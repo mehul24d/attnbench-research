@@ -5,12 +5,12 @@ not a wrong answer that looked wrong — **a plausible number, produced by
 machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
-model is self-inflicted, and this file is the record of it, kept because six
+model is self-inflicted, and this file is the record of it, kept because seven
 instances in two days is no longer a coincidence.
 
 ---
 
-## The six
+## The seven
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -50,7 +50,7 @@ the unresolved argument to stdout before writing its error to stderr**, so a
 wrapper capturing stdout receives `"HEAD"` and treats non-empty output as
 success.
 
-This is the worst of the six, because the integrity layer being built on top
+This is the worst of the seven, because the integrity layer being built on top
 of it — segment commit consistency, Stage 1 pass verification — would have
 compared `"HEAD"` against `"HEAD"`, agreed, and certified nothing. A missing
 field would have been *safer*: it fails loudly.
@@ -98,7 +98,42 @@ which is not a plan.
 
 **Found by**: reading back what the loop had actually done, after it finished.
 
+### 7. A stale cache baked into a machine image
+
+The corrected 16K anchor reported `scoring_pass: 0.007 s, 9041 TFLOPS` for a
+phase that genuinely takes 12.1 s. It was a **score-cache hit**: the v3
+machine image had been captured from the session-3 instance *after* its 16K
+anchor ran, so `results/accuracy/score_cache` rode along inside the image and
+the timed pass loaded a 7 MB file.
+
+**This one has a different shape from the other six.** Those were all defects
+in code or process that existed in one place and could, in principle, be found
+by reading. This is *contamination that survives teardown and travels between
+sessions* — the instance that created it was deleted hours earlier, and the
+evidence propagated through an artifact nobody thinks of as containing state.
+A machine image is mentally a "clean environment"; it is in fact a disk
+snapshot, and a cache is exactly the kind of thing whose purpose is to make
+expensive work free.
+
+Caught only by the "internally impossible data" heuristic — 9041 TFLOPS is
+absurd on an L4 whose dense peak is ~121. **At a plausible magnitude it would
+have been invisible**, and the Stage 3 estimate built on it would simply have
+been hours low with nothing to indicate a problem. The 32K run in the same
+session was unaffected purely by luck: no 32K entry happened to exist.
+
+**Fixed structurally, not procedurally.** Clearing derived caches is now a
+step in the instance startup script (`scripts/gcp_launch_compile_session.sh`),
+which runs on *every* boot including boots from an image, rather than a
+runbook line someone has to remember. Anything that can be forgotten will be,
+and this one does not announce itself when it fires. The loop is deliberately
+narrow — it removes only recomputable intermediates, never measurement
+outputs — and `tests/test_launch_startup_script.py` renders the startup script
+and *executes* the loop against a fake home layout to confirm both halves.
+
+**Found by**: a number being impossible rather than merely surprising.
+
 ---
+
 
 ## The general hazards, stated once
 
@@ -120,14 +155,21 @@ the test is the thing that's broken.
 path, check what breaks: nothing breaking is evidence the tests were not
 covering it, not evidence the change was safe.
 
+**Artifacts carry state you did not intend to ship.** Instance 7. A machine
+image is a disk snapshot, not a clean environment; caches, temp files and
+derived intermediates travel inside it and outlive the instance that made
+them. Clear recomputable state on boot, as a scripted step.
+
 **A field that admits ignorance beats one that invents an answer.** `None` is
 honest; `"HEAD"` was not. Prefer failing closed at the point of *use* (the
 join refuses unverified segments) over failing at the point of *capture*
 (which would take down a measurement run for an unrelated environment
 problem).
 
-**Watch for internally impossible data.** Instance 2 was caught because
-batch=2 took less total time than batch=1. Summaries hide this; raw totals
+**Watch for internally impossible data.** Instances 2 and 7 were both caught
+this way, and nothing else would have caught either: batch=2 taking less total
+time than batch=1, and a scoring pass reporting 9041 TFLOPS on a card whose
+dense peak is ~121. Summaries hide this; raw totals
 show it. When a metric surprises you, check whether the underlying numbers
 are consistent with *any* explanation before believing the metric's.
 

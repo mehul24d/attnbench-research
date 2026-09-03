@@ -39,7 +39,7 @@ seq_lens:
   2048: 300
   4096: 300
   8192: 300
-  16384: 200
+  16384: 300
   32768: 100
 
 directional_seq_lens: [32768]
@@ -67,25 +67,52 @@ block_sizes: [128]
 #
 # Cross-stage comparability with Stage 2's SweepGrid is preserved for the
 # levels that remain -- 0.5 and 0.9 are both Stage 2 operating points.
-sparsities: [0.5, 0.9]
+sparsities: [0.5, 0.75, 0.9]
 
-# RESERVE CUT (recorded, deliberately NOT applied) -- 32768: 100 -> 50.
-# Fires only if the 16384 timing anchor from the compile session comes in
-# worse than the 8192 extrapolation. Saves ~6.7h (34.1 -> ~27.4h), restoring
-# enough headroom to absorb a ~28% upward revision instead of the ~2.7% the
-# current grid tolerates. It is the right reserve because 32768 carries the
-# highest per-example cost in the grid (halving n there is worth ~3x halving
-# n at 8192) and is already labelled directional, so weakening it costs no
-# headline claim. At n=50 that point is well under 50% power at epsilon=5 --
-# it supports "we looked and saw no collapse" and nothing more. Rejected
-# alternatives: n=75 (pays 3.3h for a point still too underpowered to carry
-# a claim -- if it's being weakened, weaken it properly); dropping the gla
-# backend or a RULER task (saves more but costs a study dimension rather
-# than statistical power).
+# TWO-SIDED RULE: RESOLVED 2026-09-03 -- cuts A and B RESTORED.
 #
-# The rule is two-sided. If the 16384 anchor comes in BETTER than the
-# extrapolation, restore 16384 to n=300 rather than banking the headroom --
-# that's a main-grid point and worth more than the 32768 directional one.
+# The rule said: if the 16384 anchor came in WORSE than the extrapolation,
+# fire reserve cut C (32768: 100 -> 50); if BETTER by enough to open ~5h,
+# restore 16384 to n=300. The anchor came in far better, so B is restored and
+# C is retired unfired.
+#
+# What changed. Every number in the old estimate was a projection on top of
+# an assumed 15 TFLOPS. Session 4 measured the whole grid's throughput at
+# commit b6ed63b on an L4:
+#
+#   scoring       5.185 (8192) / 5.448 (16384) / 3.927 (32768) TFLOPS
+#   sdpa_flash    42.151 (16384) / 45.231 (32768)
+#   block_sparse  38.122 @ sparsity 0.5, 35.937 @ 0.9 (both 16384)
+#   gla           47.988 (16384) / 63.595 (32768)
+#
+# Measured throughput is ~3x the planning assumption, and token-exact sizing
+# removed a further ~21% of phantom context. The committed (post-cut) grid
+# re-estimates to 11.03h against the 34.08h it was cut down to reach.
+#
+# Restoration costs, from those measurements:
+#   B (16384: 200 -> 300)            +1.48h
+#   A (sparsity 0.75 restored)       +0.74h
+#   A+B together                     +2.33h  -> 13.35h total
+#
+# A is restored too, and it is the better bargain of the two. The cut to
+# {0.5, 0.9} was made purely on cost, and it left two points -- enough to
+# draw a line through the accuracy-vs-sparsity relationship but not enough to
+# see curvature in it. Since that relationship IS the study's headline
+# question, 0.74h for a third point is cheap. NOTE: 0.75's throughput is
+# interpolated between the two measured levels, not measured -- it was cut
+# before it was ever run. That affects this estimate, not the validity of
+# running it.
+#
+# DELIBERATELY NOT TAKEN: 32768 n=100 -> 200 (+7.43h, total 18.45h). It would
+# upgrade the longest-context point from "directional" to a real claim, which
+# is genuinely valuable and remains the best use of further headroom. It is
+# held until Stage 2's actual duration is known, because it is a 67% increase
+# to strengthen one cell, and that trade should be made against a measured
+# Stage 2 rather than an estimated one.
+#
+# Reserve cut C is retired, not deleted: if a future re-estimate moves against
+# us, 32768: 100 -> 50 remains the right first cut, for the reasons recorded
+# in git history at commit b6ed63b.
 
 # RULER task construction, not RULER's benchmark -- see
 # attnbench/_vendor/ruler/VENDORED.md. niah_single/niah_multikey/vt are

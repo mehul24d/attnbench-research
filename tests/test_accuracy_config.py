@@ -21,9 +21,9 @@ def test_pinned_grid_loads_exact_values():
     assert grid.model_primary == "Qwen/Qwen2.5-1.5B-Instruct"
     assert grid.model_alternate == "meta-llama/Llama-3.2-1B-Instruct"
     assert grid.seq_lens == {2048: 300, 4096: 300, 8192: 300,
-                             16384: 200, 32768: 100}
+                             16384: 300, 32768: 100}
     assert grid.block_sizes == (128,)
-    assert grid.sparsities == (0.5, 0.9)
+    assert grid.sparsities == (0.5, 0.75, 0.9)
     assert grid.score_dtype == "fp16"
 
 
@@ -50,35 +50,35 @@ def test_main_lengths_are_not_directional():
         assert not grid.is_directional(seq_len)
 
 
-def test_sparsity_levels_are_the_budget_cut_pair_not_stage_2s_three():
-    """The grid runs two sparsity levels, not Stage 2's three -- a ~35h
-    budget cut, costed against the 8192 timing anchor. Restoring the third
-    level adds ~6.6 GPU-hours and puts the grid back over budget, so it
-    must be a deliberate edit that fails this test first, not a silent
-    "make it match Stage 2 again" tidy-up.
+def test_all_three_sparsity_levels_are_present():
+    """0.75 was cut on cost alone and RESTORED 2026-09-03 once session 4
+    measured real throughput (+0.74h).
+
+    Two points can only support a line through the accuracy-vs-sparsity
+    relationship; three can show curvature in it. That relationship is the
+    study's headline question, so the third level is not a luxury. Matching
+    Stage 2's (0.5, 0.75, 0.9) also restores cross-stage comparability at
+    every operating point rather than two of three.
     """
     grid = load_grid(GRID_PATH)
-    assert grid.sparsities == (0.5, 0.9), (
-        "sparsities is a budget-constrained pair, not Stage 2's full "
-        "(0.5, 0.75, 0.9) -- see stage3_grid.yaml's note on why 0.75 is "
-        "the level dropped and 0.5 the one kept"
-    )
-    assert 0.5 in grid.sparsities, (
-        "0.5 must be kept over 0.75: it is the level most likely to pass "
-        "non-inferiority, and dropping it makes a negative result "
-        "uninterpretable rather than merely weaker"
-    )
+    assert grid.sparsities == (0.5, 0.75, 0.9), (
+        "all three levels are restored -- dropping one again is a budget "
+        "decision that must be recorded in stage3_grid.yaml, not a tidy-up")
 
 
-def test_16384_runs_at_the_reduced_budget_n():
-    """16384 is at n=200 as a budget cut, not a power-analysis result.
-    Bumping it back to 300 costs ~5.8 GPU-hours. It is also the first
-    point to restore if the compile session's 16384 timing anchor comes
-    in better than the 8192 extrapolation -- so a change here should be
-    an explicit decision recorded alongside that measurement.
+def test_16384_is_restored_to_full_n():
+    """16384 went to n=200 as budget cut B and was RESTORED to 300 on
+    2026-09-03 when the two-sided rule fired.
+
+    The rule required the 16384 anchor to come in better than the 8192
+    extrapolation by enough to open ~5h. Measured throughput came in at ~3x
+    the 15-TFLOPS planning assumption, so it opened far more, and B is a
+    main-grid point worth more than the 32768 directional one.
     """
     grid = load_grid(GRID_PATH)
-    assert grid.seq_lens[16384] == 200
+    assert grid.seq_lens[16384] == 300, (
+        "16384 is a main-grid point at full n since the two-sided rule "
+        "resolved; reducing it again needs a recorded reason")
 
 
 def test_32768_reserve_cut_is_not_applied():

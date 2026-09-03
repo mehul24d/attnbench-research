@@ -429,3 +429,74 @@ True), and v2 was deleted the same day. Machine image descriptions cannot be
 edited after creation, so this note is the correction. The description's
 "NOT VERIFIED: GQA" is pessimistic, not wrong -- the capture simply happened
 before the gate ran.
+
+---
+
+# OUTCOME — session 4, 2026-09-03
+
+**Succeeded, and did more than planned.** ₹113, 1h24m instance time (boot
+09:04:32Z, deleted 10:28Z). Zero OOM kills. Commit `b6ed63b`, clean tree, so
+every row carries verifiable provenance.
+
+| objective | result |
+|---|---|
+| 32K dense baseline with FA2 | **RESOLVED** — 4.92 GiB, 45.231 TFLOPS, no OOM |
+| corrected GLA anchor | **48.0 TFLOPS warm** (was 12.0 cold) |
+| BSA build, single attempt | **BUILT** in 50m52s, imports, agrees with oracle |
+| block_sparse anchor (was next-session work) | **MEASURED** |
+| Stage 3 two-sided rule | **RESOLVED — cuts A and B restored** |
+
+## The headline measurement
+
+At 16384 on an L4, dense vs block-sparse:
+
+| backend | wall_s | eff_TFLOPS |
+|---|---|---|
+| sdpa_flash (dense) | 1.566 | 42.151 |
+| block_sparse @ 0.5 | 1.429 | 38.122 |
+| block_sparse @ 0.9 | 1.259 | 35.937 |
+| gla (linear) | 1.376 | 47.988 |
+
+**Skipping 90% of blocks buys 1.24x**, and effective throughput *falls* as
+sparsity rises -- the kernel gets less efficient the sparser it gets, because
+overhead dominates the work removed. This is the study's central question
+answered at one point, and it says sparsity does not convert to speedup at
+16K on this hardware. At 32768, GLA (linear) beats dense by 1.41x, which is
+the other half of the thesis.
+
+## Causality fix validated against the real kernel
+
+The `to_dense_bool` fix made this morning was measured, not argued:
+
+| mask | future positions | max err vs BSA |
+|---|---|---|
+| fixed | 0 | 8.09e-03 (agrees, bf16 tol 2e-2) |
+| pre-fix | 65024 | **3.6972** (185x tolerance) |
+
+Without the fix the first BSA correctness gate would have failed
+catastrophically and been attributed to BSA's kernel.
+
+## Cross-session reproducibility
+
+Session 3 vs session 4, different physical machines, metrics the warmup fix
+did not touch: scoring 5.362 -> 5.448 (+1.6%), sdpa_flash 41.714 -> 42.106
+(+0.9%). Both well inside the canary's 5% tolerance -- real-world validation
+of that threshold. Scoring reproduced to five significant figures within the
+session (12.117 vs 12.118 s).
+
+## Things that nearly went wrong
+
+- **BSA defaults to FIVE architectures** (`BLOCK_SPARSE_ATTN_CUDA_ARCHS`
+  defaults to `80;90;100;110;120`). Scoped to `80;90`. The runbook line
+  telling us to check for an arch hook paid for itself.
+- **A stale score cache inside the v3 image** made a timed scoring pass report
+  9041 TFLOPS. See `docs/silent_failure_patterns.md` instance 7. Cache
+  clearing is now a scripted boot step, not a runbook instruction.
+- `import block_sparse_attn` fails unless `torch` is imported first -- the
+  extension links `libc10.so` from torch's lib directory.
+
+## Next
+
+Stage 2 (`docs/stage2_plan.md`). Every input is in place: all seven backends
+available in v4, 32K dense baseline resolved so shortest-first is safe,
+segment workflow built and tested, provenance carrying real commits.

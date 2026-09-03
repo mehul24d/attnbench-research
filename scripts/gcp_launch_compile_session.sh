@@ -101,6 +101,34 @@ cat > "$STARTUP_SCRIPT" <<EOF
 # by hand: `sudo shutdown -h HH:MM`.
 logger "attnbench-l4-compile: scheduling hard shutdown in $CAP_MINUTES minutes"
 shutdown -h +$CAP_MINUTES
+
+# ---------------------------------------------------------------------------
+# Clear derived caches on EVERY boot.
+#
+# A machine image preserves whatever the instance it was captured from had on
+# disk, including caches whose whole purpose is to make expensive work free.
+# On 2026-09-03 the v3 image carried results/accuracy/score_cache from the
+# session that captured it, so the next session's timed scoring pass loaded a
+# 7 MB file and reported "0.007 s, 9041 TFLOPS" for a phase that genuinely
+# takes 12 s. The Stage 3 estimate built on it would have been hours low.
+#
+# It was caught only because 9041 TFLOPS is absurd on its face. At a plausible
+# magnitude -- a partially warm cache, a shorter phase -- the same failure is
+# invisible. That is why this is a scripted boot step and not a line in a
+# runbook: anything that can be forgotten will be, and this one does not
+# announce itself when it fires.
+#
+# Deliberately narrow. It removes ONLY caches of derived intermediate values
+# that a later run can recompute. Measurement outputs (results/*.parquet, the
+# logs) are never touched -- those are the session's product, and an image
+# that quietly deleted them would be a far worse failure than the one this
+# prevents.
+for CACHE in /home/*/attnbench_scaffold/results/accuracy/score_cache; do
+  if [ -d "\$CACHE" ]; then
+    logger "attnbench: clearing stale derived cache \$CACHE"
+    rm -rf "\$CACHE"
+  fi
+done
 EOF
 
 echo "About to create a BILLABLE instance:"
