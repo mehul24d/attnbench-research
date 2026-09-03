@@ -145,6 +145,35 @@ Then, **on the instance, before any sweep cell runs**:
    **Do not widen the tolerance or edit `CANARY_SEQ_LENS` to make a firing
    canary pass.** That resets the baseline and makes the check decorative.
 3. **GPU exclusivity** (`provenance.assert_exclusive`) — existing gate.
+4. **Stage 1 must reproduce the 2026-09-04 flex diagnostic**, after the probe
+   and **before the sweep**:
+   ```bash
+   python3 scripts/check_stage1_against_diagnostic.py \
+       results/stage2/<segment>/probe/correctness.parquet
+   ```
+   Non-zero exit means stop. The diagnostic path (a script calling
+   `check_for_family` directly) and the pipeline path (`run_probe.py` over the
+   full grid) must agree, or something differs between them and it is worth
+   knowing at the cost of one comparison rather than 504 cells.
+
+   The check can **name** its failure rather than merely detecting one, because
+   eager and compiled flex leave different numerical fingerprints at the same
+   config and seed — 0.0157/0.0169 against 0.0084/0.0090, consistently ~1.9×
+   apart. A run reporting the eager values has fallen back again, and the tool
+   says `EAGER_SIGNATURE` instead of a generic mismatch someone would have to
+   diagnose from scratch a second time. It is a spot-check on a process-scoped
+   property (2 of 72 cells), not grid coverage — see the module docstring.
+
+### Segment 2 carries two obligations from segment 1
+
+- **Stage 1's existing pass table contains 72 void flex entries** — passes
+  earned by the eager fallback. They must be re-earned under `compile_guard`,
+  not inherited.
+- **Segment 1's 84 flex rows stay void** and are re-measured through the full
+  pipeline. The 2026-09-04 diagnostic numbers are *diagnostics*: they bypassed
+  the Stage 1 pass table deliberately to fit a 30-minute cap, and live in
+  `results/diagnostics/`, never `results/stage2/`. The other 219 rows from
+  segment 1 stand — `flex` is the only backend that calls `torch.compile`.
 
 ---
 
