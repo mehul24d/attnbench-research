@@ -49,6 +49,16 @@ def probe(backend: AttentionBackend, cfg: AttnConfig,
     """
     claimed, reason = backend.claims_support(cfg)
 
+    # A block_sparse config with no mask cannot run: every backend that
+    # implements it raises "block_sparse requires an explicit mask". Probing
+    # without one marked all 540 block_sparse cells "unsupported", so they
+    # never reached the correctness gate, so they had no Stage 1 pass, so
+    # Stage 2 would have rejected every one of them -- the sparse arm of the
+    # study, absent, with "unsupported" as the only trace.
+    if mask is None and cfg.mask == "block_sparse" and cfg.mask_source:
+        from .masks import mask_for
+        mask = mask_for(cfg)
+
     try:
         backend.run_once(cfg, mask=mask)
         torch.cuda.synchronize()

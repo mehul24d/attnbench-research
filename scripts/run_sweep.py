@@ -51,6 +51,12 @@ def main():
     ap.add_argument("--min-seq-len", type=int, default=None,
                     help="run only cells at or above this length, so a later "
                          "session picks up where the previous one stopped")
+    ap.add_argument("--pass-kind", default=None, choices=[None, "fwd", "fwd_bwd"],
+                    help="run only cells of this pass kind. Stage 1 currently "
+                         "validates forward only, so fwd_bwd cells have no "
+                         "correctness pass and would be rejected; filtering "
+                         "makes that intentional rather than 432 silent "
+                         "rejections in the report.")
     ap.add_argument("--at-commit", default=None,
                     help="require Stage 1 passes recorded at this commit. "
                          "Pass 'auto' to use the current one.")
@@ -80,6 +86,8 @@ def main():
         cells = [c for c in cells if c.cfg.seq_len <= args.max_seq_len]
     if args.min_seq_len is not None:
         cells = [c for c in cells if c.cfg.seq_len >= args.min_seq_len]
+    if args.pass_kind is not None:
+        cells = [c for c in cells if c.cfg.pass_kind == args.pass_kind]
     if len(cells) != before:
         lo = args.min_seq_len if args.min_seq_len is not None else 0
         hi = args.max_seq_len if args.max_seq_len is not None else "inf"

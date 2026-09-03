@@ -70,6 +70,33 @@ def _git_state() -> tuple[Optional[str], Optional[bool]]:
     return commit, bool(status)
 
 
+def _sh_result(cmd: list[str]) -> tuple[bool, str]:
+    """(succeeded, stdout) -- distinguishes EMPTY OUTPUT from FAILURE.
+
+    `_sh` returns `stdout.strip() or None`, which conflates the two. That is
+    fine where empty output is meaningless, and wrong wherever empty output is
+    the answer.
+
+    Concretely: `nvidia-smi --query-compute-apps` prints NOTHING when no other
+    process holds the GPU -- the exact condition Stage 2 requires. Through
+    `_sh` that became None, which `assert_exclusive` reported as "nvidia-smi
+    unavailable; cannot verify", and every timing cell was blocked on a
+    perfectly clean GPU.
+
+    This is the mirror of the `git rev-parse HEAD` bug (see
+    docs/silent_failure_patterns.md instance 3): there, non-empty stdout was
+    read as success; here, empty stdout was read as failure. Both come from
+    inferring status from output content instead of the exit code.
+    """
+    if shutil.which(cmd[0]) is None:
+        return False, ""
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return out.returncode == 0, out.stdout.strip()
+    except Exception:
+        return False, ""
+
+
 def _pkg(name: str) -> Optional[str]:
     try:
         import importlib.metadata as md
@@ -208,9 +235,9 @@ def assert_exclusive() -> tuple[str, str]:
     and may proceed regardless, recording the status as a flag rather than
     gating on it.
     """
-    out = _sh(["nvidia-smi", "--query-compute-apps=pid,used_memory",
-               "--format=csv,noheader"])
-    if out is None:
+    ok, out = _sh_result(["nvidia-smi", "--query-compute-apps=pid,used_memory",
+                          "--format=csv,noheader"])
+    if not ok:
         return "unverifiable", "nvidia-smi unavailable; cannot verify"
     others = [l for l in out.splitlines()
               if l.strip() and not l.startswith(str(os.getpid()))]
