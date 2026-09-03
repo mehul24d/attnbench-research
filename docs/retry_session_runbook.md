@@ -371,6 +371,22 @@ writes to `score_cache` — a warmup there would time a cache load.
 
 ## Next session — boot from v3, budget 2h
 
+### Precondition: a real git commit (do this BEFORE launching)
+
+```bash
+cd ~/Desktop/research/attnbench_scaffold
+git status --short                                     # expect empty
+python3 -c "from attnbench import provenance; print(provenance.capture().git_commit)"
+# must print a 40-hex SHA -- not None, and NOT the string "HEAD"
+```
+
+Session 4 produces the 32K baseline and the corrected GLA anchor. Those are
+results that later sessions will want to join, so they must carry a verifiable
+commit -- five minutes now against re-running measurements later. Everything
+measured before commit `eee2c6b32cf4` records `git_commit="HEAD"` and is not
+joinable without `allow_unverified=True`. See `docs/silent_failure_patterns.md`
+instance 3 for why that string exists.
+
 flash-attn is already in the image, so the whole window goes to BSA. Launch
 with `GCP_ZONE_FALLBACKS="asia-south1-c asia-south1-b asia-south1-a"`; the
 script now stops at the first success and refuses to launch if an instance

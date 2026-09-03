@@ -5,38 +5,37 @@ dense, linear and flex-sparse arms all run without Block-Sparse-Attention.
 
 ---
 
-## BLOCKER — the repository has no commits
+## Provenance precondition — RESOLVED 2026-09-03
 
-**Stage 2 must not start until this is fixed.** The git repository enclosing
-this project is rooted at the user's **home directory**, and its `main` branch
-has zero commits. `git rev-parse HEAD` fails there, but git echoes the
-unresolved argument to *stdout* before writing its error to stderr, so
-`provenance` captured the literal string `"HEAD"` and stored it as a commit.
+This project is now its own git repository, rooted at `attnbench_scaffold`,
+with a real baseline commit (`eee2c6b32cf4`). `provenance.capture()` records a
+40-hex SHA and `git_dirty=False` on a clean tree.
 
-Every row written on 2026-09-03 therefore carries `git_commit="HEAD"` and
-`git_dirty=True` (the latter from thousands of unrelated files in `$HOME`).
+It previously sat inside an accidental repository rooted at the user's **home
+directory** — a clone of an unrelated project. `git rev-parse HEAD` failed
+there, and because git echoes the unresolved argument to stdout before writing
+its error to stderr, provenance captured the literal string `"HEAD"` and stored
+it as a commit. See `docs/silent_failure_patterns.md` instance 3.
 
-`provenance._git_state` now validates the 40-hex SHA format and anchors git to
-this package's directory, so it records `None` rather than a plausible
-non-answer. But **None is still not a commit**, and every integrity check
-below depends on having a real one:
+**Results written before eee2c6b32cf4 carry `git_commit="HEAD"`** and cannot be
+joined with anything measured after it except via `allow_unverified=True`.
+That includes the 2026-09-03 batch-scaling and anchor measurements. They remain
+valid as measurements — the number is what the machine did — but their
+provenance is not verifiable, and they must not be silently mixed into a Stage
+2 join.
+
+Before each session, confirm:
 
 ```bash
 cd ~/Desktop/research/attnbench_scaffold
-git init                       # its own repo, not $HOME's
-git add -A && git commit -m "attnbench: baseline before Stage 2"
 python3 -c "from attnbench import provenance; print(provenance.capture().git_commit)"
 # must print a 40-hex SHA, not None and not HEAD
+git status --short        # empty: results should be measured from committed code
 ```
 
-Until that prints a SHA, `cross_arch.load_segments` refuses to join segments
-and `load_stage1_pass_set(at_commit=...)` cannot verify anything. Both have
-explicit escape hatches (`allow_unverified=True`, `at_commit=None`) which
-exist so a run *can* proceed — but a Stage 2 run using them produces results
-whose provenance cannot be checked afterwards, which for a multi-session sweep
-is most of the value.
-
----
+A dirty tree is not fatal — `git_dirty` records it — but a Stage 2 segment
+measured from uncommitted code cannot be reproduced from its own commit field,
+which defeats the purpose of recording one.
 
 ## Scope and sizing
 
@@ -168,24 +167,16 @@ two unrelated kernels on one mask object.
 
 ## What the integrity machinery is actually defending against
 
-Not tampering. Every incident behind these checks was self-inflicted, and four
-of them happened in a single day (2026-09-03):
+Not tampering. Every incident behind these checks was self-inflicted, and
+**six** are now recorded in `docs/silent_failure_patterns.md` — including the
+one that would have made this integrity layer decorative (`git_commit`
+recording the literal string `"HEAD"` on every row, so a consistency check
+over them would pass while verifying nothing).
 
-- a correctness oracle computing a **different function** than the kernel
-  under test (`to_dense_bool` permitting 63 future tokens per query)
-- a metric reporting **JIT compilation as batching benefit** (`gla 4.28x —
-  batching helps`, for a workload where batching does nothing)
-- a **guard that passed without ever running** (`git_commit` recording the
-  string `"HEAD"`)
-- a **test whose edit never applied**, reporting success for an experiment
-  that had not been performed
-
-Every one produced a plausible number that was wrong, and none raised an
-error. The checks above exist to make that class of result either impossible
-to produce or impossible to mistake for a clean one. The recurring tell is
-the same in all four cases: **a check nobody has watched fail is a guess.**
-Each guard in this plan has been observed failing when deliberately broken,
-and the tests that do so are in the suite.
+Read that file before relying on any check here. Its through-line is the rule
+this plan depends on: **a check nobody has watched fail is a guess.** Every
+guard referenced above has been deliberately broken once, observed failing,
+and restored, and the tests that do so are in the suite.
 
 ---
 
