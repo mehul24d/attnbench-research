@@ -264,10 +264,27 @@ def check_structural(backend: AttentionBackend, cfg: AttnConfig,
                                     "agreement with softmax attention")
 
 
-# Above this length the float64 naive oracle cannot be allocated: it needs
-# 64 GiB at 16384 and 256 GiB at 32768 for Stage 2's geometry (batch 1, 32
-# heads), against a 23 GiB card. 4096 costs 4 GiB and fits.
-EXACT_ORACLE_MAX_SEQ_LEN = 4096
+# Memory the float64 oracle is allowed to use for its score matrix. The
+# oracle materialises (batch, heads, S, S) in float64, so feasibility is a
+# function of the WHOLE config, not of seq_len alone -- an early version
+# thresholded on seq_len<=4096 assuming batch=1 and promptly OOM'd on the
+# batch-16 configs, where 4096 costs 68 GB rather than 4.
+#
+# 8 GiB leaves room on a 23 GiB card for weights, the backend under test, and
+# fragmentation. An OOM here is not a correctness failure but it is recorded
+# as one, so predicting it is better than discovering it.
+EXACT_ORACLE_BUDGET_BYTES = 8 * 2**30
+
+
+def exact_oracle_fits(cfg: AttnConfig,
+                      budget_bytes: int = EXACT_ORACLE_BUDGET_BYTES) -> bool:
+    """Whether a float64 naive reference can be allocated for this config."""
+    score_bytes = cfg.batch * cfg.n_heads_q * cfg.seq_len * cfg.seq_len * 8
+    return score_bytes <= budget_bytes
+
+
+def oracle_bytes(cfg: AttnConfig) -> int:
+    return cfg.batch * cfg.n_heads_q * cfg.seq_len * cfg.seq_len * 8
 
 # Independent implementations required to agree before a cross-backend pass is
 # recorded. THREE, not two: two kernels sharing a bug is plausible (a common
@@ -344,8 +361,8 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
         backend.name, cfg.key(), True, "cross_backend", max_abs_err=worst,
         detail=f"agrees with {len(errors)} independent implementations "
                f"({', '.join(sorted(errors))}) within atol={tol['atol']}; "
-               f"NOT verified against a float64 oracle, which cannot be "
-               f"allocated at seq_len={cfg.seq_len}")
+               f"NOT verified against a float64 oracle, which would need "
+               f"{oracle_bytes(cfg) / 2**30:.1f} GiB for this config")
 
 
 def check_for_family(backend: AttentionBackend, cfg: AttnConfig,
@@ -365,7 +382,7 @@ def check_for_family(backend: AttentionBackend, cfg: AttnConfig,
     if family == "linear":
         return check_structural(backend, cfg, mask=mask, seed=seed, device=device)
 
-    if cfg.seq_len > EXACT_ORACLE_MAX_SEQ_LEN:
+    if not exact_oracle_fits(cfg):
         # No float64 oracle can exist here (64 GiB at 16384, 256 at 32768).
         # Fall back to agreement among independent implementations rather than
         # either skipping the length -- which would delete the study's
@@ -375,9 +392,11 @@ def check_for_family(backend: AttentionBackend, cfg: AttnConfig,
         if not references:
             return CorrectnessResult(
                 backend.name, cfg.key(), False, "cross_backend",
-                detail=f"seq_len={cfg.seq_len} exceeds the float64 oracle's "
-                       f"reach ({EXACT_ORACLE_MAX_SEQ_LEN}) and no reference "
-                       f"backends were supplied to compare against")
+                detail=f"float64 oracle would need "
+                       f"{oracle_bytes(cfg) / 2**30:.1f} GiB for this config "
+                       f"(batch={cfg.batch}, heads={cfg.n_heads_q}, "
+                       f"seq_len={cfg.seq_len}) and no reference backends "
+                       f"were supplied to compare against")
         if cfg.mask == "block_sparse" and mask is None and cfg.mask_source:
             from .masks import mask_for
             mask = mask_for(cfg)

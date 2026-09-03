@@ -215,8 +215,7 @@ def test_a_single_disagreeing_backend_is_a_finding_not_a_skip():
 
 
 def test_long_sequences_dispatch_to_cross_backend_not_the_oracle():
-    from attnbench.gates import EXACT_ORACLE_MAX_SEQ_LEN
-    cfg = _cfg(seq_len=EXACT_ORACLE_MAX_SEQ_LEN * 2)
+    cfg = _cfg(seq_len=16384, batch=1, n_heads_q=32, n_heads_kv=32)
     r = check_for_family(_Dense("a"), cfg,
                          references=[_Dense("b"), _Dense("c")], **CPU)
     assert r.check_kind == "cross_backend"
@@ -228,10 +227,9 @@ def test_short_sequences_still_use_the_exact_oracle():
 
 
 def test_long_sequence_without_references_fails_rather_than_inheriting():
-    """Inheriting a 4096 pass upward would assume exactly what Stage 1 exists
-    to measure: that numerical error does not accumulate with length."""
-    from attnbench.gates import EXACT_ORACLE_MAX_SEQ_LEN
-    cfg = _cfg(seq_len=EXACT_ORACLE_MAX_SEQ_LEN * 2)
+    """Inheriting a short-length pass upward would assume exactly what Stage 1
+    exists to measure: that numerical error does not accumulate with length."""
+    cfg = _cfg(seq_len=16384, batch=1, n_heads_q=32, n_heads_kv=32)
     r = check_for_family(_Dense("a"), cfg, **CPU)
     assert not r.passed and "no reference backends were supplied" in r.detail
 
@@ -263,3 +261,26 @@ def test_naive_claims_block_sparse_because_it_is_the_oracle():
                mask_source="random")
     claimed, _ = NaiveAttention.claims_support(cfg)
     assert claimed
+
+
+def test_oracle_feasibility_depends_on_the_whole_config_not_just_seq_len():
+    """An early version thresholded on seq_len<=4096 assuming batch=1, and
+    OOM'd on the batch-16 configs: 4 GiB at batch 1 is 64 GiB at batch 16.
+
+    All 29 Stage 1 "failures" on 2026-09-03 were this OOM, not a single
+    numerical disagreement.
+    """
+    from attnbench.gates import exact_oracle_fits
+
+    fits = _cfg(seq_len=4096, batch=1, n_heads_q=32, n_heads_kv=32)
+    same_length_bigger_batch = _cfg(seq_len=4096, batch=16, n_heads_q=32,
+                                    n_heads_kv=32)
+    assert exact_oracle_fits(fits)
+    assert not exact_oracle_fits(same_length_bigger_batch), (
+        "batch must count: the oracle materialises (batch, heads, S, S)")
+
+
+def test_an_infeasible_oracle_config_reports_the_size_it_would_need():
+    cfg = _cfg(seq_len=16384, batch=1, n_heads_q=32, n_heads_kv=32)
+    r = check_for_family(_Dense("a"), cfg, **CPU)
+    assert not r.passed and "GiB for this config" in r.detail
