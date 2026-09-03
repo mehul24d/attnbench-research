@@ -291,6 +291,10 @@ def oracle_bytes(cfg: AttnConfig) -> int:
 # upstream, a shared CUTLASS path); three from different authors much less so.
 MIN_CROSS_BACKEND_AGREEING = 3
 
+# Cross-backend comparisons allow twice the exact check's tolerance: both
+# sides are approximate, so each contributes its own error from truth.
+CROSS_BACKEND_TOL_FACTOR = 2.0
+
 
 def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
                         references: list[AttentionBackend], mask=None,
@@ -308,7 +312,20 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
     three implementations is wrong at this shape, and which one is a question
     worth answering rather than routing around.
     """
-    tol = TOL[cfg.quant_scheme if cfg.quant_scheme is not None else "float32"]
+    # Tolerance comes from the COMPUTE dtype, not from the dtype the
+    # comparison happens to be cast to. An earlier version used float32
+    # (atol=1e-4) because the tensors are compared as float32, and every
+    # bf16 config failed at 0.004-0.023 -- ordinary bf16 kernel variation.
+    #
+    # And it is deliberately LOOSER than the exact check by
+    # CROSS_BACKEND_TOL_FACTOR. The exact check compares one kernel against
+    # float64 truth, so its error budget is one kernel's epsilon. Here BOTH
+    # sides are approximate: if each is within epsilon of truth, they can
+    # differ from each other by up to 2*epsilon without either being wrong.
+    # Holding cross-backend to the oracle's tolerance would report ordinary
+    # rounding as disagreement.
+    base = TOL[cfg.quant_scheme if cfg.quant_scheme is not None else cfg.dtype]
+    tol = {k: v * CROSS_BACKEND_TOL_FACTOR for k, v in base.items()}
 
     def fail(detail: str) -> CorrectnessResult:
         return CorrectnessResult(backend.name, cfg.key(), False,

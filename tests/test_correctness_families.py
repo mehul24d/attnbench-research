@@ -284,3 +284,40 @@ def test_an_infeasible_oracle_config_reports_the_size_it_would_need():
     cfg = _cfg(seq_len=16384, batch=1, n_heads_q=32, n_heads_kv=32)
     r = check_for_family(_Dense("a"), cfg, **CPU)
     assert not r.passed and "GiB for this config" in r.detail
+
+
+def test_cross_backend_tolerance_comes_from_the_compute_dtype():
+    """Not from the dtype the comparison is cast to.
+
+    An earlier version used TOL['float32'] (atol=1e-4) because both sides are
+    compared as float32, and every bf16 config "failed" at 0.004-0.023 --
+    ordinary bf16 kernel variation reported as disagreement.
+    """
+    from attnbench.gates import CROSS_BACKEND_TOL_FACTOR, TOL, check_cross_backend
+
+    # a disagreement that is fine for bf16 but far outside float32 tolerance
+    bf16_ok = TOL["bfloat16"]["atol"]
+    cfg = _cfg(seq_len=128, dtype="bfloat16")
+    r = check_cross_backend(_Dense("a"), cfg,
+                            [_Dense("b"), _Dense("c", bias=bf16_ok)], **CPU)
+    assert r.passed, (
+        f"{bf16_ok} is within bf16 tolerance and must not be reported as "
+        f"disagreement just because float32 would be stricter")
+
+
+def test_cross_backend_is_looser_than_the_exact_check():
+    """Both sides are approximate here, so each contributes its own error from
+    truth: two kernels each within epsilon can differ by 2*epsilon."""
+    from attnbench.gates import CROSS_BACKEND_TOL_FACTOR
+    assert CROSS_BACKEND_TOL_FACTOR == 2.0
+
+
+def test_cross_backend_still_catches_a_real_disagreement():
+    """The looser tolerance must not make the check toothless."""
+    from attnbench.gates import CROSS_BACKEND_TOL_FACTOR, TOL, check_cross_backend
+
+    way_off = TOL["bfloat16"]["atol"] * CROSS_BACKEND_TOL_FACTOR * 10
+    cfg = _cfg(seq_len=128, dtype="bfloat16")
+    r = check_cross_backend(_Dense("a"), cfg,
+                            [_Dense("b"), _Dense("c", bias=way_off)], **CPU)
+    assert not r.passed and "a finding, not a cell to skip" in r.detail
