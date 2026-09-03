@@ -23,6 +23,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from attnbench import compile_guard                   # noqa: E402
 from attnbench import provenance                      # noqa: E402
 from attnbench.config import AttnConfig               # noqa: E402
 from attnbench.backends import all_backends           # noqa: E402
@@ -104,6 +105,12 @@ def instantiate():
 
 
 def main():
+    # Raise the dynamo recompile ceiling before anything runs. Past the
+    # default of 8, torch.compile silently runs eagerly -- which is how
+    # Stage 1 certified flex block-sparse 72/72 for cells Stage 2 could
+    # not lower at all. compile_guard.guard() catches it if it happens
+    # anyway; this makes it not happen. See attnbench/compile_guard.py.
+    compile_guard.configure()
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="results/probe")
     ap.add_argument("--max-seq", type=int, default=32768,

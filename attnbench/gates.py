@@ -13,6 +13,7 @@ from typing import Iterable, Optional
 
 import torch
 
+from . import compile_guard
 from .config import AttnConfig
 from .backends.base import AttentionBackend, UnsupportedConfig
 
@@ -414,6 +415,35 @@ def check_for_family(backend: AttentionBackend, cfg: AttnConfig,
                      device: str = "cuda",
                      references: Optional[list[AttentionBackend]] = None,
                      ) -> CorrectnessResult:
+    """`_dispatch_for_family`, but a pass obtained via an eager fallback is void.
+
+    Stage 1 exists to license Stage 2. A pass earned by code Stage 2 will not
+    run is worse than no pass at all: it is a precondition that reports
+    satisfied while certifying a different implementation. That is exactly what
+    happened to `flex` block-sparse on 2026-09-03 -- 72/72 passes with real
+    numerical agreement, from the eager path dynamo silently switched to after
+    the probe exhausted the recompile limit, for 72 cells the compiled kernel
+    cannot lower on an L4 at all.
+
+    So the fallback voids the verdict rather than annotating it. `passed` goes
+    to False and the reason is written into `detail`; `check_kind` is
+    preserved, because what was attempted is still the honest label for what
+    kind of check this row was.
+    """
+    with compile_guard.guard() as cg:
+        result = _dispatch_for_family(backend, cfg, mask=mask, seed=seed,
+                                      device=device, references=references)
+    if cg.fell_back:
+        return replace(result, passed=False,
+                       detail=f"VOID ({cg.detail}) | {result.detail}"[:400])
+    return result
+
+
+def _dispatch_for_family(backend: AttentionBackend, cfg: AttnConfig,
+                         mask=None, seed: int = 0,
+                         device: str = "cuda",
+                         references: Optional[list[AttentionBackend]] = None,
+                         ) -> CorrectnessResult:
     """Dispatch to the check that is meaningful for this backend's family.
 
     Applying the exact comparison to every family is what produced Stage 2's

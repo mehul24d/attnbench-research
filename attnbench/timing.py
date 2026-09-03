@@ -17,6 +17,7 @@ from typing import Callable, Optional
 
 import torch
 
+from . import compile_guard
 from .config import AttnConfig
 
 WARMUP = 10
@@ -26,7 +27,14 @@ REPS = 30
 @dataclass
 class Measurement:
     ok: bool
-    status: str                 # ok | unsupported | oom | error
+    # ok | unsupported | oom | error | compile_fallback
+    #
+    # `compile_fallback` is a REFUSAL, not a failure of the kernel. It means
+    # torch.compile gave up and ran the function eagerly, so a latency here
+    # would time a different implementation than the one named in `backend`.
+    # See compile_guard.py -- this is the condition that made Stage 1 certify
+    # flex block-sparse 72/72 while Stage 2 could not run a single cell.
+    status: str
     detail: str = ""
     latency_ms_p50: Optional[float] = None
     latency_ms_p25: Optional[float] = None
@@ -99,12 +107,22 @@ def measure(backend, cfg: AttnConfig, mask=None,
         q, k, v = backend.make_inputs(cfg)
 
         # Warm the allocator and any JIT before the peak-memory read, so we
-        # measure steady state rather than compilation.
-        backend.timed_call(q, k, v, cfg, mask=mask)
-        torch.cuda.synchronize()
+        # measure steady state rather than compilation. This is also where a
+        # torch.compile fallback would happen, so it is where we watch: a
+        # fallback caught here costs one warmup call, whereas discovering it
+        # after `_do_bench` means having run 30 reps of the eager O(S^2) path,
+        # which at long seq_len is slow enough to matter and can OOM.
+        with compile_guard.guard() as cg:
+            backend.timed_call(q, k, v, cfg, mask=mask)
+            torch.cuda.synchronize()
+        if cg.fell_back:
+            return Measurement(False, "compile_fallback", cg.detail)
 
-        p50, p25, p75 = _do_bench(
-            lambda: backend.timed_call(q, k, v, cfg, mask=mask), warmup, reps)
+        with compile_guard.guard() as cg:
+            p50, p25, p75 = _do_bench(
+                lambda: backend.timed_call(q, k, v, cfg, mask=mask), warmup, reps)
+        if cg.fell_back:
+            return Measurement(False, "compile_fallback", cg.detail)
 
         peak = torch.cuda.max_memory_allocated() / 1e6
         issued = backend.issued_flops(cfg) / (p50 * 1e-3) / 1e12

@@ -215,10 +215,43 @@ class FlexAttentionBackend(AttentionBackend):
                "block size is hardcoded to 128 inside block_sparse_attn_func, "
                "so without this backend every 64-wide cell in Stage 2 would "
                "have no sparse arm at all. Compilation must be warmed outside "
-               "the timed region or the first measurement times the compiler."),
+               "the timed region or the first measurement times the compiler. "
+               "block_sparse additionally pins kernel_options BLOCK_M=BLOCK_N=64: "
+               "inductor's single default config (128x128 at head_dim=128) "
+               "cannot lower block_size=64 and exceeds sm_89 shared memory at "
+               "block_size=128 -- see _BLOCK_SPARSE_KERNEL_OPTIONS."),
     )
 
     _compiled = None
+
+    # Inductor picks exactly ONE candidate config when max_autotune is off, and
+    # on sm_89 at head_dim=128 that config is BLOCK_M=BLOCK_N=128. Two
+    # consequences, both measured on an L4 on 2026-09-03, and between them they
+    # killed every block-sparse cell in Stage 2 segment 1 (72/72):
+    #
+    #   block_size=64  -> ValueError: "Q and KV block size must be divisible by
+    #                     BLOCK_M and BLOCK_N. We got Q_BLOCK_SIZE=64" --
+    #                     64 % 128 != 0. It RAISES rather than skipping the
+    #                     config precisely because there is only one candidate
+    #                     (torch/_inductor/kernel/flex/flex_attention.py, the
+    #                     `if len(configs) == 1: raise` branch).
+    #   block_size=128 -> divisibility passes, then the template asks for
+    #                     114688 B of shared memory against sm_89's 101376 B:
+    #                     "No valid triton configs. OutOfMemoryError: out of
+    #                     resource ... Reducing block sizes or num_stages may
+    #                     help."
+    #
+    # 64x64 tiles satisfy both, since 64 % 64 == 0 and 128 % 64 == 0, and the
+    # halved K/V tiles bring shared memory well under the cap. The lowering
+    # reads these through `setdefault`, so a caller-supplied value wins over
+    # inductor's default -- that is the documented override path, not a hack.
+    #
+    # Applied to block_sparse ONLY. Dense flex lowers fine at the default tile
+    # size and already has measured rows on this card; forcing 64x64 there
+    # would move dense numbers for no reason and break comparability with them.
+    # The resulting asymmetry (flex-dense and flex-sparse are not tiled alike)
+    # is a real confound and is recorded in docs/limitations.md.
+    _BLOCK_SPARSE_KERNEL_OPTIONS = {"BLOCK_M": 64, "BLOCK_N": 64}
 
     @staticmethod
     def _import_check():
@@ -231,24 +264,63 @@ class FlexAttentionBackend(AttentionBackend):
             cls._compiled = torch.compile(flex_attention, dynamic=False)
         return cls._compiled
 
-    def forward(self, q, k, v, cfg, mask=None):
+    def _block_mask_for(self, cfg, mask, device):
+        """Build the BlockMask ONCE per (config, device), not once per call.
+
+        `create_block_mask` / `to_flex_block_mask` are not part of the
+        attention kernel. A real deployment builds a BlockMask once and reuses
+        it across every call and every layer; building it inside `forward` put
+        it inside Stage 2's timed region, where it is a fixed per-call tax that
+        dominates exactly the short-sequence cells. Segment 1 measured flex at
+        4.22 useful TFLOPS at seq_len=1024/batch=1 against FA2's 47.9 on the
+        same card, with a latency floor pinned near 2.0 ms at every shape
+        measured -- the signature of a constant addend, not of a slow kernel.
+        It inflated `peak_memory_mb` too, since the builder materialises a
+        dense Q_LEN x KV_LEN bool before reducing it to the block grid.
+
+        Keyed on `cfg.key()`, which hashes every config field, and the mask is
+        derived deterministically from cfg by `masks.mask_for` -- so one key
+        cannot correspond to two different masks. `forward` additionally
+        validates the supplied mask's geometry against cfg before this is
+        reached, which would catch it if that ever stopped being true.
+        """
         from torch.nn.attention.flex_attention import create_block_mask
 
-        block_mask = None
-        mask_mod = None
+        cache = self.__dict__.setdefault("_block_mask_cache", {})
+        ck = (cfg.key(), str(device))
+        if ck in cache:
+            return cache[ck]
 
-        if cfg.mask == "causal":
+        if cfg.mask == "block_sparse":
+            built = mask.to_flex_block_mask(device=device)
+        elif cfg.mask == "causal":
             def mask_mod(b, h, qi, ki):
                 return qi >= ki
+            built = create_block_mask(mask_mod, B=None, H=None,
+                                      Q_LEN=cfg.seq_len, KV_LEN=cfg.seq_len,
+                                      device=device)
         elif cfg.mask == "sliding":
             w = cfg.window
-            if w is None:
-                raise UnsupportedConfig("sliding mask needs cfg.window")
 
             def mask_mod(b, h, qi, ki):
                 return (qi >= ki) & (qi - ki <= w)
-        elif cfg.mask == "full":
-            mask_mod = None
+            built = create_block_mask(mask_mod, B=None, H=None,
+                                      Q_LEN=cfg.seq_len, KV_LEN=cfg.seq_len,
+                                      device=device)
+        else:
+            built = None
+
+        cache[ck] = built
+        return built
+
+    def forward(self, q, k, v, cfg, mask=None):
+        kernel_options = None
+
+        if cfg.mask in ("causal", "full"):
+            pass
+        elif cfg.mask == "sliding":
+            if cfg.window is None:
+                raise UnsupportedConfig("sliding mask needs cfg.window")
         elif cfg.mask == "block_sparse":
             # The BlockMask comes from the shared masks.BlockSparseMask, not
             # from a pattern rebuilt here: the whole point of that type is
@@ -262,15 +334,12 @@ class FlexAttentionBackend(AttentionBackend):
                     f"mask is ({mask.seq_len}, block {mask.block_size}) but cfg "
                     f"is ({cfg.seq_len}, block {cfg.block_size}) -- a mismatch "
                     f"here would measure a different sparsity than configured")
-            block_mask = mask.to_flex_block_mask(device=q.device)
+            kernel_options = self._BLOCK_SPARSE_KERNEL_OPTIONS
         else:
             raise UnsupportedConfig(f"mask {cfg.mask} not wired for flex yet")
 
-        if block_mask is None and mask_mod is not None:
-            block_mask = create_block_mask(
-                mask_mod, B=None, H=None,
-                Q_LEN=cfg.seq_len, KV_LEN=cfg.seq_len, device=q.device,
-            )
+        block_mask = self._block_mask_for(cfg, mask, q.device)
 
         k_, v_ = _expand_kv(k, v, cfg)
-        return self._fn()(q, k_, v_, block_mask=block_mask)
+        return self._fn()(q, k_, v_, block_mask=block_mask,
+                          kernel_options=kernel_options)

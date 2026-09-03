@@ -5,12 +5,12 @@ not a wrong answer that looked wrong — **a plausible number, produced by
 machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
-model is self-inflicted, and this file is the record of it, kept because seven
-instances in two days is no longer a coincidence.
+model is self-inflicted, and this file is the record of it, kept because eight
+instances in three days is no longer a coincidence.
 
 ---
 
-## The seven
+## The eight
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -132,6 +132,96 @@ and *executes* the loop against a fake home layout to confirm both halves.
 
 **Found by**: a number being impossible rather than merely surprising.
 
+### 8. A gate that passed by running code the sweep never runs
+
+Stage 1 certified `flex` block-sparse **72/72**, with real numerical agreement
+(`max_abs_err` 0.013–0.021, `check_kind=masked_exact`) — not nulls, not
+vacuous rows. Twelve minutes later on the same instance, at the same commit,
+Stage 2 failed **72/72** of those cells at verified-identical geometry, and so
+did three fresh processes on an idle GPU.
+
+Both results were correct. They were measuring two different implementations
+under one backend name.
+
+From `stage1.log`:
+
+```
+W0903 18:41:46 torch/_dynamo/convert_frame.py:1358] [0/8]
+    torch._dynamo hit config.recompile_limit (8)
+    function: 'flex_attention'
+    last reason: 0/7: tensor 'key' requires_grad mismatch
+torch/nn/attention/flex_attention.py:1687: UserWarning:
+    flex_attention called without torch.compile() - this will be slow
+```
+
+Dynamo recompiles per distinct guard set. The probe pushes hundreds of configs
+through one process — here the recompiles were driven partly by `requires_grad`
+differing between `fwd` and `fwd_bwd` cells, not only by shape — so it blew
+past the default limit of 8. Past the limit **dynamo stops compiling and runs
+the function eagerly**, and eager `flex_attention` materialises the score
+matrix, which handles any block size on any card. The sweep, whose ≤4096 band
+produced only 6 distinct flex shapes, never reached the limit, compiled every
+cell, and hit two hard constraints the eager path does not have:
+
+| block_size | compiled outcome on sm_89, head_dim=128 |
+|---|---|
+| 64 | `ValueError: Q and KV block size must be divisible by BLOCK_M and BLOCK_N` — 64 % 128 ≠ 0 |
+| 128 | `No valid triton configs. OutOfMemoryError: Required: 114688  Hardware limit: 101376` |
+
+Neither is perturbable by cache state or memory fragmentation, which were the
+first two hypotheses: 64 % 128 does not become 0, and 114688 does not fall
+below 101376. Both follow from inductor picking exactly **one** candidate
+config when `max_autotune` is off (BLOCK_M=BLOCK_N=128 at head_dim=128) — and
+raising rather than skipping *because* there is only one
+(`torch/_inductor/kernel/flex/flex_attention.py`, the `if len(configs) == 1:
+raise` branch).
+
+**This is a new shape, and the worst-behaved one yet.** The other seven were
+defects — something was wrong and produced a wrong number. Here nothing was
+wrong. `torch.compile`'s fallback exists precisely to keep programs *working*
+when compilation cannot proceed, and it succeeded: the answers it returned
+were numerically correct, which is exactly why the gate passed and nothing
+looked amiss. The fallback silently converts what looks like a performance
+property into a **semantic swap**, and a correctness gate cannot tell the
+difference, because by design there is no numerical difference to see.
+
+Three aggravating properties worth naming separately:
+
+* **The warning was in the log and nobody read it.** Torch announced the
+  eager path in plain English. The gate's output said PASS, and the PASS was
+  the artefact that travelled into the pass table.
+* **One log line covered 72 rows.** Python's default `once` warning filter
+  dedups by (message, category, module, lineno), so the number of warnings in
+  the log carries no information about how many results were affected.
+* **The signal fires once, at the crossing; contamination is permanent.**
+  Per-call detection would have flagged the single cell that happened to cross
+  the threshold and cleared every cell after it — the exact inverse of the
+  truth. Detection has to be sticky at process scope.
+
+The direction it happened to fire in was the lucky one. Had the sweep been the
+process that exhausted the limit — and with more `seq_len` values per process,
+segments 2 and 3 plausibly would have — flex would have produced *timing rows*
+from eager score-materialising attention: plausible numbers, wrong
+implementation, no error anywhere. That is instance 2's shape with no
+internally-impossible total to catch it.
+
+**Fixed in both directions** (`attnbench/compile_guard.py`). Prevention:
+`configure()` raises the recompile ceiling far above any segment's distinct
+shape count, so ordinary variety never trips the fallback. Detection:
+`guard()` fails closed anyway, because prevention-by-tuned-constant is exactly
+what a future grid quietly outgrows. A fallback during a timed cell yields
+`status="compile_fallback"` rather than a latency; a fallback during a
+correctness check **voids the verdict** — `passed` goes to False while
+`check_kind` and the measured error are preserved, since what was attempted is
+still the honest label and the number is still real. It is the *licence* that
+is withdrawn, not the measurement.
+
+**Found by**: the two results being mutually impossible, and refusing to
+attribute it to environment noise. The cheap hypotheses (inductor cache state,
+memory fragmentation) were both wrong; reading the two error strings against
+torch's own source is what settled it, and the mechanism then reproduced on
+CPU in seconds (`tests/test_compile_guard.py`) with no GPU involved.
+
 ---
 
 
@@ -172,6 +262,30 @@ time than batch=1, and a scoring pass reporting 9041 TFLOPS on a card whose
 dense peak is ~121. Summaries hide this; raw totals
 show it. When a metric surprises you, check whether the underlying numbers
 are consistent with *any* explanation before believing the metric's.
+
+**A gate must exercise the path the thing it licenses will run — and process
+state can change which path that is.** Instance 8. Stage 1 and Stage 2 called
+the same method on the same object at the same commit and got different
+implementations, because one process had compiled eight times before and the
+other had not. "Same code, same machine, same commit" is therefore *not*
+sufficient to conclude "same computation": accumulated JIT, compile-cache and
+autotune state are inputs too, and they are invisible in every result column.
+Where a runtime can silently substitute an implementation, the harness has to
+assert which one ran, not infer it from the answer being right.
+
+**A fallback designed to preserve correctness will defeat a correctness
+gate.** Also instance 8, stated as its own trap because it generalises past
+`torch.compile`: cuDNN/cuBLAS algorithm fallbacks, SDPA's dispatch to the math
+backend, and any `try: fast_path except: slow_path` in a dependency all have
+this shape. The output is right, so nothing downstream can notice, and the
+property that actually changed — which kernel ran, and therefore what the
+latency means — is not one the gate was ever looking at.
+
+**Warning counts do not measure blast radius.** Python's default `once` filter
+dedups by (message, category, module, lineno). One line in `stage1.log`
+covered 72 contaminated rows. When a warning is the evidence, capture it with
+`simplefilter("always")` and count the affected *operations*, never the log
+lines.
 
 **Distinguish "the check passed" from "the check ran."** An empty canary that
 reports no drift, a parametrised test that collected zero cases, a pass set

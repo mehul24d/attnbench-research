@@ -162,6 +162,45 @@ sequence lengths, and its `torch.compile` step must be warmed outside the
 timed region or the first measurement times the compiler rather than the
 kernel -- the same class of error as the GLA JIT warmup above.
 
+### flex-sparse and flex-dense are not tiled alike
+
+Stage 2 segment 1 measured flex block-sparse **0/72** on an L4. Inductor picks
+exactly one candidate config when `max_autotune` is off -- BLOCK_M=BLOCK_N=128
+at head_dim=128, the only head_dim in the block-sparse grid -- and at that tile
+size `block_size=64` cannot be lowered at all (64 % 128 != 0, and it raises
+rather than skipping because there is only one candidate) while
+`block_size=128` needs 114688 B of shared memory against sm_89's 101376 B.
+
+The backend therefore pins `kernel_options={"BLOCK_M": 64, "BLOCK_N": 64}` for
+block_sparse, which divides both block sizes and roughly halves shared memory.
+**It does not pin them for dense**, which lowers fine at the default and
+already has measured rows on this card.
+
+So a flex-dense row and a flex-sparse row at the same shape were produced by
+kernels with different tile sizes. Comparing them to each other conflates the
+sparsity effect with a tiling effect. Compare flex-sparse against
+flex-sparse across sparsity levels, and against the *other* backends at the
+same shape -- not against flex-dense. This is a constraint of the card, not a
+choice: without the override there is no flex-sparse measurement to compare
+with at all.
+
+### The mask is built once per config, not once per call
+
+Until 2026-09-04, `FlexAttentionBackend.forward` called `create_block_mask` /
+`to_flex_block_mask` on **every invocation**, which put mask construction
+inside Stage 2's timed region. A real deployment builds a BlockMask once and
+reuses it across calls and layers, so this was a tax no user would pay, and it
+dominated exactly the cells where it matters least: segment 1 measured flex at
+4.22 useful TFLOPS at seq_len=1024/batch=1 against FA2's 47.9 on the same
+card, with a latency floor pinned near 2.0 ms at every shape -- the signature
+of a constant addend, not of a slow kernel. It inflated `peak_memory_mb` too,
+since the builder materialises a dense `Q_LEN x KV_LEN` bool before reducing it
+to the block grid.
+
+**Every flex row in `results/stage2/segment_20260903_seg1/` predates the fix
+and is not comparable to later flex rows.** They are kept as evidence, not as
+measurements.
+
 ## Sub-block causality: the oracle was leaking
 
 `BlockSparseMask.active` is a grid over BLOCKS, so it can mark the diagonal
@@ -235,3 +274,27 @@ reach Stage 3 as plausible accuracy numbers.
 Any statement of the form "all backends passed correctness" must name the
 `check_kind` distribution behind it, or it silently equates a float64 oracle
 comparison with a structural sanity check.
+
+### And a fifth thing a pass has to mean: that Stage 2 can run it
+
+A correctness verdict licenses a timing cell. That licence is void if the
+verdict was earned by code the sweep will not execute — which is not
+hypothetical. On 2026-09-03 Stage 1 certified `flex` block-sparse 72/72 with
+genuine agreement (0.013–0.021) while Stage 2 could not lower a single one of
+those cells on the same card, because `torch._dynamo` had hit its recompile
+limit during the probe and silently run `flex_attention` **eagerly** from then
+on. The eager path materialises scores and works at any block size; the
+compiled path does not exist on an L4 at head_dim=128. See
+`docs/silent_failure_patterns.md` instance 8.
+
+`gates.check_for_family` now wraps every check in `compile_guard.guard()`. If
+a fallback is detected, `passed` is forced to False and the reason written into
+`detail` as `VOID (...)`. `check_kind` and `max_abs_err` are **preserved**:
+what was attempted is still the honest label for the row, and the measured
+agreement is still a real number. It is the licence that is withdrawn, not the
+measurement.
+
+Detection is sticky at process scope, because the dynamo warning fires once —
+at the crossing — and every call after it is silent. Per-call detection alone
+would void the one cell that happened to cross and clear the hundreds that
+followed, which is the exact inverse of the truth.
