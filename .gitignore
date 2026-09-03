@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Measurement outputs are data, not source. They carry their own provenance
+# (host, gpu_name, git_commit, segment_digest) and are joined by
+# analysis/cross_arch.py; committing them would conflate "the code that
+# produced a result" with "the result", which is the distinction the commit
+# field exists to make.
+results/
+*.parquet
