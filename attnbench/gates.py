@@ -333,19 +333,36 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
         return fail(f"{type(e).__name__}: {e}")
 
     errors: dict[str, float] = {}
+    skipped: dict[str, str] = {}
     for ref in usable:
         try:
             with torch.no_grad():
                 other = ref.forward(q, k, v, cfg, mask=mask).float()
-        except UnsupportedConfig:
-            continue          # this reference cannot run this shape
+        except UnsupportedConfig as e:
+            skipped[ref.name] = f"unsupported: {e}"[:80]
+            continue
+        except torch.cuda.OutOfMemoryError:
+            # A reference that cannot fit this shape is one fewer opinion,
+            # not a verdict on the backend under test. Treated like
+            # "unsupported" -- if too few remain, that is reported honestly
+            # below rather than being blamed on the backend.
+            skipped[ref.name] = "OOM at this shape"
+            torch.cuda.empty_cache()
+            continue
         except Exception as e:
             return fail(f"reference {ref.name} raised {type(e).__name__}: {e}")
         errors[ref.name] = float((got - other).abs().max())
+        # Free before the next reference. Three dense outputs at batch 16 /
+        # seq 4096 held simultaneously is what made flex OOM in 27 of 29
+        # cross-backend configs on the first run.
+        del other
+        if device.startswith("cuda"):
+            torch.cuda.empty_cache()
 
     if len(errors) + 1 < MIN_CROSS_BACKEND_AGREEING:
         return fail(f"only {len(errors) + 1} implementations could run this "
-                    f"shape, need {MIN_CROSS_BACKEND_AGREEING}")
+                    f"shape ({', '.join(sorted(errors)) or 'none'}), need "
+                    f"{MIN_CROSS_BACKEND_AGREEING}. Skipped: {skipped}")
 
     worst = max(errors.values())
     disagreeing = {n: e for n, e in errors.items() if e > tol["atol"]}
