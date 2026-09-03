@@ -250,7 +250,8 @@ def run_sweep(cells: list[SweepCell], *, out_dir: Path, stage1_path: Path,
               measure_fn: Callable,
               exclusivity_check: Callable[[], tuple[str, str]] = provenance.assert_exclusive,
               provenance_fn: Callable[[], "provenance.Provenance"] = provenance.capture,
-              dry_run: bool = False, checkpoint_every: int = 1) -> SweepReport:
+              dry_run: bool = False, checkpoint_every: int = 1,
+              stage1_at_commit: Optional[str] = None) -> SweepReport:
     """Stage 2 entry point.
 
     `measure_fn(backend, cfg, mask) -> Measurement`, `exclusivity_check()`
@@ -271,7 +272,11 @@ def run_sweep(cells: list[SweepCell], *, out_dir: Path, stage1_path: Path,
 
     prov = provenance_fn()
     check_host_continuity(checkpoint_path, prov.host)
-    stage1_passed = load_stage1_pass_set(stage1_path)
+    # stage1_at_commit: a correctness pass describes the code that produced
+    # it, not the code about to be timed. Threaded through rather than left to
+    # the caller, so a Stage 2 run cannot inherit passes from a commit whose
+    # semantics differed -- see docs/stage2_plan.md.
+    stage1_passed = load_stage1_pass_set(stage1_path, at_commit=stage1_at_commit)
     done_keys = load_done_keys(checkpoint_path)
     status, _detail = exclusivity_check()
 

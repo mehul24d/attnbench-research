@@ -134,3 +134,25 @@ def test_stage1_table_without_a_commit_column_is_refused_when_checking(tmp_path)
         p, index=False)
     with pytest.raises(Stage1CommitError, match="no git_commit column"):
         load_stage1_pass_set(p, at_commit="a" * 40)
+
+
+def test_run_sweep_threads_the_stage1_commit_gate(tmp_path):
+    """The gate is useless if run_sweep silently drops it.
+
+    A Stage 2 session inheriting Stage 1 passes from a different commit is
+    exactly what docs/stage2_plan.md forbids, and the failure is invisible:
+    the sweep simply runs cells whose correctness was established for other
+    code.
+    """
+    import pandas as pd
+    from attnbench.sweep import Stage1CommitError, run_sweep
+
+    stage1 = tmp_path / "correctness.parquet"
+    pd.DataFrame([dict(backend="flex", config_key="c1", passed=True,
+                       git_commit="a" * 40)]).to_parquet(stage1, index=False)
+
+    with pytest.raises(Stage1CommitError):
+        run_sweep([], out_dir=tmp_path / "out", stage1_path=stage1,
+                  backend_lookup={}, measure_fn=lambda *a, **k: None,
+                  exclusivity_check=lambda: ("exclusive", ""),
+                  dry_run=True, stage1_at_commit="b" * 40)
