@@ -234,3 +234,32 @@ def test_long_sequence_without_references_fails_rather_than_inheriting():
     cfg = _cfg(seq_len=EXACT_ORACLE_MAX_SEQ_LEN * 2)
     r = check_for_family(_Dense("a"), cfg, **CPU)
     assert not r.passed and "no reference backends were supplied" in r.detail
+
+
+def test_dense_backends_do_not_claim_block_sparse():
+    """A dense backend handed a block_sparse config ignores the mask entirely
+    and computes plain attention. It "succeeds", so probe() marks it
+    supported -- and the correctness check then compares it against an oracle
+    that DID apply the mask.
+
+    Measured 2026-09-03: max_abs_err=4.81, 114/126 failures for fa2,
+    sdpa_flash and sdpa_cudnn. Not a numerical defect; a config they never
+    agreed to run. The gate must filter on the CLAIM.
+    """
+    from attnbench.backends.impls import FlashAttention2, SDPABackend
+
+    cfg = _cfg(mask="block_sparse", block_size=128, sparsity=0.5,
+               mask_source="random")
+    for backend in (SDPABackend("flash"), FlashAttention2()):
+        claimed, reason = backend.claims_support(cfg)
+        assert not claimed and "block sparse" in reason
+
+
+def test_naive_claims_block_sparse_because_it_is_the_oracle():
+    """It has an explicit block_sparse branch in forward() and provides the
+    ground truth for every sparse comparison. Declaring False made
+    claims_support reject the configs it exists to serve."""
+    cfg = _cfg(mask="block_sparse", block_size=128, sparsity=0.5,
+               mask_source="random")
+    claimed, _ = NaiveAttention.claims_support(cfg)
+    assert claimed

@@ -165,6 +165,19 @@ def main():
             for cfg in configs:
                 if cfg.key() not in keys or cfg.pass_kind != "fwd":
                     continue
+                # Respect the CLAIM, not just whether it happened to run.
+                # A dense backend handed a block_sparse config ignores the
+                # mask argument entirely and computes plain attention, which
+                # "succeeds" -- so probe() marks it supported and the
+                # correctness check then compares it against an oracle that
+                # DID apply the mask. That produced max_abs_err=4.81 and
+                # 114/126 failures for fa2/sdpa_flash/sdpa_cudnn: not a
+                # numerical defect, a config they never agreed to run.
+                # Stage 2's build_cells filters on claims_support too, so
+                # this keeps probe and sweep looking at the same cells.
+                claimed, _ = b.claims_support(cfg)
+                if not claimed:
+                    continue
                 # Dispatch on family: exact for dense, masked-exact for
                 # sparse, structural for linear. Grading every family against
                 # an exact softmax oracle made gla fail 6/6 by construction.

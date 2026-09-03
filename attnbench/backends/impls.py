@@ -49,9 +49,16 @@ class NaiveAttention(AttentionBackend):
         min_compute_capability=(0, 0),
         supports_gqa=True,
         supports_sliding=True,
+        # It IS the block-sparse oracle -- forward() has an explicit
+        # block_sparse branch that applies the mask. Declaring False meant
+        # claims_support() rejected the very configs this backend exists to
+        # provide ground truth for.
+        supports_block_sparse=True,
+        block_sizes=(64, 128),
         head_dims=(32, 64, 128, 256),
         dtypes=("bfloat16", "float16", "float32", "float64"),
-        notes="O(S^2) memory. Oracle for the correctness gate.",
+        notes="O(S^2) memory. Oracle for the correctness gate, including "
+              "block_sparse (given an explicit mask).",
     )
 
     def forward(self, q, k, v, cfg, mask=None):
