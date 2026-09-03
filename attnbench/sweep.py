@@ -146,6 +146,67 @@ def load_stage1_pass_set(path: Path, *,
     return set(zip(passed["backend"], passed["config_key"]))
 
 
+def explain_stage1_rejections(cells: list[SweepCell], stage1_path: Path, *,
+                              at_commit: Optional[str] = None,
+                              ) -> dict[str, str]:
+    """Per-backend reason its cells are being rejected by the Stage 1 gate.
+
+    The gate reported one lumped `reject_stage1` count for three unrelated
+    problems on 2026-09-03 -- a backend never probed, a backend whose passes
+    lacked provenance, and a backend that failed a check inapplicable to its
+    family. Distinguishing them is what turned a day's debugging into twelve
+    minutes, so the distinction belongs in the tool rather than in whoever
+    happens to be looking.
+    """
+    p = Path(stage1_path)
+    backends = sorted({c.backend_name for c in cells})
+    if not p.exists():
+        return {b: f"no Stage 1 table at {p}" for b in backends}
+
+    df = pd.read_parquet(p)
+    if df.empty:
+        return {b: "Stage 1 table is empty" for b in backends}
+
+    out: dict[str, str] = {}
+    for name in backends:
+        mine = df[df["backend"] == name]
+        wanted = {c.cfg.key() for c in cells if c.backend_name == name}
+
+        if mine.empty:
+            out[name] = ("NEVER PROBED -- no Stage 1 rows at all. Its cells "
+                         "cannot pass, and the sweep will silently omit this "
+                         "backend entirely.")
+            continue
+        if "git_commit" not in mine.columns or mine["git_commit"].isna().all():
+            out[name] = ("NO PROVENANCE -- rows exist but carry no git_commit, "
+                         "so they cannot be tied to the code under test.")
+            continue
+        if at_commit is not None:
+            at = mine[mine["git_commit"] == at_commit]
+            if at.empty:
+                seen = sorted({str(c)[:12] for c in mine["git_commit"].unique()})
+                out[name] = (f"WRONG COMMIT -- rows exist but at {seen}, not "
+                             f"{at_commit[:12]}.")
+                continue
+            mine = at
+
+        passed = mine[mine["passed"] == True]  # noqa: E712
+        if passed.empty:
+            kinds = sorted({str(k) for k in mine.get("check_kind", ["?"])})
+            out[name] = (f"ALL CHECKS FAILED (check_kind={kinds}) -- if this is "
+                         f"a linear backend graded against an exact oracle, the "
+                         f"check is inapplicable, not the backend wrong.")
+            continue
+
+        have = set(passed["config_key"])
+        missing = wanted - have
+        if missing:
+            out[name] = (f"CONFIG MISMATCH -- {len(missing)} of {len(wanted)} "
+                         f"cells have no matching passed config_key. Stage 1 "
+                         f"probed different shapes than Stage 2 runs.")
+    return out
+
+
 def load_done_keys(checkpoint_path: Path) -> set[tuple[str, str, str]]:
     """(config_key, backend, host) triples already written to the
     checkpoint. Row key includes host so resuming on a different rented

@@ -7,6 +7,10 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from pathlib import Path as _Path
+
+REPO = _Path(__file__).resolve().parents[1]
+
 from attnbench.config import AttnConfig, SweepGrid
 from attnbench.sweep import (SweepCell, build_cells, load_done_keys,
                               load_stage1_pass_set, plan, run_sweep)
@@ -156,3 +160,40 @@ def test_run_sweep_threads_the_stage1_commit_gate(tmp_path):
                   backend_lookup={}, measure_fn=lambda *a, **k: None,
                   exclusivity_check=lambda: ("exclusive", ""),
                   dry_run=True, stage1_at_commit="b" * 40)
+
+
+def test_stage1_probes_exactly_the_configs_stage2_runs():
+    """The pass table is keyed on (backend, config_key), so Stage 1 must probe
+    the SAME configs Stage 2 will run.
+
+    On 2026-09-03 it did not: the probe used batch=2/8-heads/seq_len 512-2048
+    while SweepGrid runs batch=1/32-heads/seq_len 1024-32768. Zero keys
+    overlapped, so plan() would have rejected all 504 cells and Stage 2 would
+    have measured nothing. A zero-cell sweep is at least loud -- but the fix
+    must not silently rot, because the failure is a config edit away.
+    """
+    import importlib.util
+
+    from attnbench.backends.impls import (FlexAttentionBackend, NaiveAttention,
+                                          SDPABackend)
+    from attnbench.backends.linear import GatedLinearAttention
+    from attnbench.config import SweepGrid
+    from attnbench.sweep import build_cells
+
+    spec = importlib.util.spec_from_file_location(
+        "run_probe", REPO / "scripts" / "run_probe.py")
+    run_probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_probe)
+
+    probe_keys = {c.key() for c in run_probe.probe_configs(32768)}
+    cells = build_cells(SweepGrid(),
+                        [SDPABackend("flash"), NaiveAttention(),
+                         FlexAttentionBackend(), GatedLinearAttention()],
+                        mask_source="random")
+    sweep_keys = {c.cfg.key() for c in cells}
+
+    assert sweep_keys, "no sweep cells built -- the test would pass vacuously"
+    uncovered = sweep_keys - probe_keys
+    assert not uncovered, (
+        f"{len(uncovered)} of {len(sweep_keys)} Stage 2 cells have no Stage 1 "
+        f"config with a matching key; those cells can never pass the gate")

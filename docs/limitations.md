@@ -182,3 +182,56 @@ Fixed in `to_dense_bool` (a `tril` when `causal`) and matched in
 `to_flex_block_mask` (an elementwise `q_idx >= kv_idx` inside `mask_mod`).
 `to_block_sparse_attn_mask` deliberately does neither: BSA takes causality as
 a separate argument, so encoding it in the block grid would mask twice.
+
+## Stage 1 "passed" means four different things
+
+One column, four meanings. Every correctness row records `check_kind`, which
+has **no default** — a default would let a weaker verdict be constructed as
+`"exact"` and read that way forever after.
+
+| `check_kind` | applies to | what a pass certifies |
+|---|---|---|
+| `exact` | dense backends, seq_len ≤ 4096 | agreement with a float64 naive softmax oracle within the dtype's tolerance |
+| `masked_exact` | sparse backends | the same comparison, with the oracle given the **same** block-sparse mask |
+| `cross_backend` | any dense/sparse backend, seq_len > 4096 | agreement among **three** independent implementations at float32 tolerance. **No oracle was consulted.** |
+| `structural` | linear backends (GLA) | finite output, correct shape and dtype, determinism, and causality. **Not numerical agreement of any kind.** |
+
+**Why there is no oracle above 4096.** A float64 naive reference materialises
+the full S×S score matrix: at Stage 2's geometry (batch 1, 32 heads) that is
+4 GiB at 4096, 16 GiB at 8192, **64 GiB at 16384 and 256 GiB at 32768**,
+against a 23 GiB card. The oracle cannot be allocated at the lengths this
+study is actually about. The alternatives were capping Stage 2 at 4096 (which
+deletes the subject matter) or inheriting a 4096 pass upward (which assumes
+precisely what Stage 1 exists to measure — that numerical error does not
+accumulate with length).
+
+Three agreeing implementations, not two: two kernels sharing a bug is
+plausible — a common upstream, a shared CUTLASS path — while three from
+different authors is much less so. A single disagreeing backend is recorded
+as a **finding**, not skipped: it means one of three implementations is wrong
+at that shape, and which one is a question worth answering.
+
+The measured agreement error is recorded per row, and every row carries its
+`seq_len`. So cross-backend divergence **as a function of length** is readable
+as a result in its own right — numerical fidelity at long context is one of
+the gaps this study targets, not merely a gate to clear.
+
+**Why linear backends get no numerical check.** Gated Linear Attention is not
+an approximation of softmax attention; it is a different function. Graded
+against the exact oracle it produced `max_abs_err=1.42e+01, failed=6/6` —
+confirmation that two different computations differ, which was known in
+advance. A reference GLA implementation was considered and rejected: it would
+either be the same `fla` code path under test (circular — certifies nothing)
+or a reimplementation (a fresh source of bugs, with no way to tell which of
+the two was wrong when they disagreed).
+
+The structural properties are chosen to catch real bugs, and the load-bearing
+one is **causality**: perturbing token *t* must not change any output before
+*t*. A linear-attention kernel leaking future information would be badly
+broken in a way no throughput measurement reveals, and the corruption would
+reach Stage 3 as plausible accuracy numbers.
+
+**Consequence for a reader.** A `passed=True` row is not self-describing.
+Any statement of the form "all backends passed correctness" must name the
+`check_kind` distribution behind it, or it silently equates a float64 oracle
+comparison with a structural sanity check.

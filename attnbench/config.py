@@ -140,9 +140,35 @@ class AttnConfig:
         blob = json.dumps(asdict(self), sort_keys=True).encode()
         return hashlib.sha1(blob).hexdigest()[:12]
 
+    def shape_family_key(self) -> str:
+        """Stable hash of everything EXCEPT seq_len.
+
+        Stage 1's correctness oracle cannot exist at Stage 2's longest
+        lengths: a float64 naive reference needs 64 GiB at seq_len=16384 and
+        256 GiB at 32768, against a 23 GiB card. So a cell at 32768 can never
+        have a pass recorded at its own exact config, and matching the pass
+        table on `key()` would reject every long cell -- which is precisely
+        what it did on 2026-09-03 (0 of 504 cells matched).
+
+        Correctness is therefore established per shape family -- backend,
+        mask, block_size, sparsity, dtype, head geometry, pass_kind -- and
+        seq_len is handled as its own axis: exact float64 agreement at the
+        lengths where the oracle fits, cross-backend agreement above. Which
+        one certified a given row is recorded in `check_kind`, and the
+        measured error is recorded per length so fidelity-versus-length is
+        readable as a result rather than assumed away.
+
+        See docs/limitations.md.
+        """
+        d = asdict(self)
+        d.pop("seq_len", None)
+        blob = json.dumps(d, sort_keys=True).encode()
+        return hashlib.sha1(blob).hexdigest()[:12]
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["config_key"] = self.key()
+        d["shape_family_key"] = self.shape_family_key()
         d["is_gqa"] = self.is_gqa
         d["head_layout"] = self.head_layout
         return d

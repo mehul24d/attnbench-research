@@ -72,13 +72,20 @@ class NaiveAttention(AttentionBackend):
         return (torch.softmax(scores, dim=-1).to(v.dtype)) @ v
 
     @torch.no_grad()
-    def reference(self, q, k, v, cfg) -> torch.Tensor:
+    def reference(self, q, k, v, cfg, mask=None) -> torch.Tensor:
         """float64 ground truth for Stage 1. Slow by design.
 
         dtype lives on the tensors, not on cfg, so cfg passes through unchanged;
         only the mask logic is read from it.
+
+        `mask` must be forwarded for block_sparse configs: the oracle has to
+        see the SAME mask as the backend under test, or the two are computing
+        different functions and the comparison is meaningless. Omitting it
+        made the sparse correctness check raise "block_sparse requires an
+        explicit mask" from the oracle -- which is why block_sparse ended up
+        with zero correctness rows and would have been dropped from Stage 2.
         """
-        return self.forward(q.double(), k.double(), v.double(), cfg)
+        return self.forward(q.double(), k.double(), v.double(), cfg, mask=mask)
 
 
 # ---------------------------------------------------------------------------
