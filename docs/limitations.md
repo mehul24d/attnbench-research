@@ -332,9 +332,9 @@ Fixed in `to_dense_bool` (a `tril` when `causal`) and matched in
 `to_block_sparse_attn_mask` deliberately does neither: BSA takes causality as
 a separate argument, so encoding it in the block grid would mask twice.
 
-## Stage 1 "passed" means four different things
+## Stage 1 "passed" means five different things
 
-One column, four meanings. Every correctness row records `check_kind`, which
+One column, five meanings. Every correctness row records `check_kind`, which
 has **no default** — a default would let a weaker verdict be constructed as
 `"exact"` and read that way forever after.
 
@@ -343,6 +343,7 @@ has **no default** — a default would let a weaker verdict be constructed as
 | `exact` | dense backends, seq_len ≤ 4096 | agreement with a float64 naive softmax oracle within the dtype's tolerance |
 | `masked_exact` | sparse backends | the same comparison, with the oracle given the **same** block-sparse mask |
 | `cross_backend` | any dense/sparse backend, seq_len > 4096 | agreement among **three** independent implementations at float32 tolerance. **No oracle was consulted.** |
+| `cross_backend_pair` | as above, where the shape cost us a reference | agreement between **two** implementations only. Weaker again — a bug shared by both would not be caught. **No oracle, and no third opinion.** |
 | `structural` | linear backends (GLA) | finite output, correct shape and dtype, determinism, and causality. **Not numerical agreement of any kind.** |
 
 **Why there is no oracle above 4096.** A float64 naive reference materialises
@@ -364,6 +365,50 @@ The measured agreement error is recorded per row, and every row carries its
 `seq_len`. So cross-backend divergence **as a function of length** is readable
 as a result in its own right — numerical fidelity at long context is one of
 the gaps this study targets, not merely a gate to clear.
+
+### Cross-backend verification is itself memory-bounded, and runs out first
+
+The oracle's 23 GiB ceiling is well known here. The cross-backend check has
+one too, and it went unmodelled until it took down three consecutive rented
+sessions. The check holds, concurrently: Q, K and V (no reference can free
+them, since every reference needs them); the tested output; one reference
+output; the transient GQA expansion of K and V to the query head count inside
+a reference's forward; and three float32 batch-slices for the comparison.
+`gates.cross_backend_bytes` computes that term by term — deliberately not as a
+single headroom factor, because the oracle's first bound *was* a guess (a
+`seq_len ≤ 4096` cutoff that assumed batch 1) and was wrong by 16× at batch 16.
+
+Against a 12 GiB budget on a ~22 GiB card, the resulting picture:
+
+| shape (32 heads, head_dim 128, bf16) | concurrent tensors | verdict |
+|---|---|---|
+| 8192, batch 16, GQA 32:8 | 5.4 GiB | runs |
+| 16384, batch 16, GQA 32:8 | 10.8 GiB | runs |
+| 32768, batch 16, GQA 32:8 | **21.5 GiB** | **declined in advance** |
+
+**A declined check is a result, not a gap.** "Cross-backend verification is
+infeasible at 32768/batch 16 on 24 GB" is a true statement about what this
+study can verify on this hardware, and it is recorded as such: `passed=False`
+with a detail that names the size needed, the budget, and — explicitly —
+that nothing was run and the row is *not* a verdict on the backend. The
+alternative is finding out by OOM, which costs the run rather than the cell.
+
+Consequence: at the largest shapes there is **no verification path at all**.
+The float64 oracle needs 256 GiB, cross-backend needs 21.5, the card has 22.
+Those cells are honestly unverifiable here, and the constraint is the card,
+not the kernels.
+
+**Where a reference is lost rather than the whole check.** Three
+implementations are offered; sometimes fewer survive the shape — one OOMs
+running, or the comparison itself cannot be allocated. Insisting on three
+there would delete the long bands to protect a standard the *hardware* made
+unreachable, so two agreeing implementations pass under `cross_backend_pair`,
+carrying the weakness on the row rather than in this file. The distinction
+that keeps that honest is **attempted-and-lost versus never-offered**: a
+caller who simply supplies two references still gets a hard failure, because
+nothing was tried and no hardware limit was reached. That is a study-design
+gap, and letting it wear the same label as a memory-forced downgrade would
+hide the one case where three-way agreement is actually within reach.
 
 **Why linear backends get no numerical check.** Gated Linear Attention is not
 an approximation of softmax attention; it is a different function. Graded

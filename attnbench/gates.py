@@ -8,6 +8,7 @@ without passing here.
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass, asdict, replace
 from typing import Iterable, Optional
 
@@ -131,6 +132,12 @@ class CorrectnessResult:
                         tolerance. Weaker than an oracle, but two kernels
                         sharing a bug is plausible where three from different
                         authors is much less so.
+      "cross_backend_pair"
+                     -- the same comparison, but only TWO implementations
+                        survived the shape: the third could not run or could
+                        not be compared here. Weaker again, deliberately
+                        labelled so, and never silently merged into
+                        "cross_backend". See MIN_CROSS_BACKEND_AGREEING.
       "structural"   -- linear backends: finite/shape/dtype/determinism and
                         causality. NOT numerical agreement, because a linear
                         attention kernel does not compute softmax attention
@@ -322,10 +329,92 @@ def exact_oracle_fits(cfg: AttnConfig,
 def oracle_bytes(cfg: AttnConfig) -> int:
     return cfg.batch * cfg.n_heads_q * cfg.seq_len * cfg.seq_len * 8
 
+
+# Memory a cross-backend check is allowed to use, on the same principle as
+# EXACT_ORACLE_BUDGET_BYTES and for the same reason: a check whose cost is
+# computable from the config should be DECLINED IN ADVANCE with a recorded
+# reason, not attempted and discovered by an OOM. `exact_oracle_fits` began
+# life as a seq_len cutoff, was wrong by 16x at batch 16, and became a memory
+# bound; this is that lesson applied to the other check that allocates.
+#
+# 12 GiB against a ~22 GiB card. The remaining ~10 GiB is not slack: it covers
+# each kernel's own workspace beyond the tensors modelled below, the hoisted
+# mask caches, inductor's compiled-kernel state, and allocator fragmentation
+# -- and fragmentation is the reason a check can fail with several GiB
+# nominally free, which is exactly how Stage 1 died three times in a row.
+CROSS_BACKEND_BUDGET_BYTES = 12 * 2**30
+
+
+def _dtype_bytes(dtype: str) -> int:
+    return torch.empty(0, dtype=getattr(torch, dtype)).element_size()
+
+
+def cross_backend_bytes(cfg: AttnConfig) -> int:
+    """Peak resident tensor bytes for one cross-backend check.
+
+    Modelled term by term rather than as a single fudge factor, because a
+    wrong-by-16x guess is what this function exists to prevent:
+
+      inputs      q + k + v, held for the whole loop (every reference needs
+                  them, so none can be freed early).
+      outputs     the tested output plus ONE reference output. Not one per
+                  reference: the loop frees each before running the next, so
+                  the peak does not grow with the number of references -- and
+                  therefore comparing against fewer of them saves no memory,
+                  which is why the pair fallback below is triggered by what
+                  actually happens rather than predicted here.
+      expansion   GQA KV expansion inside a reference's forward, which
+                  materialises k and v at the query head count. At 32:8 that
+                  is 1.5x a query-shaped tensor, transient but concurrent
+                  with everything above, and far too large to bury in a
+                  headroom factor.
+      compare     `_max_abs_diff` casts one batch slice of each side to
+                  float32 and takes a difference: three slice-sized float32
+                  tensors. Coarse at small batch, where one slice is a large
+                  fraction of the whole.
+    """
+    itemsize = _dtype_bytes(cfg.dtype)
+    per_q = cfg.batch * cfg.n_heads_q * cfg.seq_len * cfg.head_dim * itemsize
+    per_kv = cfg.batch * cfg.n_heads_kv * cfg.seq_len * cfg.head_dim * itemsize
+
+    inputs = per_q + 2 * per_kv
+    outputs = 2 * per_q
+    expansion = 2 * (per_q - per_kv)
+    compare = 3 * (per_q // cfg.batch) * 4 // itemsize
+    return int(inputs + outputs + expansion + compare)
+
+
+def cross_backend_fits(cfg: AttnConfig,
+                       budget_bytes: int = CROSS_BACKEND_BUDGET_BYTES) -> bool:
+    """Whether a cross-backend check can be attempted at all for this config.
+
+    False is a RESULT -- "cross-backend verification is infeasible at this
+    shape on this hardware" is a real statement about what this study can
+    verify, and it belongs in the results table. It is not the same as a
+    crash, and it is not the same as a backend being wrong.
+    """
+    return cross_backend_bytes(cfg) <= budget_bytes
+
+
 # Independent implementations required to agree before a cross-backend pass is
 # recorded. THREE, not two: two kernels sharing a bug is plausible (a common
 # upstream, a shared CUTLASS path); three from different authors much less so.
 MIN_CROSS_BACKEND_AGREEING = 3
+
+# ...but three is not always ACHIEVABLE. Where references were offered and
+# then lost to the shape -- OOM running, OOM comparing, or an outright
+# decline -- insisting on three would delete the 8192 and 16384 bands from
+# the study to protect a standard that the hardware, not the backend, made
+# unreachable. So two implementations agreeing is recorded as a pass under a
+# DIFFERENT check_kind, carrying its own weakness on the row.
+#
+# The distinction that keeps this honest: attempted-and-lost, versus
+# never-offered. A caller who simply supplies too few references still gets a
+# hard failure below, because nothing was tried and no hardware limit was
+# reached -- that is a study-design gap, and silently downgrading it would
+# hide the one case where the standard is genuinely within reach.
+MIN_CROSS_BACKEND_PAIR = 2
+CHECK_KIND_PAIR = "cross_backend_pair"
 
 # Cross-backend comparisons allow twice the exact check's tolerance: both
 # sides are approximate, so each contributes its own error from truth.
@@ -399,6 +488,22 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
                     f"two-way agreement is not evidence enough to stand in "
                     f"for an oracle")
 
+    # Declined before a single byte is allocated. The alternative -- find out
+    # by OOMing -- costs the whole run, because an OOM mid-check leaves the
+    # allocator in whatever state it died in and takes the process with it if
+    # it lands somewhere unguarded. Three consecutive Stage 1 deaths at the
+    # 8192 band were each at a different allocation site inside this check.
+    if device.startswith("cuda") and not cross_backend_fits(cfg):
+        need = cross_backend_bytes(cfg) / 2**30
+        return fail(
+            f"CROSS-BACKEND VERIFICATION INFEASIBLE at this shape: needs "
+            f"{need:.1f} GiB of concurrent tensors (batch={cfg.batch}, "
+            f"heads={cfg.n_heads_q}:{cfg.n_heads_kv}, seq_len={cfg.seq_len}) "
+            f"against a {CROSS_BACKEND_BUDGET_BYTES / 2**30:.0f} GiB budget, "
+            f"and the float64 oracle would need {oracle_bytes(cfg) / 2**30:.1f} "
+            f"GiB. Not a verdict on this backend: nothing was run. This cell "
+            f"cannot be verified on this hardware by any means available here.")
+
     q, k, v = backend.make_inputs(cfg, device=device, seed=seed)
     q, k, v = q.detach(), k.detach(), v.detach()
 
@@ -456,27 +561,42 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
         if device.startswith("cuda"):
             torch.cuda.empty_cache()
 
-    if len(errors) + 1 < MIN_CROSS_BACKEND_AGREEING:
+    if len(errors) + 1 < MIN_CROSS_BACKEND_PAIR:
         return fail(f"only {len(errors) + 1} implementations could run this "
                     f"shape ({', '.join(sorted(errors)) or 'none'}), need "
-                    f"{MIN_CROSS_BACKEND_AGREEING}. Skipped: {skipped}")
+                    f"{MIN_CROSS_BACKEND_PAIR} even for a pair. "
+                    f"Skipped: {skipped}")
+
+    # Three references were offered; fewer survived the shape. Recorded as a
+    # pass under the weaker kind rather than discarded -- see
+    # MIN_CROSS_BACKEND_PAIR for why attempted-and-lost is treated differently
+    # from never-offered.
+    kind = ("cross_backend"
+            if len(errors) + 1 >= MIN_CROSS_BACKEND_AGREEING
+            else CHECK_KIND_PAIR)
 
     worst = max(errors.values())
     disagreeing = {n: e for n, e in errors.items() if e > tol["atol"]}
     if disagreeing:
         return CorrectnessResult(
-            backend.name, cfg.key(), False, "cross_backend",
+            backend.name, cfg.key(), False, kind,
             max_abs_err=worst,
             detail=f"disagreement beyond atol={tol['atol']}: {disagreeing}. "
                    f"One of these implementations is wrong at this shape -- "
                    f"a finding, not a cell to skip.")
 
+    weaker = ("" if kind == "cross_backend" else
+              f" WEAKER EVIDENCE: only {len(errors) + 1} implementations "
+              f"survived this shape, below the {MIN_CROSS_BACKEND_AGREEING} "
+              f"this study normally requires, so a shared bug between two "
+              f"kernels would not be caught here. Lost: {skipped}.")
+
     return CorrectnessResult(
-        backend.name, cfg.key(), True, "cross_backend", max_abs_err=worst,
+        backend.name, cfg.key(), True, kind, max_abs_err=worst,
         detail=f"agrees with {len(errors)} independent implementations "
                f"({', '.join(sorted(errors))}) within atol={tol['atol']}; "
                f"NOT verified against a float64 oracle, which would need "
-               f"{oracle_bytes(cfg) / 2**30:.1f} GiB for this config")
+               f"{oracle_bytes(cfg) / 2**30:.1f} GiB for this config.{weaker}")
 
 
 def check_for_family(backend: AttentionBackend, cfg: AttnConfig,
@@ -498,14 +618,38 @@ def check_for_family(backend: AttentionBackend, cfg: AttnConfig,
     to False and the reason is written into `detail`; `check_kind` is
     preserved, because what was attempted is still the honest label for what
     kind of check this row was.
+
+    This is also where the correctness path releases memory between checks.
+    `timing.measure` has had that `finally` since it was written and this
+    function never did, which is the whole of why Stage 1 died at the 8192
+    band three times running, at three different allocation sites, each
+    "fixed" in turn while the actual defect sat here.
+
+    The mechanism is not leaked tensors -- every check's tensors are freed by
+    refcount when its frame dies. It is that freeing them returns them to
+    PyTorch's caching allocator, which keeps the blocks RESERVED and hands
+    them back only to allocations that fit. Successive checks at different
+    shapes fragment that reserve until a 1 GiB contiguous request fails with
+    the card nominally almost empty -- the last crash reported 47 MiB free
+    against 22 GiB total, which is that state exactly. `empty_cache()` is what
+    returns the blocks to the driver; nothing else does.
     """
-    with compile_guard.guard() as cg:
-        result = _dispatch_for_family(backend, cfg, mask=mask, seed=seed,
-                                      device=device, references=references)
-    if cg.fell_back:
-        return replace(result, passed=False,
-                       detail=f"VOID ({cg.detail}) | {result.detail}"[:400])
-    return result
+    try:
+        with compile_guard.guard() as cg:
+            result = _dispatch_for_family(backend, cfg, mask=mask, seed=seed,
+                                          device=device, references=references)
+        if cg.fell_back:
+            return replace(result, passed=False,
+                           detail=f"VOID ({cg.detail}) | {result.detail}"[:400])
+        return result
+    finally:
+        # gc.collect() first: a reference cycle (an exception traceback
+        # holding a frame that holds a tensor) survives refcounting, and
+        # empty_cache() cannot release a block that is still referenced.
+        # Order matters, and it is the order timing.measure uses.
+        gc.collect()
+        if device.startswith("cuda"):
+            torch.cuda.empty_cache()
 
 
 def _dispatch_for_family(backend: AttentionBackend, cfg: AttnConfig,

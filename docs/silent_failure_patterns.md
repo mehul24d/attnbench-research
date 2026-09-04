@@ -322,6 +322,31 @@ every call site will be forgotten at one of them. It is now
 excluding `$$`; the bracket trick defeats self-match but not the `bash -c` that
 `gcloud compute ssh` spawns around the whole command.
 
+**A fix that relocates a symptom looks exactly like progress.** Stage 1 died
+at the 8192 band on three consecutive rented sessions: first in a reference
+backend's forward, then in the comparison arithmetic, then in `make_inputs` at
+the start of the *next* check. Each site was patched, and after each patch the
+run got further — 4116 rows, then 4450, then 4513. Monotonic improvement, a
+plausible story at every step, and three fixes that were all wrong, because
+the defect was in none of those places. `timing.measure` had released the
+allocator's reserve in a `finally` since it was written and `check_for_family`
+never had.
+
+Two rules fall out of it. **Read the sequence, not the step:** three fixes
+that each move a failure later rather than resolving it are evidence about
+the diagnosis, and after the second one the right move is to stop and ask what
+the sites have in common — here, that they were simply wherever the
+accumulated reserve happened to run out. And **the obvious mechanism was the
+wrong one:** "leaked tensors" would have sent the fix hunting for a dangling
+reference that does not exist. Every check's tensors *are* freed by
+refcount. Freeing them returns the blocks to PyTorch's caching allocator,
+which keeps them **reserved** from the driver and hands them back only to
+allocations that fit; successive checks at different shapes fragment that
+reserve until a 1 GiB contiguous request fails with the card nominally
+empty. The last crash reported **47 MiB free against 22.03 GiB total** — a
+reading that is impossible under the leak theory and diagnostic under the
+right one. Internally impossible data again, one paragraph up.
+
 **Warning counts do not measure blast radius.** Python's default `once` filter
 dedups by (message, category, module, lineno). One line in `stage1.log`
 covered 72 contaminated rows. When a warning is the evidence, capture it with
