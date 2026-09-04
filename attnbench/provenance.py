@@ -218,6 +218,7 @@ GATED_FIELDS = frozenset({
     "git_dirty",    # sweep.load_stage1_passes -- added because of the above
     "host",         # sweep.check_host_continuity, cross_arch grouping
     "gpu_name",     # analysis.canary, cross_arch grouping
+    "clocks_locked",  # cross_arch.Speedup, canary.CanaryDrift -- see below
 })
 
 # Kept for the record and for post-hoc analysis, consulted by no gate. This is
@@ -225,19 +226,22 @@ GATED_FIELDS = frozenset({
 # reading a result months later, and gating on it would block runs over
 # differences that usually do not matter.
 #
-# `clocks_locked` and the clock readings are the uncomfortable members of this
-# set. The module docstring above says "an unlocked run must be flagged in the
-# results" -- it is flagged, and nothing refuses to use it. Making that a hard
-# block is a real decision with a cost (clock locking needs root and fails on
-# many rental hosts, so gating on it would stop sweeps that are otherwise
-# fine), so it is recorded here as a known, named gap rather than quietly
-# looking like a check that exists.
+# `clocks_locked` was in this set until 2026-09-04, when the audit above found
+# it: the module docstring says "an unlocked run must be flagged in the
+# results", it was flagged, and nothing read it. It is now GATED, but at
+# ANALYSIS time rather than measurement time -- `nvidia-smi -lgc` needs root
+# and fails on most rental hosts, so refusing to measure would delete the
+# second architecture and with it the hardware-conditional finding, which
+# costs far more than the extra variance. So the flag travels onto every ratio
+# (cross_arch.Speedup) and every drift line (canary.CanaryDrift), where the
+# harm actually lands. The raw clock readings stay decorative: they are useful
+# for reading a result later, and nothing can act on 1710 vs 1695 MHz.
 RECORDED_FIELDS = frozenset({
     "timestamp", "python", "platform",
     "torch", "torch_cuda", "cudnn", "triton",
     "flash_attn", "flashinfer", "xformers", "fla",
     "driver", "compute_capability", "gpu_memory_gb", "gpu_count",
-    "clocks_locked", "sm_clock_mhz", "mem_clock_mhz", "persistence_mode",
+    "sm_clock_mhz", "mem_clock_mhz", "persistence_mode",
 })
 
 

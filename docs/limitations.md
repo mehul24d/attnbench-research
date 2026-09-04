@@ -332,6 +332,40 @@ Fixed in `to_dense_bool` (a `tril` when `causal`) and matched in
 `to_block_sparse_attn_mask` deliberately does neither: BSA takes causality as
 a separate argument, so encoding it in the block grid would mask twice.
 
+## Clocks are not locked on every host, and the ratios say so
+
+`nvidia-smi -lgc` needs root and fails on most rental hosts — including the
+A100 rented for the second architecture. Two options existed, and both have a
+cost:
+
+- **Gate at measurement time.** Refuse to record timing on unlocked clocks.
+  This would delete the second architecture entirely, and with it the
+  hardware-conditional finding the study exists to produce.
+- **Flag at analysis time.** Record `clocks_locked` per row and carry it onto
+  every derived comparison.
+
+The second, deliberately. Unlocked-clock variance is real but bounded; losing
+an architecture is not recoverable. So the flag rides onto `Speedup`,
+`ArchitectureComparison` and `CanaryDrift`, and it is reduced rather than
+averaged: **a ratio is as noisy as its noisier half**, so one unlocked side
+makes the whole ratio unlocked, and one unlocked host makes its architecture's
+mean unlocked.
+
+`ArchitectureComparison.caveat()` is harshest where the result is most
+interesting. A *flip* — the backend winning on one architecture and losing on
+another — is this study's headline claim, and the canary's drift tolerance is
+5%, which is the same order as unlocked-clock variance. A flip between 0.98
+and 1.02 on unlocked clocks is not evidence of anything, and the caveat says
+so in those words.
+
+**What this does not do:** it does not veto. An unlocked comparison is still
+produced and the canary still fires on unlocked data. Flagging that became
+suppressing would hide exactly what these checks exist to find.
+
+The raw readings (`sm_clock_mhz`, `mem_clock_mhz`, `persistence_mode`) stay
+unconsulted on purpose — nothing can act on 1710 MHz versus 1695, and a check
+with no decision behind it is worse than none, because it looks like coverage.
+
 ## Stage 1 "passed" means five different things
 
 One column, five meanings. Every correctness row records `check_kind`, which

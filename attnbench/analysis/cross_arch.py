@@ -43,7 +43,7 @@ host.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -67,6 +67,19 @@ class Speedup:
 
     `host` and `gpu_name` are both retained: the ratio is only valid within
     `host`, and `gpu_name` is what it may later be compared across.
+
+    `clocks_locked` travels with the ratio because it describes how noisy
+    that ratio is, and the harm from unlocked clocks lands here -- in a
+    comparison -- rather than at the moment of measurement. Gating the
+    measurement instead would block the second architecture entirely:
+    `nvidia-smi -lgc` needs root and fails on most rental hosts, and losing
+    the hardware-conditional result costs far more than the extra variance.
+
+    True only when BOTH sides were locked. A ratio is as noisy as its noisier
+    half, so "locked" cannot mean "locked somewhere in the pair". None means
+    unknown -- rows predating the field, which must not be reported as
+    unlocked: absence of evidence is not evidence of absence, and a flag that
+    fires on missing data gets ignored within a day.
     """
 
     host: str
@@ -75,6 +88,7 @@ class Speedup:
     config_key: str
     latency_ms: float
     baseline_latency_ms: float
+    clocks_locked: Optional[bool] = None
 
     @property
     def speedup(self) -> float:
@@ -283,6 +297,7 @@ def speedup_within_host(df: pd.DataFrame, *, baseline_backend: str,
             continue
         baseline_latency = float(base_rows[latency_column].iloc[0])
         gpu_name = str(cell["gpu_name"].iloc[0])
+        base_locked = _locked(base_rows.iloc[0])
         for _, row in cell.iterrows():
             if row["backend"] == baseline_backend:
                 continue
@@ -290,8 +305,35 @@ def speedup_within_host(df: pd.DataFrame, *, baseline_backend: str,
                 host=str(host), gpu_name=gpu_name, backend=str(row["backend"]),
                 config_key=str(config_key),
                 latency_ms=float(row[latency_column]),
-                baseline_latency_ms=baseline_latency))
+                baseline_latency_ms=baseline_latency,
+                clocks_locked=_both_locked(base_locked, _locked(row))))
     return results
+
+
+def _locked(row) -> Optional[bool]:
+    """`clocks_locked` for one row: True, False, or None for unknown.
+
+    None for a missing column and for NaN, deliberately. `bool(nan)` is True,
+    so a naive read would report every row predating the field as LOCKED --
+    the silent direction, and the one that would quietly certify a noisy
+    comparison as clean.
+    """
+    try:
+        v = row["clocks_locked"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    return bool(v)
+
+
+def _both_locked(a: Optional[bool], b: Optional[bool]) -> Optional[bool]:
+    """A ratio is as noisy as its noisier half."""
+    if a is False or b is False:
+        return False
+    if a is None or b is None:
+        return None
+    return True
 
 
 @dataclass(frozen=True)
@@ -306,10 +348,26 @@ class ArchitectureComparison:
     backend: str
     config_key: str
     speedup_by_architecture: dict[str, float]
+    # gpu_name -> whether every contributing ratio had both sides locked.
+    clocks_locked_by_architecture: dict[str, Optional[bool]] = field(
+        default_factory=dict)
 
     @property
     def architectures(self) -> list[str]:
         return sorted(self.speedup_by_architecture)
+
+    @property
+    def unlocked_architectures(self) -> list[str]:
+        """Architectures whose ratio came from unlocked clocks.
+
+        Non-empty means this comparison is noisier than the numbers suggest.
+        It is NOT a reason to discard the comparison: `nvidia-smi -lgc` needs
+        root and fails on most rental hosts, so refusing here would delete the
+        second architecture and with it the hardware-conditional finding --
+        which costs far more than the variance does.
+        """
+        return sorted(a for a, locked in self.clocks_locked_by_architecture.items()
+                      if locked is False)
 
     def flips(self, *, threshold: float = 1.0) -> bool:
         """True when the backend beats the baseline on one architecture and
@@ -317,6 +375,26 @@ class ArchitectureComparison:
         looking for."""
         values = list(self.speedup_by_architecture.values())
         return any(v > threshold for v in values) and any(v <= threshold for v in values)
+
+    def caveat(self) -> str:
+        """The sentence that must accompany this number, or "".
+
+        A flip is the study's headline claim, and a flip between 0.98 and 1.02
+        from unlocked clocks is not a flip at all -- DRIFT_TOLERANCE is 5%,
+        which is the scale of the effect being claimed. So the caveat is
+        harshest exactly where the result is most interesting.
+        """
+        unlocked = self.unlocked_architectures
+        if not unlocked:
+            return ""
+        base = (f"clocks were NOT locked on {', '.join(unlocked)}, so this "
+                f"ratio carries run-to-run variance of roughly the same "
+                f"magnitude as the canary tolerance (5%)")
+        if self.flips():
+            return (base + ". This comparison FLIPS, and a flip within that "
+                    "margin is not evidence of hardware-conditional behaviour "
+                    "-- re-measure with locked clocks before claiming it")
+        return base
 
 
 def compare_across_architectures(speedups: list[Speedup],
@@ -334,16 +412,30 @@ def compare_across_architectures(speedups: list[Speedup],
     single entry invites reading a one-sided result as a comparison.
     """
     by_key: dict[tuple[str, str], dict[str, list[float]]] = {}
+    locks: dict[tuple[str, str], dict[str, list[Optional[bool]]]] = {}
     for s in speedups:
         arches = by_key.setdefault((s.backend, s.config_key), {})
         arches.setdefault(s.gpu_name, []).append(s.speedup)
+        locks.setdefault((s.backend, s.config_key), {}) \
+             .setdefault(s.gpu_name, []).append(s.clocks_locked)
 
     out = []
     for (backend, config_key), arches in sorted(by_key.items()):
         if len(arches) < 2:
             continue
+        # Averaging ratios across hosts of one architecture is valid; the lock
+        # state is not averaged but REDUCED -- one unlocked host makes the
+        # architecture's mean ratio an unlocked number, because the variance
+        # it contributed is still in there.
+        by_arch_lock: dict[str, Optional[bool]] = {}
+        for gpu, vals in locks[(backend, config_key)].items():
+            reduced: Optional[bool] = True
+            for v in vals:
+                reduced = _both_locked(reduced, v)
+            by_arch_lock[gpu] = reduced
         out.append(ArchitectureComparison(
             backend=backend, config_key=config_key,
             speedup_by_architecture={
-                gpu: sum(vals) / len(vals) for gpu, vals in arches.items()}))
+                gpu: sum(vals) / len(vals) for gpu, vals in arches.items()},
+            clocks_locked_by_architecture=by_arch_lock))
     return out

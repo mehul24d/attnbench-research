@@ -34,7 +34,7 @@ from typing import Optional
 
 import pandas as pd
 
-from .cross_arch import CrossArchError, speedup_within_host
+from .cross_arch import CrossArchError, _both_locked, speedup_within_host
 
 # The canary set: cheap, short, and deliberately unchanging.
 #
@@ -65,15 +65,25 @@ class CanaryDrift:
     config_key: str
     reference_ratio: float
     observed_ratio: float
+    # False if either session measured this ratio on unlocked clocks.
+    clocks_locked: Optional[bool] = None
 
     @property
     def fractional_change(self) -> float:
         return abs(self.observed_ratio - self.reference_ratio) / self.reference_ratio
 
     def __str__(self) -> str:
+        # The lock state is in the drift line itself, not in a footnote. This
+        # string is what a session sees when the canary fires, and it is the
+        # moment someone decides whether to investigate an environment change
+        # or shrug. DRIFT_TOLERANCE is 5%, which is the same order as
+        # unlocked-clock variance, so a marginal drift on unlocked clocks may
+        # be nothing at all -- and a reader who is not told that will either
+        # chase a phantom or, worse, learn to widen the tolerance.
+        note = "" if self.clocks_locked is not False else "  [CLOCKS UNLOCKED]"
         return (f"{self.gpu_name} {self.backend} {self.config_key}: "
                 f"{self.reference_ratio:.4f} -> {self.observed_ratio:.4f} "
-                f"({self.fractional_change * 100:.1f}%)")
+                f"({self.fractional_change * 100:.1f}%){note}")
 
 
 def canary_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -106,6 +116,24 @@ def canary_ratios(df: pd.DataFrame, *,
     for s in speedups:
         grouped.setdefault((s.gpu_name, s.backend, s.config_key), []).append(s.speedup)
     return {k: sum(v) / len(v) for k, v in grouped.items()}
+
+
+def canary_clock_state(df: pd.DataFrame, *,
+                       reference_backend: str = CANARY_REFERENCE_BACKEND,
+                       ) -> dict[tuple[str, str, str], Optional[bool]]:
+    """(gpu_name, backend, config_key) -> were BOTH sides' clocks locked.
+
+    Separate from `canary_ratios` rather than folded into its return type, so
+    the ratio dict keeps the shape every existing caller expects. False if any
+    contributing measurement was taken unlocked; None where it is unknown.
+    """
+    speedups = speedup_within_host(canary_rows(df),
+                                   baseline_backend=reference_backend)
+    out: dict[tuple[str, str, str], Optional[bool]] = {}
+    for s in speedups:
+        key = (s.gpu_name, s.backend, s.config_key)
+        out[key] = _both_locked(out.get(key, True), s.clocks_locked)
+    return out
 
 
 @dataclass(frozen=True)
@@ -186,6 +214,8 @@ def check_canary_drift(reference: pd.DataFrame, observed: pd.DataFrame, *,
 
     ref = canary_ratios(reference, reference_backend=reference_backend)
     obs = canary_ratios(observed, reference_backend=reference_backend)
+    ref_locked = canary_clock_state(reference, reference_backend=reference_backend)
+    obs_locked = canary_clock_state(observed, reference_backend=reference_backend)
 
     drifts = []
     for key in sorted(set(ref) & set(obs)):
@@ -193,7 +223,12 @@ def check_canary_drift(reference: pd.DataFrame, observed: pd.DataFrame, *,
         if backend in rebased_backends:
             continue
         d = CanaryDrift(gpu_name=gpu_name, backend=backend, config_key=config_key,
-                        reference_ratio=ref[key], observed_ratio=obs[key])
+                        reference_ratio=ref[key], observed_ratio=obs[key],
+                        # Unlocked in EITHER session makes the comparison
+                        # between them unlocked: the drift is a difference of
+                        # two ratios, and it inherits the noise of both.
+                        clocks_locked=_both_locked(ref_locked.get(key),
+                                                   obs_locked.get(key)))
         if d.fractional_change > tolerance:
             drifts.append(d)
     return drifts
