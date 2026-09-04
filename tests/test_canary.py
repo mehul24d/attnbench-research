@@ -13,6 +13,7 @@ import pytest
 from attnbench.analysis.canary import (CANARY_SEQ_LENS, CanaryDrift,
                                        assert_no_canary_drift, canary_ratios,
                                        canary_rows, check_canary_drift)
+from attnbench.analysis import canary
 from attnbench.analysis.cross_arch import CrossArchError
 
 L4 = "NVIDIA L4"
@@ -121,3 +122,54 @@ def test_drift_string_names_what_moved():
                     reference_ratio=2.0, observed_ratio=2.5)
     text = str(d)
     assert "gla" in text and "c1024" in text and "25.0%" in text
+
+
+# --- deliberate baseline changes -------------------------------------------
+#
+# Added 2026-09-04. Hoisting mask construction out of flex's timed region
+# moved seq_len=1024/batch=1 from 4.22 to 40.72 useful TFLOPS, so segment 2's
+# canary would fire on flex against segment 1 -- correctly detecting a change,
+# but one we made rather than environmental drift. A false alarm here is not
+# harmless: it teaches a reader to ignore the check.
+
+def _canary_frame(backend: str, latency: float, gpu="NVIDIA L4"):
+    import pandas as pd
+    rows = []
+    for seq_len in canary.CANARY_SEQ_LENS:
+        for be, lat in (("sdpa_flash", 1.0), (backend, latency)):
+            rows.append(dict(gpu_name=gpu, host="h1", backend=be,
+                             config_key=f"cfg{seq_len}", seq_len=seq_len,
+                             latency_ms_p50=lat, ok=True))
+    return pd.DataFrame(rows)
+
+
+def test_a_recorded_baseline_change_can_be_excluded():
+    ref = _canary_frame("flex", 10.0)
+    obs = _canary_frame("flex", 1.0)          # a 10x shift, as measured
+    with pytest.raises(CrossArchError):
+        canary.assert_no_canary_drift(ref, obs)
+    canary.assert_no_canary_drift(ref, obs, rebased_backends=frozenset({"flex"}))
+
+
+def test_excluding_a_backend_with_no_recorded_reason_is_refused():
+    """The escape hatch must not be usable as 'silence whatever is firing'."""
+    ref, obs = _canary_frame("gla", 10.0), _canary_frame("gla", 1.0)
+    with pytest.raises(CrossArchError, match="no BaselineChange entry"):
+        canary.assert_no_canary_drift(ref, obs,
+                                      rebased_backends=frozenset({"gla"}))
+
+
+def test_excluding_one_backend_does_not_silence_the_others():
+    """The failure mode that would make this mechanism worse than useless."""
+    import pandas as pd
+    ref = pd.concat([_canary_frame("flex", 10.0), _canary_frame("gla", 4.0)])
+    obs = pd.concat([_canary_frame("flex", 1.0), _canary_frame("gla", 1.0)])
+    drifts = canary.check_canary_drift(ref, obs,
+                                       rebased_backends=frozenset({"flex"}))
+    assert {d.backend for d in drifts} == {"gla"}
+
+
+def test_every_recorded_change_names_a_commit_and_a_reason():
+    assert canary.BASELINE_CHANGES, "the registry documents real changes"
+    for c in canary.BASELINE_CHANGES:
+        assert len(c.commit) >= 7 and c.reason.strip() and c.date

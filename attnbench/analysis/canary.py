@@ -108,9 +108,60 @@ def canary_ratios(df: pd.DataFrame, *,
     return {k: sum(v) / len(v) for k, v in grouped.items()}
 
 
+@dataclass(frozen=True)
+class BaselineChange:
+    """A deliberate change to what a backend does inside the timed region.
+
+    The canary asks "did the environment move?" and answers it by comparing a
+    backend's ratio across sessions. That question is only meaningful while the
+    backend is computing the same thing both times. When we change the timed
+    region ourselves, the ratio moves for a reason the canary was never meant
+    to detect, and firing would be a false alarm -- the kind that teaches
+    people to ignore the check.
+
+    Silently excluding the backend would be worse. So an exclusion requires an
+    entry here: a backend, the commit that changed it, and a written reason.
+    `rebased_backends` in the check refuses any name that has no entry, which
+    makes "exclude whatever is firing" impossible to do casually.
+    """
+
+    backend: str
+    commit: str
+    date: str
+    reason: str
+
+
+BASELINE_CHANGES: tuple[BaselineChange, ...] = (
+    BaselineChange(
+        backend="flex", commit="d62d392", date="2026-09-04",
+        reason="Mask construction hoisted out of the timed region, and "
+               "block_sparse pinned to kernel_options BLOCK_M=BLOCK_N=64. "
+               "seq_len=1024/batch=1 moved 4.22 -> 40.72 useful TFLOPS "
+               "(9.65x) on the same L4; the shift is largest at the smallest "
+               "cells and ~1.0x at the largest, which is a removed constant "
+               "addend, not an environment change."),
+    BaselineChange(
+        backend="naive", commit="0463528", date="2026-09-04",
+        reason="Causal mask and block_sparse dense conversion hoisted out of "
+               "the timed region, found by tests/test_timed_region_setup.py "
+               "after the flex case. Expected to be small -- naive is O(S^2) "
+               "itself, so this is a bounded factor rather than an addend -- "
+               "but it is a change to the timed region and is recorded as "
+               "one rather than assumed negligible."),
+)
+
+
+def _rebase_reason(backend: str) -> str:
+    for c in BASELINE_CHANGES:
+        if c.backend == backend:
+            return f"{c.commit} ({c.date}): {c.reason}"
+    return ""
+
+
 def check_canary_drift(reference: pd.DataFrame, observed: pd.DataFrame, *,
                        tolerance: float = DRIFT_TOLERANCE,
                        reference_backend: str = CANARY_REFERENCE_BACKEND,
+                       rebased_backends: frozenset[str] = frozenset(),
                        ) -> list[CanaryDrift]:
     """Compare two sessions' canary measurements, returning what moved.
 
@@ -118,13 +169,29 @@ def check_canary_drift(reference: pd.DataFrame, observed: pd.DataFrame, *,
     compared. A key present in one and not the other is not drift -- it is a
     coverage difference, and reporting it as drift would train a reader to
     ignore the output.
+
+    `rebased_backends` names backends whose timed region we changed on
+    purpose between the two sessions. Every name must have a `BaselineChange`
+    entry, or this raises: the escape hatch is only usable by someone who has
+    already written down what changed and why.
     """
+    unjustified = sorted(b for b in rebased_backends if not _rebase_reason(b))
+    if unjustified:
+        raise CrossArchError(
+            f"cannot exclude {unjustified} from the canary: no BaselineChange "
+            f"entry. If the timed region really did change, record it in "
+            f"canary.BASELINE_CHANGES with the commit and the reason. If it "
+            f"did not, this is environmental drift and excluding it would "
+            f"hide exactly what the canary exists to find.")
+
     ref = canary_ratios(reference, reference_backend=reference_backend)
     obs = canary_ratios(observed, reference_backend=reference_backend)
 
     drifts = []
     for key in sorted(set(ref) & set(obs)):
         gpu_name, backend, config_key = key
+        if backend in rebased_backends:
+            continue
         d = CanaryDrift(gpu_name=gpu_name, backend=backend, config_key=config_key,
                         reference_ratio=ref[key], observed_ratio=obs[key])
         if d.fractional_change > tolerance:
@@ -135,6 +202,7 @@ def check_canary_drift(reference: pd.DataFrame, observed: pd.DataFrame, *,
 def assert_no_canary_drift(reference: pd.DataFrame, observed: pd.DataFrame, *,
                            tolerance: float = DRIFT_TOLERANCE,
                            reference_backend: str = CANARY_REFERENCE_BACKEND,
+                           rebased_backends: frozenset[str] = frozenset(),
                            ) -> None:
     """Raise if any canary ratio moved by more than `tolerance`.
 
@@ -144,7 +212,8 @@ def assert_no_canary_drift(reference: pd.DataFrame, observed: pd.DataFrame, *,
     that cannot be joined with what came before.
     """
     drifts = check_canary_drift(reference, observed, tolerance=tolerance,
-                                reference_backend=reference_backend)
+                                reference_backend=reference_backend,
+                                rebased_backends=rebased_backends)
     if not drifts:
         return
     raise CrossArchError(

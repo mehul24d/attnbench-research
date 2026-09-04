@@ -144,6 +144,16 @@ Then, **on the instance, before any sweep cell runs**:
 
    **Do not widen the tolerance or edit `CANARY_SEQ_LENS` to make a firing
    canary pass.** That resets the baseline and makes the check decorative.
+
+   **Segment 2 must pass `rebased_backends=frozenset({"flex", "naive"})`.**
+   Both had work hoisted out of their timed region on 2026-09-04 — flex moved
+   4.22 → 40.72 useful TFLOPS at 1024/b1 — so their ratios against segment 1
+   have moved for a reason the canary was never meant to detect. Firing there
+   would be a false alarm, and a false alarm teaches a reader to ignore the
+   check. Excluding them is not a loophole: every name must have a
+   `canary.BaselineChange` entry naming the commit and the reason, or the call
+   raises. `sdpa_*`, `fa2`, `gla` and `block_sparse` are unchanged and must
+   still be compared.
 3. **GPU exclusivity** (`provenance.assert_exclusive`) — existing gate.
 4. **Stage 1 must reproduce the 2026-09-04 flex diagnostic**, after the probe
    and **before the sweep**:

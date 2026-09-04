@@ -201,6 +201,36 @@ to the block grid.
 and is not comparable to later flex rows.** They are kept as evidence, not as
 measurements.
 
+### The suite could not have caught this, and now can
+
+Every other test in this project asserts *correctness* — outputs, masks,
+shapes, dtypes, determinism, causality. None asserted anything about **what is
+inside the timed region**. For a study whose entire output is timing
+measurements that is a structural gap, and it is why the mask sat in flex's
+hot path for as long as the backend existed: the suite was green throughout,
+because the answers were right.
+
+`tests/test_timed_region_setup.py` now asks the question for every registered
+backend — is this work done once, or per call? It detects two things a backend
+cannot hide: factory ops (`torch.ones/zeros/arange/…`) sized by `seq_len`,
+which take no input tensor and so depend only on cfg; and calls to the named
+view constructors (`BlockSparseMask.to_*`, `create_block_mask`), which take a
+tensor and are therefore invisible to the first check.
+
+Run against the code as it stood, it immediately found a **second** instance:
+`NaiveAttention` was allocating `torch.ones(S, S).triu(1)` on every causal
+call and re-running `to_dense_bool()` plus a `~` on every block-sparse call.
+Fixed the same way. The effect is far smaller than flex's — naive is O(S²) in
+its own right, so mask construction is a bounded *factor* rather than the
+unbounded *addend* that pinned flex to a 2 ms floor — but it is a change to
+the timed region and is recorded as one in `canary.BASELINE_CHANGES` rather
+than assumed negligible.
+
+Backends needing CUDA or an extension (`fa2`, `gla`, `block_sparse`, `sage`,
+`xformers`) report as NOT_EXERCISED on a workstation rather than passing
+silently; the same test covers them on the instance, where the suite is a
+per-session precondition.
+
 ## Sub-block causality: the oracle was leaking
 
 `BlockSparseMask.active` is a grid over BLOCKS, so it can mark the diagonal

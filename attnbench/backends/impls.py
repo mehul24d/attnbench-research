@@ -61,21 +61,60 @@ class NaiveAttention(AttentionBackend):
               "block_sparse (given an explicit mask).",
     )
 
-    def forward(self, q, k, v, cfg, mask=None):
-        k, v = _expand_kv(k, v, cfg)
-        scores = (q @ k.transpose(-2, -1)) / math.sqrt(cfg.head_dim)
+    def _blocked_for(self, cfg, mask, device):
+        """Positions to fill with -inf, built ONCE per (config, device).
+
+        True where a query may NOT attend. Both branches produce the same kind
+        of thing, so they share one cache entry and one `masked_fill` below.
+
+        Built once for the same reason flex's BlockMask is: it depends only on
+        cfg, so rebuilding it per call is a tax Stage 2 times and no
+        deployment pays. `tests/test_timed_region_setup.py` found this after
+        the flex case made the general question worth asking -- causal was
+        allocating `torch.ones(S, S).triu(1)` on every call, and block_sparse
+        was re-running `to_dense_bool()` plus a `~` on every call.
+
+        The effect here is far smaller than flex's: naive is O(S^2) in its own
+        right, so an O(S^2) mask build is a bounded *factor* rather than the
+        unbounded *addend* that pinned flex to a 2 ms floor at every shape.
+        Fixed anyway -- "the baseline is allowed to be sloppy" is not a
+        principle worth defending, and naive is the memory-wall ceiling that
+        every other backend is read against.
+        """
+        cache = self.__dict__.setdefault("_blocked_cache", {})
+        ck = (cfg.key(), str(device))
+        if ck in cache:
+            return cache[ck]
+
         if cfg.mask == "causal":
             s = cfg.seq_len
-            causal = torch.ones(s, s, dtype=torch.bool, device=q.device).triu(1)
-            scores = scores.masked_fill(causal, float("-inf"))
+            blocked = torch.ones(s, s, dtype=torch.bool, device=device).triu(1)
         elif cfg.mask == "block_sparse":
             if mask is None:
                 raise UnsupportedConfig("block_sparse requires an explicit mask")
+            if mask.seq_len != cfg.seq_len or mask.block_size != cfg.block_size:
+                # The oracle comparing against a mask built for another shape
+                # would certify agreement on a different function than the one
+                # under test -- the sub-block causality bug's failure mode.
+                raise UnsupportedConfig(
+                    f"mask is ({mask.seq_len}, block {mask.block_size}) but cfg "
+                    f"is ({cfg.seq_len}, block {cfg.block_size})")
             # mask is a masks.BlockSparseMask (masks.mask_for's return type),
             # not a dense tensor -- to_dense_bool() is the conversion its own
             # docstring already documents this call as using.
-            dense = mask.to_dense_bool(device=q.device)
-            scores = scores.masked_fill(~dense, float("-inf"))
+            blocked = ~mask.to_dense_bool(device=device)
+        else:
+            blocked = None
+
+        cache[ck] = blocked
+        return blocked
+
+    def forward(self, q, k, v, cfg, mask=None):
+        blocked = self._blocked_for(cfg, mask, q.device)
+        k, v = _expand_kv(k, v, cfg)
+        scores = (q @ k.transpose(-2, -1)) / math.sqrt(cfg.head_dim)
+        if blocked is not None:
+            scores = scores.masked_fill(blocked, float("-inf"))
         return (torch.softmax(scores, dim=-1).to(v.dtype)) @ v
 
     @torch.no_grad()
