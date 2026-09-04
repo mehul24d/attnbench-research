@@ -332,6 +332,43 @@ Fixed in `to_dense_bool` (a `tril` when `causal`) and matched in
 `to_block_sparse_attn_mask` deliberately does neither: BSA takes causality as
 a separate argument, so encoding it in the block grid would mask twice.
 
+## The sparse arm is exactly-verified to 4096, and inferred above it
+
+**The honest statement.** `block_sparse` is verified against a float64 naive
+oracle (`masked_exact`, same mask on both sides) at every seq_len up to and
+including 4096, across both block sizes. Above 4096 there is no numerical
+verification at all, and its correctness is *inferred from the kernel's
+length-independence* rather than measured.
+
+That is narrower than "unverified", and it is a consequence of hardware, not
+of methodology. Three independent constraints converge, and **any one of them
+failing differently would have left a usable reference**:
+
+| candidate reference | why it cannot serve above 4096 |
+|---|---|
+| the five dense kernels (fa2, sdpa_×4) | they *decline* `block_sparse` — `claims_support` returns `(False, "no block sparse")`. Run anyway they ignore the mask and compute plain causal attention, which is a confident answer about a different function |
+| `naive` (the float64 oracle) | needs 16 GiB at 8192, **64 GiB at 16384, 256 GiB at 32768** against a 23 GiB card |
+| `flex` | cannot lower block-sparse above 1024 on sm_89: 114688 B of shared memory required against a 101376 B limit |
+
+**Why a second sparse backend was considered and rejected.** FlashInfer would
+need building, is forward-only, and would very likely meet its own sm_89
+constraints — a session spent to find out. More fundamentally, it would not
+buy what it appears to: two sparse implementations agreeing can share a
+*convention* error (the block-grid causality bug of 2026-09-03 is exactly that
+shape), which is precisely what agreement with a float64 oracle rules out and
+agreement with a peer does not.
+
+**What the inference rests on.** The kernel's correctness is not length-
+dependent in any way observed here: BSA agreed with the naive oracle to
+8.09e-03 (bf16 tolerance 2e-2) given a real mask, and cross-backend divergence
+in the segment 1 data *decreased* with length rather than accumulating. The
+inference is stated so a reader can weigh it, not buried.
+
+**Open on other hardware.** Whether `flex` lowers block-sparse on an A100
+(80 GB, sm_80) is untested. If it does, it restores a third opinion and gives
+the sparse arm real cross-backend verification at 8192 and 16384 on at least
+one architecture — see `docs/stage2_plan.md`, A100 session.
+
 ## Clocks are not locked on every host, and the ratios say so
 
 `nvidia-smi -lgc` needs root and fails on most rental hosts — including the

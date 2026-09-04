@@ -185,6 +185,28 @@ Then, **on the instance, before any sweep cell runs**:
   `results/diagnostics/`, never `results/stage2/`. The other 219 rows from
   segment 1 stand — `flex` is the only backend that calls `torch.compile`.
 
+### The A100 session carries one cheap check that is not about timing
+
+**Does `flex` lower block-sparse on sm_80?** On the L4 it cannot: 114688 B of
+shared memory required against a 101376 B limit, which is why flex is
+unavailable as a cross-backend reference and why the sparse arm has no
+numerical verification above 4096 (see `docs/limitations.md`). An A100 has
+164 KB of shared memory per SM and 80 GB of device memory, so both of the
+constraints that bind on the L4 may not bind there.
+
+Run it **before** the sweep, as a precondition-style probe, not after:
+
+1. One `block_sparse` config at 8192 and one at 16384, through
+   `check_for_family` with the full reference set.
+2. If flex lowers, the sparse arm gains real `cross_backend` verification at
+   8192 and 16384 **on at least one architecture** — a materially stronger
+   claim than the L4 result, and one that costs minutes.
+3. If it does not, record the sm_80 numbers next to the sm_89 ones. "Flex
+   block-sparse is shared-memory-bound on two generations" is a finding about
+   a shipping PyTorch feature, not a gap.
+
+Either outcome is worth recording. Neither changes the timing plan.
+
 ---
 
 ## Block-Sparse-Attention: one attempt, then move on

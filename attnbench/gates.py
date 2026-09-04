@@ -175,6 +175,23 @@ def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
     from .backends.impls import NaiveAttention
 
     ref_backend = NaiveAttention()
+
+    # The ORACLE is asked whether it supports this config, for the same reason
+    # the cross-backend references are: an implementation that declines a
+    # config and is run anyway computes a different function and answers with
+    # confidence. Naive happens to claim every config this study uses today,
+    # so this changes nothing now -- which is exactly why it was missing.
+    # Correctness by luck of one backend's breadth is not correctness by
+    # design, and the next oracle, dtype or mask kind would inherit the gap.
+    ref_claimed, ref_why = ref_backend.claims_support(cfg)
+    if not ref_claimed:
+        return CorrectnessResult(
+            backend.name, cfg.key(), False, "exact",
+            detail=f"the float64 oracle declines this config ({ref_why}), so "
+                   f"there is nothing to compare against. Not a verdict on "
+                   f"{backend.name}: the reference, not the backend, is "
+                   f"missing here."[:300])
+
     q, k, v = backend.make_inputs(cfg, device=device, seed=seed)
 
     try:
