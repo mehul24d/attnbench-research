@@ -75,6 +75,15 @@ class _CpuBackend(AttentionBackend):
     def make_inputs(self, cfg, device="cuda", seed: int = 0):
         return super().make_inputs(cfg, device="cpu", seed=seed)
 
+    def claims_support(self, cfg):
+        # The base implementation is a CLASSMETHOD reading `cls.capability`,
+        # and these stubs carry a per-INSTANCE capability so each can have its
+        # own name. Overriding here rather than hoisting capability to the
+        # class, because per-instance capability is exactly the shape real
+        # backends use (SDPABackend builds one per kernel variant) and the
+        # stubs should not be easier than the thing they stand in for.
+        return True, ""
+
     def forward(self, q, k, v, cfg, mask=None):
         return v
 
@@ -277,6 +286,15 @@ class _Dense(AttentionBackend):
     @property
     def name(self):
         return self.capability.name
+
+    def claims_support(self, cfg):
+        # The base implementation is a CLASSMETHOD reading `cls.capability`,
+        # and these stubs carry a per-INSTANCE capability so each can have its
+        # own name. Overriding here rather than hoisting capability to the
+        # class, because per-instance capability is exactly the shape real
+        # backends use (SDPABackend builds one per kernel variant) and the
+        # stubs should not be easier than the thing they stand in for.
+        return True, ""
 
     def forward(self, q, k, v, cfg, mask=None):
         return v + self._bias

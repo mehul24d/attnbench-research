@@ -178,6 +178,15 @@ class _Dense(AttentionBackend):
     def name(self):
         return self.capability.name
 
+    def claims_support(self, cfg):
+        # The base implementation is a CLASSMETHOD reading `cls.capability`,
+        # and these stubs carry a per-INSTANCE capability so each can have its
+        # own name. Overriding here rather than hoisting capability to the
+        # class, because per-instance capability is exactly the shape real
+        # backends use (SDPABackend builds one per kernel variant) and the
+        # stubs should not be easier than the thing they stand in for.
+        return True, ""
+
     def forward(self, q, k, v, cfg, mask=None):
         return v + self._bias
 
@@ -367,6 +376,15 @@ class _Stub(AttentionBackend):
     @property
     def name(self):
         return self.capability.name
+
+    def claims_support(self, cfg):
+        # The base implementation is a CLASSMETHOD reading `cls.capability`,
+        # and these stubs carry a per-INSTANCE capability so each can have its
+        # own name. Overriding here rather than hoisting capability to the
+        # class, because per-instance capability is exactly the shape real
+        # backends use (SDPABackend builds one per kernel variant) and the
+        # stubs should not be easier than the thing they stand in for.
+        return True, ""
 
     def forward(self, q, k, v, cfg, mask=None):
         return _torch.zeros_like(q)

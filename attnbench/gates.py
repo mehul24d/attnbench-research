@@ -567,6 +567,25 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
     errors: dict[str, float] = {}
     skipped: dict[str, str] = {}
     for ref in usable:
+        # RESPECT THE CLAIM, exactly as the Stage 1 loop does for the backend
+        # under test. A dense backend handed a block_sparse config ignores the
+        # mask argument entirely and computes plain causal attention, which
+        # "succeeds" -- so it produces a confident, wrong opinion about a
+        # different function.
+        #
+        # This is instance 1's shape (an oracle computing something other than
+        # the kernel) arriving through the reference path. The guard was added
+        # to run_probe.py's choice of BACKEND on 2026-09-03, after it produced
+        # max_abs_err=4.81 and 114/126 failures, and not to the choice of
+        # REFERENCE -- so on 2026-09-04 the identical failure reappeared as 66
+        # block_sparse/naive cells disagreeing by ~4.9 with five dense
+        # references that were identical to six decimal places. Five
+        # independent kernels agreeing exactly is not five opinions; it is one
+        # computation, and it was not the one under test.
+        claimed, why = ref.claims_support(cfg)
+        if not claimed:
+            skipped[ref.name] = f"declines this config: {why}"[:80]
+            continue
         try:
             with torch.no_grad():
                 other = ref.forward(q, k, v, cfg, mask=mask)
