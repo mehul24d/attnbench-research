@@ -304,6 +304,30 @@ class FlexAttentionBackend(AttentionBackend):
     # is a real confound and is recorded in docs/limitations.md.
     _BLOCK_SPARSE_KERNEL_OPTIONS = {"BLOCK_M": 64, "BLOCK_N": 64}
 
+    # The 64x64 override is VERIFIED ONLY AT seq_len <= 1024.
+    #
+    # That is not a cautious guess about coverage; it is the literal extent of
+    # the evidence. The 2026-09-04 diagnostic ran under a 30-minute cap and
+    # bought exactly two configs, both at seq_len=1024, both agreeing with the
+    # float64 oracle (0.008404 at block_size 64, 0.008983 at 128).
+    #
+    # The very next session died to an Xid 31 MMU fault --
+    #   "MMU Fault: ENGINE GRAPHICS GPC2 ... FAULT_PDE ACCESS_TYPE_VIRT_READ"
+    # a GPU page fault, i.e. a kernel reading unmapped memory -- and the last
+    # configs logged before it were seq_len=32768. Forcing non-default triton
+    # tiles at 32x the verified length is a plausible cause. It is NOT a
+    # confirmed one, and deliberately stays unconfirmed: a session to test it
+    # would cost real money to distinguish two outcomes we would act on
+    # identically, since either way this cap is what ships.
+    #
+    # Above the cap, no override is passed and inductor's default applies --
+    # which on sm_89 at head_dim=128 cannot lower block_size=64 at all and
+    # exceeds shared memory at 128. So flex-sparse is effectively capped at
+    # short lengths on this card until proven otherwise. That is a real
+    # hardware finding about sm_89, not a scoping convenience; recorded in
+    # docs/limitations.md.
+    _BLOCK_SPARSE_KERNEL_OPTIONS_MAX_SEQ = 1024
+
     @staticmethod
     def _import_check():
         from torch.nn.attention.flex_attention import flex_attention  # noqa: F401
@@ -389,7 +413,8 @@ class FlexAttentionBackend(AttentionBackend):
                     f"mask is ({mask.seq_len}, block {mask.block_size}) but cfg "
                     f"is ({cfg.seq_len}, block {cfg.block_size}) -- a mismatch "
                     f"here would measure a different sparsity than configured")
-            kernel_options = self._BLOCK_SPARSE_KERNEL_OPTIONS
+            if cfg.seq_len <= self._BLOCK_SPARSE_KERNEL_OPTIONS_MAX_SEQ:
+                kernel_options = self._BLOCK_SPARSE_KERNEL_OPTIONS
         else:
             raise UnsupportedConfig(f"mask {cfg.mask} not wired for flex yet")
 

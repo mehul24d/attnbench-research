@@ -127,3 +127,38 @@ def test_a_different_config_gets_a_different_mask(flex):
         cfg = _cfg(sparsity=sparsity)
         be.forward(*_qkv(cfg), cfg, mask=mask_for(cfg))
     assert rec.calls[0]["block_mask"] is not rec.calls[1]["block_mask"]
+
+
+# --- the override is capped at the length it was actually verified at -------
+
+def test_the_override_applies_only_up_to_the_verified_length(flex):
+    """1024 is not a cautious guess -- it is the literal extent of the
+    evidence. The 2026-09-04 diagnostic ran under a 30-minute cap and bought
+    two configs, both at seq_len=1024. The next session died to an Xid 31 MMU
+    fault whose last logged configs were 32768."""
+    be, rec = flex
+    for seq_len in (256, 1024):
+        cfg = _cfg(seq_len=seq_len)
+        be.forward(*_qkv(cfg), cfg, mask=mask_for(cfg))
+    assert all(c["kernel_options"] == {"BLOCK_M": 64, "BLOCK_N": 64}
+               for c in rec.calls)
+
+
+def test_above_the_verified_length_no_override_is_forced(flex):
+    """Inductor's default then applies, which on sm_89 at head_dim=128 cannot
+    lower block_size=64 and exceeds shared memory at 128 -- so flex-sparse is
+    effectively capped at short lengths on this card. Failing to lower is a
+    recorded result; a GPU page fault is not."""
+    be, rec = flex
+    cfg = _cfg(seq_len=2048)
+    be.forward(*_qkv(cfg), cfg, mask=mask_for(cfg))
+    assert rec.calls[0]["kernel_options"] is None
+
+
+def test_the_cap_is_not_silently_raised_past_the_evidence():
+    """A future edit that widens this must also widen the verification. The
+    constant is the claim, so the claim is asserted."""
+    assert FlexAttentionBackend._BLOCK_SPARSE_KERNEL_OPTIONS_MAX_SEQ == 1024, (
+        "the override is verified at seq_len<=1024 only (two configs, "
+        "2026-09-04). Raising this needs measurements at the new length, "
+        "not just a larger number.")

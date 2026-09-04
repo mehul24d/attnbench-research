@@ -23,6 +23,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from attnbench import checkpoint                      # noqa: E402
 from attnbench import compile_guard                   # noqa: E402
 from attnbench import provenance                      # noqa: E402
 from attnbench.config import AttnConfig               # noqa: E402
@@ -31,7 +32,7 @@ from attnbench.backends.impls import SDPABackend      # noqa: E402
 from attnbench.gates import probe, check_for_family  # noqa: E402
 
 
-def probe_configs(max_seq: int):
+def probe_configs(max_seq: int, min_seq: int = 0):
     """EXACTLY the configs Stage 2 will run.
 
     This used to be a small independent grid (batch 2, 8 heads, seq_len
@@ -53,7 +54,7 @@ def probe_configs(max_seq: int):
     seen = set()
     for cfg in list(grid.dense_configs()) + list(
             grid.sparse_configs(mask_source="random")):
-        if cfg.seq_len > max_seq or cfg.key() in seen:
+        if not (min_seq <= cfg.seq_len <= max_seq) or cfg.key() in seen:
             continue
         seen.add(cfg.key())
         yield cfg
@@ -92,6 +93,21 @@ def _legacy_probe_configs(max_seq: int):
                                  mask_source="random")
 
 
+def band_plan(configs, backend_names, done):
+    """(band, backend, configs-still-to-run), shortest band first.
+
+    Pure, so the two properties that matter can be tested without a GPU:
+    bands are visited in ascending seq_len, and anything already banked is
+    skipped. Both were bought on 2026-09-04, when the probe wrote only at the
+    end and an Xid 31 MMU fault at 32768 destroyed every shorter band with it.
+    """
+    for band in sorted({c.seq_len for c in configs}):
+        band_cfgs = [c for c in configs if c.seq_len == band]
+        for name in backend_names:
+            yield band, name, [c for c in band_cfgs
+                               if (name, c.key()) not in done]
+
+
 def instantiate():
     """One instance per backend, plus the SDPA variants we pin explicitly."""
     out = []
@@ -116,7 +132,14 @@ def main():
     ap.add_argument("--max-seq", type=int, default=32768,
                     help="probe only configs at or below this length. Stage 2 "
                          "cells above it will have no pass and be rejected.")
+    ap.add_argument("--min-seq", type=int, default=0,
+                    help="probe only configs at or above this length, so a "
+                         "band that faulted can be retried on its own without "
+                         "redoing the bands that already succeeded")
     ap.add_argument("--skip-correctness", action="store_true")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="re-probe rows already present in the checkpoint "
+                         "instead of skipping them")
     args = ap.parse_args()
 
     outdir = Path(args.out)
@@ -139,13 +162,46 @@ def main():
     if unavailable:
         print(f"missing  : {', '.join(unavailable)}")
 
-    configs = list(probe_configs(args.max_seq))
-    print(f"\nprobing {len(backends)} backends x {len(configs)} configs\n")
+    configs = list(probe_configs(args.max_seq, args.min_seq))
+    bands = sorted({c.seq_len for c in configs})
+    probe_path = outdir / "probe.parquet"
+    corr_path = outdir / "correctness.parquet"
+
+    # Shortest band first, and every band fully written before the next one
+    # starts. Two things follow, and both were paid for on 2026-09-04:
+    #
+    #   * A crash loses at most the current band. The first attempt lost 24
+    #     minutes of work and the second 29, both complete, because this
+    #     script wrote only at the very end.
+    #   * A fault at 32768 cannot destroy 8192's results. The second attempt
+    #     died to an Xid 31 MMU fault whose last logged configs were 32768,
+    #     and took every shorter band down with it. That coupling has no
+    #     reason to exist: the bands are independent measurements.
+    #
+    # Resume is keyed on (backend, config_key), so re-running after a fault
+    # skips what is already banked and costs only the band that failed.
+    done_probe = set() if args.no_resume else checkpoint.done_keys(
+        probe_path, "backend", "config_key")
+    done_corr = set() if args.no_resume else checkpoint.done_keys(
+        corr_path, "backend", "config_key")
+    if done_probe or done_corr:
+        print(f"resuming: {len(done_probe)} probe rows and {len(done_corr)} "
+              f"correctness rows already banked")
+
+    print(f"\nprobing {len(backends)} backends x {len(configs)} configs "
+          f"in {len(bands)} bands: {bands}\n")
 
     rows = []
-    for b in backends:
-        counts = {}
-        for cfg in configs:
+    by_name = {b.name: b for b in backends}
+    seen_band = None
+    for band, name, todo in band_plan(configs, list(by_name), done_probe):
+        if band != seen_band:
+            seen_band = band
+            n = sum(1 for c in configs if c.seq_len == band)
+            print(f"[stage 0] seq_len={band}  ({n} configs)")
+        b = by_name[name]
+        counts, pending = {}, []
+        for cfg in todo:
             r = probe(b, cfg)
             counts[r.actual] = counts.get(r.actual, 0) + 1
             # Full provenance on every row, not just gpu/compute_capability.
@@ -154,56 +210,68 @@ def main():
             # rows carried no git_commit at all, so the Stage 2 commit gate
             # could never be satisfied by ANY table this script produced --
             # a gate that can never pass, which is the "HEAD" bug again.
-            rows.append({**r.to_dict(), **cfg.to_dict(), **prov.to_dict()})
+            pending.append({**r.to_dict(), **cfg.to_dict(), **prov.to_dict()})
+        if pending:
+            checkpoint.append_checkpoint(probe_path, pending)
+            rows += pending
         summary = "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-        mism = sum(1 for r in rows[-len(configs):] if r["claim_mismatch"])
+        mism = sum(1 for r in pending if r["claim_mismatch"])
         flag = f"   [{mism} claim mismatches]" if mism else ""
-        print(f"  {b.name:<16} {summary}{flag}")
+        print(f"    {b.name:<16} {summary or 'all resumed'}{flag}", flush=True)
 
-    df = pd.DataFrame(rows)
-    df.to_parquet(outdir / "probe.parquet", index=False)
+    df = pd.read_parquet(probe_path)
 
     if not args.skip_correctness:
         print("\ncorrectness gate (vs float64 naive)\n")
         crows = []
         supported = df[df.actual == "supported"]
-        for b in backends:
-            keys = set(supported[supported.backend == b.name].config_key)
-            for cfg in configs:
-                if cfg.key() not in keys or cfg.pass_kind != "fwd":
-                    continue
-                # Respect the CLAIM, not just whether it happened to run.
-                # A dense backend handed a block_sparse config ignores the
-                # mask argument entirely and computes plain attention, which
-                # "succeeds" -- so probe() marks it supported and the
-                # correctness check then compares it against an oracle that
-                # DID apply the mask. That produced max_abs_err=4.81 and
-                # 114/126 failures for fa2/sdpa_flash/sdpa_cudnn: not a
-                # numerical defect, a config they never agreed to run.
-                # Stage 2's build_cells filters on claims_support too, so
-                # this keeps probe and sweep looking at the same cells.
-                claimed, _ = b.claims_support(cfg)
-                if not claimed:
-                    continue
-                # Dispatch on family: exact for dense, masked-exact for
-                # sparse, structural for linear. Grading every family against
-                # an exact softmax oracle made gla fail 6/6 by construction.
-                # references: independent dense implementations, used only
-                # where the float64 oracle cannot be allocated (>4096).
-                refs = [o for o in backends
-                        if o.name != b.name
-                        and o.capability.family in ("dense_exact", "reference")]
-                r = check_for_family(b, cfg, references=refs)
-                crows.append({**r.to_dict(), **cfg.to_dict(), **prov.to_dict()})
-            mine = [r for r in crows if r["backend"] == b.name]
-            if mine:
-                worst = max((r["max_abs_err"] or 0) for r in mine)
-                failed = sum(1 for r in mine if not r["passed"])
-                kinds = sorted({r["check_kind"] for r in mine})
-                print(f"  {b.name:<16} max_abs_err={worst:.2e}  "
-                      f"failed={failed}/{len(mine)}  [{','.join(kinds)}]")
-        pd.DataFrame(crows).to_parquet(
-            outdir / "correctness.parquet", index=False)
+        for band in bands:
+            band_cfgs = [c for c in configs if c.seq_len == band]
+            print(f"[stage 1] seq_len={band}")
+            for b in backends:
+                keys = set(supported[supported.backend == b.name].config_key)
+                pending = []
+                for cfg in band_cfgs:
+                    if cfg.key() not in keys or cfg.pass_kind != "fwd":
+                        continue
+                    if (b.name, cfg.key()) in done_corr:
+                        continue
+                    # Respect the CLAIM, not just whether it happened to run.
+                    # A dense backend handed a block_sparse config ignores the
+                    # mask argument entirely and computes plain attention,
+                    # which "succeeds" -- so probe() marks it supported and the
+                    # correctness check then compares it against an oracle that
+                    # DID apply the mask. That produced max_abs_err=4.81 and
+                    # 114/126 failures for fa2/sdpa_flash/sdpa_cudnn: not a
+                    # numerical defect, a config they never agreed to run.
+                    # Stage 2's build_cells filters on claims_support too, so
+                    # this keeps probe and sweep looking at the same cells.
+                    claimed, _ = b.claims_support(cfg)
+                    if not claimed:
+                        continue
+                    # Dispatch on family: exact for dense, masked-exact for
+                    # sparse, structural for linear. Grading every family
+                    # against an exact softmax oracle made gla fail 6/6 by
+                    # construction. references: independent dense
+                    # implementations, used only where the float64 oracle
+                    # cannot be allocated (>4096).
+                    refs = [o for o in backends
+                            if o.name != b.name
+                            and o.capability.family in ("dense_exact",
+                                                        "reference")]
+                    r = check_for_family(b, cfg, references=refs)
+                    pending.append({**r.to_dict(), **cfg.to_dict(),
+                                    **prov.to_dict()})
+                if pending:
+                    checkpoint.append_checkpoint(corr_path, pending)
+                    crows += pending
+                if pending:
+                    worst = max((r["max_abs_err"] or 0) for r in pending)
+                    failed = sum(1 for r in pending if not r["passed"])
+                    kinds = sorted({r["check_kind"] for r in pending})
+                    print(f"    {b.name:<16} max_abs_err={worst:.2e}  "
+                          f"failed={failed}/{len(pending)}  "
+                          f"[{','.join(kinds)}]", flush=True)
 
     print(f"\nwritten to {outdir}/")
 

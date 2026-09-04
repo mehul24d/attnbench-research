@@ -201,6 +201,37 @@ to the block grid.
 and is not comparable to later flex rows.** They are kept as evidence, not as
 measurements.
 
+### flex-sparse is length-capped on sm_89, and that is a hardware finding
+
+The 64×64 override above is applied **only at `seq_len <= 1024`**
+(`_BLOCK_SPARSE_KERNEL_OPTIONS_MAX_SEQ`). Above it, no override is passed and
+inductor's default tile applies — which on this card at `head_dim=128` cannot
+lower `block_size=64` at all and exceeds shared memory at `block_size=128`. So
+**flex block-sparse is effectively unavailable above 1024 on an L4.**
+
+Two reasons, and the second is the honest one:
+
+1. 1024 is the literal extent of the evidence. The 2026-09-04 diagnostic ran
+   under a 30-minute cap and bought exactly two configs, both at 1024, both
+   agreeing with the float64 oracle (0.008404 at block_size 64, 0.008983 at
+   128).
+2. The next session died to an **Xid 31 MMU fault** — `ENGINE GRAPHICS GPC2 …
+   FAULT_PDE ACCESS_TYPE_VIRT_READ`, a GPU page fault — and the last configs
+   logged before it were `seq_len=32768`. Forcing non-default triton tiles at
+   32× the verified length is a plausible cause. It is deliberately left
+   unconfirmed: a session to test it would cost real money to distinguish two
+   outcomes that would be acted on identically, since this cap ships either
+   way.
+
+The underlying constraint is not a scoping convenience. sm_89 gives 101376 B
+of shared memory per block, and flex's default block-sparse kernel at
+`head_dim=128` asks for 114688 B. That is a **real limit of this
+architecture**, and it means the block-size axis of Stage 2 has a sparse arm
+only at short lengths on an L4 — reportable as a finding about the card, not
+merely as missing coverage. A second architecture (H100, 227 KB shared memory
+per SM) would very likely not have it, which makes it a cross-architecture
+result worth stating rather than a hole to apologise for.
+
 ### The suite could not have caught this, and now can
 
 Every other test in this project asserts *correctness* — outputs, masks,

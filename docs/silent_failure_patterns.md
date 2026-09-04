@@ -5,12 +5,12 @@ not a wrong answer that looked wrong — **a plausible number, produced by
 machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
-model is self-inflicted, and this file is the record of it, kept because eight
+model is self-inflicted, and this file is the record of it, kept because nine
 instances in three days is no longer a coincidence.
 
 ---
 
-## The eight
+## The nine
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -222,6 +222,35 @@ memory fragmentation) were both wrong; reading the two error strings against
 torch's own source is what settled it, and the mechanism then reproduced on
 CPU in seconds (`tests/test_compile_guard.py`) with no GPU involved.
 
+### 9. Regression tests that pass against the bug they were written for
+
+Three times in one day (2026-09-04), a test written *specifically* to catch a
+defect just observed was then run against that defect reintroduced — and
+passed.
+
+| the test | why it passed anyway |
+|---|---|
+| unbounded mask cache OOMs the probe | it summed tensors in the instance `__dict__`; the cache was a **`dict`**, and a dict is not a Tensor |
+| `pgrep -f` matches the matcher | it only ever exercised **self**-match, which a second filter already handled; the ancestor path was never reached |
+| ...the ancestor test that replaced it | on macOS `pgrep -f` **cannot see an ancestor's command line at all**, so the scenario was unconstructable and the test was vacuous *by platform* |
+
+Each was caught by the same move: break the fix, re-run, and require the test
+to go red. None would have been caught by reading the test, and all three
+would have shipped as green coverage of nothing.
+
+The third is the most instructive, because the test was *correct* — it was the
+platform that made it empty. `ps -o args=` showed the ancestor's command line
+plainly while `pgrep -f` returned nothing for it, so the exact failure that
+cost two sessions on Linux is not reproducible on the workstation. That is
+instance 5's shape one level up: not "green tests exercising nothing", but a
+green test whose emptiness depends on where it runs. The fix was to stop
+testing the platform's matcher and test **our** filter instead, by stubbing
+`pgrep` to return a chosen pid list — deterministic everywhere.
+
+**Found by**: never trusting a new guard until it has been watched failing.
+This is now the single most productive habit in the project, and its cost is
+about ninety seconds per guard.
+
 ---
 
 
@@ -280,6 +309,18 @@ backend, and any `try: fast_path except: slow_path` in a dependency all have
 this shape. The output is right, so nothing downstream can notice, and the
 property that actually changed — which kernel ran, and therefore what the
 latency means — is not one the gate was ever looking at.
+
+**A process-matching command must never match itself or its ancestors.** Two
+sessions lost, in opposite directions: `pkill -f 'pip install'` killed its own
+invoking SSH command and took the build with it (2026-09-03), and `pgrep -f
+run_probe.py` matched the polling command, so a probe already dead of an Xid 31
+MMU fault reported RUNNING for six more minutes (2026-09-04). Both were
+"documented" -- the `[n]vcc` bracket trick appears twice in the compile-session
+runbook -- and both happened anyway, because a rule that must be remembered at
+every call site will be forgotten at one of them. It is now
+`scripts/procmatch.sh`, which walks the full ancestor chain rather than only
+excluding `$$`; the bracket trick defeats self-match but not the `bash -c` that
+`gcloud compute ssh` spawns around the whole command.
 
 **Warning counts do not measure blast radius.** Python's default `once` filter
 dedups by (message, category, module, lineno). One line in `stage1.log`
