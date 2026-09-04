@@ -90,7 +90,8 @@ def test_kill_never_targets_an_ancestor(tmp_path):
 
 def test_a_non_ancestor_pid_from_pgrep_is_kept(tmp_path):
     """The other half: a filter that drops everything is equally useless."""
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                            start_new_session=True)
     try:
         env = _pgrep_stub(tmp_path, [os.getpid(), proc.pid])
         out = subprocess.run(["bash", str(SCRIPT), "pids", "anything"],
@@ -105,7 +106,8 @@ def test_a_real_process_is_found():
     """The other half: a matcher that never matches is also useless."""
     marker = "attnbench_procmatch_live_marker"
     proc = subprocess.Popen([sys.executable, "-c",
-                             f"import time; _={marker!r}; time.sleep(30)"])
+                             f"import time; _={marker!r}; time.sleep(30)"],
+                            start_new_session=True)
     try:
         time.sleep(0.7)
         out = run("status", marker)
@@ -120,7 +122,8 @@ def test_a_real_process_is_found():
 def test_the_reported_pids_exclude_the_matcher_itself():
     marker = "attnbench_procmatch_pids_marker"
     proc = subprocess.Popen([sys.executable, "-c",
-                             f"import time; _={marker!r}; time.sleep(30)"])
+                             f"import time; _={marker!r}; time.sleep(30)"],
+                            start_new_session=True)
     try:
         time.sleep(0.7)
         out = run("pids", marker)
@@ -141,7 +144,8 @@ def test_kill_refuses_when_only_the_caller_matches():
 def test_kill_terminates_a_real_match():
     marker = "attnbench_procmatch_kill_marker"
     proc = subprocess.Popen([sys.executable, "-c",
-                             f"import time; _={marker!r}; time.sleep(30)"])
+                             f"import time; _={marker!r}; time.sleep(30)"],
+                            start_new_session=True)
     try:
         time.sleep(0.7)
         out = run("kill", marker, "KILL")
@@ -157,3 +161,60 @@ def test_kill_terminates_a_real_match():
 def test_an_unknown_action_is_refused():
     out = run("obliterate", "whatever")
     assert out.returncode == 2
+
+
+def test_a_sibling_in_our_process_group_is_excluded(tmp_path):
+    """The residual gap ancestor-walking left, observed live on 2026-09-04:
+    `RUNNING pids=1338 5634`, where 5634 was a forked subshell of the polling
+    command. Subshells inherit the parent's command line, so they carry the
+    pattern while being nobody's ancestor. When 1338 died, that phantom held
+    the answer at RUNNING for three minutes."""
+    import subprocess as sp
+    sibling = sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        env = _pgrep_stub(tmp_path, [sibling.pid])
+        out = subprocess.run(["bash", str(SCRIPT), "status", "anything"],
+                             capture_output=True, text=True, env=env)
+        assert out.stdout.strip() == "NOT_RUNNING", (
+            f"a sibling in our process group was reported live: {out.stdout!r}")
+    finally:
+        sibling.kill()
+        sibling.wait()
+
+
+def test_a_detached_process_is_still_found(tmp_path):
+    """The other side, and the actual use case: work started with `nohup` over
+    ssh gets its own session and must still be reported. An exclusion that
+    also hid the target would be worse than the phantom it removes."""
+    import subprocess as sp
+    detached = sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                        start_new_session=True)
+    try:
+        env = _pgrep_stub(tmp_path, [detached.pid])
+        out = subprocess.run(["bash", str(SCRIPT), "status", "anything"],
+                             capture_output=True, text=True, env=env)
+        assert out.stdout.startswith("RUNNING"), out.stdout
+        assert str(detached.pid) in out.stdout
+    finally:
+        detached.kill()
+        detached.wait()
+
+
+def test_the_blind_spot_is_deliberate_and_stated(tmp_path):
+    """Process-group exclusion has a cost: a target started by this same shell
+    and NOT detached is missed. That is the right way to be wrong here -- a
+    false NOT_RUNNING gets investigated, a false RUNNING gets believed -- but
+    it is a real limitation and is asserted so it cannot be forgotten or
+    silently "fixed" into a phantom-producing state again."""
+    import subprocess as sp
+    attached = sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        env = _pgrep_stub(tmp_path, [attached.pid])
+        out = subprocess.run(["bash", str(SCRIPT), "status", "anything"],
+                             capture_output=True, text=True, env=env)
+        assert out.stdout.strip() == "NOT_RUNNING", (
+            "documented blind spot changed: a same-process-group target is "
+            "now reported. Re-check the phantom case before accepting this.")
+    finally:
+        attached.kill()
+        attached.wait()

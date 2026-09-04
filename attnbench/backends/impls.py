@@ -10,12 +10,14 @@ the sparse and linear backends will fit without redesign.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import torch
 import torch.nn.functional as F
 
 from ..config import AttnConfig
-from .base import AttentionBackend, Capability, UnsupportedConfig, register
+from .base import (AttentionBackend, Capability, FAULT_REASON_PREFIX,
+                   UnsupportedConfig, register)
 
 
 def _expand_kv(k: torch.Tensor, v: torch.Tensor, cfg: AttnConfig):
@@ -166,10 +168,67 @@ class SDPABackend(AttentionBackend):
         notes="Backend forced per instance; recorded in results.",
     )
 
+    # cuDNN's fused attention faults the device at long sequence length on
+    # sm_89. Observed 2026-09-04 on an L4 (driver 580.173.02, torch 2.9.1+cu129,
+    # CUDA 12.9): the Stage 0 probe reached seq_len=16384, nine backends
+    # completed all 84 configs in that band, `sdpa_cudnn` wrote zero, and the
+    # process died with
+    #
+    #   torch.AcceleratorError: CUDA error: an illegal memory access
+    #   NVRM: Xid (PCI:0000:00:03): 31, pid=..., name=python3
+    #     MMU Fault: ENGINE GRAPHICS GPC2 GPCCLIENT_T1_3
+    #     faulted @ 0x77aa_5e201000, FAULT_PDE ACCESS_TYPE_VIRT_READ
+    #
+    # An earlier session that reached 32768 died the same way; that one is
+    # consistent with this cause but was not isolated per-backend, so it counts
+    # as corroboration, not a second observation. Confirm at 16384 whenever a
+    # future session touches that band.
+    #
+    # 8192 is the highest length actually observed working (84/84 configs), so
+    # that is where the line is drawn -- not a round number chosen for
+    # tidiness. Only `cudnn` is affected: flash, efficient and math all
+    # completed 16384.
+    _CUDNN_FAULTS_ABOVE = 8192
+
     def __init__(self, kernel: str = "efficient"):
         if kernel not in ("flash", "efficient", "math", "cudnn"):
             raise ValueError(kernel)
         self.kernel = kernel
+        if kernel == "cudnn":
+            # Per-INSTANCE capability: the four SDPA variants share one class,
+            # so a class-level declaration would silently disable flash,
+            # efficient and math at 16384 as well -- deleting three backends'
+            # worth of long-context coverage to work around one.
+            self.capability = replace(
+                type(self).capability,
+                faults_above_seq_len=self._CUDNN_FAULTS_ABOVE,
+                fault_detail=(
+                    "cuDNN fused attention reads unmapped memory above "
+                    f"seq_len={self._CUDNN_FAULTS_ABOVE} on sm_89 "
+                    "(Xid 31, MMU Fault ENGINE GRAPHICS, observed 2026-09-04 "
+                    "on L4/driver 580.173.02/torch 2.9.1+cu129). Not launched: "
+                    "an illegal access corrupts the CUDA context for the whole "
+                    "process and cannot be caught."),
+            )
+
+    def claims_support(self, cfg: AttnConfig) -> tuple[bool, str]:
+        """Instance-level, because the fault belongs to ONE of the four kernels.
+
+        `AttentionBackend.claims_support` is a classmethod reading
+        `cls.capability`, and all four SDPA variants share this class -- so a
+        class-level fault declaration would disable flash, efficient and math
+        at 16384 too, deleting three backends' worth of long-context coverage
+        to work around one. All three completed that band; only cudnn faulted.
+
+        Production always calls this on an instance (timing.measure,
+        gates.probe, sweep.build_cells, run_probe); only tests call it on a
+        class, and never on SDPABackend.
+        """
+        c = self.capability
+        if (c.faults_above_seq_len is not None
+                and cfg.seq_len > c.faults_above_seq_len):
+            return False, f"{FAULT_REASON_PREFIX}{c.fault_detail}"
+        return super().claims_support(cfg)
 
     @property
     def name(self) -> str:

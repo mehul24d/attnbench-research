@@ -48,7 +48,32 @@ def probe(backend: AttentionBackend, cfg: AttnConfig,
     wrong often enough that disagreement between the two is a reportable finding
     rather than a bug in our harness.
     """
+    from .backends.base import FAULT_REASON_PREFIX
+
     claimed, reason = backend.claims_support(cfg)
+
+    # A kernel that faults the device is NOT launched, and the cell is recorded
+    # as the finding it is rather than as a gap. `sdpa_cudnn` at seq_len=16384
+    # on sm_89 reads unmapped memory: Xid 31, MMU Fault ENGINE GRAPHICS, which
+    # kills the whole process. Nine other backends completed all 84 configs in
+    # that band and cuDNN wrote zero.
+    #
+    # This is deliberately its own status. "unsupported" would say the kernel
+    # declines the config, which is false and much milder than the truth, and
+    # it would sit in the same column as fifty ordinary declines where nobody
+    # would ever look at it again.
+    if not claimed and reason.startswith(FAULT_REASON_PREFIX):
+        return ProbeResult(
+            backend=backend.name,
+            config_key=cfg.key(),
+            claimed=False,
+            claim_reason=reason,
+            actual="illegal_memory_access",
+            detail=reason[len(FAULT_REASON_PREFIX):][:300],
+            # Not a mismatch: claim and behaviour agree. The backend says it
+            # faults here and it does.
+            claim_mismatch=False,
+        )
 
     # A block_sparse config with no mask cannot run: every backend that
     # implements it raises "block_sparse requires an explicit mask". Probing

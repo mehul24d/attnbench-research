@@ -44,11 +44,32 @@ ancestors() {
 
 genuine_pids() {
   local anc; anc="$(ancestors)"
+  # Everything spawned as part of THIS invocation shares our process group:
+  # ancestors, and equally the forked subshells they spawn for pipelines and
+  # command substitution. Those siblings inherit the parent's command line, so
+  # they carry the pattern while being nobody's ancestor -- ancestor-walking
+  # alone reported `RUNNING pids=1338 5634` where 5634 was a subshell of the
+  # poller itself. When the real pid died, that phantom kept the answer at
+  # RUNNING for three minutes.
+  #
+  # The process group is the correct primitive: it is exactly "the job this
+  # command is part of". The trade-off is deliberate -- a target started by
+  # this same shell and NOT detached shares our pgid and will be missed. For a
+  # tool whose whole purpose is checking on `nohup`ed background work over ssh
+  # (pgid of its own, ppid 1), that is the right way to be wrong: it errs
+  # toward reporting NOT_RUNNING, and a false "not running" is investigated
+  # while a false "running" is believed.
+  local mypgid; mypgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
   local found; found="$(pgrep -f -- "$PATTERN" 2>/dev/null || true)"
   local pid
   for pid in $found; do
     # skip self and every ancestor
     if printf '%s\n' "$anc" | grep -qx -- "$pid"; then continue; fi
+    # skip anything in our own process group (siblings, subshells, the job)
+    if [ -n "$mypgid" ]; then
+      pidpgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+      [ "$pidpgid" = "$mypgid" ] && continue
+    fi
     # Skip anything whose command line is this script (belt and braces: a
     # sibling invocation of procmatch.sh is not the target either).
     # `-o args=`, NOT `-o cmd=`: the latter is GNU-only, and BSD/macOS ps

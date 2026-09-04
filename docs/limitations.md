@@ -201,6 +201,55 @@ to the block grid.
 and is not comparable to later flex rows.** They are kept as evidence, not as
 measurements.
 
+### cuDNN fused attention faults the device above 8192 on sm_89
+
+`sdpa_cudnn` is excluded above `seq_len=8192` and its cells are recorded with
+`status="illegal_memory_access"`, not omitted.
+
+Observed 2026-09-04 on an L4 (driver 580.173.02, torch 2.9.1+cu129, CUDA
+12.9). The Stage 0 probe reached the 16384 band; **nine backends completed all
+84 configs in it and `sdpa_cudnn` wrote zero**, then the process died:
+
+```
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+NVRM: Xid (PCI:0000:00:03): 31, pid=1338, name=python3
+  MMU Fault: ENGINE GRAPHICS GPC2 GPCCLIENT_T1_3
+  faulted @ 0x77aa_5e201000, FAULT_PDE ACCESS_TYPE_VIRT_READ
+```
+
+An earlier session that reached 32768 died identically; it was not isolated
+per-backend, so it counts as corroboration rather than a second independent
+observation. **Confirm at 16384 whenever a future session touches that band.**
+
+8192 is where the line is drawn because it is the longest band cuDNN actually
+completed (84/84) — not a round number. Only `cudnn` is affected: `flash`,
+`efficient` and `math` all completed 16384, which is also why the declaration
+is per-instance. All four SDPA variants share one class, so a class-level
+declaration would have deleted three backends' worth of long-context coverage
+to work around one.
+
+**Why it is not caught and retried instead.** An illegal memory access
+corrupts the CUDA context for the whole process. `try/except` around the call
+is useless — the damage is to the context, not the Python frame — so every
+subsequent CUDA call in that process fails, which is exactly how it presented:
+the traceback pointed at an unrelated `torch.cuda.empty_cache()`, with torch
+itself warning that "CUDA kernel errors might be asynchronously reported at
+some other API call". The only safe handling is not to launch it. Subprocess
+isolation per cell would also work and was rejected on scope: it is a process
+pool plus IPC plus timeout handling, and it would pay CUDA context creation on
+every one of ~1400 cells, adding minutes of overhead and noise to the very
+timing measurements the sweep exists to collect.
+
+**The cost is one data point in a well-covered family.** Dense-exact at 16384
+and 32768 still has `fa2`, `sdpa_flash`, `sdpa_efficient` and `sdpa_math`.
+
+**The finding is worth more than the cells.** A shipping cuDNN kernel that
+works at 8192 and reads unmapped memory at 16384 on the same card is a result
+about a production kernel, reproducible, with a kernel-level Xid to back it.
+It is also the starkest form of the hardware-conditional behaviour this study
+is about: not a ranking that reorders between cards, but a kernel that works
+at one length and faults at another on one card.
+
 ### flex-sparse is length-capped on sm_89, and that is a hardware finding
 
 The 64×64 override above is applied **only at `seq_len <= 1024`**

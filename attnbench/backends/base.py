@@ -45,6 +45,30 @@ class Capability:
     dtypes: tuple = ("bfloat16", "float16")
     notes: str = ""
 
+    # A length above which this kernel is known to FAULT THE DEVICE, not merely
+    # fail. Distinct from every other field here: the others describe what a
+    # backend declines to do, this one describes what it does destructively.
+    #
+    # An illegal memory access corrupts the CUDA context for the whole process.
+    # It cannot be caught and recovered from -- `try/except` around the call is
+    # useless, because the damage is to the context, not the Python frame -- so
+    # the only safe handling is not to launch it. That is why this is a
+    # capability declaration rather than an exception handler.
+    #
+    # Set only from a REPRODUCED observation with the Xid recorded, never
+    # speculatively: the cost of an unnecessary entry is silently deleted
+    # coverage.
+    faults_above_seq_len: Optional[int] = None
+    fault_detail: str = ""
+
+
+# Prefix marking a claims_support() refusal that exists because the kernel
+# FAULTS THE DEVICE, not because it declines the config. `gates.probe` keys on
+# it to record status="illegal_memory_access" instead of "unsupported" -- the
+# difference between "this kernel does not do that" and "this kernel does that
+# destructively", which a results table must not conflate.
+FAULT_REASON_PREFIX = "KNOWN DEVICE FAULT: "
+
 
 class UnsupportedConfig(Exception):
     """Raised by a backend when it cannot run a config. Not an error."""
@@ -101,6 +125,14 @@ class AttentionBackend(abc.ABC):
     def claims_support(cls, cfg: AttnConfig) -> tuple[bool, str]:
         """Cheap pre-filter from the declared capability. Returns (ok, reason)."""
         c = cls.capability
+        # Checked FIRST, before anything else can decline the config for a
+        # milder reason. The reason string is load-bearing: `gates.probe`
+        # matches on this prefix to record the cell as a FAULT rather than as
+        # an ordinary "unsupported", so a destructive kernel appears in the
+        # capability matrix as a finding instead of a gap.
+        if (c.faults_above_seq_len is not None
+                and cfg.seq_len > c.faults_above_seq_len):
+            return False, f"{FAULT_REASON_PREFIX}{c.fault_detail}"
         if cfg.pass_kind == "fwd_bwd" and not c.supports_backward:
             return False, "no backward pass"
         if cfg.is_gqa and not c.supports_gqa:
