@@ -332,6 +332,40 @@ Fixed in `to_dense_bool` (a `tril` when `causal`) and matched in
 `to_block_sparse_attn_mask` deliberately does neither: BSA takes causality as
 a separate argument, so encoding it in the block grid would mask twice.
 
+## The study is inference-focused: the backward pass is out of scope
+
+**Decided, not overlooked.** `SweepGrid.passes` contains `fwd_bwd`, and Stage 0
+finds **914 supported `fwd_bwd` cells** at ≤16384 — more than the 1000 `fwd`
+ones. None of them will be measured, because none of them can be licensed:
+Stage 1 has no backward correctness check, so no `fwd_bwd` cell has a pass, and
+`build_cells` rejects them all.
+
+**Why not just build the check.** A backward check is not a variant of the
+forward one. It needs a float64 oracle for three gradients rather than one
+output, a tolerance calibration per gradient (dQ, dK and dV do not accumulate
+error alike), a decision about how to grade a `structural`-family backend whose
+backward is a different function again, and a memory budget roughly 3.5× the
+forward's against a card the forward check already declines at 32768. That is
+session-scale work with its own failure modes, not an afternoon.
+
+**What it costs, stated plainly.** LongCA-bench's own conclusion is that the
+**backward pass is the major bottleneck across sparse kernels**. Excluding it
+means this study cannot speak to training-time cost at all, and a reader should
+not extrapolate the forward results to it — sparse kernels that win on the
+forward may well lose on the backward, which is precisely the finding
+LongCA-bench reports.
+
+**Why it is nonetheless defensible.** The study becomes an inference-focused
+one, which is coherent with where it already lives: the Stage 3 accuracy track
+is inference-only (RULER, prefill and decode), the decode regime exists in
+`AttnConfig`, and the hardware-conditional claim is about serving. An
+inference study that says so is a different thing from a general study with a
+silent hole in it.
+
+`fwd_bwd` stays in the grid and in the config hash rather than being deleted,
+so a future backward segment appends to this dataset instead of colliding
+with it.
+
 ## The sparse arm is exactly-verified to 4096, and inferred above it
 
 **The honest statement.** `block_sparse` is verified against a float64 naive
