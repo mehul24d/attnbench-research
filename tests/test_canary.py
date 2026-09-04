@@ -91,7 +91,7 @@ def test_an_empty_canary_raises_instead_of_passing():
     off_grid = _frame("host-1", L4, gla_latency=50.0, seq_len=32768)
     assert off_grid[off_grid["seq_len"].isin(CANARY_SEQ_LENS)].empty
 
-    with pytest.raises(CrossArchError, match="no canary rows"):
+    with pytest.raises(CrossArchError, match="no usable canary rows"):
         canary_ratios(off_grid)
 
 
@@ -136,7 +136,11 @@ def _canary_frame(backend: str, latency: float, gpu="NVIDIA L4"):
     import pandas as pd
     rows = []
     for seq_len in canary.CANARY_SEQ_LENS:
-        for be, lat in (("sdpa_flash", 1.0), (backend, latency)):
+        # The reference must clear CANARY_MIN_LATENCY_MS or the cell is not
+        # resolvable at the tolerance and canary_rows excludes it. 1.0 ms was
+        # fine when no floor existed; it now means "unmeasurable", which is
+        # a different fixture than this test intends.
+        for be, lat in (("sdpa_flash", 40.0), (backend, latency)):
             rows.append(dict(gpu_name=gpu, host="h1", backend=be,
                              config_key=f"cfg{seq_len}", seq_len=seq_len,
                              latency_ms_p50=lat, ok=True))
@@ -144,8 +148,8 @@ def _canary_frame(backend: str, latency: float, gpu="NVIDIA L4"):
 
 
 def test_a_recorded_baseline_change_can_be_excluded():
-    ref = _canary_frame("flex", 10.0)
-    obs = _canary_frame("flex", 1.0)          # a 10x shift, as measured
+    ref = _canary_frame("flex", 400.0)
+    obs = _canary_frame("flex", 40.0)        # a 10x shift, as measured
     with pytest.raises(CrossArchError):
         canary.assert_no_canary_drift(ref, obs)
     canary.assert_no_canary_drift(ref, obs, rebased_backends=frozenset({"flex"}))
@@ -173,3 +177,87 @@ def test_every_recorded_change_names_a_commit_and_a_reason():
     assert canary.BASELINE_CHANGES, "the registry documents real changes"
     for c in canary.BASELINE_CHANGES:
         assert len(c.commit) >= 7 and c.reason.strip() and c.date
+
+
+# ---------------------------------------------------------------------------
+# Resolution floor: a ratio is only as precise as its denominator.
+# ---------------------------------------------------------------------------
+#
+# 2026-09-04. The canary fired on 12 ratios against segment 1 and none were
+# environmental. Every one sat at a config where sdpa_flash -- the canary's
+# own reference, and therefore the denominator of every ratio -- runs in about
+# 2 ms and varies 4% run to run (max 17.8%). The slow backends at those same
+# configs moved 0.2-1.5%, which is what a stable environment looks like.
+#
+# The fix is NOT a wider tolerance. It is refusing to build a ratio on a
+# measurement that cannot resolve the tolerance in the first place.
+
+def _res_frame(ref_latency, other_latency, backend="gla"):
+    import pandas as pd
+    rows = []
+    for seq_len in canary.CANARY_SEQ_LENS:
+        for be, lat in (("sdpa_flash", ref_latency), (backend, other_latency)):
+            rows.append(dict(gpu_name="NVIDIA L4", host="h1", backend=be,
+                             config_key=f"cfg{seq_len}", seq_len=seq_len,
+                             latency_ms_p50=lat, ok=True))
+    return pd.DataFrame(rows)
+
+
+def test_a_cell_whose_reference_is_too_fast_to_measure_is_excluded():
+    """2 ms against a 5% tolerance is 0.1 ms of resolution, which is below
+    this instrument's run-to-run spread."""
+    rows = canary.canary_rows(_res_frame(2.0, 50.0))
+    assert rows.empty
+
+
+def test_a_cell_with_a_slow_enough_reference_is_kept():
+    rows = canary.canary_rows(_res_frame(40.0, 50.0))
+    assert not rows.empty
+
+
+def test_the_floor_looks_at_the_reference_not_the_backend():
+    """The denominator is what limits the ratio. A numerator measured to 0.2%
+    against a denominator measured to 18% still yields a ratio good to 18%."""
+    # slow backend, fast reference -> still excluded
+    assert canary.canary_rows(_res_frame(2.0, 500.0)).empty
+    # fast backend, slow reference -> kept
+    assert not canary.canary_rows(_res_frame(40.0, 0.5)).empty
+
+
+def test_noise_at_an_unresolvable_cell_does_not_fire_as_drift():
+    """The 2026-09-04 false alarm, reconstructed: a 20% swing in a 2 ms
+    reference with everything else unchanged.
+
+    It REFUSES rather than returning "no drift", and that is the stronger
+    answer: "this cannot be checked" and "this was checked and is fine" are
+    different claims, and reporting the second when the first is true is how
+    a canary becomes decorative. The refusal names the floor and the observed
+    median, so the reader can act on it.
+    """
+    ref = _res_frame(2.5, 50.0)
+    obs = _res_frame(2.0, 50.0)          # reference alone moved 20%
+    with pytest.raises(CrossArchError, match="no usable canary rows"):
+        canary.check_canary_drift(ref, obs)
+
+
+def test_real_drift_at_a_resolvable_cell_still_fires():
+    """The floor must not become a way of not looking. Same 20% swing, at a
+    config the instrument can actually measure."""
+    ref = _res_frame(50.0, 50.0)
+    obs = _res_frame(40.0, 50.0)
+    assert canary.check_canary_drift(ref, obs)
+
+
+def test_the_floor_is_justified_by_measurement_not_convenience():
+    assert canary.CANARY_MIN_LATENCY_MS >= 10.0, (
+        "lowering this re-admits cells whose run-to-run spread exceeds the "
+        "drift tolerance; the numbers are in the constant's comment")
+    assert canary.DRIFT_TOLERANCE == 0.05, (
+        "the floor exists so this does NOT have to move")
+
+
+def test_the_resolution_report_states_what_was_excluded():
+    """A canary that quietly shrinks to two cells and reports 'no drift' is
+    the exact failure this module exists to prevent."""
+    msg = canary.canary_resolution_report(_res_frame(2.0, 50.0))
+    assert "0 of" in msg and "cannot resolve" in msg

@@ -55,6 +55,32 @@ CANARY_REFERENCE_BACKEND = "sdpa_flash"
 # and well inside the magnitude of a real regression.
 DRIFT_TOLERANCE = 0.05
 
+# A canary cell is only usable if its REFERENCE measurement is long enough that
+# DRIFT_TOLERANCE is resolvable. This is not a widened tolerance -- the
+# tolerance is unchanged. It excludes cells the instrument cannot measure to
+# the required precision, which is a different thing and the opposite of
+# permissive: it makes a firing canary mean something.
+#
+# Measured on 2026-09-04, comparing segment 1 against the segment 2 sweep on
+# two rented L4s with identical driver, torch, triton and clock state:
+#
+#     reference latency   cells   median |change|   max |change|
+#     < 3 ms                 50        1.2 %           89.7 %
+#     3 - 5 ms               21        4.8 %           41.0 %
+#     5 - 10 ms              11        0.4 %            5.6 %
+#     > 20 ms                47        1.5 %            8.6 %
+#
+# `sdpa_flash` -- the canary's own reference, and therefore the denominator of
+# every canary ratio -- has a median latency of 2.31 ms at these lengths and a
+# median run-to-run change of 4.0%, with a maximum of 17.8%. A ratio built on
+# that denominator cannot resolve 5% drift no matter how stable the numerator
+# is, and on 2026-09-04 it produced 12 "drifts" of which none were
+# environmental: the slow backends at the same configs moved 0.2-1.5%.
+#
+# 10 ms is chosen from the table, not for roundness: it is where the maximum
+# excursion first falls to the same order as the tolerance itself.
+CANARY_MIN_LATENCY_MS = 10.0
+
 
 @dataclass(frozen=True)
 class CanaryDrift:
@@ -86,13 +112,51 @@ class CanaryDrift:
                 f"({self.fractional_change * 100:.1f}%){note}")
 
 
-def canary_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """The subset of a results frame that belongs to the canary set."""
+def canary_rows(df: pd.DataFrame, *,
+                min_latency_ms: float = CANARY_MIN_LATENCY_MS,
+                reference_backend: str = CANARY_REFERENCE_BACKEND,
+                ) -> pd.DataFrame:
+    """The subset of a results frame that belongs to the canary set.
+
+    Restricted to cells whose REFERENCE measurement clears
+    `min_latency_ms` -- see that constant for why. The filter is on the
+    reference, not on each backend's own latency, because the reference is the
+    denominator of every ratio at that config: a numerator measured to 0.2%
+    against a denominator measured to 18% still gives a ratio measured to 18%.
+    """
     if "seq_len" not in df.columns:
         raise CrossArchError(
             "canary selection needs a seq_len column; without it the canary "
             "would silently select nothing and pass")
-    return df[df["seq_len"].isin(CANARY_SEQ_LENS)]
+    rows = df[df["seq_len"].isin(CANARY_SEQ_LENS)]
+    if min_latency_ms <= 0 or "latency_ms_p50" not in rows.columns:
+        return rows
+
+    ok = rows[(rows["backend"] == reference_backend)
+              & (rows["latency_ms_p50"] >= min_latency_ms)]
+    return rows[rows["config_key"].isin(set(ok["config_key"]))]
+
+
+def canary_resolution_report(df: pd.DataFrame, *,
+                             min_latency_ms: float = CANARY_MIN_LATENCY_MS,
+                             reference_backend: str = CANARY_REFERENCE_BACKEND,
+                             ) -> str:
+    """How many canary configs the instrument can actually resolve, and why.
+
+    Printed rather than inferred, because a canary that quietly shrinks to two
+    cells and reports "no drift" is the failure this whole module is built to
+    avoid.
+    """
+    allrows = df[df["seq_len"].isin(CANARY_SEQ_LENS)]
+    refs = allrows[allrows["backend"] == reference_backend]
+    if "latency_ms_p50" not in allrows.columns or refs.empty:
+        return "no reference rows; resolution unknown"
+    keep = refs[refs["latency_ms_p50"] >= min_latency_ms]
+    return (f"{len(keep)} of {len(refs)} canary configs have a "
+            f"{reference_backend} reference at or above {min_latency_ms:g} ms "
+            f"(median {refs['latency_ms_p50'].median():.2f} ms). Configs below "
+            f"it cannot resolve a {DRIFT_TOLERANCE * 100:.0f}% tolerance and "
+            f"are excluded.")
 
 
 def canary_ratios(df: pd.DataFrame, *,
@@ -108,8 +172,14 @@ def canary_ratios(df: pd.DataFrame, *,
     rows = canary_rows(df)
     if rows.empty:
         raise CrossArchError(
-            f"no canary rows found (expected seq_len in {CANARY_SEQ_LENS}). "
-            f"An empty canary that reports success is worse than no canary.")
+            f"no usable canary rows (expected seq_len in {CANARY_SEQ_LENS} "
+            f"with a {reference_backend} reference at or above "
+            f"{CANARY_MIN_LATENCY_MS:g} ms). "
+            f"{canary_resolution_report(df, reference_backend=reference_backend)} "
+            f"An empty canary that reports success is worse than no canary, so "
+            f"this refuses instead. If every config is below the floor, the "
+            f"canary set needs a config where the reference is slow enough to "
+            f"measure -- a larger batch, not a lower floor.")
 
     speedups = speedup_within_host(rows, baseline_backend=reference_backend)
     grouped: dict[tuple[str, str, str], list[float]] = {}
