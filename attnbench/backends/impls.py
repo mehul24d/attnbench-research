@@ -81,10 +81,20 @@ class NaiveAttention(AttentionBackend):
         principle worth defending, and naive is the memory-wall ceiling that
         every other backend is read against.
         """
-        cache = self.__dict__.setdefault("_blocked_cache", {})
+        # SIZE ONE, deliberately. An unbounded dict here OOMed the Stage 1
+        # probe on 2026-09-04 after 24 minutes: this tensor is (S, S) bool --
+        # 268 MB at seq_len 16384 and 1.07 GB at 32768 -- and the probe reuses
+        # one backend instance across all 504 configs, so every distinct cfg
+        # left a copy behind. It reached 21.69 GiB and the next make_inputs
+        # could not allocate 256 MB.
+        #
+        # Keeping only the current config loses nothing: the point of hoisting
+        # is to serve the repeated calls WITHIN one cell (1 warmup + 40 reps of
+        # a single cfg), not to carry masks between cells. Cross-cell reuse was
+        # never a benefit, only an accumulation.
         ck = (cfg.key(), str(device))
-        if ck in cache:
-            return cache[ck]
+        if self.__dict__.get("_blocked_key") == ck:
+            return self.__dict__["_blocked_value"]
 
         if cfg.mask == "causal":
             s = cfg.seq_len
@@ -106,7 +116,9 @@ class NaiveAttention(AttentionBackend):
         else:
             blocked = None
 
-        cache[ck] = blocked
+        # Assign before dropping the old one so a failure leaves no stale key.
+        self.__dict__["_blocked_key"] = ck
+        self.__dict__["_blocked_value"] = blocked
         return blocked
 
     def forward(self, q, k, v, cfg, mask=None):
@@ -325,10 +337,13 @@ class FlexAttentionBackend(AttentionBackend):
         """
         from torch.nn.attention.flex_attention import create_block_mask
 
-        cache = self.__dict__.setdefault("_block_mask_cache", {})
+        # Size one, for the same reason NaiveAttention's is -- see there. A
+        # BlockMask is far smaller than a dense (S, S) bool, but it still holds
+        # device tensors, and "small leak across 504 configs" is the same bug
+        # with a longer fuse.
         ck = (cfg.key(), str(device))
-        if ck in cache:
-            return cache[ck]
+        if self.__dict__.get("_bm_key") == ck:
+            return self.__dict__["_bm_value"]
 
         if cfg.mask == "block_sparse":
             built = mask.to_flex_block_mask(device=device)
@@ -349,7 +364,8 @@ class FlexAttentionBackend(AttentionBackend):
         else:
             built = None
 
-        cache[ck] = built
+        self.__dict__["_bm_key"] = ck
+        self.__dict__["_bm_value"] = built
         return built
 
     def forward(self, q, k, v, cfg, mask=None):

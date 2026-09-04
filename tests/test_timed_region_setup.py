@@ -255,3 +255,69 @@ def test_the_detector_catches_a_deliberately_reintroduced_rebuild(monkeypatch):
     assert obs.exercised, "the reintroduced defect must still be observable"
     assert obs.repeats_setup, (
         f"detector missed a per-call mask rebuild: {obs.per_call}")
+
+
+# --- the other half of hoisting: it must not accumulate ---------------------
+#
+# Added after the fix above OOMed the Stage 1 probe on 2026-09-04. Hoisting
+# setup out of the timed region is only correct if what is kept is BOUNDED.
+# NaiveAttention's cached mask is (S, S) bool -- 268 MB at seq_len 16384, 1.07
+# GB at 32768 -- and the probe reuses one backend instance across 504 configs,
+# so an unbounded dict reached 21.69 GiB and killed the run after 24 minutes.
+#
+# "Cache it" and "cache all of them forever" are one keystroke apart, and only
+# the second one shows up as an OOM half an hour into a billed session.
+
+@pytest.mark.parametrize("backend_name", ["naive", "flex"])
+def test_hoisted_setup_is_bounded_not_accumulated(backend_name):
+    cls = all_backends()[backend_name]
+    backend = cls()
+    mask_kind = "causal" if backend_name == "naive" else "causal"
+
+    def cached_tensor_bytes(obj) -> int:
+        """Every tensor reachable from the instance, INCLUDING inside
+        containers. The first version of this walked only top-level attributes
+        and therefore passed against the exact bug it was written for -- the
+        original cache was a `dict`, and a dict is not a Tensor. Watched it
+        fail to fail, which is the only reason it is written this way now."""
+        seen: set[int] = set()
+
+        def walk(value) -> int:
+            if id(value) in seen:
+                return 0
+            seen.add(id(value))
+            if isinstance(value, torch.Tensor):
+                return value.numel() * value.element_size()
+            if isinstance(value, dict):
+                return sum(walk(v) for v in value.values())
+            if isinstance(value, (list, tuple, set)):
+                return sum(walk(v) for v in value)
+            if hasattr(value, "__dict__"):        # e.g. a flex BlockMask
+                return sum(walk(v) for v in vars(value).values())
+            return 0
+
+        return sum(walk(v) for v in obj.__dict__.values())
+
+    seen_sizes = []
+    for seq_len in (64, 128, 256, 512):
+        cfg = AttnConfig(seq_len=seq_len, batch=1, n_heads_q=4, n_heads_kv=4,
+                         head_dim=64, dtype="float32", mask=mask_kind,
+                         pass_kind="fwd", regime="prefill")
+        q = torch.zeros(1, 4, seq_len, 64)
+        try:
+            backend.forward(q, q.clone(), q.clone(), cfg)
+        except Exception:
+            pass                      # flex cannot lower on CPU; setup still ran
+        seen_sizes.append(cached_tensor_bytes(backend))
+
+    # Four distinct configs of growing size. If every one were retained the
+    # total would grow monotonically; bounded means it tracks the CURRENT
+    # config only, so it never exceeds the largest single mask.
+    largest_single = 512 * 512          # bool, one element per byte
+    assert max(seen_sizes) <= largest_single, (
+        f"{backend_name} retained {max(seen_sizes)} bytes across 4 configs; "
+        f"one mask is at most {largest_single}. The cache is accumulating -- "
+        f"this is what OOMed the probe at 21.69 GiB.")
+
+    keys = [k for k in backend.__dict__ if k.endswith("_key")]
+    assert len(keys) <= 1, f"expected a single-entry cache, found keys {keys}"
