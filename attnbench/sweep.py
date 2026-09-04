@@ -98,8 +98,20 @@ class Stage1CommitError(RuntimeError):
     """Stage 1 passes exist, but not for the code about to be measured."""
 
 
+class Stage1ProvenanceError(RuntimeError):
+    """Stage 1 passes exist, and their provenance stamp is not trustworthy.
+
+    Separate from Stage1CommitError because the failures are different in
+    kind, and treating them alike is what let this through. A commit check
+    asks "is this the right commit"; it presumes the recorded commit means
+    something. A dirty working tree breaks that presumption: the commit can
+    match exactly and still describe different code.
+    """
+
+
 def load_stage1_pass_set(path: Path, *,
-                         at_commit: Optional[str] = None) -> set[tuple[str, str]]:
+                         at_commit: Optional[str] = None,
+                         allow_dirty: bool = False) -> set[tuple[str, str]]:
     """(backend, config_key) pairs with a recorded Stage 1 pass. Everything
     else -- including a pair that was never run at all -- counts as not
     passing. A missing correctness.parquet returns the empty set, not an
@@ -119,6 +131,12 @@ def load_stage1_pass_set(path: Path, *,
     which is the behaviour that existed before this parameter and is kept only
     so a run without git can proceed. Callers that care should pass it; see
     `docs/stage2_plan.md`.
+
+    `allow_dirty` is the escape hatch for local development, where a dirty
+    tree is normal and blocking every run would be worse than the risk. It is
+    off by default: a dirty stamp is refused, because the commit it names does
+    not describe the code that produced the rows. That is not hypothetical --
+    see `provenance.stamp_integrity_problems`.
     """
     p = Path(path)
     if not p.exists():
@@ -127,6 +145,24 @@ def load_stage1_pass_set(path: Path, *,
     if df.empty:
         return set()
     passed = df[df["passed"] == True]  # noqa: E712 (pandas boolean column)
+
+    # Checked BEFORE the commit filter, and deliberately so. A dirty row can
+    # carry the exact commit being asked for; filtering first would hand back
+    # a set that satisfied the commit check while describing other code.
+    if not allow_dirty and "git_dirty" in passed.columns:
+        dirty = passed[passed["git_dirty"] == True]  # noqa: E712
+        if not dirty.empty:
+            commits = sorted({str(c)[:12] for c in
+                              dirty.get("git_commit", pd.Series(dtype=str))
+                              .dropna().unique()})
+            raise Stage1ProvenanceError(
+                f"{p}: {len(dirty)} of {len(passed)} passes were recorded with "
+                f"a dirty working tree (commit(s) {', '.join(commits) or 'none'}). "
+                f"The commit named does not describe the code that ran, so "
+                f"these passes cannot license anything. Re-run Stage 1 from a "
+                f"clean checkout -- see scripts/gcp_deploy_source.sh, which "
+                f"refuses to deploy in a state that would produce this. Pass "
+                f"allow_dirty=True only for local development.")
 
     if at_commit is not None:
         if "git_commit" not in passed.columns:
@@ -180,6 +216,14 @@ def explain_stage1_rejections(cells: list[SweepCell], stage1_path: Path, *,
         if "git_commit" not in mine.columns or mine["git_commit"].isna().all():
             out[name] = ("NO PROVENANCE -- rows exist but carry no git_commit, "
                          "so they cannot be tied to the code under test.")
+            continue
+        if "git_dirty" in mine.columns and (mine["git_dirty"] == True).any():  # noqa: E712
+            n = int((mine["git_dirty"] == True).sum())  # noqa: E712
+            out[name] = (f"DIRTY PROVENANCE -- {n} row(s) recorded with a "
+                         f"working tree that did not match the commit they "
+                         f"name, so the commit describes different code. Not "
+                         f"the same as a wrong commit: this one passes a "
+                         f"commit check and still means nothing.")
             continue
         if at_commit is not None:
             at = mine[mine["git_commit"] == at_commit]

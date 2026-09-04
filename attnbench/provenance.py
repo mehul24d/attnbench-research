@@ -196,6 +196,108 @@ def write(path: str | Path = "versions.json", **kw) -> Provenance:
 
 
 # ---------------------------------------------------------------------------
+# Which of these fields anything actually reads
+# ---------------------------------------------------------------------------
+#
+# On 2026-09-04 every row of a 4576-row result set was stamped with a commit 18
+# behind the code that produced it. The stamp was not silently wrong:
+# `git_dirty=True` was recorded correctly on every one of those rows. No gate
+# read it, so the table would have cleared the Stage 2 commit check carrying a
+# stamp that provably could not be right -- it contained 84
+# `illegal_memory_access` rows, and the code that writes that status did not
+# exist at the commit named.
+#
+# A field that is set correctly and read by nobody fails exactly as a missing
+# field does. So the split is declared here rather than left to be discovered:
+# every field of Provenance must appear in one of these two sets, and
+# tests/test_provenance_consulted.py fails if a new field appears in neither,
+# or if a GATED field is not actually read by any gate module.
+
+GATED_FIELDS = frozenset({
+    "git_commit",   # sweep.load_stage1_passes, analysis.cross_arch join
+    "git_dirty",    # sweep.load_stage1_passes -- added because of the above
+    "host",         # sweep.check_host_continuity, cross_arch grouping
+    "gpu_name",     # analysis.canary, cross_arch grouping
+})
+
+# Kept for the record and for post-hoc analysis, consulted by no gate. This is
+# a deliberate classification, not a backlog: a version string is evidence when
+# reading a result months later, and gating on it would block runs over
+# differences that usually do not matter.
+#
+# `clocks_locked` and the clock readings are the uncomfortable members of this
+# set. The module docstring above says "an unlocked run must be flagged in the
+# results" -- it is flagged, and nothing refuses to use it. Making that a hard
+# block is a real decision with a cost (clock locking needs root and fails on
+# many rental hosts, so gating on it would stop sweeps that are otherwise
+# fine), so it is recorded here as a known, named gap rather than quietly
+# looking like a check that exists.
+RECORDED_FIELDS = frozenset({
+    "timestamp", "python", "platform",
+    "torch", "torch_cuda", "cudnn", "triton",
+    "flash_attn", "flashinfer", "xformers", "fla",
+    "driver", "compute_capability", "gpu_memory_gb", "gpu_count",
+    "clocks_locked", "sm_clock_mhz", "mem_clock_mhz", "persistence_mode",
+})
+
+
+def stamp_integrity_problems(stamp) -> list[str]:
+    """Reasons the provenance on a row cannot be trusted to describe the code.
+
+    Takes anything with `.get` or `[]` access -- a dict, a pandas row. Returns
+    a list of human-readable problems; empty means usable.
+
+    This checks the stamp's INTERNAL consistency, not whether it matches any
+    particular commit. "Is this stamp meaningful at all" and "is it the commit
+    I expect" are different questions, and conflating them is how a dirty tree
+    passed a commit check: the commit matched, and the commit was meaningless.
+    """
+    def get(key):
+        try:
+            return stamp[key]
+        except (KeyError, IndexError, TypeError):
+            return getattr(stamp, key, None)
+
+    def is_true(v) -> bool:
+        """True for Python True, numpy.bool_(True), 1 -- and NOT for NaN.
+
+        `v is True` fails on numpy.bool_, which is what a pandas column hands
+        back, so the dirty check silently passed every parquet row it was
+        written to catch. And plain `bool(v)` is worse: a missing value reads
+        as NaN, `bool(nan)` is True, and every row with no git_dirty at all
+        would be reported dirty -- a check that fires on absence is as useless
+        as one that never fires.
+        """
+        if v is None or isinstance(v, str):
+            return False
+        if isinstance(v, float) and v != v:      # NaN
+            return False
+        try:
+            return bool(v)
+        except Exception:
+            return False
+
+    problems: list[str] = []
+
+    commit = get("git_commit")
+    if commit is None or (isinstance(commit, float) and commit != commit):
+        problems.append("no git_commit: the code that produced this row is "
+                        "unidentifiable")
+    elif not _SHA_RE.match(str(commit)):
+        problems.append(f"git_commit {str(commit)[:20]!r} is not a 40-hex SHA")
+
+    if is_true(get("git_dirty")):
+        problems.append(
+            "git_dirty: the working tree did not match the commit named, so "
+            "the commit does not describe the code that ran. This is how a "
+            "4576-row table came to be stamped 18 commits behind itself on "
+            "2026-09-04 -- source deployed over an image's checkout, leaving "
+            "`.git` describing the image")
+
+    return problems
+
+
+# ---------------------------------------------------------------------------
 # Clock control
 # ---------------------------------------------------------------------------
 

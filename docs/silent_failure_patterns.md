@@ -5,12 +5,12 @@ not a wrong answer that looked wrong — **a plausible number, produced by
 machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
-model is self-inflicted, and this file is the record of it, kept because nine
+model is self-inflicted, and this file is the record of it, kept because ten
 instances in three days is no longer a coincidence.
 
 ---
 
-## The nine
+## The ten
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -251,6 +251,52 @@ testing the platform's matcher and test **our** filter instead, by stubbing
 This is now the single most productive habit in the project, and its cost is
 about ninety seconds per guard.
 
+### 10. A provenance flag set correctly and read by nobody
+
+2026-09-04. The first complete Stage 1 in the project — 4200 Stage 0 rows and
+376 correctness rows — was stamped `git_commit=b6ed63b`, a commit **18 behind**
+the code that produced it.
+
+Cause: the deploy untarred source over the instance's existing checkout. That
+replaced `attnbench/`, `scripts/`, `tests/` and `docs/`, and left `.git`
+describing the machine image. `provenance.capture()` then reported the image's
+commit, correctly, for a repository that no longer held the code being run.
+
+The stamp was wrong in the worst available way — **plausible**. `b6ed63b` is a
+real commit in this repo's history, so nothing was malformed, no field was
+empty, and the format validation added after instance 3 passed cleanly. The
+Stage 2 gate compares `git_commit` against the current commit, so this table
+would have been rejected as WRONG COMMIT and re-run — or, had the sweep been
+launched from a matching checkout, accepted outright.
+
+**What makes this instance different from the other nine: the mechanism
+worked.** `git_dirty=True` was recorded on every one of those rows. The stamp
+announced its own unreliability, accurately, and nothing was listening.
+`load_stage1_pass_set` read `git_commit` and no other field.
+
+An audit of the rest of the stamp found the same shape elsewhere. Of 23
+`Provenance` fields, exactly **four** are consulted by any gate (`git_commit`,
+`git_dirty`, `host`, `gpu_name`). The rest are recorded and never read —
+including `clocks_locked`, despite `provenance.py`'s own docstring saying "an
+unlocked run must be flagged in the results". It is flagged. Nothing refuses to
+use it.
+
+**Found by**: noticing that the recorded commit was not the commit deployed,
+while cross-checking results against the local repo. Nothing in the pipeline
+would have raised it. The contradiction was visible in the data — the table
+contains 84 `illegal_memory_access` rows, and the code that writes that status
+did not exist at `b6ed63b` — which is the "internally impossible data" heuristic
+again, and again the only thing that worked.
+
+**Fixed by**: `GATED_FIELDS`/`RECORDED_FIELDS` in `provenance.py`, so every
+field must be classified as read-by-a-gate or deliberately-decorative and a new
+field forces that decision; a test asserting each GATED field is genuinely read
+somewhere, because a declaration that drifts from reality is the same failure
+one level up; `Stage1ProvenanceError` refusing dirty passes in
+`load_stage1_pass_set`; and `scripts/gcp_deploy_source.sh`, which deploys a git
+bundle rather than a source tarball and then asks the *instance* what commit it
+is at.
+
 ---
 
 
@@ -346,6 +392,23 @@ reserve until a 1 GiB contiguous request fails with the card nominally
 empty. The last crash reported **47 MiB free against 22.03 GiB total** — a
 reading that is impossible under the leak theory and diagnostic under the
 right one. Internally impossible data again, one paragraph up.
+
+**A flag set correctly and read by nobody fails exactly as a missing flag
+does.** Instance 10. It is worse than a missing field in one respect: the field
+is there, so an auditor reading the schema concludes the risk is covered. The
+question to ask of every recorded field is not "is this captured correctly" but
+"what refuses to run when it says something is wrong" — and if the answer is
+nothing, the field is documentation, not a check. Say so where it is declared,
+rather than letting it look like a guard.
+
+**A stamp can be well-formed, validated, internally consistent, and still
+describe different code.** Also instance 10, and the reason a commit check
+could not catch it: the commit was real and matched exactly. Format validation
+answers "is this a SHA"; it cannot answer "does this SHA describe what ran".
+Only something that observes the *working tree* can, which is why `git_dirty`
+exists — and why it has to be read. Deploy by moving history (a clone, a pull,
+a bundle), never by copying source over a checkout: source without its history
+takes the identity of whatever it landed on.
 
 **Warning counts do not measure blast radius.** Python's default `once` filter
 dedups by (message, category, module, lineno). One line in `stage1.log`

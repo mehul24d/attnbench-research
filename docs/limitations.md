@@ -398,9 +398,27 @@ The float64 oracle needs 256 GiB, cross-backend needs 21.5, the card has 22.
 Those cells are honestly unverifiable here, and the constraint is the card,
 not the kernels.
 
+**A reference that cannot lower is not a verdict on the backend under test.**
+The 2026-09-04 Stage 1 reported 66 failures, every one of them
+`reference flex raised InductorError` — 54 from the sm_89 shared-memory limit
+and 12 from the BlockMask/tile divisibility mismatch, both of them flex's own
+documented limits above, and in every case flex was a *reference* rather than
+the backend being checked. `UnsupportedConfig` and `OutOfMemoryError` from a
+reference were already handled as "one fewer opinion"; a device-capability
+limit is the same thing arriving under a different exception type, and
+treating it as a hard failure cost block_sparse 42 of its 78 cells — the
+sparse arm, at exactly the lengths this study is about.
+
+The classification is deliberately narrow: it matches the two known *messages*,
+never the exception type. `except InductorError: skip` would be a hatch that
+silently downgraded the evidence behind every cell a genuinely broken reference
+touched, with no trace, since the cell would pass with one fewer opinion and
+no reason to look.
+
 **Where a reference is lost rather than the whole check.** Three
 implementations are offered; sometimes fewer survive the shape — one OOMs
-running, or the comparison itself cannot be allocated. Insisting on three
+running, the comparison itself cannot be allocated, or a reference hits a
+device limit. Insisting on three
 there would delete the long bands to protect a standard the *hardware* made
 unreachable, so two agreeing implementations pass under `cross_backend_pair`,
 carrying the weakness on the row rather than in this file. The distinction

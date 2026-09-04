@@ -421,6 +421,50 @@ CHECK_KIND_PAIR = "cross_backend_pair"
 CROSS_BACKEND_TOL_FACTOR = 2.0
 
 
+# A REFERENCE hitting a hardware limit is one fewer opinion; a reference
+# hitting a bug is a hard failure. Both arrive as the same exception type
+# (torch._inductor's InductorError wraps everything), so the two are separated
+# on the MESSAGE, deliberately and narrowly.
+#
+# Matching on the type instead -- `except InductorError: skip` -- would be a
+# hatch that swallows real compilation bugs in a reference implementation and
+# silently downgraded the evidence for every cell that reference touched. Only
+# these two signatures are known to be device limits, both already recorded in
+# docs/limitations.md, and anything else stays a hard failure:
+#
+#   1. Triton shared memory. flex block-sparse at head_dim=128 needs 114688 B
+#      per block; sm_89 has 101376 B. "Required: 114688 Hardware limit:101376".
+#   2. flex's BlockMask block size against inductor's default tile. With
+#      max_autotune off there is exactly one candidate config, so a
+#      divisibility mismatch raises rather than falling back to another tile.
+#
+# Both were found on 2026-09-04, where they cost 66 correctness cells -- 42 of
+# block_sparse's 78, the sparse arm, at exactly the lengths this study is
+# about -- because flex-as-reference could not lower and the whole check was
+# recorded as the backend under test having failed.
+_DEVICE_LIMIT_SIGNATURES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("out of resource", "Hardware limit"),
+     "Triton shared-memory limit"),
+    (("must be divisible by BLOCK_M and BLOCK_N",),
+     "BlockMask block size vs inductor's default tile"),
+)
+
+
+def device_limit_reason(exc: BaseException) -> Optional[str]:
+    """A short label if `exc` is a known device limit, else None.
+
+    None means "not recognised", and the caller must treat that as a real
+    failure. Erring toward None is the safe direction: an unrecognised error
+    fails a cell loudly, where a wrongly-recognised one quietly weakens the
+    evidence behind a pass.
+    """
+    msg = str(exc)
+    for needles, label in _DEVICE_LIMIT_SIGNATURES:
+        if all(n in msg for n in needles):
+            return label
+    return None
+
+
 def _max_abs_diff(a: torch.Tensor, b: torch.Tensor, chunk: int = 1) -> float:
     """max |a - b| in float32, without materialising a full difference tensor.
 
@@ -538,7 +582,19 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
             torch.cuda.empty_cache()
             continue
         except Exception as e:
-            return fail(f"reference {ref.name} raised {type(e).__name__}: {e}")
+            # A reference that cannot LOWER on this device is in the same
+            # position as one that cannot fit: it has no opinion here. It is
+            # not evidence about the backend under test, and recording it as a
+            # failure of that backend is a misattribution, not a conservative
+            # choice -- it deleted 42 of block_sparse's 78 cells on 2026-09-04
+            # because flex could not compile a mask it never needed to.
+            limit = device_limit_reason(e)
+            if limit is None:
+                return fail(f"reference {ref.name} raised {type(e).__name__}: {e}")
+            skipped[ref.name] = f"device limit ({limit})"
+            if device.startswith("cuda"):
+                torch.cuda.empty_cache()
+            continue
 
         try:
             errors[ref.name] = _max_abs_diff(got, other)
@@ -585,18 +641,27 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
                    f"One of these implementations is wrong at this shape -- "
                    f"a finding, not a cell to skip.")
 
-    weaker = ("" if kind == "cross_backend" else
-              f" WEAKER EVIDENCE: only {len(errors) + 1} implementations "
-              f"survived this shape, below the {MIN_CROSS_BACKEND_AGREEING} "
-              f"this study normally requires, so a shared bug between two "
-              f"kernels would not be caught here. Lost: {skipped}.")
+    if kind == CHECK_KIND_PAIR:
+        note = (f" WEAKER EVIDENCE: only {len(errors) + 1} implementations "
+                f"survived this shape, below the {MIN_CROSS_BACKEND_AGREEING} "
+                f"this study normally requires, so a shared bug between two "
+                f"kernels would not be caught here. Lost: {skipped}.")
+    elif skipped:
+        # Reported even when the check passed at full strength. Otherwise a
+        # row reading "agrees with 2 implementations" is indistinguishable
+        # between "two were offered" and "three were offered and one hit a
+        # hardware limit" -- and the second is a fact about this card that the
+        # study is partly about.
+        note = f" One reference did not run here: {skipped}."
+    else:
+        note = ""
 
     return CorrectnessResult(
         backend.name, cfg.key(), True, kind, max_abs_err=worst,
         detail=f"agrees with {len(errors)} independent implementations "
                f"({', '.join(sorted(errors))}) within atol={tol['atol']}; "
                f"NOT verified against a float64 oracle, which would need "
-               f"{oracle_bytes(cfg) / 2**30:.1f} GiB for this config.{weaker}")
+               f"{oracle_bytes(cfg) / 2**30:.1f} GiB for this config.{note}")
 
 
 def check_for_family(backend: AttentionBackend, cfg: AttnConfig,
