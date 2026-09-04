@@ -218,3 +218,43 @@ def test_the_blind_spot_is_deliberate_and_stated(tmp_path):
     finally:
         attached.kill()
         attached.wait()
+
+
+def test_pattern_from_a_file_matches_the_same_way(tmp_path):
+    """`--file` exists to remove the problem at the root: if the pattern never
+    appears in ANY command line, no ancestor, sibling, subshell, or leftover
+    from a previous invocation can carry it, and there is nothing for pgrep to
+    falsely match. The filters remain for callers who pass it directly."""
+    marker = "attnbench_patternfile_marker"
+    pf = tmp_path / "pattern.txt"
+    pf.write_text(marker + "\n")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", f"_={marker!r}; import time; time.sleep(30)"],
+        start_new_session=True)
+    try:
+        time.sleep(0.7)
+        out = subprocess.run(["bash", str(SCRIPT), "status", "--file", str(pf)],
+                             capture_output=True, text=True)
+        assert out.stdout.startswith("RUNNING"), out.stdout
+        assert str(proc.pid) in out.stdout
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_an_unreadable_pattern_file_is_refused(tmp_path):
+    out = subprocess.run(["bash", str(SCRIPT), "status", "--file",
+                          str(tmp_path / "nope.txt")],
+                         capture_output=True, text=True)
+    assert out.returncode == 2
+
+
+def test_an_empty_pattern_file_is_refused(tmp_path):
+    """An empty pattern would match every process on the box -- and for
+    `kill`, that is catastrophic rather than merely wrong."""
+    pf = tmp_path / "empty.txt"
+    pf.write_text("")
+    out = subprocess.run(["bash", str(SCRIPT), "kill", "--file", str(pf)],
+                         capture_output=True, text=True)
+    assert out.returncode == 2
+    assert "empty" in (out.stderr + out.stdout).lower()

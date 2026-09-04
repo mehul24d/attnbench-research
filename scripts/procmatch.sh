@@ -28,9 +28,29 @@
 # Exit status for `status`: 0 if at least one genuine match, 1 if none.
 set -uo pipefail
 
-ACTION="${1:?usage: procmatch.sh status|pids|kill PATTERN [SIGNAL]}"
-PATTERN="${2:?pattern required}"
-SIGNAL="${3:-TERM}"
+ACTION="${1:?usage: procmatch.sh status|pids|kill (PATTERN|--file PATH) [SIGNAL]}"
+
+# `--file PATH` reads the pattern from a file instead of argv. This is the
+# only construction that removes the problem at the root rather than filtering
+# its symptoms: if the pattern never appears in ANY command line, no ancestor,
+# sibling, subshell or leftover from a previous invocation can carry it, and
+# there is nothing for pgrep to falsely match.
+#
+# Ancestor and process-group exclusion still run and are still worth having --
+# they cover a caller who passes the pattern directly. But they are filters,
+# and a filter has edges: on 2026-09-04 a subshell left over from the PREVIOUS
+# ssh invocation was in neither our ancestor chain nor our process group, and
+# was reported as a live match for three minutes after the real process died.
+if [ "${2:-}" = "--file" ]; then
+  PATTERN_FILE="${3:?--file needs a path}"
+  [ -r "$PATTERN_FILE" ] || { echo "cannot read $PATTERN_FILE" >&2; exit 2; }
+  PATTERN="$(head -n1 "$PATTERN_FILE")"
+  [ -n "$PATTERN" ] || { echo "$PATTERN_FILE is empty" >&2; exit 2; }
+  SIGNAL="${4:-TERM}"
+else
+  PATTERN="${2:?pattern required}"
+  SIGNAL="${3:-TERM}"
+fi
 
 # Every pid from here up to init. `pgrep` output containing any of these is
 # this command seeing itself, never the thing being looked for.

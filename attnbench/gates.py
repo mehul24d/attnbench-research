@@ -332,6 +332,31 @@ MIN_CROSS_BACKEND_AGREEING = 3
 CROSS_BACKEND_TOL_FACTOR = 2.0
 
 
+def _max_abs_diff(a: torch.Tensor, b: torch.Tensor, chunk: int = 1) -> float:
+    """max |a - b| in float32, without materialising a full difference tensor.
+
+    `(a - b).abs().max()` allocates two more tensors the size of the inputs. At
+    batch 16 / seq 8192 / 32 heads / head_dim 128 that is ~1 GB apiece, on top
+    of the two outputs already resident -- which is exactly how Stage 1 died at
+    the 8192 band on 2026-09-04, *after* both forwards had succeeded.
+
+    Reducing over the batch dimension one slice at a time bounds the extra
+    allocation to one slice, and casting per slice keeps the comparison in
+    float32 (where the tolerance reasoning lives) without ever holding a
+    float32 copy of the whole output.
+
+    The result is identical to the unchunked computation: max is associative
+    over a partition, so chunking changes peak memory and nothing else --
+    asserted in tests/test_correctness_families.py.
+    """
+    worst = 0.0
+    for i in range(0, a.shape[0], chunk):
+        d = (a[i:i + chunk].float() - b[i:i + chunk].float()).abs().max()
+        worst = max(worst, float(d))
+        del d
+    return worst
+
+
 def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
                         references: list[AttentionBackend], mask=None,
                         seed: int = 0, device: str = "cuda",
@@ -379,7 +404,12 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
 
     try:
         with torch.no_grad():
-            got = backend.forward(q, k, v, cfg, mask=mask).float()
+            # Deliberately NOT .float() here. A float32 copy of the output at
+            # batch 16 / seq 8192 / 32 heads / head_dim 128 is 2.1 GB, held for
+            # the whole loop while each reference allocates its own. The
+            # comparison still happens in float32 -- `_max_abs_diff` casts one
+            # slice at a time, which is where the tolerance reasoning needs it.
+            got = backend.forward(q, k, v, cfg, mask=mask)
     except UnsupportedConfig as e:
         return fail(f"unsupported: {e}")
     except Exception as e:
@@ -390,7 +420,7 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
     for ref in usable:
         try:
             with torch.no_grad():
-                other = ref.forward(q, k, v, cfg, mask=mask).float()
+                other = ref.forward(q, k, v, cfg, mask=mask)
         except UnsupportedConfig as e:
             skipped[ref.name] = f"unsupported: {e}"[:80]
             continue
@@ -404,7 +434,21 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
             continue
         except Exception as e:
             return fail(f"reference {ref.name} raised {type(e).__name__}: {e}")
-        errors[ref.name] = float((got - other).abs().max())
+
+        try:
+            errors[ref.name] = _max_abs_diff(got, other)
+        except torch.cuda.OutOfMemoryError:
+            # The COMPARISON can OOM even when both forwards fit -- it was the
+            # full-tensor `(got - other).abs()` that killed Stage 1 at the 8192
+            # band on 2026-09-04, asking for 1024 MiB with 559 MiB free, after
+            # both outputs had been computed successfully.
+            #
+            # The existing policy covered a reference that could not RUN; this
+            # is a reference we could not FINISH COMPARING, and it is the same
+            # thing for the same reason -- one fewer opinion, never a verdict
+            # on the backend under test.
+            skipped[ref.name] = "OOM comparing at this shape"
+            torch.cuda.empty_cache()
         # Free before the next reference. Three dense outputs at batch 16 /
         # seq 4096 held simultaneously is what made flex OOM in 27 of 29
         # cross-backend configs on the first run.

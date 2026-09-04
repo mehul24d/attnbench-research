@@ -321,3 +321,142 @@ def test_cross_backend_still_catches_a_real_disagreement():
     r = check_cross_backend(_Dense("a"), cfg,
                             [_Dense("b"), _Dense("c", bias=way_off)], **CPU)
     assert not r.passed and "a finding, not a cell to skip" in r.detail
+
+
+# --- cross-backend comparison must not OOM the run -------------------------
+#
+# Stage 1 died at the 8192 band on 2026-09-04 in check_cross_backend, asking
+# for 1024 MiB with 559 MiB free -- AFTER both forwards had succeeded. The
+# existing policy covered a reference that could not RUN; nothing covered a
+# reference we could not finish COMPARING.
+
+import pytest as _pytest
+import torch as _torch
+from attnbench.gates import _max_abs_diff
+
+
+@_pytest.mark.parametrize("chunk", [1, 2, 3, 8])
+def test_chunked_max_abs_diff_equals_the_unchunked_result(chunk):
+    """max is associative over a partition, so chunking must change peak
+    memory and nothing else."""
+    _torch.manual_seed(0)
+    a = _torch.randn(5, 4, 16, 8)
+    b = _torch.randn(5, 4, 16, 8)
+    expected = float((a - b).abs().max())
+    assert _max_abs_diff(a, b, chunk=chunk) == _pytest.approx(expected, rel=1e-6)
+
+
+def test_max_abs_diff_compares_in_float32_not_the_input_dtype():
+    """The tolerance reasoning lives in float32. Casting per slice is what
+    lets the full-size float32 copy be avoided without losing that."""
+    a = _torch.zeros(2, 1, 4, 4, dtype=_torch.bfloat16)
+    b = _torch.full((2, 1, 4, 4), 0.01, dtype=_torch.bfloat16)
+    assert _max_abs_diff(a, b) == _pytest.approx(
+        float(b[0, 0, 0, 0].float()), rel=1e-3)
+
+
+class _Stub(AttentionBackend):
+    """Minimal backend so the test exercises check_cross_backend's policy, not
+    which SDPA kernels happen to exist on CPU."""
+
+    def __init__(self, name):
+        self.capability = Capability(name=name, family="dense_exact",
+                                     min_compute_capability=(0, 0),
+                                     dtypes=("float32", "bfloat16"))
+
+    @property
+    def name(self):
+        return self.capability.name
+
+    def forward(self, q, k, v, cfg, mask=None):
+        return _torch.zeros_like(q)
+
+
+def _oom(*a, **kw):
+    raise _torch.cuda.OutOfMemoryError("simulated")
+
+
+def test_a_comparison_that_ooms_is_one_fewer_opinion_not_a_failure(monkeypatch):
+    """The distinction that matters: an OOM in OUR arithmetic says nothing
+    about the backend under test, so it must not be recorded against it."""
+    from attnbench import gates
+
+    cfg = AttnConfig(seq_len=64, batch=1, n_heads_q=4, n_heads_kv=4,
+                     head_dim=64, dtype="float32", mask="causal")
+    calls = {"n": 0}
+
+    def flaky(a, b, chunk=1):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _torch.cuda.OutOfMemoryError("simulated")
+        return 0.0
+
+    monkeypatch.setattr(gates, "_max_abs_diff", flaky)
+    refs = [_Stub("ref_a"), _Stub("ref_b"), _Stub("ref_c")]
+    r = gates.check_cross_backend(_Stub("under_test"), cfg, refs, device="cpu")
+
+    assert r.check_kind == "cross_backend"
+    assert r.passed, (
+        f"one un-comparable reference must not fail the cell: {r.detail}")
+    assert calls["n"] == 3, "every reference should still have been attempted"
+
+
+def test_too_few_comparable_references_is_reported_honestly(monkeypatch):
+    """The other direction: if the OOM leaves too few opinions, say so rather
+    than passing on the strength of one comparison."""
+    from attnbench import gates
+
+    cfg = AttnConfig(seq_len=64, batch=1, n_heads_q=4, n_heads_kv=4,
+                     head_dim=64, dtype="float32", mask="causal")
+    monkeypatch.setattr(gates, "_max_abs_diff", _oom)
+    refs = [_Stub("ref_a"), _Stub("ref_b"), _Stub("ref_c")]
+    r = gates.check_cross_backend(_Stub("under_test"), cfg, refs, device="cpu")
+
+    assert not r.passed
+    assert "OOM comparing" in str(r.detail) or "need" in r.detail
+
+
+def test_a_comparison_oom_is_not_blamed_on_the_backend_under_test(monkeypatch):
+    """It must be recorded as a skipped REFERENCE, never as a disagreement."""
+    from attnbench import gates
+
+    cfg = AttnConfig(seq_len=64, batch=1, n_heads_q=4, n_heads_kv=4,
+                     head_dim=64, dtype="float32", mask="causal")
+    monkeypatch.setattr(gates, "_max_abs_diff", _oom)
+    r = gates.check_cross_backend(_Stub("under_test"), cfg,
+                                  [_Stub("ref_a"), _Stub("ref_b")],
+                                  device="cpu")
+    assert "disagreement" not in r.detail.lower()
+    assert "OOM comparing" in r.detail
+
+
+def test_max_abs_diff_never_materialises_a_full_size_intermediate():
+    """Equivalence tests cannot catch this: an unchunked implementation gives
+    the identical answer and differs only in peak allocation, which is the
+    entire point. So the allocation is what gets asserted.
+
+    Watched the equivalence tests pass against a reintroduced
+    `(a - b).abs().max()` before this was added.
+    """
+    from torch.overrides import TorchFunctionMode
+
+    class Biggest(TorchFunctionMode):
+        def __init__(self):
+            self.max_numel = 0
+
+        def __torch_function__(self, func, types, args=(), kwargs=None):
+            out = func(*args, **(kwargs or {}))
+            if isinstance(out, _torch.Tensor):
+                self.max_numel = max(self.max_numel, out.numel())
+            return out
+
+    a = _torch.randn(8, 4, 16, 8)
+    b = _torch.randn(8, 4, 16, 8)
+    with Biggest() as mode:
+        _max_abs_diff(a, b, chunk=1)
+
+    per_slice = a.numel() // a.shape[0]
+    assert mode.max_numel <= per_slice, (
+        f"allocated a {mode.max_numel}-element intermediate; one batch slice "
+        f"is {per_slice}. A full-size difference tensor is what OOMed Stage 1 "
+        f"at the 8192 band with both forwards already resident.")
