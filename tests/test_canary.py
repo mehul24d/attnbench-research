@@ -7,6 +7,8 @@ whether the check can pass vacuously.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -20,7 +22,7 @@ L4 = "NVIDIA L4"
 H100 = "NVIDIA H100 80GB HBM3"
 
 
-def _frame(host, gpu_name, *, gla_latency, seq_len=1024, ref_latency=100.0):
+def _frame(host, gpu_name, *, gla_latency, seq_len=4096, ref_latency=100.0):
     """One session on one machine: the reference backend plus one other."""
     return pd.DataFrame([
         dict(host=host, gpu_name=gpu_name, backend="sdpa_flash",
@@ -79,7 +81,7 @@ def test_architectures_are_compared_separately():
 
 
 def test_a_key_present_in_only_one_session_is_not_drift():
-    a = _frame("host-1", L4, gla_latency=50.0, seq_len=1024)
+    a = _frame("host-1", L4, gla_latency=50.0, seq_len=2048)
     b = _frame("host-2", L4, gla_latency=50.0, seq_len=4096)
     assert check_canary_drift(a, b) == []
 
@@ -106,11 +108,11 @@ def test_ratios_are_never_formed_across_hosts():
     is the place someone would be tempted to relax it."""
     ref_only = pd.DataFrame([
         dict(host="host-1", gpu_name=L4, backend="sdpa_flash", config_key="c1024",
-             seq_len=1024, latency_ms_p50=100.0, ok=True),
+             seq_len=4096, latency_ms_p50=100.0, ok=True),
     ])
     other_only = pd.DataFrame([
         dict(host="host-2", gpu_name=L4, backend="gla", config_key="c1024",
-             seq_len=1024, latency_ms_p50=50.0, ok=True),
+             seq_len=4096, latency_ms_p50=50.0, ok=True),
     ])
     combined = pd.concat([ref_only, other_only], ignore_index=True)
     with pytest.raises(CrossArchError, match="was not measured on"):
@@ -261,3 +263,94 @@ def test_the_resolution_report_states_what_was_excluded():
     the exact failure this module exists to prevent."""
     msg = canary.canary_resolution_report(_res_frame(2.0, 50.0))
     assert "0 of" in msg and "cannot resolve" in msg
+
+
+# ---------------------------------------------------------------------------
+# Changing CANARY_SEQ_LENS is the edit the module warns against.
+# ---------------------------------------------------------------------------
+
+SEG1 = (Path(__file__).resolve().parents[1] / "results" / "stage2" /
+        "segment_20260903_seg1" / "results" / "stage2_seg1" / "sweep.parquet")
+SEG2 = (Path(__file__).resolve().parents[1] / "results" / "stage2" /
+        "seg2sweep_20260904" / "results" / "stage2" / "seg2sweep" / "sweep" /
+        "sweep.parquet")
+REBASED = frozenset({"flex", "naive"})
+
+
+@pytest.mark.skipif(not (SEG1.exists() and SEG2.exists()),
+                    reason="needs both measured segments on disk")
+def test_dropping_1024_changes_no_verdict(monkeypatch):
+    """The guard against 'edited to make it pass'.
+
+    CANARY_SEQ_LENS went from (1024, 4096) to (2048, 4096, 8192) on
+    2026-09-05, and 10 of the 12 ratios that had fired lived at 1024. That is
+    exactly the shape of quietly deleting an inconvenient result, so the claim
+    that it is bookkeeping is tested against the real data rather than argued:
+    replay the actual segment-1-vs-segment-2 comparison under both sets and
+    require the same verdict.
+
+    It holds because CANARY_MIN_LATENCY_MS was already excluding every 1024
+    cell dynamically -- the reference runs there in 0.18 to 2.63 ms against a
+    10 ms floor. The set changed; nothing it concludes did.
+    """
+    ref = pd.read_parquet(SEG1)
+    obs = pd.read_parquet(SEG2)
+
+    def verdict(seq_lens):
+        monkeypatch.setattr(canary, "CANARY_SEQ_LENS", seq_lens)
+        return sorted((d.backend, d.config_key, round(d.fractional_change, 6))
+                      for d in canary.check_canary_drift(
+                          ref, obs, rebased_backends=REBASED))
+
+    assert verdict((4096,)) == verdict((1024, 4096)), (
+        "dropping 1024 changed the drift verdict, so it is a baseline reset "
+        "rather than removal of unresolvable cells -- revert it.")
+
+
+@pytest.mark.skipif(not SEG1.exists(), reason="needs segment 1 on disk")
+def test_1024_could_never_have_contributed():
+    """The factual claim the change rests on: not 'those cells were noisy'
+    but 'those cells were never admitted'."""
+    ref = pd.read_parquet(SEG1)
+    at_1024 = ref[(ref.seq_len == 1024)
+                  & (ref.backend == canary.CANARY_REFERENCE_BACKEND)]
+    assert not at_1024.empty, "fixture problem: no 1024 reference rows"
+    assert at_1024.latency_ms_p50.max() < canary.CANARY_MIN_LATENCY_MS, (
+        f"1024's reference reaches {at_1024.latency_ms_p50.max():.2f} ms, "
+        f"at or above the {canary.CANARY_MIN_LATENCY_MS} ms floor -- it CAN "
+        f"contribute, so dropping it does delete evidence")
+
+
+def test_4096_is_retained_so_the_baseline_survives():
+    assert 4096 in canary.CANARY_SEQ_LENS, (
+        "4096 is the one length whose reference is comfortably measurable "
+        "(~40 ms at batch 16) and the only one with a segment-1 baseline")
+
+
+@pytest.mark.skipif(not (SEG1.exists() and SEG2.exists()),
+                    reason="needs both measured segments on disk")
+def test_the_expansion_only_adds_drifts(monkeypatch):
+    """Widening the set must never SILENCE a drift the narrow set reported.
+
+    Adding 2048 and 8192 is not bookkeeping -- it changed the answer, finding
+    three more drifts. That is the acceptable direction. The unacceptable one
+    is a widening that drops a previously-reported drift, which would be
+    'edited to make it pass' wearing the costume of better coverage, so the
+    direction is asserted rather than trusted.
+    """
+    ref = pd.read_parquet(SEG1)
+    obs = pd.read_parquet(SEG2)
+
+    def keys(seq_lens):
+        monkeypatch.setattr(canary, "CANARY_SEQ_LENS", seq_lens)
+        return {(d.backend, d.config_key) for d in canary.check_canary_drift(
+            ref, obs, rebased_backends=REBASED)}
+
+    wide = keys((2048, 4096, 8192))
+    narrow = keys((1024, 4096))
+    assert narrow <= wide, (
+        f"the wider canary set LOST drift(s) the narrow one reported: "
+        f"{sorted(narrow - wide)}")
+    assert len(wide) > len(narrow), (
+        "the expansion is claimed to add coverage; it added no drifts, so "
+        "either the claim or the data is wrong")

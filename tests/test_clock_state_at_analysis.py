@@ -148,8 +148,11 @@ def test_the_comparison_is_still_produced():
 # ---------------------------------------------------------------------------
 
 def _canary_df(locked, other_ms):
-    return _df(_rows("h1", "L4", locked, other_ms=other_ms, seq_len=1024),
-               _rows("h1", "L4", locked, other_ms=other_ms, seq_len=4096))
+    # Reference at 40 ms so the cells clear CANARY_MIN_LATENCY_MS: below the
+    # floor they are excluded as unresolvable and the canary refuses outright,
+    # which is a different behaviour than the one these tests are about.
+    return _df(_rows("h1", "L4", locked, base_ms=40.0, other_ms=other_ms, seq_len=2048),
+               _rows("h1", "L4", locked, base_ms=40.0, other_ms=other_ms, seq_len=4096))
 
 
 def test_a_drift_on_unlocked_clocks_says_so():

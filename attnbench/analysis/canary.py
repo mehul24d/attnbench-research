@@ -46,7 +46,41 @@ from .cross_arch import CrossArchError, _both_locked, speedup_within_host
 # These values must NOT be edited to make a failing canary pass. Changing the
 # set silently resets the baseline, which is the one thing that would make
 # this whole mechanism decorative.
-CANARY_SEQ_LENS = (1024, 4096)
+#
+# CHANGED 2026-09-05, from (1024, 4096). This is the edit the paragraph above
+# warns against, so it is tested rather than argued -- and the first version
+# of the justification was WRONG, caught by that test. It claimed the change
+# preserved the drift verdict. It does not: the wider set found three MORE
+# drifts. The change is two separate things and only one of them is
+# bookkeeping.
+#
+# DROPPING 1024 is bookkeeping, and verdict-preserving --
+# `test_dropping_1024_changes_no_verdict` replays the real
+# segment-1-vs-segment-2 comparison and requires an identical result.
+# `CANARY_MIN_LATENCY_MS` was already excluding every 1024 cell dynamically:
+# the reference runs there in 0.18 / 0.62 / 2.63 ms at batch 1 / 4 / 16,
+# against a 10 ms floor. Carrying them meant a canary that looked like 12
+# configs and was really 2. Removing them changes what the set CLAIMS to
+# cover, not what it covers.
+#
+# ADDING 2048 and 8192 is an EXPANSION, and it made the canary stricter, not
+# quieter: three additional drifts appeared at 2048/batch16 (gla 10.5% and
+# 11.7%, sdpa_efficient 7.2%). `test_the_expansion_only_adds_drifts` requires
+# exactly that direction -- a widening that removed a previously-reported
+# drift would be the failure this whole comment exists to prevent.
+#
+# 4096 is retained, so the segment-1 baseline is retained: it is the one
+# length whose reference is comfortably measurable (42.6 / 40.0 ms at batch
+# 16 across the two sessions). 2048 is marginal at batch 16 (12.4 / 11.0 ms)
+# and admitted only when the floor lets it through. 8192 is added because its
+# reference is solidly measurable (37.8 ms at batch 4); it has no segment-1
+# baseline and contributes nothing until two sessions have measured it, which
+# the "keys present in BOTH frames" rule handles without special-casing.
+#
+# Cost is not a consideration in this choice, contrary to the paragraph above:
+# the canary is computed FROM sweep rows that were measured anyway, so adding
+# a length the sweep already covers costs nothing.
+CANARY_SEQ_LENS = (2048, 4096, 8192)
 CANARY_REFERENCE_BACKEND = "sdpa_flash"
 
 # Fractional change in a within-host ratio that counts as drift. 5% is well
