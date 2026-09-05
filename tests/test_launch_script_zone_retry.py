@@ -289,22 +289,32 @@ def test_the_default_is_still_on_demand():
     assert ":-g2-standard-8}" in src
 
 
-def test_a_single_zone_stockout_does_not_advise_retrying_the_list():
+def test_a_single_zone_stockout_does_not_advise_retrying_the_list(tmp_path):
     """With one zone there is nothing to retry INTO. Telling the operator to
     'retry the same list' is advice to re-run an identical single attempt,
-    which reads as progress and is not."""
-    proc = subprocess.run(["bash", str(SCRIPT), "test-instance"],
-                          input="launch\n", capture_output=True, text=True,
-                          env={**os.environ,
-                               "GCP_ZONE_FALLBACKS": "asia-southeast1-c",
-                               "PATH": os.environ["PATH"]})
-    combined = proc.stdout + proc.stderr
-    # The script may exit earlier (no project, image check) in a sandbox; the
-    # branch is asserted against the source when it cannot be exercised.
-    src = SCRIPT.read_text()
-    assert "SINGLE-ZONE target" in src
-    assert "Do not sit in a retry loop against one zone." in src
-    assert 'if [[ "$N_ZONES" == "1" ]]' in src
+    which reads as progress and is not.
+
+    **This test created four real GPU instances before it was fixed.** It ran
+    the launcher with the real PATH and no GCP_PROJECT, so the script resolved
+    the live project and created `test-instance` in `asia-southeast1-c` --
+    ₹218 across 2026-09-05, while that day was spent investigating where the
+    instances came from. Its three assertions all read SCRIPT.read_text(), so
+    it passed every time and reported nothing about what it had spawned.
+
+    It now goes through `_run` like every other test here: fake gcloud first
+    on PATH, GCP_PROJECT=test-project. It also asserts the BEHAVIOUR now, not
+    the source text -- an assertion against the file it is testing is not a
+    test of the file, it is a copy of it.
+    """
+    proc, tried = _run(tmp_path, fail_zones="zone-only", zones="zone-only")
+    out = proc.stdout + proc.stderr
+
+    assert tried == ["zone-only"], "exactly one attempt, and it must happen"
+    assert proc.returncode != 0
+    assert "SINGLE-ZONE target" in out
+    assert "Do not sit in a retry loop against one zone." in out
+    assert "retrying the same" not in out, (
+        "the multi-zone advice must not appear when there is nothing to retry")
 
 
 def test_the_multi_zone_advice_survives():

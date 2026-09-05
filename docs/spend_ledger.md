@@ -46,10 +46,38 @@ authority is the billing console.
 | 2026-09-03 | Stage 2 segment 1 — aborted attempt | ~12 | ~16 | prose only |
 | 2026-09-03 | Stage 2 segment 1 | ~67 | ~90 | prose only |
 | 2026-09-04 | flex recheck diagnostic | **6** | **8** | `session_cost.txt` |
+| 2026-09-05 | `test-instance` ×4 — **test suite side effect** | **162** | **218** | audit log |
+
+### The 2026-09-05 row
+
+Four `g2-standard-8` + L4 instances in `asia-southeast1-c`, created and deleted
+across 05:53–10:22 UTC. **No session ran on any of them.** They were created by
+`tests/test_launch_script_zone_retry.py`, which ran the real launcher against
+the real project on every full-suite run — see silent-failure instance 12.
+
+| life | window (UTC) | minutes | est ₹ |
+|---|---|---|---|
+| 1 | 05:53:53 → 06:16:44 | 22.9 | 31 |
+| 2 | 06:23:35 → 07:43:05 | 79.5 | 107 |
+| 3 | 07:53:53 → 08:48:41 | 54.8 | 74 |
+| 4 | 10:17:19 → 10:21:50 | 4.5 | 6 |
+| | | **161.7** | **218** |
+
+Rate $0.916/h (8 vCPU + 32 GiB + 1× L4 in Singapore, plus a 200 GB disk) at
+₹88/$. Durations are from the Cloud Audit Log's insert/delete timestamps, which
+is the same principle as reading the instance's own boot clock: the authority
+is the remote record, not anything reconstructed locally.
+
+**This was reported as ₹0 for most of the day**, while being investigated as
+someone else's unexplained spend. It is recorded here as project spend because
+that is what it is. The ledger exists because a total maintained by restating
+it drifts; a total maintained by *misattributing* it is the same failure with a
+worse cause.
 
 The pre-09-04 rows are what was reported at the time. They are recorded as
 estimates rather than silently promoted to facts, and they are why the
-project total is best stated as **≈ ₹900–950** rather than to the rupee. The
+project total is best stated as **≈ ₹1,120–1,170** rather than to the rupee
+(₹900–950 of session work plus the ₹218 above). The
 instances are deleted, so those durations cannot be recovered from anything
 but the billing console; if the exact figure ever matters, that is where to
 get it, not from this file's older rows.

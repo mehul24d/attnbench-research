@@ -5,12 +5,12 @@ not a wrong answer that looked wrong — **a plausible number, produced by
 machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
-model is self-inflicted, and this file is the record of it, kept because eleven
+model is self-inflicted, and this file is the record of it, kept because twelve
 instances in four days is no longer a coincidence.
 
 ---
 
-## The eleven
+## The twelve
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -352,9 +352,89 @@ flag was added for. Caught by the existing zone-retry tests within a minute,
 which is what those tests are for.)*
 
 ---
+---
+
+### 12. A green test that created a billable GPU instance on every run
+
+`test_a_single_zone_stockout_does_not_advise_retrying_the_list` ran the real
+`gcp_launch_compile_session.sh` with the **real `PATH`** and **no
+`GCP_PROJECT`**, fed `launch\n` to its confirmation prompt, and set
+`GCP_ZONE_FALLBACKS=asia-southeast1-c`. The script therefore resolved the live
+project from `gcloud config get-value project` and created `test-instance`,
+a `g2-standard-8` + L4, in GCP. Four times. **₹218.**
+
+It passed every time. All three of its assertions read `SCRIPT.read_text()`:
+
+```python
+src = SCRIPT.read_text()
+assert "SINGLE-ZONE target" in src
+```
+
+**The test could not fail.** It asserted that a string appears in a file that
+was never modified, so it reported nothing about the process it had spawned.
+An assertion against the file under test is not a test of that file; it is a
+copy of it. Every other test in the same file stubbed `gcloud` onto `PATH` --
+this one was written without the stub, and nothing distinguishes the two until
+the invoice arrives.
+
+It also carried a comment rationalising a failure that never happened:
+
+```python
+# The script may exit earlier (no project, image check) in a sandbox
+```
+
+That is the `EDIT APPLIED: True` shape from instance 3 -- an assumption about
+what occurred, written down in the position where an observation belongs. The
+sibling deploy test carried the same fiction ("fails later, at the gcloud call,
+which is not available here"); the interception log showed it really attempting
+`gcloud compute scp` to a host called `inst`.
+
+**What makes this instance different from the other eleven: it cost money, and
+the investigation was the failure.** A full day went into finding the source of
+these instances. Their appearance was correlated 4-for-4 with commits, 1-3
+minutes before each -- because the full suite runs immediately before every
+commit. Two of them were created *during* the investigation, by test runs made
+while investigating, and were then reported as fresh evidence of an unknown
+external cause. Two peer sessions were asked to account for themselves. An
+elaborate 2-hour-cadence theory was built on two timestamps that happened to
+fall two hours apart, and a clean interval was twice read as proof the source
+was gone.
+
+**Found by**: shadowing `gcloud` with a logging shim and running the suite. The
+ancestry chain ended at `pytest -> bash gcp_launch_compile_session.sh
+test-instance` in one line. The question that would have found it on the first
+try -- *what runs `gcloud` on this machine besides me?* -- was never asked, and
+the suite that answers it was run repeatedly throughout.
+
+A near-miss worth recording: the transcript was searched for
+`Created [https...test-instance` and returned zero hits, which was read as
+exoneration. It only meant the create was not in *this* process's output. It
+was in a subprocess's.
+
+**Fixed by**: routing the test through `_run` like its siblings, and asserting
+behaviour rather than source text; and `tests/conftest.py`, a session-scoped
+autouse fixture that puts refusing shims for every network-capable CLI
+(`gcloud`, `gsutil`, `aws`, `ssh`, `scp`, `curl`, `wget`, `rsync`, `kubectl`,
+...) ahead of everything on `PATH`. A test that stubs a tool itself still wins,
+so reaching production is now deliberate rather than available by omission.
+A static check additionally fails the suite if any test hands a cloud-facing
+script an unmodified `os.environ["PATH"]`.
 
 
 ## The general hazards, stated once
+
+**Per-item protection fails by omission.** Instance 12. Every test in that
+file stubbed `gcloud` except one, and one is enough. When a safety measure has
+to be remembered per use, the question is not whether it will be forgotten but
+what it costs the first time it is. Put it at the boundary -- a session
+fixture, a conftest, a default -- so that skipping it is an act rather than an
+oversight.
+
+**An assertion against the source of the thing under test is not a test.**
+Instance 12 asserted that a string appears in a shell script, having just run
+that shell script. The run was decorative. If a test spawns a process, it must
+assert on what the process did; otherwise delete the spawn, because it is pure
+side effect.
 
 **Non-empty stdout is not success.** Instance 3 is a specific case of a
 general trap: a shell wrapper that returns `stdout.strip() or None` treats any
