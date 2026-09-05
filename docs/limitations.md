@@ -568,8 +568,30 @@ crossover moves: FA2 wins everywhere on both cards up to 4096, GLA wins from
 **What that rests on, stated exactly.** `scripts/run_cross_arch_analysis.py`
 restricts to (seq_len, batch) cells measured on *both* cards. There are **11**
 of them out of 17, and the winner differs in **exactly one**: seq_len=8192,
-batch=1, where GLA is 1.26x faster on the A100 and 19% slower on the L4. Both
-sides clear the 5% noise floor comfortably, but it is one cell.
+batch=1, where GLA is 1.26x faster on the A100 and 19% slower on the L4.
+
+**And that cell is the one cell in the crossover table the instrument cannot
+resolve** -- by 0.007. Its A100 side is a 2.16 ms kernel, where this dataset's
+own cross-host evidence puts the uncertainty at 27.2%; the margin is 26.5%.
+27 of the 28 crossover cells clear their band; this is the one that does not,
+and it is the one the headline rested on.
+
+The verdict on each card is separately resolvable, at different batches:
+
+| card | batch | FA2 ms | GLA ms | margin | resolution | verdict |
+|---|---|---|---|---|---|---|
+| A100 | 1 | 2.73 | 2.16 | 0.265 | 0.272 | **unresolvable** |
+| A100 | 4 | 10.68 | 8.36 | 0.277 | 0.133 | gla |
+| A100 | 16 | 42.31 | 32.65 | 0.296 | 0.133 | gla |
+| L4 | 1 | 9.19 | 10.97 | 0.162 | 0.133 | fa2 |
+
+So the disagreement is real and stands on resolvable measurements on both
+sides -- at unmatched batch. What makes that tolerable is that the A100's
+ratio barely moves with batch at 8192 (1.265 / 1.277 / 1.296, a 2.4% spread
+across a 15x range of kernel time), so batch is not what carries the result.
+It is stated here rather than folded into the matched table because it is an
+unmatched comparison supporting a claim, which is the thing the rest of this
+analysis refuses.
 
 Four things about it that a reader should have:
 
@@ -595,14 +617,37 @@ Four things about it that a reader should have:
   the comparison that is strongest, and it was not free -- see
   `attnbench/analysis/code_identity.py`.
 
-**19 comparisons flip; 4 clear the noise floor.** `ArchitectureComparison.
-flips()` counts a backend winning on one card and losing on the other, and at
-threshold 1.0 that includes 0.999 against 1.001. `flips_materially()` requires
-the *weaker* side to clear 5%. The five apparent `flex` flips are all nominal:
-flex sits at 1.00-1.03 against sdpa_flash on the L4, so any A100 value below 1
-registers. The real statement about flex is that it is 15-19% slower than
-sdpa_flash on the A100 and level with it on the L4 -- a magnitude difference,
-not a reversal.
+**19 comparisons flip; NONE clears the resolution its own latencies support.**
+`ArchitectureComparison.flips()` counts a backend winning on one card and
+losing on the other, and at threshold 1.0 that includes 0.999 against 1.001.
+An earlier version of this section reported 4 clearing a flat 5% bar. That bar
+was a guess, and the dataset contains a measurement of the right one: the L4
+was rented three times, and 75 (backend, config) pairs were measured on more
+than one of those hosts with identical driver, torch and triton.
+
+| shorter latency | pairs | median spread | max spread |
+|---|---|---|---|
+| < 3 ms | 54 | 1.8% | **27.2%** |
+| 3-5 ms | 0 | -- | -- |
+| 5-10 ms | 7 | 2.0% | 11.3% |
+| 10-20 ms | 7 | 5.0% | 13.3% |
+| > 20 ms | 7 | 3.3% | 6.2% |
+
+The median is low everywhere, which is exactly why an unfloored analysis looks
+healthy; the tail is what disqualifies a claim. Two of the four the 5% bar had
+certified were at 1024, where **the two L4 hosts straddle parity by
+themselves** -- `fa2` at 1.031 and 0.811, `sdpa_cudnn` at 0.895 and 1.004. The
+"flip" was between an average of those and the A100.
+
+Flips are structurally the hardest thing here to resolve: a flip requires one
+side near parity by definition, and near parity is where the margin is
+smallest relative to the noise. The crossover survives the same standard
+because FA2/GLA ratios run from 0.11 to 3.7 and sit far from parity.
+
+The five apparent `flex` flips show the shape plainly: flex sits at 1.00-1.03
+against sdpa_flash on the L4, so any A100 value below 1 registers. The real
+statement about flex is that it is 15-19% slower than sdpa_flash on the A100
+and level with it on the L4 -- a magnitude difference, not a reversal.
 
 **Marginal summaries of this dataset are not reportable.** Any median over
 seq_len is refused by `analysis.composition`, because OOM attrition changes the

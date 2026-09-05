@@ -6,11 +6,11 @@ machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
 model is self-inflicted, and this file is the record of it, kept because
-thirteen instances in four days is no longer a coincidence.
+fourteen instances in five days is no longer a coincidence.
 
 ---
 
-## The thirteen
+## The fourteen
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -463,7 +463,63 @@ complaint. It cannot return a bare number: every exit carries `n`,
 cannot lose the provenance of its own averages. A guard that offers no
 alternative gets bypassed under time pressure.
 
+### 14. A divide-by-zero guard mistaken for a resolution floor
+
+Three places in this codebase divide by a quantity that can be arbitrarily
+small. Two had `clamp_min(1e-8)` / `max(..., 1e-12)`; the third had nothing.
+None of them was wrong in a way that raised, and two produced numbers that
+looked like results.
+
+**`gates.check_correctness`.** `abs_err / expected.abs().clamp_min(1e-8)`. On a
+block-sparse config the mask zeroes most of `expected` by construction, so
+this divided a real bf16 error by a number carrying no information. Live A100
+rows: `max_rel_err = 3.3e+04` beside `max_abs_err = 1.3e-02`. Pass/fail keys
+off absolute error, so no verdict was ever wrong -- but the column would have
+produced nonsense the moment anything plotted or aggregated it.
+
+**`diagnostic_agreement._rel`.** `max(abs(a), abs(b), 1e-12)`. 1e-10 against
+3e-10 scored as a 67% disagreement between two numbers that are zero to every
+tolerance in the project.
+
+**`cross_arch.Speedup.speedup`.** No floor at all, and a flat 5% materiality
+bar that had been added the day before. Against a floor measured from the
+study's own data -- the L4 rented three times, 75 pairs measured on more than
+one host, cross-host ratio spread up to **27.2%** below 3 ms -- **0 of 19
+flips clear it, where the flat bar certified 4.** Two of the four were at
+seq_len=1024, where the two L4 hosts straddle parity *by themselves*: `fa2` at
+1.031 and 0.811, `sdpa_cudnn` at 0.895 and 1.004. The reported "flip" was
+between an average of those two and the A100.
+
+**Why the pattern hid.** The median cross-host spread is 1.8-5.0% in every
+band. Almost every ratio is fine, so an unfloored analysis looks healthy and
+spot-checking confirms it. The tail is what disqualifies a claim, and a tail
+does not show up in the cells you happen to look at.
+
+**Why it hit the headline specifically.** A flip requires one side near parity
+by definition, and near parity is where the margin is smallest relative to the
+noise. So the test the study most wants to pass is the one its instrument
+resolves worst. The crossover claim survived the same standard only because
+FA2/GLA ratios run from 0.11 to 3.7 and sit far from parity -- with the single
+exception of the matched 8192 cell, which missed by 0.007 and was the cell the
+headline had been resting on.
+
 ## The general hazards, stated once
+
+**A divide-by-zero guard is not a resolution floor, and they are the same line
+of code.** Instance 14. `clamp_min(1e-8)` keeps the arithmetic finite and says
+nothing about whether the answer means anything; a floor excludes the cases the
+instrument cannot resolve. Reviewing one as the other is easy because the fixed
+version looks almost identical. The question that separates them: *if the
+denominator were at this bound, would I believe the ratio?* A backstop test now
+fails the suite on any bare epsilon in a division under `attnbench/`.
+
+**Set the floor from measurement, not from a round number.** The first bar for
+flip materiality was 5% -- defensible-sounding, borrowed from a tolerance
+measured for a different purpose, and wrong by a factor of five in the
+permissive direction. The right number was already in the data: the same card
+rented three times, measuring itself. Where a study has repeated measurements
+of anything, that is the resolution, and no argument about what the tolerance
+"should" be beats it.
 
 **Arithmetic that runs correctly on correct inputs can still answer a different
 question.** Instance 13. Every guard in this project until then watched for
