@@ -123,6 +123,60 @@ def test_the_caveat_is_harshest_where_the_result_is_most_interesting():
     assert "re-measure" in c.caveat()
 
 
+def test_a_mixed_comparison_is_flagged_as_asymmetrically_controlled():
+    """The shape the A100 session produces if its clock lock succeeds.
+
+    Every L4 row in this dataset was measured unlocked -- the project has had
+    root nowhere. A locked A100 alongside them is not "one more architecture";
+    it is a comparison whose two halves are measured to different precision,
+    and the noisier half is not identifiable from the ratio.
+    """
+    c = _cmp(False, True)                      # L4 unlocked, A100 locked
+    assert c.asymmetrically_controlled
+    assert c.unlocked_architectures == ["L4"]
+    assert c.locked_architectures == ["A100"]
+
+
+def test_a_uniformly_unlocked_comparison_is_not_asymmetric():
+    """Both sides unlocked is a different, milder problem: uniformly noisy,
+    and a reader discounts it uniformly. Conflating the two would make the
+    stronger warning routine, and a routine warning is not read."""
+    c = _cmp(False, False)
+    assert not c.asymmetrically_controlled
+    assert c.locked_architectures == []
+
+
+def test_the_asymmetry_is_stated_in_words_not_just_a_field():
+    """`unlocked_architectures: ['L4']` alone reads as 'this comparison is
+    unlocked', which invites discounting both halves equally. The caveat has
+    to say that the OTHER side was locked, or the reader cannot tell an
+    asymmetric comparison from a uniformly noisy one."""
+    text = _cmp(False, True).caveat()
+    assert "NOT locked on L4" in text
+    assert "locked on A100" in text
+    assert "not controlled to the same precision" in text.lower()
+
+
+def test_the_uniform_case_does_not_claim_an_asymmetry():
+    text = _cmp(False, False).caveat()
+    assert "same precision" not in text
+    assert "NOT locked on" in text
+
+
+def test_unknown_lock_state_is_not_counted_as_locked():
+    """`locked_architectures` must use `is True`. A row predating the field
+    reports None, and treating None as locked would manufacture an asymmetry
+    warning out of missing data -- the same NaN-is-truthy trap one level up."""
+    rows = _rows("h1", "L4", False) + _rows("h2", "A100", True)
+    for r in rows:
+        if r["gpu_name"] == "A100":
+            del r["clocks_locked"]
+    c = compare_across_architectures(
+        speedup_within_host(_df(rows), baseline_backend="sdpa_flash"))[0]
+    assert c.locked_architectures == []
+    assert not c.asymmetrically_controlled
+
+
 def test_an_unlocked_host_taints_its_architectures_mean():
     """Ratios across hosts of one architecture are averaged; the lock state is
     REDUCED, not averaged. One unlocked host's variance is still in the mean."""

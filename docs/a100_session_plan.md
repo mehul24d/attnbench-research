@@ -194,9 +194,20 @@ this session produces locked-clock A100 ratios that will be compared against
 unlocked-clock L4 ratios. Ratios are computed strictly within host, so the
 comparison is *valid* — but the two sides are not measured to the same
 precision, and `unlocked_architectures: ['NVIDIA L4']` will say so on every
-comparison. That is the machinery working; the writeup still has to say it in
-words, because "the L4 side of this comparison is the noisy one" is not
-something a reader will infer from a field name.
+comparison.
+
+`ArchitectureComparison.asymmetrically_controlled` now distinguishes this case
+from a uniformly-unlocked one and `caveat()` states it in words, because
+`unlocked_architectures: ['NVIDIA L4']` on its own reads as "this comparison
+is unlocked" and invites discounting both halves equally. The asymmetry — that
+one half is better controlled than the other, and the difference between them
+is therefore partly measurement quality — is the thing a reader cannot recover
+from the number. The writeup should still say it plainly; the machinery is
+there so that forgetting to is not silent.
+
+This matters more than it looks because the canary measured roughly a **6%
+host-to-host spread** across unlocked L4 hosts, which is larger than
+`DRIFT_TOLERANCE` and the same order as the effects being claimed.
 
 ---
 

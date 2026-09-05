@@ -369,6 +369,33 @@ class ArchitectureComparison:
         return sorted(a for a, locked in self.clocks_locked_by_architecture.items()
                       if locked is False)
 
+    @property
+    def locked_architectures(self) -> list[str]:
+        """Architectures whose ratio came from locked clocks.
+
+        Exists so `asymmetrically_controlled` can tell the two failure shapes
+        apart. `is True` rather than `not locked is False`, because unknown
+        (a row predating the field, or NaN) is not evidence of locking.
+        """
+        return sorted(a for a, locked in self.clocks_locked_by_architecture.items()
+                      if locked is True)
+
+    @property
+    def asymmetrically_controlled(self) -> bool:
+        """One side locked, the other not.
+
+        Distinct from "unlocked", and the distinction is the point. If both
+        sides are unlocked the comparison is uniformly noisy, which a reader
+        discounts uniformly. If one side is locked, the halves are measured to
+        DIFFERENT precision and the noisier one is not identifiable from the
+        ratio -- so a difference between architectures can be read as hardware
+        behaviour when part of it is measurement quality.
+
+        This is the shape the A100 session produces if its clock lock
+        succeeds: every L4 row in the dataset was measured unlocked.
+        """
+        return bool(self.locked_architectures) and bool(self.unlocked_architectures)
+
     def flips(self, *, threshold: float = 1.0) -> bool:
         """True when the backend beats the baseline on one architecture and
         loses on another -- the hardware-conditional result this study is
@@ -390,6 +417,15 @@ class ArchitectureComparison:
         base = (f"clocks were NOT locked on {', '.join(unlocked)}, so this "
                 f"ratio carries run-to-run variance of roughly the same "
                 f"magnitude as the canary tolerance (5%)")
+        if self.asymmetrically_controlled:
+            # Naming only the unlocked side reads as "everything here is
+            # unlocked", which invites discounting both halves equally. The
+            # asymmetry is the thing a reader cannot recover from the number.
+            base += (f"; clocks WERE locked on "
+                     f"{', '.join(self.locked_architectures)}, so the two "
+                     f"sides of this comparison are NOT controlled to the "
+                     f"same precision and the difference between them is "
+                     f"partly a difference in measurement quality")
         if self.flips():
             return (base + ". This comparison FLIPS, and a flip within that "
                     "margin is not evidence of hardware-conditional behaviour "
