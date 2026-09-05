@@ -108,7 +108,15 @@ def test_no_test_file_invokes_the_launcher_with_the_inherited_path():
     offenders = []
     for f in sorted((REPO / "tests").glob("test_*.py")):
         src = f.read_text()
-        if "gcp_launch_compile_session" not in src and "gcp_deploy_source" not in src:
+        # Every test file that shells out to a cloud-facing script, not just
+        # the two that can create instances. gcp_cleanup_check only lists, so
+        # it cannot bill on its own -- but "this one is read-only" is a claim
+        # about today's version of the script, and the guard should not need
+        # re-auditing every time one of them grows a new subcommand.
+        if not any(name in src for name in ("gcp_launch_compile_session",
+                                             "gcp_deploy_source",
+                                             "gcp_cleanup_check",
+                                             "gcp_teardown_session")):
             continue
         if f.name == "test_no_test_reaches_production.py":
             continue          # this file does it on purpose, under the guard
