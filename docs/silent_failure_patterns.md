@@ -5,12 +5,12 @@ not a wrong answer that looked wrong — **a plausible number, produced by
 machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
-model is self-inflicted, and this file is the record of it, kept because ten
-instances in three days is no longer a coincidence.
+model is self-inflicted, and this file is the record of it, kept because eleven
+instances in four days is no longer a coincidence.
 
 ---
 
-## The ten
+## The eleven
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -296,6 +296,60 @@ one level up; `Stage1ProvenanceError` refusing dirty passes in
 `load_stage1_pass_set`; and `scripts/gcp_deploy_source.sh`, which deploys a git
 bundle rather than a source tarball and then asks the *instance* what commit it
 is at.
+
+---
+
+### 11. A heredoc executing its own comments on the launching machine
+
+The launch script builds the instance startup script with an **unquoted**
+heredoc, so that `$CAP_MINUTES` expands and the agreed deadline is baked in.
+That expansion is not selective. It runs command substitution over the whole
+body — comment lines included, because a heredoc body is not shell source and
+a leading `#` protects nothing.
+
+One comment documented the restart-recovery procedure and quoted the command
+in backticks. So every launch ran `sudo shutdown -h HH:MM` **on the operator's
+laptop** and pasted its output — empty — into the script. The instance shipped
+with the line reading `by hand: .` and the procedure silently deleted.
+
+It was harmless only by luck, twice over: `HH:MM` is not a valid time, and
+`sudo` had no tty. A comment quoting any runnable command would have run it,
+once per launch, with the operator's privileges, saying nothing.
+
+**What makes this instance different**: the damage was to the *instructions*,
+not the data. No result row is wrong because of it. It belongs here anyway,
+because the mechanism is indifferent to what it deletes — the same heredoc
+also carries `shutdown -h +$CAP_MINUTES`, the cap that exists so a forgotten
+instance cannot bill for a week. A substitution that swallowed that line would
+disarm the backstop and leave a script that still looks correct in the repo.
+
+**Found by**: reading a live instance's deployed metadata and comparing it
+against the source that produced it, while investigating an unexpected
+instance for an unrelated reason. Reading the script alone would never show
+it: the bug is invisible in the source and visible only in the output. That is
+the same "compare the artefact against its source" move that caught instance
+10's stale provenance stamp, and it is now two for two.
+
+**Also found in the same read**: the launcher's default source image was still
+`v3`, and the unexpected instance had booted it — an image predating the
+instance-10 deploy fix. A default that has gone stale does not announce
+itself; it just quietly hands you last week's machine.
+
+**Fixed by**: single quotes in that comment, plus a test that renders the
+heredoc and asserts the body contains no backticks and no `$(`, and a second
+test asserting the recovery text actually arrives — because "no backticks"
+alone would pass if someone deleted the line instead of fixing it. A third
+test pins the set of launch-time expansions to exactly `{CAP_MINUTES}`, so
+the next variable someone interpolates has to be a decision. The image default
+is now v4 with a test naming the version.
+
+*(A fourth defect surfaced while fixing this one and is worth recording as a
+near miss: the new accelerator-override flag used `"${ARR[@]}"` on a possibly
+empty array, which under `set -u` in bash 3.2 — what macOS ships — is an
+unbound-variable abort. It failed closed, killing the launch before gcloud was
+called, and it would have done so on every G2 launch, not just the A2 one the
+flag was added for. Caught by the existing zone-retry tests within a minute,
+which is what those tests are for.)*
 
 ---
 

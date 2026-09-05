@@ -34,7 +34,11 @@ set -euo pipefail
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 ZONE="${GCP_ZONE:-asia-south1-b}"
 MACHINE_TYPE="${GCP_MACHINE_TYPE:-g2-standard-8}"
-SOURCE_MACHINE_IMAGE="${GCP_SOURCE_IMAGE:-attnbench-l4-image-v3-20260903}"
+# v4, not v3. A stale default is not a harmless one: on 2026-09-05 a launch
+# that set GCP_ZONE and the instance name but left this alone booted the v3
+# image -- an image predating the deploy-provenance fix. Bump this when a new
+# image is captured, in the same commit.
+SOURCE_MACHINE_IMAGE="${GCP_SOURCE_IMAGE:-attnbench-l4-image-v4-20260903}"
 CAP_MINUTES="${GCP_CAP_MINUTES:-360}"
 INSTANCE_NAME="${1:-attnbench-l4-compile-$(date +%Y%m%d-%H%M)}"
 
@@ -56,6 +60,22 @@ ZONE_FALLBACKS="${GCP_ZONE_FALLBACKS:-$ZONE}"
 # into the same results file -- the recovery path is a new segment, joined at
 # analysis time.
 PROVISIONING_MODEL="${GCP_PROVISIONING_MODEL:-STANDARD}"
+
+# Accelerator override. Empty means "inherit whatever the machine image
+# recorded", which is right for every G2/L4 session and WRONG for A2.
+#
+# attnbench-l4-image-v4 records guestAccelerators: nvidia-l4, because that is
+# the card it was captured from. Creating from it with --machine-type=
+# a2-ultragpu-1g would carry an L4 request onto a machine type whose A100 is
+# part of the machine type itself. Set GCP_ACCELERATOR to replace the
+# inherited list, e.g.:
+#
+#   GCP_ACCELERATOR="type=nvidia-a100-80gb,count=1"
+#
+# A create that is rejected for a bad accelerator shape costs nothing -- the
+# instance never exists -- so this is safe to get wrong once. It is NOT safe
+# to leave implicit, which is why it is a named variable and not a comment.
+ACCELERATOR="${GCP_ACCELERATOR:-}"
 
 if [[ -z "$PROJECT" ]]; then
   echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
@@ -110,7 +130,18 @@ cat > "$STARTUP_SCRIPT" <<EOF
 # the new boot time, so an instance intended to die at T+6h can quietly live
 # to T+11h. The cap is a backstop against forgetting, and this is the one way
 # it fails open. After any restart, re-arm the original wall-clock deadline
-# by hand: `sudo shutdown -h HH:MM`.
+# by hand: 'sudo shutdown -h HH:MM'.
+#
+# Those quotes are single, and that is load-bearing. This heredoc is unquoted
+# so that CAP_MINUTES expands at launch time, and the same expansion performs
+# command substitution anywhere in the body -- comment lines included, since a
+# heredoc body is not shell source and a leading hash protects nothing.
+#
+# On 2026-09-05 this line quoted the recovery command in backticks instead.
+# The launching Mac ran it and substituted the empty output, so the instance
+# shipped with the instruction deleted. Harmless only by luck: HH:MM is not a
+# valid time and sudo had no tty. Keep this body substitution-free; a test
+# enforces it.
 logger "attnbench-l4-compile: scheduling hard shutdown in $CAP_MINUTES minutes"
 shutdown -h +$CAP_MINUTES
 
@@ -149,7 +180,8 @@ echo "  name         : $INSTANCE_NAME"
 echo "  machine-type : $MACHINE_TYPE"
 echo "  provisioning : $PROVISIONING_MODEL"
 echo "  zone(s)      : $ZONE_FALLBACKS (tried in order, STOPPING at first success)"
-echo "  machine-type : $MACHINE_TYPE (1x nvidia-l4, inherited from the image)"
+echo "  machine-type : $MACHINE_TYPE"
+echo "  accelerator  : ${ACCELERATOR:-inherited from the machine image}"
 echo "  source image : $SOURCE_MACHINE_IMAGE (machine image)"
 echo "  provisioning : $PROVISIONING_MODEL"
 echo "  hard cap     : shutdown -h +$CAP_MINUTES ($((CAP_MINUTES / 60))h from boot)"
@@ -171,6 +203,13 @@ CREATED_ZONE=""
 for Z in $ZONE_FALLBACKS; do
   echo
   echo ">> attempting $Z"
+  # macOS ships bash 3.2, where "${ARR[@]}" on an EMPTY array is an unbound
+  # variable under `set -u` -- so the plain form aborts every launch from this
+  # laptop before gcloud is ever called. The ${ARR[@]+...} guard is the 3.2-safe
+  # idiom. It failed closed rather than open, but it failed on every G2 launch
+  # too, not just the A2 one this flag exists for.
+  ACCEL_FLAG=()
+  [[ -n "$ACCELERATOR" ]] && ACCEL_FLAG=(--accelerator="$ACCELERATOR")
   if gcloud compute instances create "$INSTANCE_NAME" \
       --project="$PROJECT" \
       --zone="$Z" \
@@ -178,6 +217,7 @@ for Z in $ZONE_FALLBACKS; do
       --source-machine-image="$SOURCE_MACHINE_IMAGE" \
       --maintenance-policy=TERMINATE \
       --provisioning-model="$PROVISIONING_MODEL" \
+      ${ACCEL_FLAG[@]+"${ACCEL_FLAG[@]}"} \
       --metadata-from-file=startup-script="$STARTUP_SCRIPT"; then
     CREATED_ZONE="$Z"
     break                     # <-- do not remove: see comment above

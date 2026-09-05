@@ -43,6 +43,7 @@ case "$ARGS" in
       ZONE=""
       for a in "$@"; do case "$a" in --zone=*) ZONE="${a#--zone=}" ;; esac; done
       echo "$ZONE" >> "$ATTEMPT_LOG"
+      printf '%s\n' "$ARGS" >> "${CREATE_ARGV_LOG:-/dev/null}"
       case " $FAIL_ZONES " in
         *" $ZONE "*) echo "ZONE_RESOURCE_POOL_EXHAUSTED" >&2; exit 1 ;;
       esac
@@ -52,7 +53,7 @@ exit 0
 """
 
 
-def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = ""):
+def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = "", **extra_env):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "gcloud"
@@ -61,19 +62,24 @@ def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = ""):
 
     attempts = tmp_path / "attempts.txt"
     attempts.write_text("")
+    argv_log = tmp_path / "create_argv.txt"
+    argv_log.write_text("")
 
     env = dict(os.environ)
     env.update(
         PATH=f"{bin_dir}:{env['PATH']}",
         ATTEMPT_LOG=str(attempts),
+        CREATE_ARGV_LOG=str(argv_log),
         FAIL_ZONES=fail_zones,
         FAKE_EXISTING_INSTANCES=existing,
         GCP_ZONE_FALLBACKS=zones,
         GCP_PROJECT="test-project",
     )
+    env.update({k: str(v) for k, v in extra_env.items()})
     proc = subprocess.run(["bash", str(SCRIPT), "test-instance"], input="launch\n",
                           capture_output=True, text=True, env=env, timeout=60)
     tried = [z for z in attempts.read_text().split() if z]
+    proc.create_argv = argv_log.read_text()      # type: ignore[attr-defined]
     return proc, tried
 
 
@@ -104,6 +110,58 @@ def test_all_zones_stocked_out_creates_nothing_and_fails(tmp_path):
     assert tried == ["zone-a", "zone-b"]
     assert proc.returncode != 0
     assert "nothing is billing" in (proc.stdout + proc.stderr)
+
+
+def test_a_g2_launch_passes_no_accelerator_flag(tmp_path):
+    """Default: inherit the machine image's own card.
+
+    Every L4 session to date created the instance with no --accelerator flag
+    at all, and those sessions produced the entire dataset. Adding an A2
+    override must not start sending a flag on the G2 path.
+    """
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a")
+    assert proc.returncode == 0
+    assert "--accelerator" not in proc.create_argv
+
+
+def test_an_empty_override_does_not_pass_an_empty_argument(tmp_path):
+    """The bash-3.2 trap, stated as behaviour rather than as an idiom.
+
+    `"${ARR[@]}"` on an empty array is an unbound variable under `set -u` in
+    bash 3.2, which is what macOS ships -- so the naive version aborted the
+    launch script before gcloud was reached, on EVERY launch from this laptop
+    and not only the A2 one. It failed closed, which is the good direction,
+    but it failed on the G2 path this project actually uses.
+    """
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a", GCP_ACCELERATOR="")
+    assert proc.returncode == 0, proc.stderr
+    assert tried == ["zone-a"], "the create was never attempted"
+    assert "--accelerator=" not in proc.create_argv
+
+
+def test_the_a2_override_reaches_the_create_call(tmp_path):
+    """attnbench-l4-image-v4 records guestAccelerators: nvidia-l4, because an
+    L4 is the card it was captured from. Carrying that onto a2-ultragpu-1g,
+    whose A100 is part of the machine type, is the one image property that
+    must not be inherited."""
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
+                   GCP_MACHINE_TYPE="a2-ultragpu-1g",
+                   GCP_PROVISIONING_MODEL="SPOT",
+                   GCP_ACCELERATOR="type=nvidia-a100-80gb,count=1")
+    assert proc.returncode == 0, proc.stderr
+    assert "--accelerator=type=nvidia-a100-80gb,count=1" in proc.create_argv
+    assert "--machine-type=a2-ultragpu-1g" in proc.create_argv
+    assert "--provisioning-model=SPOT" in proc.create_argv
+
+
+def test_the_default_image_is_the_current_one(tmp_path):
+    """A stale default is not harmless. On 2026-09-05 a launch that set the
+    zone and the instance name but left GCP_SOURCE_IMAGE alone booted v3 --
+    an image predating the deploy-provenance fix -- and nobody noticed until
+    the audit log was read."""
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a")
+    assert "attnbench-l4-image-v4-20260903" in proc.create_argv
+    assert "v3-20260903" not in proc.create_argv
 
 
 def test_refuses_to_launch_when_an_instance_already_exists(tmp_path):

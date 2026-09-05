@@ -108,3 +108,61 @@ def test_extraction_finds_a_real_loop():
     every test above pass by executing an empty string."""
     loop = _extract_cache_loop(_render())
     assert "score_cache" in loop and "rm -rf" in loop
+
+
+# ---------------------------------------------------------------------------
+# The heredoc runs command substitution on its own comments
+# ---------------------------------------------------------------------------
+
+def test_no_command_substitution_survives_in_the_heredoc_body():
+    """The defect this catches, found 2026-09-05 by reading a live instance's
+    deployed metadata rather than the source that produced it.
+
+    The heredoc is unquoted so `$CAP_MINUTES` expands. That same expansion
+    applies to backticks and `$(...)` ANYWHERE in the body -- shell comments
+    included, because a heredoc body is not shell source and `#` does not
+    protect it. The STANDING HAZARD comment ended with a backticked
+    `sudo shutdown -h HH:MM`; it was executed on the LAUNCHING MACHINE at
+    launch time and replaced with its (empty) output, so the instance shipped
+    with the recovery instruction silently deleted.
+
+    Harmless only by luck: HH:MM is not a valid time and sudo had no tty. The
+    same mechanism with a valid command would run it on the operator's laptop
+    with their privileges, once per launch, and say nothing.
+    """
+    body = subprocess.run(
+        ["awk", '/^cat > "\\$STARTUP_SCRIPT" <<EOF$/{f=1;next} /^EOF$/{f=0} f',
+         str(SCRIPT)],
+        capture_output=True, text=True, check=True).stdout
+    assert body, "heredoc body not found -- the awk range stopped matching"
+    assert "`" not in body, (
+        "backticks in the startup-script heredoc are command-substituted on "
+        "the launching machine; use single quotes")
+    assert "$(" not in body, (
+        "$(...) in the startup-script heredoc is command-substituted on the "
+        "launching machine")
+
+
+def test_the_restart_recovery_instruction_reaches_the_instance():
+    """The specific text that went missing. Asserting 'no backticks' alone
+    would pass if someone deleted the line instead of fixing it -- and the
+    line is the only place the re-arm procedure is written down where an
+    operator on a restarted instance will actually see it."""
+    rendered = _render()
+    assert "shutdown -h HH:MM" in rendered
+    assert "by hand: ." not in rendered, "the instruction was substituted away"
+
+
+def test_only_the_intended_variable_expands():
+    """A positive statement of the rule: CAP_MINUTES in, everything else out.
+
+    Renders with a sentinel in the environment that the body must not pick up,
+    so a future edit that interpolates something new fails here.
+    """
+    body = subprocess.run(
+        ["awk", '/^cat > "\\$STARTUP_SCRIPT" <<EOF$/{f=1;next} /^EOF$/{f=0} f',
+         str(SCRIPT)],
+        capture_output=True, text=True, check=True).stdout
+    unescaped = re.findall(r"(?<!\\)\$(\w+)", body)
+    assert set(unescaped) <= {"CAP_MINUTES"}, (
+        f"unexpected launch-time expansion in the startup script: {unescaped}")
