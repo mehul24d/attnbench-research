@@ -234,3 +234,61 @@ def check_code_identity(df: pd.DataFrame, *, repo: Path | str,
             "reason."
         )
     return drifts
+
+
+@dataclass(frozen=True)
+class CodeRestriction:
+    """What `restrict_to_reference_code` removed, and why."""
+
+    backend: str
+    dropped_commit: str
+    kept_commits: tuple[str, ...]
+    n_dropped: int
+    methods: tuple[str, ...]
+
+    def describe(self) -> str:
+        return (f"{self.backend}: dropped {self.n_dropped} row(s) at "
+                f"{self.dropped_commit[:8]} ({', '.join(self.methods)} differs "
+                f"from the reference)")
+
+
+def restrict_to_reference_code(df: pd.DataFrame, *, repo: Path | str,
+                               reference_commit: str,
+                               ) -> tuple[pd.DataFrame, list[CodeRestriction]]:
+    """Keep only rows whose backend was timed by the same code as at
+    `reference_commit`.
+
+    The finer repair, and usually the right one. Drift is a property of a
+    (backend, commit) pair, not of a backend: on the real Stage 2 data, flex
+    and naive changed only at the seg1 boundary, so dropping those two
+    backends entirely would discard 90 flex rows and 112 naive rows that were
+    measured by exactly the reference code. Dropping the 172 seg1 rows instead
+    keeps both backends in the cross-architecture comparison.
+
+    Returns the filtered frame and a record of every exclusion, so the report
+    can state what was removed rather than quietly showing a smaller table.
+    """
+    if "git_commit" not in df.columns:
+        raise CodeIdentityError(
+            "no git_commit column; code identity cannot be established")
+
+    keep = pd.Series(True, index=df.index)
+    restrictions: list[CodeRestriction] = []
+    for backend, group in df.groupby("backend"):
+        ref = fingerprint(repo, reference_commit, str(backend))
+        commits = sorted({str(c) for c in group["git_commit"].dropna().unique()
+                          if str(c) not in ("None", "nan", "HEAD", "")})
+        for commit in commits:
+            fp = fingerprint(repo, commit, str(backend))
+            if fp.digest == ref.digest:
+                continue
+            mask = (df["backend"] == backend) & (df["git_commit"] == commit)
+            keep &= ~mask
+            restrictions.append(CodeRestriction(
+                backend=str(backend), dropped_commit=commit,
+                kept_commits=tuple(c for c in commits if c != commit),
+                n_dropped=int(mask.sum()),
+                methods=tuple(sorted(
+                    name for name in ref.parts
+                    if ref.parts.get(name) != fp.parts.get(name)))))
+    return df[keep].copy(), restrictions

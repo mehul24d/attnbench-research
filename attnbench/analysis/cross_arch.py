@@ -399,9 +399,46 @@ class ArchitectureComparison:
     def flips(self, *, threshold: float = 1.0) -> bool:
         """True when the backend beats the baseline on one architecture and
         loses on another -- the hardware-conditional result this study is
-        looking for."""
+        looking for.
+
+        A necessary condition, not a sufficient one. See `flip_margin` and
+        `flips_materially`: a ratio of 0.999 on one card and 1.001 on the
+        other satisfies this and means nothing.
+        """
         values = list(self.speedup_by_architecture.values())
         return any(v > threshold for v in values) and any(v <= threshold for v in values)
+
+    @property
+    def flip_margin(self) -> float:
+        """How far the CLOSER side of the flip sits from parity.
+
+        The closer side, because a flip is only as strong as its weaker half:
+        0.82 on one card and 1.44 on the other is a real reversal, while 0.999
+        against 1.44 is one card being fast and the other being exactly
+        average. Reported for every comparison, flipping or not, so the number
+        can be sorted on rather than consulted after the fact.
+        """
+        values = list(self.speedup_by_architecture.values())
+        if len(values) < 2:
+            return 0.0
+        return min(abs(v - 1.0) for v in values)
+
+    def flips_materially(self, *, margin: float = 0.05) -> bool:
+        """A flip whose weaker side clears measurement noise.
+
+        `margin` defaults to `canary.DRIFT_TOLERANCE` (5%), the project's own
+        estimate of run-to-run variation on an unlocked card. Both
+        architectures in this study were measured unlocked, so a flip inside
+        that band is indistinguishable from the same backend measured twice on
+        one machine -- and every row in the dataset satisfies that condition,
+        which makes the raw `flips()` count an overstatement by construction.
+        On the 2026-09-05 join, 19 comparisons flip and 5 flip materially.
+
+        Imported as a literal default rather than from `canary` to keep this
+        module free of a dependency on the canary machinery; the number is
+        asserted equal to DRIFT_TOLERANCE by a test.
+        """
+        return self.flips() and self.flip_margin > margin
 
     def caveat(self) -> str:
         """The sentence that must accompany this number, or "".

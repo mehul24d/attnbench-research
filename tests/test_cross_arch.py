@@ -392,3 +392,44 @@ def test_digest_is_attached_to_every_loaded_row(tmp_path):
     assert "segment_digest" in joined.columns
     assert joined.groupby("segment")["segment_digest"].nunique().eq(1).all()
     assert joined["segment_digest"].nunique() == 2
+
+
+# --- flip materiality (added 2026-09-05, after the two-architecture join) ---
+
+def test_flip_margin_takes_the_weaker_side():
+    """A flip is only as strong as its half nearest parity. 0.999 against
+    1.44 is not a reversal -- it is one card being fast and the other being
+    exactly average, and `flips()` alone cannot tell those apart."""
+    from attnbench.analysis.cross_arch import ArchitectureComparison
+
+    real = ArchitectureComparison("gla", "k", {"L4": 0.823, "A100": 1.443})
+    assert real.flip_margin == pytest.approx(0.177)
+    assert real.flips() and real.flips_materially()
+
+    nominal = ArchitectureComparison("flex", "k", {"L4": 1.001, "A100": 0.837})
+    assert nominal.flip_margin == pytest.approx(0.001)
+    assert nominal.flips()
+    assert not nominal.flips_materially()
+
+
+def test_the_materiality_default_is_the_projects_own_drift_tolerance():
+    """The 5% default is not a free parameter: it is canary.DRIFT_TOLERANCE,
+    the measured run-to-run variation on an unlocked card. Both architectures
+    in this study were measured unlocked, so a flip inside that band is
+    indistinguishable from noise. Asserted rather than imported so cross_arch
+    keeps no dependency on the canary machinery."""
+    import inspect
+
+    from attnbench.analysis.canary import DRIFT_TOLERANCE
+    from attnbench.analysis.cross_arch import ArchitectureComparison
+
+    default = inspect.signature(
+        ArchitectureComparison.flips_materially).parameters["margin"].default
+    assert default == DRIFT_TOLERANCE
+
+
+def test_a_one_sided_comparison_has_no_flip_margin():
+    from attnbench.analysis.cross_arch import ArchitectureComparison
+
+    assert ArchitectureComparison("fa2", "k", {"L4": 2.0}).flip_margin == 0.0
+    assert not ArchitectureComparison("fa2", "k", {"L4": 2.0}).flips_materially()
