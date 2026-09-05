@@ -112,7 +112,43 @@ sparsities: [0.5, 0.75, 0.9]
 #
 # Reserve cut C is retired, not deleted: if a future re-estimate moves against
 # us, 32768: 100 -> 50 remains the right first cut, for the reasons recorded
-# in git history at commit b6ed63b.
+# in git history at commit b6ed63b. Priced today at -2.55h.
+#
+# ---------------------------------------------------------------------------
+# RE-CHECKED 2026-09-06, before booking the session. THE NUMBER TO BOOK IS
+# 14.85 HOURS, not the 11.03h that appears above.
+#
+# 11.03h is the POST-CUT grid, before the two-sided rule restored A and B.
+# The committed grid on this page -- 16384 at n=300 and sparsity 0.75 back --
+# costs 13.35h of compute, which the paragraph above already states. The 11h
+# figure survived in conversation because it was the last round number in the
+# chain, which is exactly how a superseded estimate gets booked against.
+#
+#   13.35 h compute  +  1.5 h fixed overhead  =  14.85 h
+#   at GCP_RATE_INR_HR=80 (g2-standard-8 + L4, asia-south1)  ~= Rs 1,190
+#
+# The 1.5h is instance creation, image boot, source deploy, the pre-flight
+# suite, the Stage 0/1 gates and teardown. The A100 session on 2026-09-05 ran
+# 165.9 minutes wall for roughly 100 minutes of measurement; 1.5h is the
+# conservative read of that record for a run that boots from the prepared
+# image and runs the gates once. It does NOT budget for a preemption, which
+# is why this goes on an ON-DEMAND L4 rather than Spot: at 13+ hours one
+# preemption costs more than the discount saves several times over.
+#
+# Nothing measured since the grid was pinned changes the inputs. Stage 2's
+# cross-architecture pass produced newer L4 throughput numbers, and they are
+# NOT comparable to the anchors here: Stage 2 records attention-KERNEL
+# TFLOPS (sdpa_flash 59.9 at 16384) while this estimate uses WHOLE-MODEL
+# throughput (42.2), where the MLP and projections dominate. Reading one as
+# an update to the other would have looked like a 42% speedup and been a
+# category error -- the same shape as comparing GLA's 1.7 "TFLOPS" to FA2's
+# 61.8 and concluding GLA is slow, when GLA is faster in wall clock at that
+# length and simply issues ~30x fewer FLOPs.
+#
+# Hardware decision: on-demand L4 in asia-south1, not the A100. The A100 is
+# faster and its boot path is now known to work, but it is Spot-only in a
+# contended zone. Stage 3's grid was also estimated FROM L4 measurements, so
+# running it on an L4 keeps the estimate and the run on the same instrument.
 
 # RULER task construction, not RULER's benchmark -- see
 # attnbench/_vendor/ruler/VENDORED.md. niah_single/niah_multikey/vt are

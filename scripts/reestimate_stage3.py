@@ -108,18 +108,65 @@ for sl, d in base["per_length"].items():
 print(f"{'TOTAL':>8} {'':5} {base['scoring_h']:10.2f} {base['measured_h']:11.2f} "
       f"{base['total_h']:9.2f}\n")
 
-# ---- the two-sided rule ----------------------------------------------------
+# ---- variants --------------------------------------------------------------
+#
+# Labels are DERIVED from the diff against the loaded grid, not written by
+# hand. The hand-written ones went stale the moment the two-sided rule
+# restored cuts A and B in the YAML: this script printed
+# "committed (16384:200, 32768:100)" directly above a table showing
+# 16384: 300, and reported +0.00 deltas for restorations that were already
+# in the baseline. A label that contradicts the data it sits next to is the
+# same defect as a stale comment, except a reader trusts it more.
 print("=" * 68)
-print("VARIANTS (delta vs committed)\n")
-variants = {
-    "committed (16384:200, 32768:100)": (COMMITTED, SPARSITIES),
-    "B restored: 16384 -> 300": ({**COMMITTED, 16384: 300}, SPARSITIES),
-    "B restored + 32768 -> 150": ({**COMMITTED, 16384: 300, 32768: 150}, SPARSITIES),
-    "A restored: sparsity 0.75 back": (COMMITTED, [0.5, 0.75, 0.9]),
-    "A+B restored (full original)": ({**COMMITTED, 16384: 300}, [0.5, 0.75, 0.9]),
-    "A+B + 32768 -> 200": ({**COMMITTED, 16384: 300, 32768: 200}, [0.5, 0.75, 0.9]),
-}
-for label, (sls, sps) in variants.items():
+print("VARIANTS (delta vs the grid as committed today)\n")
+
+
+def describe(sls: dict, sps: list) -> str:
+    bits = []
+    for k in sorted(set(sls) | set(COMMITTED)):
+        if sls.get(k) != COMMITTED.get(k):
+            bits.append(f"{k}: {COMMITTED.get(k)} -> {sls.get(k)}")
+    if sorted(sps) != sorted(SPARSITIES):
+        bits.append(f"sparsities {SPARSITIES} -> {sorted(sps)}")
+    return "; ".join(bits) if bits else "committed grid (no change)"
+
+
+variants = [
+    (COMMITTED, SPARSITIES),
+    ({**COMMITTED, 16384: 200}, SPARSITIES),
+    (COMMITTED, [0.5, 0.9]),
+    ({**COMMITTED, 32768: 150}, SPARSITIES),
+    ({**COMMITTED, 32768: 200}, SPARSITIES),
+    ({**COMMITTED, 32768: 50}, SPARSITIES),
+]
+for sls, sps in variants:
     e = estimate(sls, sps, TASKS)
-    print(f"  {label:<36} {e['total_h']:6.2f} h  "
+    print(f"  {describe(sls, sps):<44} {e['total_h']:6.2f} h  "
           f"({e['total_h'] - base['total_h']:+6.2f})")
+
+# ---- what to actually book -------------------------------------------------
+#
+# The number above is pure compute. A session is not pure compute, and this
+# project has a measured record of the difference: every rented session so far
+# has spent time on instance creation, image boot, source deploy, the
+# pre-flight test suite, Stage 0/1 gates, and teardown before and after any
+# measured work. The A100 session on 2026-09-05 ran 165.9 minutes wall for
+# roughly 100 minutes of measurement.
+#
+# 1.5 h of fixed overhead is the conservative read of that record for a run
+# that boots from the prepared image and runs the gates once. It does NOT
+# include a preemption, which is why Stage 3 goes on an on-demand L4 rather
+# than Spot: at this duration a preemption costs more than the price
+# difference saves several times over.
+OVERHEAD_H = 1.5
+print()
+print("=" * 68)
+print(f"BOOK: {base['total_h']:.2f} h compute + {OVERHEAD_H:.1f} h fixed "
+      f"overhead = {base['total_h'] + OVERHEAD_H:.2f} h")
+print("  On-demand L4 in asia-south1. Not Spot: at this duration one")
+print("  preemption costs more than the discount saves.")
+print("  Caveat carried forward: block_sparse throughput at sparsity 0.75 is")
+print("  interpolated between the 0.5 and 0.9 measurements, never measured --")
+print("  it was cut from the grid before it ever ran, and the two-sided rule")
+print("  restored it. That is roughly 0.7 h of the total resting on an")
+print("  interpolation, and it affects this estimate, not the run's validity.")
