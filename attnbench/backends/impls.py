@@ -385,6 +385,17 @@ class FlexAttentionBackend(AttentionBackend):
     # short lengths on this card until proven otherwise. That is a real
     # hardware finding about sm_89, not a scoping convenience; recorded in
     # docs/limitations.md.
+    #
+    # 2026-09-05, sm_80 (A100, 164 KB shared/SM): the two halves of that
+    # sentence come apart. block_size=128 is supported at EVERY band to 16384
+    # -- the shared-memory limit is architectural and Ampere clears it.
+    # block_size=64 still fails at 2048+, with inductor's tiling error
+    # ("Q and KV block size must be divisible by BLOCK_M and BLOCK_N"), which
+    # is precisely what _BLOCK_SPARSE_KERNEL_OPTIONS overrides and what this
+    # cap declines to override above 1024. So that column is OUR cap on both
+    # cards, not the hardware. Raising it is now a cheap experiment rather
+    # than an expensive one, but it changes what the sweep measures, so the
+    # constant stays where it is until that is a deliberate decision.
     _BLOCK_SPARSE_KERNEL_OPTIONS_MAX_SEQ = 1024
 
     @staticmethod

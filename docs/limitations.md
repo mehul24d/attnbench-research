@@ -201,7 +201,7 @@ to the block grid.
 and is not comparable to later flex rows.** They are kept as evidence, not as
 measurements.
 
-### cuDNN fused attention faults the device above 8192 on sm_89
+### cuDNN fused attention faults the device above 8192 -- on sm_89 AND sm_80
 
 `sdpa_cudnn` is excluded above `seq_len=8192` and its cells are recorded with
 `status="illegal_memory_access"`, not omitted.
@@ -219,7 +219,28 @@ NVRM: Xid (PCI:0000:00:03): 31, pid=1338, name=python3
 
 An earlier session that reached 32768 died identically; it was not isolated
 per-backend, so it counts as corroboration rather than a second independent
-observation. **Confirm at 16384 whenever a future session touches that band.**
+observation.
+
+**Confirmed on Ampere, 2026-09-05.** The A100-SXM4-80GB session reproduced it
+at the same band with the same signature -- Xid 31, MMU fault, GPU board serial
+1322522008730, recorded in `results/a100/serial_console.log`. That makes it
+**four machines and two architectures** (sm_89 and sm_80), same driver
+(580.173.02) and torch (2.9.1+cu129) on all of them.
+
+So the fault is **not** a property of Ada, and the section heading has been
+corrected accordingly. What it is a property of is not yet established: driver
+and torch were held constant across all four observations, so it could equally
+be a cuDNN version issue rather than a silicon one. That distinction needs a
+second driver or torch build to separate, and this study has not run one.
+Stating it as architecture-general is what the evidence supports; stating it as
+hardware-independent is not.
+
+**A prior claim here was wrong and is worth recording.** During the A100
+session it was reported that the fault "was gone on Ampere", on the strength of
+a count of zero `illegal_memory_access` rows. The cells had not run -- the
+length cap excluded them -- so the zero was an absence of attempts, not an
+absence of faults. `docs/silent_failure_patterns.md` general hazard:
+*distinguish "the check passed" from "the check ran."*
 
 8192 is where the line is drawn because it is the longest band cuDNN actually
 completed (84/84) — not a round number. Only `cudnn` is affected: `flash`,
@@ -280,6 +301,45 @@ only at short lengths on an L4 — reportable as a finding about the card, not
 merely as missing coverage. A second architecture (H100, 227 KB shared memory
 per SM) would very likely not have it, which makes it a cross-architecture
 result worth stating rather than a hole to apologise for.
+
+**Tested on Ampere, 2026-09-05, and the prediction holds — but only half of
+it.** The A100-SXM4-80GB (164 KB shared memory per SM) was probed at every
+band:
+
+| `block_size` | 1024 | 2048 | 4096 | 8192 | 16384 |
+|---|---|---|---|---|---|
+| 128 | supported | supported | supported | supported | supported |
+| 64 | supported | error | error | error | error |
+
+So the ceiling **is** lifted, decisively, and for the reason predicted: at
+`block_size=128` the kernel that would not fit in sm_89's 100 KB fits in
+sm_80's 164 KB, and flex block-sparse runs to 16384. Verified, not merely
+launched — `masked_exact` against the oracle through 4096, and
+`cross_backend_pair` through 16384.
+
+The `block_size=64` failures are a **different constraint that Ampere does not
+touch**, and the error says so plainly:
+
+```
+LoweringException: ValueError: Q and KV block size must be divisible by
+BLOCK_M and BLOCK_N. We got Q_BLOCK_SIZE=64 and KV_BLOCK_SIZE=64.
+```
+
+That is inductor's tiling, not the card's shared memory, and it is the exact
+condition `_BLOCK_SPARSE_KERNEL_OPTIONS` exists to override — an override this
+code applies only at `seq_len <= 1024`. The 2048+ column is therefore **our
+cap, not the hardware**, on both architectures. Whether raising it works on
+sm_80 is now a cheap question rather than an expensive one, but it changes what
+the sweep measures and has not been changed here.
+
+**Two claims made earlier in the A100 session were wrong and are corrected
+here.** That "Ampere does not lift the sparse-arm ceiling" — it does, at
+`block_size=128`. And that flex block-sparse fails "on the inductor tiling
+constraint, not shared memory" — both constraints are real, they bind at
+different `block_size` values, and only one of them is architectural. The
+lesson is the same in both cases: two failures with the same surface
+(`error` in a probe cell) had different causes, and one summary sentence was
+made to cover both.
 
 ### The suite could not have caught this, and now can
 
@@ -436,6 +496,78 @@ suppressing would hide exactly what these checks exist to find.
 The raw readings (`sm_clock_mhz`, `mem_clock_mhz`, `persistence_mode`) stay
 unconsulted on purpose — nothing can act on 1710 MHz versus 1695, and a check
 with no decision behind it is worse than none, because it looks like coverage.
+
+**And `sm_clock_mhz` could not rescue `clocks_locked` even if consulted.** The
+obvious repair — derive the flag from the reading rather than accepting it as
+an unvalidated parameter nobody passes — does not work with what is recorded.
+The column holds **one sample, taken when the provenance stamp is captured**,
+not a statistic over the timed region. Across the whole dataset:
+
+| host | `sm_clock_mhz` |
+|---|---|
+| A100 (sm_80) | 1410 |
+| L4 ×3 (sm_89) | 210 |
+
+210 MHz is the L4's **idle** clock; it runs a kernel near 2040. So the reading
+does not describe the measurement at all, and a single sample cannot separate
+"locked at this value" from "happened to be at this value" in either direction.
+Deriving `clocks_locked` from it would manufacture confidence rather than
+measure it. The honest fix needs sampling *during* the run, which needs
+hardware. Until then the flag is `False` everywhere, on both architectures —
+which is at least the symmetric case: both halves of every cross-architecture
+ratio carry the same variance, so a reader discounts them uniformly instead of
+mistaking a difference in measurement quality for a difference in silicon.
+
+
+## The cross-architecture claim rests on 11 cells, and one of them carries it
+
+Stage 2 now has two architectures with real data on both -- Ada (L4, sm_89)
+and Ampere (A100-SXM4-80GB, sm_80). The headline result is that the GLA/FA2
+crossover moves: FA2 wins everywhere on both cards up to 4096, GLA wins from
+8192 on the A100, and on the L4 FA2 is still ahead at 8192 and only loses at
+16384. One doubling earlier on Ampere.
+
+**What that rests on, stated exactly.** `scripts/run_cross_arch_analysis.py`
+restricts to (seq_len, batch) cells measured on *both* cards. There are **11**
+of them out of 17, and the winner differs in **exactly one**: seq_len=8192,
+batch=1, where GLA is 1.26x faster on the A100 and 19% slower on the L4. Both
+sides clear the 5% noise floor comfortably, but it is one cell.
+
+Four things about it that a reader should have:
+
+- **Above 4096, only batch=1 is shared.** The A100 covers batches 1, 4 and 16
+  at 8192 and 16384; the L4 covers batch 1. So the claim above 4096 is a
+  batch-1 claim. The A100's own batch 4 and 16 rows agree with its batch 1 row
+  (1.28x and 1.30x at 8192), which is supporting evidence and not the same as
+  matched evidence.
+- **32768 exists on the L4 only.** The A100 session was capped at 16384 after
+  a cuDNN Xid 31 crash consumed part of it. The L4's 32768 numbers
+  (GLA 3.65-3.70x faster) have no Ampere counterpart and are excluded from the
+  matched table.
+- **Clocks are unlocked on both** (see above). Symmetric, so the ratios are
+  uniformly noisy rather than differently controlled -- but 1.26 against 0.84
+  is a 50% gap, not a 5% one.
+- **The environment is genuinely common:** driver 580.173.02, torch
+  2.9.1+cu129, torch_cuda 12.9, triton 3.5.1 on all four hosts, and the timed
+  region byte-identical in AST after `code_identity.restrict_to_reference_code`
+  drops the 172 pre-hoist seg1 rows for `flex` and `naive`. This is the part of
+  the comparison that is strongest, and it was not free -- see
+  `attnbench/analysis/code_identity.py`.
+
+**19 comparisons flip; 4 clear the noise floor.** `ArchitectureComparison.
+flips()` counts a backend winning on one card and losing on the other, and at
+threshold 1.0 that includes 0.999 against 1.001. `flips_materially()` requires
+the *weaker* side to clear 5%. The five apparent `flex` flips are all nominal:
+flex sits at 1.00-1.03 against sdpa_flash on the L4, so any A100 value below 1
+registers. The real statement about flex is that it is 15-19% slower than
+sdpa_flash on the A100 and level with it on the L4 -- a magnitude difference,
+not a reversal.
+
+**Marginal summaries of this dataset are not reportable.** Any median over
+seq_len is refused by `analysis.composition`, because OOM attrition changes the
+batch composition between bands and the resulting number can move opposite to
+every cell inside it. See `docs/silent_failure_patterns.md` instance 13. The
+per-cell tables are the result; there is no valid one-number version of them.
 
 ## Stage 1 "passed" means five different things
 

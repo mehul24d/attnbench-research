@@ -5,12 +5,12 @@ not a wrong answer that looked wrong — **a plausible number, produced by
 machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
-model is self-inflicted, and this file is the record of it, kept because twelve
-instances in four days is no longer a coincidence.
+model is self-inflicted, and this file is the record of it, kept because
+thirteen instances in four days is no longer a coincidence.
 
 ---
 
-## The twelve
+## The thirteen
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -421,7 +421,66 @@ A static check additionally fails the suite if any test hands a cloud-facing
 script an unmodified `os.environ["PATH"]`.
 
 
+### 13. A median that moved in the opposite direction to every cell inside it
+
+Two findings came out of the 2026-09-05 A100 session that were not findings.
+**"GLA's cost FALLS from 4096 to 8192"** -- physically impossible for an
+attention kernel -- and **"fa2 is 15x faster"**, the same mechanism with the
+sign reversed.
+
+Nothing was mismeasured. Every latency in the dataset is correct. On the L4,
+per cell at `batch=1`:
+
+```
+seq_len      1024   2048   4096    8192    16384    32768
+per cell     0.96   2.56   5.08   10.97    20.55    41.90   ms   (2x per doubling)
+marginal     5.02   9.93  19.81   10.97    20.55   101.20   ms
+                                  ^^^^^ falls 45%
+```
+
+GLA is almost exactly linear, which is what a linear-attention kernel should
+be. The marginal median inverts at 8192 because batches 4 and 16 OOM'd out of
+that band, so its composition changed from `{1,4,16}` to `{1}` and the median
+switched to a cheaper population. Simpson's paradox, in a results table.
+
+**Why this is structural here rather than unlucky.** The attrition that
+unbalances a band is OOM; OOM correlates with sequence length and batch size;
+sequence length is the independent variable in most of the study's claims. The
+composition is therefore unbalanced *as a function of the thing being
+measured*, which is precisely the condition under which a marginal inverts.
+Every long-context table in this project is in scope by default.
+
+It looked like a result rather than a mistake, which is why it nearly shipped.
+There was no error, no warning, no failed check -- just a plausible number from
+arithmetic that ran correctly on correct inputs and answered a different
+question than the one asked.
+
+The fix is `attnbench/analysis/composition.py`. `aggregate()` refuses by
+default across groups whose facet composition differs at all, names the missing
+levels, and offers `matched_subset()` as the repair rather than only the
+complaint. It cannot return a bare number: every exit carries `n`,
+`facet_levels`, `facet_counts` and `composition_tvd`, so a table built from it
+cannot lose the provenance of its own averages. A guard that offers no
+alternative gets bypassed under time pressure.
+
 ## The general hazards, stated once
+
+**Arithmetic that runs correctly on correct inputs can still answer a different
+question.** Instance 13. Every guard in this project until then watched for
+wrong *inputs* -- a stale commit, a mismatched host, a contaminated row. None
+watched the *combination step*, which is where the error lived. When a summary
+number contradicts a mechanism you are confident about (an attention kernel
+getting cheaper with length), the number is not surprising evidence; it is a
+composition question, and the first thing to look at is what changed about the
+population between the two groups being compared, not the measurements inside
+them.
+
+**A number is only as comparable as the cells it was formed from.** The
+cross-architecture crossover result rests on 11 (seq_len, batch) cells measured
+on *both* cards. The unrestricted table has 17, and reading the winner off it
+gives the same answer -- by luck, since the A100 covers three batches at 8192
+where the L4 covers one. Getting the right answer from an invalid comparison is
+the worst outcome available: it certifies the method.
 
 **Check the constraints that apply, not the ones you just learned.** On
 2026-09-05 a CPU machine family was chosen as a workaround after verifying it
