@@ -423,6 +423,15 @@ script an unmodified `os.environ["PATH"]`.
 
 ## The general hazards, stated once
 
+**Check the constraints that apply, not the ones you just learned.** On
+2026-09-05 a CPU machine family was chosen as a workaround after verifying it
+against the two constraints that had failed that morning -- NVME capability and
+`pd-balanced` support -- while the third, `guestAccelerators`, went unchecked
+even though it was the *first* property that had failed that day. Three of four
+constraints verified reads as diligence and fails identically to none. The
+answer is not more care; it is a preflight that enumerates every inherited
+property every time, which is now in the launcher.
+
 **Per-item protection fails by omission.** Instance 12. Every test in that
 file stubbed `gcloud` except one, and one is enough. When a safety measure has
 to be remembered per use, the question is not whether it will be forgotten but

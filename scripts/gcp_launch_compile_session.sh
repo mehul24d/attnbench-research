@@ -122,6 +122,64 @@ if [[ -n "$EXISTING" ]] && [[ "${GCP_ALLOW_SECOND_INSTANCE:-0}" != "1" ]]; then
   exit 1
 fi
 
+# PREFLIGHT: a machine image is locked to the family it was captured from.
+#
+# Learned the hard way on 2026-09-05, over four failed creates and no successes.
+# attnbench-l4-image-v4 was captured from a g2-standard-8 and records THREE
+# properties that a different family rejects:
+#
+#   machineType         g2-standard-8   -- overridable (--machine-type)
+#   guestAccelerators   nvidia-l4       -- replaceable, but NEVER CLEARABLE
+#   disks[0].interface  NVME            -- not overridable at all
+#
+# The last two are the trap. `--boot-disk-interface` shapes a boot disk gcloud
+# CREATES; it is ignored when the disk comes from a machine image, so an A2
+# rejects the inherited NVME outright. And gcloud requires `type=` whenever
+# --accelerator is given, so there is no way to say "no accelerator" -- which
+# means the image can only boot on a family that accepts an L4, i.e. g2 alone.
+# Those two constraints together are mutually exclusive with escaping the
+# contended GPU pool, so no CPU family can be used as a workaround.
+#
+# The durable fix is a plain DISK image rather than a machine image -- see
+# docs/machine_image_family_lock.md. This check exists so that until that is
+# done, the failure arrives here in one second with an explanation, rather
+# than as a sequence of unrelated-looking API rejections.
+IMAGE_PROPS="$(gcloud compute machine-images describe "$SOURCE_MACHINE_IMAGE" \
+    --project="$PROJECT" \
+    --format="value(sourceInstanceProperties.machineType,sourceInstanceProperties.guestAccelerators[0].acceleratorType)" \
+    2>/dev/null || true)"
+IMAGE_MACHINE_TYPE="$(printf '%s' "$IMAGE_PROPS" | awk '{print $1}')"
+IMAGE_ACCELERATOR="$(printf '%s' "$IMAGE_PROPS" | awk '{print $2}')"
+IMAGE_FAMILY="${IMAGE_MACHINE_TYPE%%-*}"
+TARGET_FAMILY="${MACHINE_TYPE%%-*}"
+
+if [[ -n "$IMAGE_MACHINE_TYPE" ]] && [[ "$IMAGE_FAMILY" != "$TARGET_FAMILY" ]] \
+   && [[ "${GCP_ALLOW_CROSS_FAMILY_IMAGE:-0}" != "1" ]]; then
+  echo "REFUSING TO LAUNCH -- cross-family machine image." >&2
+  echo >&2
+  echo "  machine image : $SOURCE_MACHINE_IMAGE" >&2
+  echo "  captured from : $IMAGE_MACHINE_TYPE (family '$IMAGE_FAMILY')" >&2
+  echo "  requested     : $MACHINE_TYPE (family '$TARGET_FAMILY')" >&2
+  if [[ -n "$IMAGE_ACCELERATOR" ]]; then
+    echo "  image carries : guestAccelerators=$IMAGE_ACCELERATOR" >&2
+  fi
+  echo >&2
+  echo "A machine image records the machine type, the accelerators AND the" >&2
+  echo "boot disk interface of the instance it was captured from. The machine" >&2
+  echo "type can be overridden; the accelerator can only be REPLACED, never" >&2
+  echo "cleared; the disk interface cannot be changed at all. So this image" >&2
+  echo "can only boot the family it came from." >&2
+  echo >&2
+  echo "Fix: capture a plain DISK image instead --" >&2
+  echo "    gcloud compute images create attnbench-env-vN \\" >&2
+  echo "        --source-disk=DISK --source-disk-zone=ZONE --force" >&2
+  echo "A disk image carries no machine type, no accelerators and no disk" >&2
+  echo "interface, so it boots any family. See docs/machine_image_family_lock.md" >&2
+  echo >&2
+  echo "To attempt anyway: GCP_ALLOW_CROSS_FAMILY_IMAGE=1" >&2
+  exit 1
+fi
+
 if ! gcloud compute machine-images describe "$SOURCE_MACHINE_IMAGE" \
       --project="$PROJECT" --format="value(status)" 2>/dev/null | grep -q READY; then
   echo "Source machine image '$SOURCE_MACHINE_IMAGE' is missing or not READY." >&2

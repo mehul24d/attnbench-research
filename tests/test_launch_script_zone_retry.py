@@ -36,6 +36,9 @@ FAKE_GCLOUD = r"""#!/usr/bin/env bash
 ARGS="$*"
 case "$ARGS" in
   *"config get-value project"*) echo "test-project"; exit 0 ;;
+  *"sourceInstanceProperties"*)
+      printf '%s\t%s\n' "${FAKE_IMAGE_MACHINE_TYPE-g2-standard-8}" \
+                          "${FAKE_IMAGE_ACCELERATOR-nvidia-l4}"; exit 0 ;;
   *"machine-images describe"*)  echo "READY"; exit 0 ;;
   *"machine-images list"*)      exit 0 ;;
   *"instances list"*)           printf '%s' "${FAKE_EXISTING_INSTANCES:-}"; exit 0 ;;
@@ -78,6 +81,8 @@ def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = "", **extra_e
         CREATE_ARGV_LOG=str(argv_log),
         FAIL_ZONES=fail_zones,
         INVALID_ZONES="",
+        FAKE_IMAGE_MACHINE_TYPE="g2-standard-8",
+        FAKE_IMAGE_ACCELERATOR="nvidia-l4",
         FAKE_EXISTING_INSTANCES=existing,
         GCP_ZONE_FALLBACKS=zones,
         GCP_PROJECT="test-project",
@@ -153,6 +158,8 @@ def test_the_a2_override_reaches_the_create_call(tmp_path):
     must not be inherited."""
     proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
                    GCP_MACHINE_TYPE="a2-ultragpu-1g",
+                   # exercising flag plumbing, not the family guard
+                   GCP_ALLOW_CROSS_FAMILY_IMAGE="1",
                    GCP_PROVISIONING_MODEL="SPOT",
                    GCP_ACCELERATOR="type=nvidia-a100-80gb,count=1")
     assert proc.returncode == 0, proc.stderr
@@ -217,6 +224,8 @@ def test_a_real_stockout_still_says_it_is_transient(tmp_path):
 def test_the_boot_disk_interface_override_reaches_the_create_call(tmp_path):
     proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
                    GCP_MACHINE_TYPE="a2-ultragpu-1g",
+                   # exercising flag plumbing, not the family guard
+                   GCP_ALLOW_CROSS_FAMILY_IMAGE="1",
                    GCP_BOOT_DISK_INTERFACE="SCSI")
     assert proc.returncode == 0, proc.stderr
     assert "--boot-disk-interface=SCSI" in proc.create_argv
@@ -321,3 +330,71 @@ def test_the_multi_zone_advice_survives():
     """asia-south1 stocked out in all three zones and cleared minutes later.
     That advice is correct there and must not be lost."""
     assert "retrying the same" in SCRIPT.read_text()
+
+
+# ---------------------------------------------------------------------------
+# A machine image is locked to the family it was captured from
+# ---------------------------------------------------------------------------
+
+def test_a_cross_family_launch_is_refused_before_any_create(tmp_path):
+    """2026-09-05: four creates were attempted against an A2 using an image
+    captured from a G2, each failing on a different inherited property. The
+    launcher should say so in one second instead."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a",
+                       GCP_MACHINE_TYPE="a2-ultragpu-1g")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert tried == [], "no create may be attempted -- that is the point"
+    assert "cross-family machine image" in out
+
+
+def test_the_refusal_explains_all_three_inherited_properties(tmp_path):
+    """Naming only the one that happened to fail today would send the next
+    person round the same loop: fix the accelerator, hit NVME, fix NVME, find
+    the accelerator cannot be cleared."""
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
+                   GCP_MACHINE_TYPE="a2-ultragpu-1g")
+    out = proc.stdout + proc.stderr
+    assert "g2-standard-8" in out and "a2-ultragpu-1g" in out
+    assert "nvidia-l4" in out
+    assert "never" in out.lower() and "cleared" in out.lower()
+    assert "interface cannot be changed" in out
+
+
+def test_the_refusal_names_the_durable_fix(tmp_path):
+    """A guard that blocks without pointing at the way out gets bypassed."""
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
+                   GCP_MACHINE_TYPE="a2-ultragpu-1g")
+    out = proc.stdout + proc.stderr
+    assert "images create" in out
+    assert "--force" in out
+    assert "machine_image_family_lock" in out
+
+
+def test_a_same_family_launch_is_unaffected(tmp_path):
+    """Every L4 session to date is same-family. The guard must be invisible
+    to the path that produced the entire dataset."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a")
+    assert proc.returncode == 0, proc.stderr
+    assert tried == ["zone-a"]
+    assert "cross-family" not in (proc.stdout + proc.stderr)
+
+
+def test_the_escape_hatch_works_but_must_be_asked_for(tmp_path):
+    """A plain disk image has no machineType, so this check cannot see it is
+    safe. The override exists so the guard does not block the fix itself."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a",
+                       GCP_MACHINE_TYPE="a2-ultragpu-1g",
+                       GCP_ALLOW_CROSS_FAMILY_IMAGE="1")
+    assert proc.returncode == 0, proc.stderr
+    assert tried == ["zone-a"]
+
+
+def test_an_image_with_no_recorded_machine_type_does_not_block(tmp_path):
+    """Absence of data is not evidence of a mismatch. A guard that fires on a
+    missing field gets disabled within a day."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a",
+                       GCP_MACHINE_TYPE="a2-ultragpu-1g",
+                       FAKE_IMAGE_MACHINE_TYPE="", FAKE_IMAGE_ACCELERATOR="")
+    assert proc.returncode == 0, proc.stderr
+    assert tried == ["zone-a"]

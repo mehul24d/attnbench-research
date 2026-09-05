@@ -18,6 +18,14 @@ on an L4 but loses elsewhere" is a hypothesis with one data point.
 | quota | all gating metrics confirmed at 12/12/1 — see below |
 | image | `attnbench-l4-image-v4-20260903`, **global**, `storageLocations: ['asia']` |
 
+> **BLOCKED 2026-09-05.** The v4 machine image cannot boot an A2 at all: it
+> records `guestAccelerators: nvidia-l4` (replaceable, never clearable) and
+> `disks[0].interface: NVME` (not overridable), so it boots `g2` alone. Four
+> creates confirmed this; none reached a capacity check. The session cannot
+> run until a plain **disk** image exists — see
+> `docs/machine_image_family_lock.md`. Capture it in the next G2 session, from
+> the running instance, with `gcloud compute images create --force`.
+
 Quota verified live, 2026-09-05: `A2_CPUS` 12, `PREEMPTIBLE_CPUS` 12,
 `PREEMPTIBLE_NVIDIA_A100_80GB_GPUS` 1, `CPUS` 100, `CPUS_ALL_REGIONS` 32,
 `GPUS_ALL_REGIONS` 1. Nothing is short.
