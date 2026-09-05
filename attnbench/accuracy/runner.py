@@ -106,6 +106,95 @@ def load_done_keys(checkpoint_path: Path) -> set[tuple[str, str, str, str]]:
     return set(zip(df["config_key"], df["backend"], df["task"], df["example_id"]))
 
 
+class CodeContinuityError(RuntimeError):
+    """Resuming an accuracy run into rows written by different code."""
+
+
+def check_code_continuity(checkpoint_path: Path, *,
+                          current: "provenance.Provenance",
+                          allow_mixed_commits: bool = False,
+                          allow_dirty: bool = False) -> None:
+    """Refuse to resume into a checkpoint written at a different commit.
+
+    The mirror of `load_done_keys`'s deliberate omission, and the reason both
+    belong here. An accuracy score does not depend on which MACHINE produced
+    it -- so host is correctly ignored -- but it depends entirely on the CODE
+    that produced it: the attention swap in `accuracy/model.py`, the example
+    generation and scoring in `accuracy/ruler.py`, the mask, the kernel. A
+    resume that silently mixes two commits produces one parquet answering two
+    questions, and nothing downstream can separate them.
+
+    This matters now rather than in principle: Stage 3 is ~13.4 h of compute
+    and will be run in three sessions across several days, which is exactly
+    the window in which a repository changes. Stage 2's equivalent hazard
+    (`analysis.code_identity`) was found only after four segments had already
+    been measured.
+
+    Whole-commit equality, not the per-backend fingerprinting Stage 2 needed.
+    There the question was "may these independently-motivated segments be
+    joined?", and a blanket answer was wrong because it was yes for seven
+    backends and no for two. Here the segments are one experiment split for
+    scheduling, so any change to the code that produced a row makes the
+    remainder a different run. The coarser check is the correct one, not a
+    lazier one.
+
+    `git_dirty` refuses in both directions: a checkpoint written from a dirty
+    tree cannot be shown to match anything, and resuming FROM a dirty tree
+    cannot be shown to match the checkpoint. A commit is a claim about
+    history; only `git_dirty` says whether it describes what ran.
+    """
+    # A first segment has nothing to be continuous WITH, and blocking it here
+    # would turn this into a general commit-hygiene check that fires on every
+    # exploratory run -- which is how a guard acquires an unconditional
+    # override in front of it. The dirty flag still lands on every row, and
+    # the downstream join refuses it there.
+    p = Path(checkpoint_path)
+    if not p.exists():
+        return
+    df = pd.read_parquet(p)
+    if df.empty:
+        return
+
+    if not allow_dirty:
+        dirty_now = bool(getattr(current, "git_dirty", False))
+        dirty_before = ("git_dirty" in df.columns
+                        and bool(df["git_dirty"].fillna(False).astype(bool).any()))
+        if dirty_now or dirty_before:
+            where = " and ".join(
+                w for w, flag in (("this working tree", dirty_now),
+                                   ("the checkpoint's rows", dirty_before)) if flag)
+            raise CodeContinuityError(
+                f"{where} carry uncommitted changes, so the commit recorded on "
+                f"these rows does not establish what code ran. Commit first, or "
+                f"pass allow_dirty=True to state that you have checked.")
+
+    if "git_commit" not in df.columns:
+        raise CodeContinuityError(
+            f"{p} has no git_commit column, so it cannot be shown that its "
+            f"rows were produced by the code running now. Start a new "
+            f"checkpoint rather than appending to one of unknown provenance.")
+
+    prior = sorted({str(c) for c in df["git_commit"].dropna().unique()
+                    if str(c) not in ("None", "nan", "HEAD", "")})
+    now = str(getattr(current, "git_commit", "") or "")
+    if not prior:
+        raise CodeContinuityError(
+            f"{p} records no usable commit (found "
+            f"{sorted({str(c) for c in df['git_commit'].unique()})}).")
+    if allow_mixed_commits:
+        return
+    if prior != [now]:
+        raise CodeContinuityError(
+            f"{p} was written at {', '.join(c[:12] for c in prior)} and this "
+            f"process is at {now[:12] or '(none)'}. Stage 3 runs in several "
+            f"sessions across several days; a repository change between them "
+            f"makes the remainder a different experiment, and the rows would "
+            f"be indistinguishable afterwards.\n\nCheck out the segment's "
+            f"pinned commit and re-run, write the new segment to its own "
+            f"out_dir, or pass allow_mixed_commits=True having established "
+            f"the difference cannot affect these rows.")
+
+
 @dataclass(frozen=True)
 class CellDecision:
     cell: AccuracyCell
@@ -144,6 +233,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                                          tuple[str, Optional[float]]],
                   provenance_fn: Callable[[], "provenance.Provenance"] = provenance.capture,
                   dry_run: bool = False, checkpoint_every: int = 1,
+                  allow_mixed_commits: bool = False, allow_dirty: bool = False,
                   ) -> AccuracyReport:
     """Stage 3 entry point.
 
@@ -183,6 +273,9 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
     out_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = out_dir / "accuracy.parquet"
 
+    check_code_continuity(checkpoint_path, current=provenance_fn(),
+                          allow_mixed_commits=allow_mixed_commits,
+                          allow_dirty=allow_dirty)
     done_keys = load_done_keys(checkpoint_path)
     decisions = plan(cells, done_keys=done_keys)
     report = AccuracyReport.from_decisions(decisions)

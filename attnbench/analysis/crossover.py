@@ -149,3 +149,63 @@ def crossover_point(cross: pd.DataFrame, *, gpu_name: str, batch: int,
         rows = rows[rows["resolvable"]]
     wins = rows[rows[ratio] > 1].sort_values("seq_len")
     return int(wins["seq_len"].iloc[0]) if not wins.empty else None
+
+
+def advantage_shift(matched: pd.DataFrame, *, reference: str, comparison: str,
+                    ) -> pd.DataFrame:
+    """Per-cell ratio-of-ratios: how much larger `comparison`'s advantage is
+    than `reference`'s, at identical (seq_len, batch).
+
+    **Why this is the stronger form of the claim.** A crossover point is where
+    one curve crosses 1.0, so pinning it depends on the cells nearest parity --
+    the cells whose margin is smallest relative to measurement noise, and the
+    ones an instrument resolves worst. On the 2026-09-06 data the matched cell
+    that would pin it missed its resolution bar by 0.007.
+
+    The direction and size of the gap between the two architectures does not
+    have that problem. It is measured at every matched cell, including the
+    ones far from parity where the ratios are large and the noise is
+    proportionally small, and a consistent sign across many cells is evidence
+    that no single cell has to carry.
+
+    Returns the matched frame with `advantage_shift` (comparison / reference)
+    and `comparison_ahead` (whether it exceeds 1.0) added.
+    """
+    for col in (reference, comparison):
+        if col not in matched.columns:
+            raise CrossoverError(
+                f"{col!r} is not a column of the matched table; pass the "
+                f"gpu_name values as they appear there, e.g. "
+                f"{[c for c in matched.columns if 'NVIDIA' in str(c)]}")
+    out = matched.copy()
+    out["advantage_shift"] = out[comparison] / out[reference]
+    out["comparison_ahead"] = out["advantage_shift"] > 1.0
+    return out
+
+
+def sign_consistency(shifted: pd.DataFrame, *, min_seq_len: int = 0) -> dict:
+    """How many matched cells agree on the direction of the shift.
+
+    A sign summary rather than a mean: the per-cell magnitudes are ratios of
+    ratios and their errors compound, while the SIGN is robust to that. `k` of
+    `n` cells pointing the same way is the claim; the magnitude range is
+    context for it.
+
+    `min_seq_len` excludes short cells without deleting them from the record.
+    The exclusion is a real one on this dataset -- at 1024/batch 1 the A100
+    runs a 0.09 ms kernel, the smallest measurement in the study -- and it is
+    a parameter rather than a hardcoded cut so a reader sees both numbers.
+    """
+    sub = shifted[shifted["seq_len"] >= min_seq_len]
+    if sub.empty:
+        raise CrossoverError(f"no matched cells at seq_len >= {min_seq_len}")
+    ahead = int(sub["comparison_ahead"].sum())
+    return {
+        "n": len(sub),
+        "ahead": ahead,
+        "against": len(sub) - ahead,
+        "min_shift": float(sub["advantage_shift"].min()),
+        "max_shift": float(sub["advantage_shift"].max()),
+        "median_shift": float(sub["advantage_shift"].median()),
+        "min_seq_len": min_seq_len,
+    }

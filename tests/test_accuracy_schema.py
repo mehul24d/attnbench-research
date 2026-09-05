@@ -122,6 +122,20 @@ def test_build_cells_gives_each_backend_only_its_own_configs():
     assert by_backend["block_sparse"].mask == "block_sparse"
 
 
+def _clean_prov(commit="a" * 40, host="machine-a"):
+    """Provenance with a real commit and a clean tree.
+
+    The resume tests are about resume, and the real `capture()` reports the
+    developer's working tree -- which is usually dirty while these tests are
+    being edited, so the code-continuity guard would fail them for a reason
+    that has nothing to do with what they assert. Pinning it also lets the
+    guard's own behaviour be tested deliberately, below.
+    """
+    from dataclasses import replace as dc_replace
+    return lambda: dc_replace(prov_mod.capture(), git_commit=commit,
+                              git_dirty=False, host=host)
+
+
 def test_resume_after_simulated_crash(tmp_path):
     cfg = _cfg()
     examples = [_example(example_id=f"ex{i}") for i in range(5)]
@@ -139,7 +153,8 @@ def test_resume_after_simulated_crash(tmp_path):
 
     with pytest.raises(RuntimeError):
         run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
-                    generate_fn=crash_after_two, checkpoint_every=1)
+                    generate_fn=crash_after_two, checkpoint_every=1,
+                    provenance_fn=_clean_prov())
 
     partial = pd.read_parquet(tmp_path / "accuracy.parquet")
     assert len(partial) == 2
@@ -151,7 +166,8 @@ def test_resume_after_simulated_crash(tmp_path):
         return example.answer[0], 1.0
 
     report = run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
-                          generate_fn=count_calls, checkpoint_every=1)
+                          generate_fn=count_calls, checkpoint_every=1,
+                          provenance_fn=_clean_prov())
 
     assert calls2["n"] == 3           # only the 3 not-yet-done cells ran
     assert report.run == 3
@@ -179,8 +195,10 @@ def test_resume_works_across_a_host_change_unlike_stage2():
         return example.answer[0], 1.0
 
     with tempfile.TemporaryDirectory() as out_dir:
-        prov_a = lambda: dc_replace(prov_mod.capture(), host="machine-a")
-        prov_b = lambda: dc_replace(prov_mod.capture(), host="machine-b")
+        # Same commit, different host -- the case accuracy deliberately
+        # allows. Code continuity is what must hold, not host continuity.
+        prov_a = _clean_prov(host="machine-a")
+        prov_b = _clean_prov(host="machine-b")
 
         run_accuracy(cells, out_dir=out_dir, examples_by_id=examples_by_id,
                     generate_fn=gen, provenance_fn=prov_a)
@@ -214,3 +232,113 @@ def test_dry_run_reports_without_writing():
         assert report.run == 1
         import os
         assert not os.path.exists(os.path.join(out_dir, "accuracy.parquet"))
+
+
+# --- code continuity: the mirror of the host-independence above ------------
+#
+# Stage 3 is ~13.4 h of compute and will run in three sessions across several
+# days. That is exactly the window in which a repository changes, and the
+# resume path recognises a cell as done from its keys alone.
+
+def test_resuming_at_a_different_commit_refuses(tmp_path):
+    from attnbench.accuracy.runner import CodeContinuityError
+
+    cells = _one_cell()
+    examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
+    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+
+    run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
+                 generate_fn=gen, provenance_fn=_clean_prov(commit="a" * 40))
+
+    with pytest.raises(CodeContinuityError, match="different experiment"):
+        run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
+                     generate_fn=gen, provenance_fn=_clean_prov(commit="b" * 40))
+
+
+def test_a_dirty_tree_refuses_in_both_directions(tmp_path):
+    """A commit is a claim about history; only git_dirty says whether it
+    describes what ran."""
+    from dataclasses import replace as dc_replace
+
+    from attnbench.accuracy.runner import CodeContinuityError
+
+    cells = _one_cell()
+    examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
+    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+
+    dirty = lambda: dc_replace(prov_mod.capture(), git_commit="a" * 40,
+                               git_dirty=True, host="h")
+
+    # (a) clean checkpoint, dirty resume
+    seg_a = tmp_path / "a"; seg_a.mkdir()
+    run_accuracy(cells, out_dir=seg_a, examples_by_id=examples_by_id,
+                 generate_fn=gen, provenance_fn=_clean_prov())
+    with pytest.raises(CodeContinuityError, match="this working tree"):
+        run_accuracy(cells, out_dir=seg_a, examples_by_id=examples_by_id,
+                     generate_fn=gen, provenance_fn=dirty)
+    run_accuracy(cells, out_dir=seg_a, examples_by_id=examples_by_id,
+                 generate_fn=gen, provenance_fn=dirty, allow_dirty=True)
+
+    # (b) dirty checkpoint, clean resume -- the direction that is easy to
+    # miss, because the tree in front of you looks fine.
+    seg_b = tmp_path / "b"; seg_b.mkdir()
+    run_accuracy(cells, out_dir=seg_b, examples_by_id=examples_by_id,
+                 generate_fn=gen, provenance_fn=dirty)
+    with pytest.raises(CodeContinuityError, match="the checkpoint's rows"):
+        run_accuracy(cells, out_dir=seg_b, examples_by_id=examples_by_id,
+                     generate_fn=gen, provenance_fn=_clean_prov())
+
+
+def test_a_fresh_run_from_a_dirty_tree_is_not_blocked(tmp_path):
+    """Scope, stated deliberately. There is nothing to be CONTINUOUS with on
+    a first segment, and blocking it here would make this guard a general
+    commit-hygiene check that fires on every exploratory run -- which is how
+    a guard gets an unconditional override pasted in front of it. The dirty
+    flag still lands on every row, and the downstream join
+    (analysis.cross_arch) refuses it there."""
+    cells = _one_cell()
+    examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
+    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+    from dataclasses import replace as dc_replace
+
+    r = run_accuracy(
+        cells, out_dir=tmp_path, examples_by_id=examples_by_id, generate_fn=gen,
+        provenance_fn=lambda: dc_replace(prov_mod.capture(), git_commit="a" * 40,
+                                          git_dirty=True, host="h"))
+    assert r.run == 1
+    assert bool(pd.read_parquet(tmp_path / "accuracy.parquet")["git_dirty"].iloc[0])
+
+
+def test_the_override_is_available_and_has_to_be_asked_for(tmp_path):
+    cells = _one_cell()
+    examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
+    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+
+    run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
+                 generate_fn=gen, provenance_fn=_clean_prov(commit="a" * 40))
+    report = run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
+                          generate_fn=gen,
+                          provenance_fn=_clean_prov(commit="b" * 40),
+                          allow_mixed_commits=True)
+    assert report.skip_done == 1
+
+
+def test_a_fresh_out_dir_is_never_blocked(tmp_path):
+    """Writing a new segment to its own out_dir is one of the two repairs the
+    error message offers, so it must actually work."""
+    cells = _one_cell()
+    examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
+    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+
+    for commit, sub in (("a" * 40, "seg1"), ("b" * 40, "seg2")):
+        out = tmp_path / sub
+        out.mkdir()
+        r = run_accuracy(cells, out_dir=out, examples_by_id=examples_by_id,
+                         generate_fn=gen, provenance_fn=_clean_prov(commit=commit))
+        assert r.run == 1
+
+
+def _one_cell():
+    return build_cells(
+        configs_by_backend={"fake": [_cfg()]},
+        examples_by_task_length={("niah_single", 1024): [_example(example_id="ex0")]})

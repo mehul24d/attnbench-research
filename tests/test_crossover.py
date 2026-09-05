@@ -195,3 +195,66 @@ def test_crossover_point_can_require_resolvable_cells():
                            resolvable_only=True) == 16384
     assert crossover_point(cross, gpu_name=A100, batch=4,
                            resolvable_only=True) == 8192
+
+
+# --- the shift, which is the claim that does not rest on one cell -----------
+
+def test_the_advantage_shift_points_one_way_at_almost_every_matched_cell():
+    """The stronger form of the result. A crossover POINT depends on the cells
+    nearest parity, which are the ones the instrument resolves worst; the SIZE
+    of the gap between the two cards is measured everywhere, including far from
+    parity where the ratios are large and the noise proportionally small."""
+    from attnbench.analysis.crossover import advantage_shift, sign_consistency
+
+    matched = matched_cells(crossover_table(frame()))
+    shifted = advantage_shift(matched, reference=L4, comparison=A100)
+
+    all_cells = sign_consistency(shifted)
+    assert all_cells["n"] == all_cells["ahead"] + all_cells["against"]
+    assert all_cells["against"] == 1, "one cell points the other way"
+
+    long_cells = sign_consistency(shifted, min_seq_len=2048)
+    assert long_cells["against"] == 0
+    assert long_cells["min_shift"] > 1.0
+
+
+def test_the_dissenting_cell_is_the_shortest_kernel_in_the_study():
+    """1024/batch 1, where the A100 runs a 0.09 ms FA2 kernel. Named rather
+    than excluded by a hardcoded cut, so a reader sees both numbers."""
+    from attnbench.analysis.crossover import advantage_shift
+
+    matched = matched_cells(crossover_table(frame()))
+    shifted = advantage_shift(matched, reference=L4, comparison=A100)
+    against = shifted[~shifted["comparison_ahead"]]
+    assert len(against) == 1
+    assert (int(against.iloc[0]["seq_len"]), int(against.iloc[0]["batch"])) == (1024, 1)
+
+
+def test_the_shift_does_not_depend_on_the_unresolvable_cell():
+    """The 8192/batch-1 cell cannot resolve its own verdict. Dropping it must
+    not change the direction of the claim -- that is what makes this the
+    version of the result worth quoting."""
+    from attnbench.analysis.crossover import advantage_shift, sign_consistency
+
+    matched = matched_cells(crossover_table(frame()))
+    shifted = advantage_shift(matched, reference=L4, comparison=A100)
+    without = shifted[~((shifted["seq_len"] == 8192) & (shifted["batch"] == 1))]
+    assert sign_consistency(without, min_seq_len=2048)["against"] == 0
+
+
+def test_a_gpu_name_that_is_not_a_column_says_which_names_exist():
+    from attnbench.analysis.crossover import CrossoverError, advantage_shift
+
+    matched = matched_cells(crossover_table(frame()))
+    with pytest.raises(CrossoverError, match="NVIDIA"):
+        advantage_shift(matched, reference="NVIDIA H100", comparison=A100)
+
+
+def test_an_empty_restriction_refuses_rather_than_reporting_zero_of_zero():
+    """0 of 0 cells disagreeing reads as unanimous support."""
+    from attnbench.analysis.crossover import CrossoverError, advantage_shift, sign_consistency
+
+    matched = matched_cells(crossover_table(frame()))
+    shifted = advantage_shift(matched, reference=L4, comparison=A100)
+    with pytest.raises(CrossoverError, match="no matched cells"):
+        sign_consistency(shifted, min_seq_len=999999)

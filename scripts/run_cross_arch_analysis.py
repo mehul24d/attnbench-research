@@ -47,7 +47,7 @@ from attnbench.analysis import composition, cross_arch  # noqa: E402
 from attnbench.analysis.code_identity import (  # noqa: E402
     backends_with_drift, restrict_to_reference_code)
 from attnbench.analysis.crossover import (  # noqa: E402
-    crossover_table, matched_cells)
+    advantage_shift, crossover_table, matched_cells, sign_consistency)
 
 # The segments this study has produced, newest last. Listed rather than
 # globbed: `results/` also holds aborted runs, warm-up probes and a duplicate
@@ -230,6 +230,25 @@ def main() -> int:
             print(f"  winner DIFFERS at seq={int(r.seq_len)}/"
                   f"batch={int(r.batch)} -- {tag}")
 
+    arches = [c for c in matched.columns if str(c).startswith("NVIDIA")]
+    if len(arches) == 2:
+        ref = next(a for a in arches if "L4" in a)
+        cmp_ = next(a for a in arches if a != ref)
+        shifted = advantage_shift(matched, reference=ref, comparison=cmp_)
+        print(f"\n## Advantage shift ({cmp_} relative to {ref}) -- the claim "
+              f"that does not rest on one cell")
+        for lo in (0, 2048):
+            c = sign_consistency(shifted, min_seq_len=lo)
+            label = "all matched cells" if lo == 0 else f"seq_len >= {lo}"
+            print(f"  {label:22s} {c['ahead']}/{c['n']} cells favour "
+                  f"{cmp_.replace('NVIDIA ', '')}, shift "
+                  f"{c['min_shift']:.2f}-{c['max_shift']:.2f}x "
+                  f"(median {c['median_shift']:.2f})")
+        dissent = shifted[~shifted["comparison_ahead"]]
+        for r in dissent.itertuples():
+            print(f"  against: seq={int(r.seq_len)} batch={int(r.batch)} "
+                  f"shift={r.advantage_shift:.2f}")
+
     n_res = int(cross["resolvable"].sum())
     print(f"\n  {n_res}/{len(cross)} crossover cells resolve their own verdict "
           f"against the latency they were measured at.")
@@ -271,6 +290,8 @@ def main() -> int:
     } for c in comparisons]).to_parquet(args.out / "comparisons.parquet")
     cross.to_parquet(args.out / "crossover.parquet")
     matched.to_parquet(args.out / "crossover_matched.parquet")
+    if len(arches) == 2:
+        shifted.to_parquet(args.out / "advantage_shift.parquet")
     pd.DataFrame([{
         "host": s.host, "gpu_name": s.gpu_name, "backend": s.backend,
         "config_key": s.config_key, "latency_ms": s.latency_ms,
