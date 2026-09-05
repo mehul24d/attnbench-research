@@ -426,23 +426,44 @@ silent hole in it.
 so a future backward segment appends to this dataset instead of colliding
 with it.
 
-## The sparse arm is exactly-verified to 4096, and inferred above it
+## The sparse arm's verification ceiling is a property of the card, not the study
 
-**The honest statement.** `block_sparse` is verified against a float64 naive
-oracle (`masked_exact`, same mask on both sides) at every seq_len up to and
-including 4096, across both block sizes. Above 4096 there is no numerical
-verification at all, and its correctness is *inferred from the kernel's
-length-independence* rather than measured.
+**The honest statement, restated 2026-09-05 after the A100 session.** How far
+`block_sparse` can be verified is **architecture-dependent**, and the earlier
+version of this section stated an sm_89 result as if it were a property of the
+method:
 
-That is narrower than "unverified", and it is a consequence of hardware, not
-of methodology. Three independent constraints converge, and **any one of them
-failing differently would have left a usable reference**:
+| | oracle (`masked_exact`) | peer (`cross_backend_pair`) | inferred only |
+|---|---|---|---|
+| **L4, sm_89, 23 GiB** | ≤ 4096 | — | > 4096 |
+| **A100, sm_80, 80 GiB** | ≤ **8192** | **16384** | > 16384 |
+
+Both terms that moved are hardware. The float64 oracle needs 16 GiB at 8192,
+which an 80 GB card has and a 23 GB card does not. And `flex` lowers
+block-sparse at `block_size=128` on sm_80, restoring the second opinion that
+sm_89's shared-memory limit removed — see the flex-sparse section above.
+
+**16384 is a pair, not a panel, and the rows say so.** The
+`cross_backend_pair` verdicts at 16384 carry their own caveat text: *"agrees
+with 1 independent implementations (flex) within atol=0.04; NOT verified
+against a float64 oracle, which would need 1024.0 GiB for this config. WEAKER
+EVIDENCE: only 2 implementations survived this shape, below the 3 this study
+normally requires, so a shared bug between two kernels would not be caught
+here."* Two block-sparse kernels agreeing can still share a *convention* error
+— the block-grid causality bug of 2026-09-03 is exactly that shape — which is
+what oracle agreement rules out and peer agreement does not. So 16384 is
+better than inference and weaker than verification, and it is recorded as its
+own `check_kind` rather than folded into either neighbour.
+
+**Why the constraints bind at all.** Three converge, and **any one of them
+failing differently leaves a usable reference** — which is precisely what
+Ampere demonstrates, by relaxing two of the three:
 
 | candidate reference | why it cannot serve above 4096 |
 |---|---|
 | the five dense kernels (fa2, sdpa_×4) | they *decline* `block_sparse` — `claims_support` returns `(False, "no block sparse")`. Run anyway they ignore the mask and compute plain causal attention, which is a confident answer about a different function |
-| `naive` (the float64 oracle) | needs 16 GiB at 8192, **64 GiB at 16384, 256 GiB at 32768** against a 23 GiB card |
-| `flex` | cannot lower block-sparse above 1024 on sm_89: 114688 B of shared memory required against a 101376 B limit |
+| `naive` (the float64 oracle) | needs 16 GiB at 8192, **64 GiB at 16384, 256 GiB at 32768**. Against a 23 GiB L4 that caps it at 4096; against an 80 GiB A100 it reaches 8192 and stops there. The wall is the same wall, one band further out |
+| `flex` | on sm_89, cannot lower block-sparse above 1024: 114688 B of shared memory required against a 101376 B limit. **On sm_80 (164 KB/SM) it lowers at `block_size=128` at every band to 16384**, which is what supplies the pair verdicts above |
 
 **Why a second sparse backend was considered and rejected.** FlashInfer would
 need building, is forward-only, and would very likely meet its own sm_89
@@ -458,10 +479,27 @@ dependent in any way observed here: BSA agreed with the naive oracle to
 in the segment 1 data *decreased* with length rather than accumulating. The
 inference is stated so a reader can weigh it, not buried.
 
-**Open on other hardware.** Whether `flex` lowers block-sparse on an A100
-(80 GB, sm_80) is untested. If it does, it restores a third opinion and gives
-the sparse arm real cross-backend verification at 8192 and 16384 on at least
-one architecture — see `docs/stage2_plan.md`, A100 session.
+**Answered on other hardware, 2026-09-05.** This section used to end by asking
+whether `flex` lowers block-sparse on an A100, and to predict that if it did,
+the sparse arm would gain "real cross-backend verification at 8192 and 16384".
+It does lower, and the prediction was half right in a way worth keeping: 8192
+turned out **better** than hoped (the oracle itself fits, so it is
+`masked_exact`, not merely cross-backend) and 16384 **weaker** (one peer, not
+a panel — `cross_backend_pair`).
+
+**And this is itself a cross-architecture result.** Which kernels can be
+*verified*, not just which run fast, depends on the card. That is a claim about
+methodology on real hardware, and it is more useful than the flat limitation it
+replaces: a study that reports "sparse is unverified above 4096" is describing
+its rental budget, while one that reports the ceiling per architecture is
+describing the problem.
+
+**One caveat that travels with these rows.** `max_rel_err` on `masked_exact`
+verdicts reaches 3.3e4 while `max_abs_err` stays at 1.3e-2, because masked
+positions put near-zero values in the denominator. The pass/fail decision keys
+off absolute error for exactly that reason. `max_rel_err` needs a resolution
+floor before it is reportable — the same defect as `CANARY_MIN_LATENCY_MS`,
+still open.
 
 ## Clocks are not locked on every host, and the ratios say so
 
@@ -547,6 +585,9 @@ Four things about it that a reader should have:
 - **Clocks are unlocked on both** (see above). Symmetric, so the ratios are
   uniformly noisy rather than differently controlled -- but 1.26 against 0.84
   is a 50% gap, not a 5% one.
+- **Verification depth also differs by card**, which is a second
+  hardware-conditional result rather than a footnote to this one -- see "The
+  sparse arm's verification ceiling is a property of the card".
 - **The environment is genuinely common:** driver 580.173.02, torch
   2.9.1+cu129, torch_cuda 12.9, triton 3.5.1 on all four hosts, and the timed
   region byte-identical in AST after `code_identity.restrict_to_reference_code`
