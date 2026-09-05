@@ -77,6 +77,20 @@ PROVISIONING_MODEL="${GCP_PROVISIONING_MODEL:-STANDARD}"
 # to leave implicit, which is why it is a named variable and not a comment.
 ACCELERATOR="${GCP_ACCELERATOR:-}"
 
+# Boot disk interface. Empty means "inherit from the machine image", which is
+# right for G2 and WRONG for A2 -- the same shape as GCP_ACCELERATOR above.
+#
+# attnbench-l4-image-v4 was captured from a g2-standard-8, and g2-vm supports
+# NVME, so the image records interface: NVME. a2-ultragpu-1g is not in the
+# NVME-capable family list and the create is rejected outright:
+#
+#   Invalid value for field 'resource.disks[0].interface': 'NVME'.
+#
+# Set GCP_BOOT_DISK_INTERFACE=SCSI for A2. This is the second image property
+# that must not be inherited across families; if a third appears, this file is
+# where it goes.
+BOOT_DISK_INTERFACE="${GCP_BOOT_DISK_INTERFACE:-}"
+
 if [[ -z "$PROJECT" ]]; then
   echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
   exit 1
@@ -117,7 +131,8 @@ if ! gcloud compute machine-images describe "$SOURCE_MACHINE_IMAGE" \
 fi
 
 STARTUP_SCRIPT="$(mktemp)"
-trap 'rm -f "$STARTUP_SCRIPT"' EXIT
+CREATE_ERR="$(mktemp)"
+trap 'rm -f "$STARTUP_SCRIPT" "$CREATE_ERR"' EXIT
 cat > "$STARTUP_SCRIPT" <<EOF
 #!/bin/bash
 # Hard cap: this instance self-terminates even if every teardown step in the
@@ -182,6 +197,7 @@ echo "  provisioning : $PROVISIONING_MODEL"
 echo "  zone(s)      : $ZONE_FALLBACKS (tried in order, STOPPING at first success)"
 echo "  machine-type : $MACHINE_TYPE"
 echo "  accelerator  : ${ACCELERATOR:-inherited from the machine image}"
+echo "  boot disk    : ${BOOT_DISK_INTERFACE:-interface inherited from the machine image}"
 echo "  source image : $SOURCE_MACHINE_IMAGE (machine image)"
 echo "  provisioning : $PROVISIONING_MODEL"
 echo "  hard cap     : shutdown -h +$CAP_MINUTES ($((CAP_MINUTES / 60))h from boot)"
@@ -210,6 +226,8 @@ for Z in $ZONE_FALLBACKS; do
   # too, not just the A2 one this flag exists for.
   ACCEL_FLAG=()
   [[ -n "$ACCELERATOR" ]] && ACCEL_FLAG=(--accelerator="$ACCELERATOR")
+  [[ -n "$BOOT_DISK_INTERFACE" ]] && \
+    ACCEL_FLAG+=(--boot-disk-interface="$BOOT_DISK_INTERFACE")
   if gcloud compute instances create "$INSTANCE_NAME" \
       --project="$PROJECT" \
       --zone="$Z" \
@@ -218,11 +236,37 @@ for Z in $ZONE_FALLBACKS; do
       --maintenance-policy=TERMINATE \
       --provisioning-model="$PROVISIONING_MODEL" \
       ${ACCEL_FLAG[@]+"${ACCEL_FLAG[@]}"} \
-      --metadata-from-file=startup-script="$STARTUP_SCRIPT"; then
+      --metadata-from-file=startup-script="$STARTUP_SCRIPT" 2>"$CREATE_ERR"; then
     CREATED_ZONE="$Z"
     break                     # <-- do not remove: see comment above
   fi
-  echo ">> $Z unavailable (nothing created, nothing billed)"
+  cat "$CREATE_ERR" >&2
+
+  # Classify the failure. A stockout and a bad request are both "create
+  # returned non-zero", and treating them alike is how this script told a
+  # human to "wait and attempt again later" after an NVME/A2 disk-interface
+  # rejection on 2026-09-05 -- advice that would have been followed patiently,
+  # forever, for an error that is deterministic and would never clear.
+  #
+  # A capacity failure is worth retrying and worth trying another zone.
+  # A validation failure will fail identically in every zone, so iterating the
+  # fallback list just prints the same rejection N times and buries it.
+  if grep -qiE 'ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources|resource pool exhausted|currently unavailable|no available capacity|QUOTA_EXCEEDED|Quota .* exceeded' "$CREATE_ERR"; then
+    echo ">> $Z unavailable (nothing created, nothing billed)"
+    continue
+  fi
+
+  echo >&2
+  echo "CONFIGURATION ERROR -- this is NOT a stockout." >&2
+  echo "The request was rejected as invalid, so it will fail the same way in" >&2
+  echo "every zone and on every retry. Nothing was created and nothing is" >&2
+  echo "billing. Fix the request, do not wait and try again." >&2
+  echo >&2
+  echo "Overrides that commonly need setting when the machine image was" >&2
+  echo "captured on a DIFFERENT machine family than the target:" >&2
+  echo "    GCP_ACCELERATOR           e.g. type=nvidia-a100-80gb,count=1" >&2
+  echo "    GCP_BOOT_DISK_INTERFACE   e.g. SCSI  (A2 rejects the image's NVME)" >&2
+  exit 1
 done
 
 if [[ -z "$CREATED_ZONE" ]]; then

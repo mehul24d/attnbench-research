@@ -47,6 +47,12 @@ case "$ARGS" in
       case " $FAIL_ZONES " in
         *" $ZONE "*) echo "ZONE_RESOURCE_POOL_EXHAUSTED" >&2; exit 1 ;;
       esac
+      case " ${INVALID_ZONES:-} " in
+        *" $ZONE "*)
+          echo "ERROR: (gcloud.compute.instances.create) Could not fetch resource:" >&2
+          echo " - Invalid value for field 'resource.disks[0].interface': 'NVME'." >&2
+          exit 1 ;;
+      esac
       echo "Created instance in $ZONE"; exit 0 ;;
 esac
 exit 0
@@ -71,6 +77,7 @@ def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = "", **extra_e
         ATTEMPT_LOG=str(attempts),
         CREATE_ARGV_LOG=str(argv_log),
         FAIL_ZONES=fail_zones,
+        INVALID_ZONES="",
         FAKE_EXISTING_INSTANCES=existing,
         GCP_ZONE_FALLBACKS=zones,
         GCP_PROJECT="test-project",
@@ -162,6 +169,64 @@ def test_the_default_image_is_the_current_one(tmp_path):
     proc, _ = _run(tmp_path, fail_zones="", zones="zone-a")
     assert "attnbench-l4-image-v4-20260903" in proc.create_argv
     assert "v3-20260903" not in proc.create_argv
+
+
+def test_a_validation_error_is_not_reported_as_a_stockout(tmp_path):
+    """The 2026-09-05 defect. `a2-ultragpu-1g` rejected the machine image's
+    NVME boot-disk interface, and the script printed the stockout message --
+    "wait and attempt again later" -- for an error that is deterministic and
+    would never clear. Advice that is patiently followed forever is worse than
+    no advice."""
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a", INVALID_ZONES="zone-a")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "CONFIGURATION ERROR" in out
+    assert "not a stockout" in out.lower()
+    assert "attempt again later" not in out, (
+        "a deterministic rejection must not be described as transient")
+
+
+def test_a_validation_error_does_not_walk_the_zone_list(tmp_path):
+    """A bad request fails identically everywhere. Iterating the fallback list
+    prints the same rejection N times and buries the one that matters."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a zone-b zone-c",
+                       INVALID_ZONES="zone-a zone-b zone-c")
+    assert tried == ["zone-a"], f"stopped after {tried}, should stop at the first"
+
+
+def test_the_error_names_the_overrides_that_fix_it(tmp_path):
+    """Both cross-family image properties found so far, named at the point of
+    failure -- the operator is holding a rejection, not reading this file."""
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a", INVALID_ZONES="zone-a")
+    out = proc.stdout + proc.stderr
+    assert "GCP_BOOT_DISK_INTERFACE" in out and "SCSI" in out
+    assert "GCP_ACCELERATOR" in out
+
+
+def test_a_real_stockout_still_says_it_is_transient(tmp_path):
+    """The other direction: the fix must not turn every capacity failure into
+    a configuration error. Stockouts in this region HAVE cleared minutes
+    later, and that advice is correct for them."""
+    proc, tried = _run(tmp_path, fail_zones="zone-a zone-b", zones="zone-a zone-b")
+    out = proc.stdout + proc.stderr
+    assert tried == ["zone-a", "zone-b"], "a stockout must still try the list"
+    assert "CONFIGURATION ERROR" not in out
+    assert "nothing is billing" in out
+
+
+def test_the_boot_disk_interface_override_reaches_the_create_call(tmp_path):
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
+                   GCP_MACHINE_TYPE="a2-ultragpu-1g",
+                   GCP_BOOT_DISK_INTERFACE="SCSI")
+    assert proc.returncode == 0, proc.stderr
+    assert "--boot-disk-interface=SCSI" in proc.create_argv
+
+
+def test_a_g2_launch_passes_no_boot_disk_interface(tmp_path):
+    """Inherit-from-the-image stays the default; the L4 sessions that produced
+    the whole dataset passed no such flag."""
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a")
+    assert "--boot-disk-interface" not in proc.create_argv
 
 
 def test_refuses_to_launch_when_an_instance_already_exists(tmp_path):
