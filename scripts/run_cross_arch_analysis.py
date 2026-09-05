@@ -179,11 +179,16 @@ def main() -> int:
     print(f"\n## Cross-architecture comparisons (baseline {args.baseline})")
     print(f"  {len(speedups)} within-host ratios -> {len(comparisons)} comparisons")
     print(f"  {len(material) + len(nominal)} flip; {len(material)} clear the "
-          f"5% noise floor")
+          f"resolution their own latencies support")
     if nominal:
-        print(f"  {len(nominal)} flip only nominally -- the weaker side sits "
-              f"within measurement noise of parity, and every row in this "
-              f"dataset was measured on an unlocked card. Not reportable.")
+        print(f"  {len(nominal)} do not. A ratio is only as precise as its "
+              f"shorter latency, and below 5 ms two L4 hosts in this very "
+              f"dataset disagree with each other by up to 27.2% at the same "
+              f"config. Not reportable as hardware-conditional behaviour.")
+        worst = max(nominal, key=lambda c: c.flip_margin)
+        print(f"  widest non-material: {worst.backend} margin "
+              f"{worst.flip_margin:.3f} vs resolution {worst.resolution:.3f} "
+              f"at {worst.min_latency_ms:.2f} ms")
 
     meta = df.drop_duplicates("config_key").set_index("config_key")
     print("\n### Material flips")
@@ -194,7 +199,15 @@ def main() -> int:
         arch = "  ".join(f"{k.replace('NVIDIA ', '')}={v:.3f}"
                          for k, v in sorted(c.speedup_by_architecture.items()))
         print(f"  {c.backend:8s} seq={int(m.seq_len):<6d} batch={int(m.batch):<3d} "
-              f"{arch}   margin={c.flip_margin:.3f}")
+              f"{arch}   margin={c.flip_margin:.3f} > res={c.resolution:.3f} "
+              f"@ {c.min_latency_ms:.1f} ms")
+
+    print("\n### Flips that do not clear their own resolution")
+    for c in sorted(nominal, key=lambda c: -c.flip_margin)[:8]:
+        m = meta.loc[c.config_key]
+        print(f"  {c.backend:8s} seq={int(m.seq_len):<6d} batch={int(m.batch):<3d} "
+              f"margin={c.flip_margin:.3f} < res={c.resolution:.3f} "
+              f"@ {c.min_latency_ms:.1f} ms")
 
     cross = crossover_table(df)
     print("\n## GLA vs FA2 crossover, per cell")
@@ -211,10 +224,21 @@ def main() -> int:
     if disagree.empty:
         print("  The two architectures agree on the winner in every shared cell.")
     else:
-        cells = ", ".join(f"seq={int(r.seq_len)}/batch={int(r.batch)}"
-                          for r in disagree.itertuples())
-        print(f"  The winner DIFFERS in {len(disagree)} shared cell(s): {cells}.")
-        print("  That is the hardware-conditional result, at matched batch.")
+        for r in disagree.itertuples():
+            tag = ("both sides resolvable" if r.both_resolvable else
+                   "NOT resolvable on both sides")
+            print(f"  winner DIFFERS at seq={int(r.seq_len)}/"
+                  f"batch={int(r.batch)} -- {tag}")
+
+    n_res = int(cross["resolvable"].sum())
+    print(f"\n  {n_res}/{len(cross)} crossover cells resolve their own verdict "
+          f"against the latency they were measured at.")
+    unres = cross[~cross["resolvable"]]
+    for r in unres.itertuples():
+        print(f"  UNRESOLVABLE: {r.gpu_name.replace('NVIDIA ', '')} "
+              f"seq={int(r.seq_len)} batch={int(r.batch)} "
+              f"margin={r.margin:.3f} < res={r.resolution:.3f} "
+              f"@ {r.min_latency_ms:.2f} ms")
 
     print("\n## Composition guard")
     try:
@@ -240,7 +264,10 @@ def main() -> int:
            for k, v in c.speedup_by_architecture.items()},
         "flips": c.flips(), "flip_margin": c.flip_margin,
         "flips_materially": c.flips_materially(),
+        "resolution": c.resolution,
+        "min_latency_ms": c.min_latency_ms,
         "caveat": c.caveat(),
+        "resolution_caveat": c.resolution_caveat(),
     } for c in comparisons]).to_parquet(args.out / "comparisons.parquet")
     cross.to_parquet(args.out / "crossover.parquet")
     matched.to_parquet(args.out / "crossover_matched.parquet")

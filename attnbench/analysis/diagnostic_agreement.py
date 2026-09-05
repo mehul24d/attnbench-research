@@ -80,8 +80,27 @@ class AgreementRow:
         return asdict(self)
 
 
+# Below this, two `max_abs_err` values are both effectively zero and their
+# ratio is noise. 1e-6 is two orders below the smallest tolerance in gates.TOL
+# (float32 atol=1e-4), so a real disagreement can never be hidden under it,
+# while 1e-10 against 3e-10 -- which the old 1e-12 divide-by-zero guard scored
+# as a 67% disagreement -- now reads as the agreement it is.
+AGREEMENT_FLOOR = 1e-6
+
+
 def _rel(a: float, b: float) -> float:
-    denom = max(abs(a), abs(b), 1e-12)
+    """Relative gap between two error magnitudes, floored.
+
+    The floor is a RESOLUTION floor, not a divide-by-zero guard. The previous
+    1e-12 prevented the division from blowing up and did nothing about the
+    case that actually matters: both inputs so small that their ratio is
+    determined by float noise rather than by any difference in behaviour.
+    Same defect as `max_rel_err` in gates.py and `CANARY_MIN_LATENCY_MS`'s
+    absence would have been -- a ratio is only as precise as its denominator.
+    """
+    denom = max(abs(a), abs(b))
+    if denom < AGREEMENT_FLOOR:
+        return 0.0
     return abs(a - b) / denom
 
 

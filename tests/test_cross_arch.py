@@ -394,7 +394,11 @@ def test_digest_is_attached_to_every_loaded_row(tmp_path):
     assert joined["segment_digest"].nunique() == 2
 
 
-# --- flip materiality (added 2026-09-05, after the two-architecture join) ---
+# --- flip materiality --------------------------------------------------------
+#
+# Added 2026-09-05 with a flat 5% bar, corrected 2026-09-06. The flat bar was
+# wrong in the dangerous direction: it certified four flips this dataset's own
+# instrument cannot resolve. See RATIO_RESOLUTION_BANDS.
 
 def test_flip_margin_takes_the_weaker_side():
     """A flip is only as strong as its half nearest parity. 0.999 against
@@ -402,9 +406,9 @@ def test_flip_margin_takes_the_weaker_side():
     exactly average, and `flips()` alone cannot tell those apart."""
     from attnbench.analysis.cross_arch import ArchitectureComparison
 
-    real = ArchitectureComparison("gla", "k", {"L4": 0.823, "A100": 1.443})
-    assert real.flip_margin == pytest.approx(0.177)
-    assert real.flips() and real.flips_materially()
+    wide = ArchitectureComparison("gla", "k", {"L4": 0.823, "A100": 1.443})
+    assert wide.flip_margin == pytest.approx(0.177)
+    assert wide.flips()
 
     nominal = ArchitectureComparison("flex", "k", {"L4": 1.001, "A100": 0.837})
     assert nominal.flip_margin == pytest.approx(0.001)
@@ -412,20 +416,83 @@ def test_flip_margin_takes_the_weaker_side():
     assert not nominal.flips_materially()
 
 
-def test_the_materiality_default_is_the_projects_own_drift_tolerance():
-    """The 5% default is not a free parameter: it is canary.DRIFT_TOLERANCE,
-    the measured run-to-run variation on an unlocked card. Both architectures
-    in this study were measured unlocked, so a flip inside that band is
-    indistinguishable from noise. Asserted rather than imported so cross_arch
-    keeps no dependency on the canary machinery."""
-    import inspect
-
-    from attnbench.analysis.canary import DRIFT_TOLERANCE
+def test_materiality_is_measured_from_the_latency_not_fixed():
+    """The same flip margin is material at 40 ms and not at 2 ms, because the
+    instrument resolves differently there. A fixed bar cannot express that."""
     from attnbench.analysis.cross_arch import ArchitectureComparison
 
-    default = inspect.signature(
-        ArchitectureComparison.flips_materially).parameters["margin"].default
-    assert default == DRIFT_TOLERANCE
+    margin = dict(backend="gla", config_key="k",
+                  speedup_by_architecture={"L4": 0.823, "A100": 1.443})
+
+    slow = ArchitectureComparison(
+        **margin, min_latency_by_architecture={"L4": 42.0, "A100": 33.0})
+    assert slow.resolution == pytest.approx(0.133)
+    assert slow.flips_materially(), "0.177 clears 0.133 at long latencies"
+
+    fast = ArchitectureComparison(
+        **margin, min_latency_by_architecture={"L4": 9.5, "A100": 2.05})
+    assert fast.resolution == pytest.approx(0.272)
+    assert not fast.flips_materially(), (
+        "0.177 does not clear 0.272 -- two L4 hosts in this dataset disagree "
+        "with each other by 27.2% at sub-3 ms latencies")
+
+
+def test_the_shortest_latency_on_either_side_sets_the_resolution():
+    """A comparison is as imprecise as its least precise half, and the flip
+    has to survive both halves. Taking the mean, or the A100's own latency,
+    would let one long-running side buy precision for a short-running one."""
+    from attnbench.analysis.cross_arch import ArchitectureComparison
+
+    c = ArchitectureComparison("gla", "k", {"L4": 0.8, "A100": 1.4},
+                               min_latency_by_architecture={"L4": 90.0,
+                                                            "A100": 2.0})
+    assert c.min_latency_ms == pytest.approx(2.0)
+    assert c.resolution == pytest.approx(0.272)
+
+
+def test_an_unknown_latency_buys_the_widest_band_not_the_narrowest():
+    """A missing measurement must not buy a claim more precision than a
+    measured one -- the same direction rule as `_both_locked` on None."""
+    from attnbench.analysis.cross_arch import (ArchitectureComparison,
+                                                ratio_resolution)
+
+    assert ratio_resolution(None) == pytest.approx(0.272)
+    c = ArchitectureComparison("gla", "k", {"L4": 0.823, "A100": 1.443})
+    assert c.min_latency_ms is None
+    assert c.resolution == pytest.approx(0.272)
+    assert not c.flips_materially()
+
+
+def test_the_bands_come_from_measured_spread_not_a_round_number():
+    """Both values are maxima observed in this study's own cross-host data.
+    A round 0.05 or 0.10 here would be a guess wearing a measurement's
+    clothes."""
+    from attnbench.analysis.cross_arch import RATIO_RESOLUTION_BANDS
+
+    assert RATIO_RESOLUTION_BANDS == ((5.0, 0.272), (float("inf"), 0.133))
+    for _, r in RATIO_RESOLUTION_BANDS:
+        assert r * 100 % 1 != 0, "a round percentage is not a measurement"
+
+
+def test_a_nonmaterial_flip_explains_why_it_is_not_reportable():
+    from attnbench.analysis.cross_arch import ArchitectureComparison
+
+    c = ArchitectureComparison("fa2", "k", {"L4": 0.921, "A100": 1.090},
+                               min_latency_by_architecture={"L4": 2.3,
+                                                            "A100": 0.83})
+    text = c.resolution_caveat()
+    assert "0.272" in text and "Not reportable" in text
+    assert ArchitectureComparison("fa2", "k", {"L4": 1.2, "A100": 1.3}
+                                  ).resolution_caveat() == ""
+
+
+def test_an_explicit_margin_still_overrides_at_the_call_site():
+    from attnbench.analysis.cross_arch import ArchitectureComparison
+
+    c = ArchitectureComparison("gla", "k", {"L4": 0.823, "A100": 1.443},
+                               min_latency_by_architecture={"A100": 2.0})
+    assert not c.flips_materially()
+    assert c.flips_materially(margin=0.05)
 
 
 def test_a_one_sided_comparison_has_no_flip_margin():

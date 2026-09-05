@@ -57,6 +57,55 @@ import pandas as pd
 REQUIRED_COLUMNS = ("host", "gpu_name", "backend", "config_key")
 
 
+# How precisely a within-host speedup ratio can be compared ACROSS sessions,
+# by the shorter of the two latencies that formed it.
+#
+# Measured from this study's own data, not imported from the canary module.
+# The L4 was rented three times, and 75 (backend, config) pairs were measured
+# on more than one of those hosts with identical driver, torch, triton and
+# clock state -- which is the same comparison a cross-architecture flip makes,
+# minus the change of architecture. Spread is (max - min) / min over the hosts:
+#
+#     shorter latency   pairs   median spread   max spread
+#     < 3 ms               54       1.8 %          27.2 %
+#     3 - 5 ms              0        --             --
+#     5 - 10 ms             7       2.0 %          11.3 %
+#     10 - 20 ms            7       5.0 %          13.3 %
+#     > 20 ms               7       3.3 %           6.2 %
+#
+# Two readings matter. The median is low everywhere (1.8-5.0%), so most short
+# ratios are fine -- which is exactly why an unfloored analysis looks healthy.
+# The TAIL is what disqualifies a claim, and below 3 ms it reaches 27.2%: one
+# pair of L4s disagreed with itself by more than a quarter at the same config.
+#
+# Bands are collapsed to two, deliberately coarser than the table. The three
+# bands above 5 ms hold 7 pairs each and their maxima (11.3, 13.3, 6.2) are not
+# ordered, so treating them as three different standards would be fitting noise
+# with seven points. The 3-5 ms band has no pairs at all and inherits the
+# WORSE neighbour: absence of evidence about a band is not evidence that it
+# behaves like the better one.
+RATIO_RESOLUTION_BANDS: tuple[tuple[float, float], ...] = (
+    (5.0, 0.272),     # shorter latency below 5 ms
+    (float("inf"), 0.133),
+)
+
+
+def ratio_resolution(min_latency_ms: Optional[float]) -> float:
+    """Smallest ratio difference that is distinguishable from run-to-run
+    variation, for a ratio whose shorter latency is `min_latency_ms`.
+
+    `None` (unknown latency) returns the widest band rather than the
+    narrowest. A missing measurement must not buy a claim more precision than
+    a measured one.
+    """
+    if min_latency_ms is None:
+        return RATIO_RESOLUTION_BANDS[0][1]
+    for upper, resolution in RATIO_RESOLUTION_BANDS:
+        if min_latency_ms < upper:
+            return resolution
+    return RATIO_RESOLUTION_BANDS[-1][1]
+
+
 class CrossArchError(RuntimeError):
     """A cross-architecture combination that would produce an invalid number."""
 
@@ -94,6 +143,21 @@ class Speedup:
     def speedup(self) -> float:
         """Baseline over backend: >1 means the backend is faster."""
         return self.baseline_latency_ms / self.latency_ms
+
+    @property
+    def min_latency_ms(self) -> float:
+        """The shorter of the two latencies in this ratio.
+
+        The shorter one, because a ratio is no more precise than its least
+        precise half -- the same reason `_both_locked` reduces rather than
+        averages. This is what `ratio_resolution` is keyed on.
+        """
+        return min(self.latency_ms, self.baseline_latency_ms)
+
+    @property
+    def resolution(self) -> float:
+        """The smallest difference in this ratio that means anything."""
+        return ratio_resolution(self.min_latency_ms)
 
 
 def segment_digest(df: pd.DataFrame) -> str:
@@ -351,6 +415,10 @@ class ArchitectureComparison:
     # gpu_name -> whether every contributing ratio had both sides locked.
     clocks_locked_by_architecture: dict[str, Optional[bool]] = field(
         default_factory=dict)
+    # gpu_name -> the shortest latency any contributing ratio was built from.
+    # Empty for comparisons built before this field existed, which is why
+    # `resolution` treats a missing entry as the widest band.
+    min_latency_by_architecture: dict[str, float] = field(default_factory=dict)
 
     @property
     def architectures(self) -> list[str]:
@@ -423,22 +491,61 @@ class ArchitectureComparison:
             return 0.0
         return min(abs(v - 1.0) for v in values)
 
-    def flips_materially(self, *, margin: float = 0.05) -> bool:
-        """A flip whose weaker side clears measurement noise.
+    @property
+    def min_latency_ms(self) -> Optional[float]:
+        """Shortest latency behind any side of this comparison."""
+        if not self.min_latency_by_architecture:
+            return None
+        return min(self.min_latency_by_architecture.values())
 
-        `margin` defaults to `canary.DRIFT_TOLERANCE` (5%), the project's own
-        estimate of run-to-run variation on an unlocked card. Both
-        architectures in this study were measured unlocked, so a flip inside
-        that band is indistinguishable from the same backend measured twice on
-        one machine -- and every row in the dataset satisfies that condition,
-        which makes the raw `flips()` count an overstatement by construction.
-        On the 2026-09-05 join, 19 comparisons flip and 5 flip materially.
+    @property
+    def resolution(self) -> float:
+        """Smallest flip margin this comparison can distinguish from noise.
 
-        Imported as a literal default rather than from `canary` to keep this
-        module free of a dependency on the canary machinery; the number is
-        asserted equal to DRIFT_TOLERANCE by a test.
+        Derived from the shortest latency on EITHER architecture -- a
+        comparison is as imprecise as its least precise side, and the flip has
+        to survive both. See RATIO_RESOLUTION_BANDS.
         """
-        return self.flips() and self.flip_margin > margin
+        return ratio_resolution(self.min_latency_ms)
+
+    def flips_materially(self, *, margin: Optional[float] = None) -> bool:
+        """A flip whose weaker side clears this comparison's resolution.
+
+        `margin=None` (the default) uses `self.resolution`, which is measured
+        from the latency the ratio was built on rather than fixed. A flat 5%
+        was the first version of this and was wrong in the dangerous
+        direction: sub-3 ms ratios in this dataset disagree with THEMSELVES
+        across two L4 hosts by up to 27.2%, so a 5% bar certified four flips
+        that its own instrument could not resolve. Two of them were at 1024,
+        where the two L4 hosts straddle parity -- 1.031 and 0.811 for `fa2`,
+        0.895 and 1.004 for `sdpa_cudnn`. The same card, the same config, and
+        the "flip" was between an average of those and the A100.
+
+        Pass an explicit `margin` to state a different standard at the call
+        site, where a reader can see it.
+        """
+        bar = self.resolution if margin is None else margin
+        return self.flips() and self.flip_margin > bar
+
+    def resolution_caveat(self) -> str:
+        """The sentence a NON-material flip needs, or "".
+
+        Separate from `caveat()` (clocks) because it is a different defect
+        with a different repair: unlocked clocks are fixed with root on the
+        host, an unresolvable ratio is fixed with a longer-running config.
+        """
+        if not self.flips() or self.flips_materially():
+            return ""
+        return (f"this comparison flips by {self.flip_margin:.3f}, below the "
+                f"{self.resolution:.3f} that a ratio built on a "
+                f"{self.min_latency_ms:.2f} ms latency can resolve -- two L4 "
+                f"hosts in this dataset disagree with each other by more than "
+                f"that at the same config. Not reportable as "
+                f"hardware-conditional behaviour."
+                if self.min_latency_ms is not None else
+                f"this comparison flips by {self.flip_margin:.3f}, below the "
+                f"{self.resolution:.3f} floor, and the latencies behind it "
+                f"were not recorded")
 
     def caveat(self) -> str:
         """The sentence that must accompany this number, or "".
@@ -486,11 +593,14 @@ def compare_across_architectures(speedups: list[Speedup],
     """
     by_key: dict[tuple[str, str], dict[str, list[float]]] = {}
     locks: dict[tuple[str, str], dict[str, list[Optional[bool]]]] = {}
+    lats: dict[tuple[str, str], dict[str, list[float]]] = {}
     for s in speedups:
         arches = by_key.setdefault((s.backend, s.config_key), {})
         arches.setdefault(s.gpu_name, []).append(s.speedup)
         locks.setdefault((s.backend, s.config_key), {}) \
              .setdefault(s.gpu_name, []).append(s.clocks_locked)
+        lats.setdefault((s.backend, s.config_key), {}) \
+            .setdefault(s.gpu_name, []).append(s.min_latency_ms)
 
     out = []
     for (backend, config_key), arches in sorted(by_key.items()):
@@ -510,5 +620,10 @@ def compare_across_architectures(speedups: list[Speedup],
             backend=backend, config_key=config_key,
             speedup_by_architecture={
                 gpu: sum(vals) / len(vals) for gpu, vals in arches.items()},
-            clocks_locked_by_architecture=by_arch_lock))
+            clocks_locked_by_architecture=by_arch_lock,
+            # MIN across hosts, not mean: the resolution of the architecture's
+            # averaged ratio is set by its shortest-running contributor, the
+            # same reduction the lock state gets one block above.
+            min_latency_by_architecture={
+                gpu: min(vals) for gpu, vals in lats[(backend, config_key)].items()}))
     return out

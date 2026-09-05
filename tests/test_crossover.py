@@ -133,3 +133,65 @@ def test_failed_rows_are_excluded_from_the_median():
     cross = crossover_table(pd.concat([df, poison], ignore_index=True))
     cell = cross[(cross["gpu_name"] == A100) & (cross["seq_len"] == 16384)].iloc[0]
     assert cell["fa2_over_gla"] == pytest.approx(10.621696 / 4.282112)
+
+
+# --- resolution: can the instrument tell this winner from a tie? ------------
+
+def test_the_matched_8192_cell_is_not_resolvable_and_the_neighbours_are():
+    """The real 2026-09-06 state, and the reason the headline had to be
+    restated. At batch 1 the A100's 8192 ratio is 1.265 off a 2.16 ms kernel:
+    a 26.5% margin against a 27.2% resolution, missing by 0.007. Its batch 4
+    and 16 cells, on 8.4 ms and 32.6 ms kernels, clear the bar comfortably and
+    say the same thing."""
+    cross = crossover_table(frame())
+    a100 = cross[(cross["gpu_name"] == A100) & (cross["seq_len"] == 8192)]
+
+    b1 = a100[a100["batch"] == 1].iloc[0]
+    assert b1["winner"] == "gla"
+    assert not b1["resolvable"]
+    assert b1["margin"] == pytest.approx(0.2648, abs=1e-3)
+    assert b1["resolution"] == pytest.approx(0.272)
+
+    b4 = a100[a100["batch"] == 4].iloc[0]
+    assert b4["winner"] == "gla" and b4["resolvable"]
+    assert b4["resolution"] == pytest.approx(0.133), "8.4 ms is the wide band"
+
+
+def test_the_l4_verdict_at_8192_is_resolvable():
+    """The other half of the disagreement. 9.19 ms puts it in the 13.3% band
+    and its margin is 16.2%, so 'FA2 still wins here' is a measurement."""
+    cross = crossover_table(frame())
+    row = cross[(cross["gpu_name"] == L4) & (cross["seq_len"] == 8192)].iloc[0]
+    assert row["winner"] == "fa2" and row["resolvable"]
+
+
+def test_both_resolvable_is_reported_next_to_disagrees():
+    """A disagreement between two unresolvable verdicts is one card measuring
+    a tie twice and landing on opposite sides of 1.0."""
+    matched = matched_cells(crossover_table(frame()))
+    row = matched[(matched["seq_len"] == 8192) & (matched["batch"] == 1)].iloc[0]
+    assert row["disagrees"]
+    assert not row["both_resolvable"], (
+        "the matched cell disagrees but cannot resolve its own A100 side")
+
+
+def test_far_from_parity_cells_resolve_even_at_short_latencies():
+    """The bar bites near parity, which is where a crossover lives -- but it
+    must not disqualify the bulk of the data. At 1024 the A100 runs a 0.09 ms
+    kernel and still resolves, because the ratio is 0.11."""
+    cross = crossover_table(frame())
+    short = cross[(cross["gpu_name"] == A100) & (cross["seq_len"] == 1024)]
+    assert short["resolvable"].all()
+    assert (cross["resolvable"].sum() / len(cross)) > 0.9
+
+
+def test_crossover_point_can_require_resolvable_cells():
+    """Two answers to the same question, and the caller says which. Restricted
+    to resolvable cells the A100's batch-1 crossover moves out to 16384,
+    because its 8192 verdict is real but unmeasurable at that batch."""
+    cross = crossover_table(frame())
+    assert crossover_point(cross, gpu_name=A100, batch=1) == 8192
+    assert crossover_point(cross, gpu_name=A100, batch=1,
+                           resolvable_only=True) == 16384
+    assert crossover_point(cross, gpu_name=A100, batch=4,
+                           resolvable_only=True) == 8192

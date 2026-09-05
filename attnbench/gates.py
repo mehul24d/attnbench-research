@@ -170,8 +170,45 @@ class CorrectnessResult:
     # produced it travel together, on the row.
     memory_budget_bytes: Optional[int] = None
 
+    # The denominator floor `max_rel_err` was computed over, or None where no
+    # relative-error comparison was made (structural checks, declined configs).
+    #
+    # A ratio is only as precise as its denominator. Elements whose |expected|
+    # is below this floor are excluded from max_rel_err entirely, so the
+    # number reports the largest relative error among the elements where
+    # relative error decides anything -- see check_correctness. Recorded on the
+    # row for the same reason as `memory_budget_bytes`: a reader must not have
+    # to reconstruct the standard a verdict was measured against.
+    #
+    # `max_rel_err=None` with a floor set means NOTHING cleared the floor. That
+    # is not agreement, and must never be read as 0.0.
+    rel_err_floor: Optional[float] = None
+
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def resolvable_rel_err(abs_err, expected, floor: float):
+    """Largest relative error among elements whose denominator resolves it.
+
+    Returns `(max_rel_err_or_None, n_resolvable, n_total)`.
+
+    Elements with `|expected| < floor` are excluded, not clamped. Clamping
+    reports a ratio against a denominator that was never measured, which is
+    the same fiction one magnitude smaller; excluding says how many elements
+    the answer rests on, which is what `n_resolvable` is for.
+
+    `None` when nothing clears the floor -- absence of a measurement. Never
+    0.0, which reads as perfect agreement and is the strongest possible claim
+    to make from no data.
+    """
+    denom = expected.abs()
+    resolvable = denom >= floor
+    n_resolvable = int(resolvable.sum())
+    n_total = int(denom.numel())
+    if not n_resolvable:
+        return None, 0, n_total
+    return float((abs_err[resolvable] / denom[resolvable]).max()), n_resolvable, n_total
 
 
 def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
@@ -221,7 +258,6 @@ def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
 
     got = got.double()
     abs_err = (got - expected).abs()
-    rel_err = abs_err / expected.abs().clamp_min(1e-8)
 
     # A quantized backend's error profile comes from cfg.quant_scheme, not
     # cfg.dtype -- dtype is the storage/output precision (e.g. bfloat16),
@@ -244,13 +280,58 @@ def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
     # fine somewhere in the tensor.
     passed = bool((abs_err <= tol["atol"] + tol["rtol"] * expected.abs()).all())
 
+    # Relative error is only as precise as its denominator, and the previous
+    # `abs_err / expected.abs().clamp_min(1e-8)` had no floor -- 1e-8 is a
+    # divide-by-zero guard, which is a different thing. On a block-sparse
+    # config most of `expected` is at or near zero by construction (the mask
+    # zeroes it), so the ratio was dividing a real bf16 absolute error by a
+    # number that carries no information. The A100 rows show the result:
+    # max_rel_err reached 3.3e+04 while max_abs_err stayed at 1.3e-02.
+    #
+    # The floor is `atol`, and not by analogy. Below atol the pass/fail bound
+    # `atol + rtol*|expected|` is dominated by atol, so relative error governs
+    # nothing there; above it, relative error is what decides. Reporting the
+    # maximum over exactly the elements where the metric has a decision behind
+    # it is what makes the number mean something.
+    #
+    # Sub-floor elements are EXCLUDED, not clamped. Clamping would report a
+    # ratio computed against a denominator that was never measured, which is
+    # the same fiction one magnitude smaller. If nothing clears the floor the
+    # answer is None -- absence of a measurement, never 0.0, which would read
+    # as perfect agreement.
+    rel_floor = float(tol["atol"])
+    max_rel, n_resolvable, n_total = resolvable_rel_err(abs_err, expected,
+                                                        rel_floor)
+
+    max_abs = float(abs_err.max())
+    n_violating = int((abs_err > tol["atol"] + tol["rtol"] * expected.abs()).sum())
+
+    # `detail` was empty on both outcomes, so a FAILING row carried a number
+    # and no account of it -- a reader had the max error and not the tolerance
+    # it was judged against, the count of offending elements, or where in the
+    # tensor they were. That is the same shape as a flag nobody reads: the
+    # field exists, so an auditor concludes the reason is recorded.
+    if passed:
+        detail = (f"{n_resolvable}/{n_total} elements above the "
+                  f"rel_err floor {rel_floor:g}")
+    else:
+        worst = int(abs_err.argmax())
+        detail = (f"{n_violating}/{n_total} elements exceed "
+                  f"atol={tol['atol']:g} + rtol={tol['rtol']:g}*|expected|; "
+                  f"worst at flat index {worst} with |err|={max_abs:.3e} "
+                  f"against |expected|={float(expected.abs().flatten()[worst]):.3e}; "
+                  f"{n_resolvable}/{n_total} elements above the rel_err floor "
+                  f"{rel_floor:g}")
+
     return CorrectnessResult(
         backend=backend.name,
         config_key=cfg.key(),
         passed=passed,
         check_kind="exact",
-        max_abs_err=float(abs_err.max()),
-        max_rel_err=float(rel_err.max()),
+        max_abs_err=max_abs,
+        max_rel_err=max_rel,
+        rel_err_floor=rel_floor,
+        detail=detail[:300],
     )
 
 
@@ -329,11 +410,20 @@ def check_structural(backend: AttentionBackend, cfg: AttnConfig,
         return fail(f"CAUSALITY VIOLATED: perturbing tokens >= {split} changed "
                     f"earlier outputs by up to {leak:.3e}")
 
-    return CorrectnessResult(backend.name, cfg.key(), True, max_abs_err=0.0,
-                             max_rel_err=0.0, check_kind="structural",
+    # Both error columns are None, not 0.0. A structural check makes NO
+    # numerical comparison -- there is no oracle to differ from -- and 0.0 in
+    # an error column reads as perfect agreement, which is the strongest
+    # possible claim and the exact opposite of what this verdict certifies.
+    # GLA contributes 30 such rows to the A100 dataset; under the old value a
+    # plot of max_abs_err by backend would have shown GLA as the most accurate
+    # kernel in the study.
+    return CorrectnessResult(backend.name, cfg.key(), True, max_abs_err=None,
+                             max_rel_err=None, check_kind="structural",
                              detail="structural only: finite/shape/dtype/"
                                     "determinism/causality, NOT numerical "
-                                    "agreement with softmax attention")
+                                    "agreement with softmax attention; error "
+                                    "columns are null because no comparison "
+                                    "was made")
 
 
 # Memory the float64 oracle is allowed to use for its score matrix. The

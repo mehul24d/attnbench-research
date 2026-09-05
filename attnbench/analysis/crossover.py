@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .cross_arch import ratio_resolution
+
 DEFAULT_PAIR = ("gla", "fa2")
 
 
@@ -63,6 +65,23 @@ def crossover_table(df: pd.DataFrame, *, backends: tuple[str, str] = DEFAULT_PAI
     wide = wide.dropna(how="any").reset_index()
     wide[f"{b}_over_{a}"] = wide[b] / wide[a]
     wide["winner"] = [a if x > 1 else b for x in wide[f"{b}_over_{a}"]]
+
+    # Whether the instrument can tell this winner from a tie.
+    #
+    # A ratio built on a 2 ms kernel cannot resolve a 20% difference: two L4
+    # hosts in this study, same driver and same config, disagree with each
+    # other by up to 27.2% below 5 ms. `resolvable` is what separates "GLA is
+    # faster here" from "GLA measured faster here once".
+    #
+    # This is more forgiving than it sounds for a crossover specifically. The
+    # ratios here run from 0.1 to 3.7, so most cells clear their band easily;
+    # it is the cells NEAR PARITY that fail, and a crossover's neighbourhood
+    # is exactly where those live. The bar bites hardest precisely where the
+    # claim is most interesting -- which is the point.
+    wide["min_latency_ms"] = wide[[a, b]].min(axis=1)
+    wide["resolution"] = wide["min_latency_ms"].map(ratio_resolution)
+    wide["margin"] = (wide[f"{b}_over_{a}"] - 1.0).abs()
+    wide["resolvable"] = wide["margin"] > wide["resolution"]
     return wide
 
 
@@ -96,6 +115,13 @@ def matched_cells(cross: pd.DataFrame, *,
         piv[f"winner_{_short(col)}"] = [a if v > 1 else b for v in piv[col]]
     winner_columns = [f"winner_{_short(c)}" for c in arch_columns]
     piv["disagrees"] = piv[winner_columns].nunique(axis=1) > 1
+
+    # A cell only counts as a disagreement if BOTH sides could resolve their
+    # own verdict. Otherwise the "disagreement" may be one card measuring a
+    # tie twice and landing on opposite sides of 1.0.
+    res = cross.pivot_table(index=["seq_len", "batch"], columns="gpu_name",
+                            values="resolvable", aggfunc="min")
+    piv["both_resolvable"] = res.reindex(piv.index).all(axis=1)
     return piv.reset_index()
 
 
@@ -106,7 +132,8 @@ def _short(gpu_name) -> str:
 
 
 def crossover_point(cross: pd.DataFrame, *, gpu_name: str, batch: int,
-                    backends: tuple[str, str] = DEFAULT_PAIR):
+                    backends: tuple[str, str] = DEFAULT_PAIR,
+                    resolvable_only: bool = False):
     """Lowest seq_len at which `backends[0]` first wins, on one card at one
     batch, or None if it never does within the measured range.
 
@@ -118,5 +145,7 @@ def crossover_point(cross: pd.DataFrame, *, gpu_name: str, batch: int,
     a, b = backends
     ratio = f"{b}_over_{a}"
     rows = cross[(cross["gpu_name"] == gpu_name) & (cross["batch"] == batch)]
+    if resolvable_only and "resolvable" in rows.columns:
+        rows = rows[rows["resolvable"]]
     wins = rows[rows[ratio] > 1].sort_values("seq_len")
     return int(wins["seq_len"].iloc[0]) if not wins.empty else None
