@@ -52,9 +52,14 @@ that should not drive a booking.
    the honest sequence is: attempt, and if refused, stop and try later. Do not
    book five hours of attention against a resource whose availability is
    unknown until the moment it is created.
-3. **A2 override flags.** The image records `machineType: g2-standard-8` and
-   `guestAccelerators: nvidia-l4`. Both must be overridden at create time. This
-   is a flag change, not a rebuild.
+3. **~~A2 override flags.~~ FALSE — this is what blocked the session.** The
+   claim that both properties "must be overridden at create time" and that this
+   "is a flag change, not a rebuild" was wrong on both counts.
+   `guestAccelerators` can be *replaced* but never *cleared*, and
+   `disks[0].interface: NVME` cannot be overridden at all. What is needed is a
+   plain disk image, captured with `gcloud compute images create --force` from
+   a running G2 — see `docs/machine_image_family_lock.md`. Still not a rebuild,
+   but not a flag change either.
 
 ---
 
@@ -77,9 +82,21 @@ knowing, and it decides how the cross-architecture comparison must be worded
 
 ### Phase 1 — the wheel gate (~10 min, decides 3 h vs 6 h)
 
-`flash-attn` and `Block-Sparse-Attention` were compiled on the L4 for
-**sm_89**. If either was built with `TORCH_CUDA_ARCH_LIST` pinned, it will not
-load on sm_80 (A100). Image metadata cannot answer this; only an import can.
+`flash-attn` and `Block-Sparse-Attention` were compiled on the L4, and
+`docs/retry_session_runbook.md` records the flags actually used:
+`FLASH_ATTN_CUDA_ARCHS=80;90` and `BLOCK_SPARSE_ATTN_CUDA_ARCHS=80;90`.
+**sm_80 was in both builds**, so the gate is now expected to pass rather than
+hoped to.
+
+(An earlier draft of this plan said the wheels were "compiled for sm_89". That
+was inferred from the card they were built on rather than read from the build
+flags, and it is wrong.)
+
+It still runs, and the 15-minute decision below still stands. A recorded build
+flag is not a loaded kernel: `no kernel image is available for execution on the
+device` passes every paper check and fails at first launch, which is the exact
+shape this project keeps meeting. Image metadata cannot answer it; only an
+import plus a forward can.
 
 ```
 python3 -c "import torch; print(torch.cuda.get_device_capability())"   # expect (8, 0)
@@ -125,7 +142,7 @@ Two things get *stronger* here, both consequences of memory:
 **The float64 oracle is restored at three config classes** that the L4 could
 only reach by cross-backend agreement:
 
-| config | oracle needs | L4 (8 GiB budget) | A100 (48 GiB budget) |
+| config | oracle needs | L4 (8.15 GiB budget) | A100 (29.6 GiB budget) |
 |---|---|---|---|
 | 2048 / batch 16 | 16.0 GiB | no | **fits** |
 | 4096 / batch 4 | 16.0 GiB | no | **fits** |
@@ -135,14 +152,17 @@ Those rows move from `check_kind="cross_backend"` to `"exact"` — a genuine
 upgrade in verification strength, on the same kernels.
 
 **Cross-backend at 32768/batch 16 stops being declined.** It needs 21.5 GiB,
-which the L4's 12 GiB budget refused in production yesterday and 48 GiB
-accommodates.
+which the L4's 12.12 GiB budget refused in production and the A100's
+44.0 GiB accommodates.
 
-`EXACT_ORACLE_BUDGET_BYTES` and `CROSS_BACKEND_BUDGET_BYTES` are constants
-sized for a 22 GiB card. They must be raised **as an explicit, committed code
-change before the session**, not edited on the instance — a budget edited on
-billed hardware is a mixed-commit table, and this project has thrown away two
-result sets for exactly that.
+**Done, in `da8ca90`.** The budgets are no longer absolute constants sized for
+a 22 GiB card: they are fractions of `torch.cuda.get_device_properties(0)
+.total_memory` (`ORACLE_BUDGET_FRACTION = 0.37`,
+`CROSS_BACKEND_BUDGET_FRACTION = 0.55`), giving 8.15/12.12 GiB on an L4 and
+29.6/44.0 GiB on an A100 — and every existing L4 verdict is asserted unchanged.
+The budget that produced a verdict travels on the result row as
+`memory_budget_bytes`, so a decline can be reproduced without knowing which
+card ran it.
 
 ### Phase 4 — sweep (~55–65 min)
 
