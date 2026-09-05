@@ -157,6 +157,18 @@ class CorrectnessResult:
     max_abs_err: Optional[float] = None
     max_rel_err: Optional[float] = None
     detail: str = ""
+    # The memory budget that produced this verdict, in bytes.
+    #
+    # Budgets became a FRACTION of device memory when the study gained a
+    # second card, so "declined: memory infeasible" no longer means one fixed
+    # number -- it means 12.1 GiB on an L4 and 44.0 GiB on an A100. A reader
+    # who has to infer the budget from the GPU model is reconstructing the
+    # standard from context, and will get it wrong the first time a third card
+    # appears.
+    #
+    # Same principle as `check_kind`: the verdict and the standard that
+    # produced it travel together, on the row.
+    memory_budget_bytes: Optional[int] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -333,12 +345,65 @@ def check_structural(backend: AttentionBackend, cfg: AttnConfig,
 # 8 GiB leaves room on a 23 GiB card for weights, the backend under test, and
 # fragmentation. An OOM here is not a correctness failure but it is recorded
 # as one, so predicting it is better than discovering it.
-EXACT_ORACLE_BUDGET_BYTES = 8 * 2**30
+# Budgets are a FRACTION of the device, not an absolute number of bytes.
+#
+# Both constants below were sized by hand for a 22.03 GiB L4. Carrying them to
+# an 80 GB A100 would make the same commit mean different things on different
+# cards -- verification strength conditioned on which machine happened to run
+# it, which is the failure the commit-pinning machinery exists to prevent. So
+# the fraction is the constant and the byte count is derived.
+#
+# The fractions reproduce the hand-picked L4 values almost exactly:
+#
+#     0.37 x 22.03 GiB =  8.15 GiB   (was 8)
+#     0.55 x 22.03 GiB = 12.12 GiB   (was 12)
+#
+# Slightly above rather than below, deliberately: nothing that fit before may
+# stop fitting now. And nothing NEW is admitted either, because oracle and
+# cross-backend costs across this grid are widely spaced powers of two -- the
+# nearest values to the oracle's 8 GiB boundary are 4 and 16 GiB, so a 2%
+# change in the threshold cannot move a single cell. Asserted in
+# tests/test_device_aware_budgets.py rather than left as arithmetic in a
+# comment.
+#
+# On an 80 GiB A100 the same fractions give 29.6 and 44.0 GiB, which restores
+# the float64 oracle at three config classes and admits cross-backend at
+# 32768/batch 16 (21.5 GiB) -- see docs/a100_session_plan.md.
+ORACLE_BUDGET_FRACTION = 0.37
+CROSS_BACKEND_BUDGET_FRACTION = 0.55
+
+# Used when no CUDA device is visible: the card every existing result in this
+# project was measured on. A CPU test run must produce the same verdicts as the
+# L4 did, or the suite stops describing the hardware the data came from.
+FALLBACK_DEVICE_BYTES = 23_660_000_000      # NVIDIA L4, as torch reports it
+
+# Retained as the L4-equivalent values so existing references keep meaning what
+# they meant. New code should call the budget functions, which are device-aware.
+EXACT_ORACLE_BUDGET_BYTES = int(FALLBACK_DEVICE_BYTES * ORACLE_BUDGET_FRACTION)
+CROSS_BACKEND_BUDGET_BYTES = int(FALLBACK_DEVICE_BYTES * CROSS_BACKEND_BUDGET_FRACTION)
+
+
+def device_memory_bytes(device: str = "cuda") -> int:
+    """Total memory of the device a check would run on."""
+    if not device.startswith("cuda") or not torch.cuda.is_available():
+        return FALLBACK_DEVICE_BYTES
+    return int(torch.cuda.get_device_properties(0).total_memory)
+
+
+def exact_oracle_budget_bytes(device: str = "cuda") -> int:
+    return int(device_memory_bytes(device) * ORACLE_BUDGET_FRACTION)
+
+
+def cross_backend_budget_bytes(device: str = "cuda") -> int:
+    return int(device_memory_bytes(device) * CROSS_BACKEND_BUDGET_FRACTION)
 
 
 def exact_oracle_fits(cfg: AttnConfig,
-                      budget_bytes: int = EXACT_ORACLE_BUDGET_BYTES) -> bool:
+                      budget_bytes: Optional[int] = None,
+                      device: str = "cuda") -> bool:
     """Whether a float64 naive reference can be allocated for this config."""
+    if budget_bytes is None:
+        budget_bytes = exact_oracle_budget_bytes(device)
     score_bytes = cfg.batch * cfg.n_heads_q * cfg.seq_len * cfg.seq_len * 8
     return score_bytes <= budget_bytes
 
@@ -402,7 +467,8 @@ def cross_backend_bytes(cfg: AttnConfig) -> int:
 
 
 def cross_backend_fits(cfg: AttnConfig,
-                       budget_bytes: int = CROSS_BACKEND_BUDGET_BYTES) -> bool:
+                       budget_bytes: Optional[int] = None,
+                       device: str = "cuda") -> bool:
     """Whether a cross-backend check can be attempted at all for this config.
 
     False is a RESULT -- "cross-backend verification is infeasible at this
@@ -410,6 +476,8 @@ def cross_backend_fits(cfg: AttnConfig,
     verify, and it belongs in the results table. It is not the same as a
     crash, and it is not the same as a backend being wrong.
     """
+    if budget_bytes is None:
+        budget_bytes = cross_backend_budget_bytes(device)
     return cross_backend_bytes(cfg) <= budget_bytes
 
 
@@ -538,9 +606,12 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
     base = TOL[cfg.quant_scheme if cfg.quant_scheme is not None else cfg.dtype]
     tol = {k: v * CROSS_BACKEND_TOL_FACTOR for k, v in base.items()}
 
+    budget = cross_backend_budget_bytes(device)
+
     def fail(detail: str) -> CorrectnessResult:
         return CorrectnessResult(backend.name, cfg.key(), False,
-                                 "cross_backend", detail=detail[:300])
+                                 "cross_backend", detail=detail[:300],
+                                 memory_budget_bytes=budget)
 
     usable = [r for r in references if r.name != backend.name]
     if len(usable) + 1 < MIN_CROSS_BACKEND_AGREEING:
@@ -554,13 +625,15 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
     # allocator in whatever state it died in and takes the process with it if
     # it lands somewhere unguarded. Three consecutive Stage 1 deaths at the
     # 8192 band were each at a different allocation site inside this check.
-    if device.startswith("cuda") and not cross_backend_fits(cfg):
+    if device.startswith("cuda") and not cross_backend_fits(cfg, device=device):
         need = cross_backend_bytes(cfg) / 2**30
         return fail(
             f"CROSS-BACKEND VERIFICATION INFEASIBLE at this shape: needs "
             f"{need:.1f} GiB of concurrent tensors (batch={cfg.batch}, "
             f"heads={cfg.n_heads_q}:{cfg.n_heads_kv}, seq_len={cfg.seq_len}) "
-            f"against a {CROSS_BACKEND_BUDGET_BYTES / 2**30:.0f} GiB budget, "
+            f"against a {budget / 2**30:.1f} GiB budget "
+            f"({CROSS_BACKEND_BUDGET_FRACTION:.0%} of a "
+            f"{device_memory_bytes(device) / 2**30:.1f} GiB device), "
             f"and the float64 oracle would need {oracle_bytes(cfg) / 2**30:.1f} "
             f"GiB. Not a verdict on this backend: nothing was run. This cell "
             f"cannot be verified on this hardware by any means available here.")
@@ -672,7 +745,7 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
     if disagreeing:
         return CorrectnessResult(
             backend.name, cfg.key(), False, kind,
-            max_abs_err=worst,
+            max_abs_err=worst, memory_budget_bytes=budget,
             detail=f"disagreement beyond atol={tol['atol']}: {disagreeing}. "
                    f"One of these implementations is wrong at this shape -- "
                    f"a finding, not a cell to skip.")
@@ -694,6 +767,7 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
 
     return CorrectnessResult(
         backend.name, cfg.key(), True, kind, max_abs_err=worst,
+        memory_budget_bytes=budget,
         detail=f"agrees with {len(errors)} independent implementations "
                f"({', '.join(sorted(errors))}) within atol={tol['atol']}; "
                f"NOT verified against a float64 oracle, which would need "
@@ -770,7 +844,7 @@ def _dispatch_for_family(backend: AttentionBackend, cfg: AttnConfig,
     if family == "linear":
         return check_structural(backend, cfg, mask=mask, seed=seed, device=device)
 
-    if not exact_oracle_fits(cfg):
+    if not exact_oracle_fits(cfg, device=device):
         # No float64 oracle can exist here (64 GiB at 16384, 256 at 32768).
         # Fall back to agreement among independent implementations rather than
         # either skipping the length -- which would delete the study's
@@ -814,9 +888,12 @@ def _dispatch_for_family(backend: AttentionBackend, cfg: AttnConfig,
             mask = mask_for(cfg)
         # to_dense_bool/to_flex_block_mask move the mask to the right device
         result = check_correctness(backend, cfg, mask=mask, seed=seed, device=device)
-        return replace(result, check_kind="masked_exact")
+        return replace(result, check_kind="masked_exact",
+                       memory_budget_bytes=exact_oracle_budget_bytes(device))
 
-    return check_correctness(backend, cfg, mask=mask, seed=seed, device=device)
+    return replace(
+        check_correctness(backend, cfg, mask=mask, seed=seed, device=device),
+        memory_budget_bytes=exact_oracle_budget_bytes(device))
 
 
 def probe_grid(backends: Iterable[AttentionBackend],

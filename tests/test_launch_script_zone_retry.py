@@ -132,3 +132,59 @@ def test_default_source_image_is_not_the_deleted_v2(stale):
     passed. A default pointing at it would fail closed at launch, wasting a
     session's opening minutes."""
     assert stale not in SCRIPT.read_text()
+
+
+# ---------------------------------------------------------------------------
+# A100: Spot-only, single-zone.
+# ---------------------------------------------------------------------------
+#
+# The A100 grant is PREEMPTIBLE_NVIDIA_A100_80GB_GPUS=1 with the on-demand
+# NVIDIA_A100_80GB_GPUS at 0, so a STANDARD create cannot succeed at all --
+# it is refused by quota, not merely more expensive. And a2-ultragpu-1g
+# exists in asia-southeast1-c alone, so the fallback list has one element and
+# there is nothing to retry into.
+
+def test_provisioning_model_is_overridable():
+    src = SCRIPT.read_text()
+    assert 'PROVISIONING_MODEL="${GCP_PROVISIONING_MODEL:-STANDARD}"' in src
+    assert '--provisioning-model="$PROVISIONING_MODEL"' in src
+    assert "--provisioning-model=STANDARD \\" not in src, (
+        "a hardcoded STANDARD cannot create the A100, whose quota is Spot-only")
+
+
+def test_machine_type_is_overridable():
+    src = SCRIPT.read_text()
+    assert 'MACHINE_TYPE="${GCP_MACHINE_TYPE:-g2-standard-8}"' in src
+
+
+def test_the_default_is_still_on_demand():
+    """Overridable, not changed. The L4 compile sessions must not silently
+    become preemptible -- preemption 70 minutes into a build wastes far more
+    than Spot saves, which is the reasoning in the script header."""
+    src = SCRIPT.read_text()
+    assert ":-STANDARD}" in src
+    assert ":-g2-standard-8}" in src
+
+
+def test_a_single_zone_stockout_does_not_advise_retrying_the_list():
+    """With one zone there is nothing to retry INTO. Telling the operator to
+    'retry the same list' is advice to re-run an identical single attempt,
+    which reads as progress and is not."""
+    proc = subprocess.run(["bash", str(SCRIPT), "test-instance"],
+                          input="launch\n", capture_output=True, text=True,
+                          env={**os.environ,
+                               "GCP_ZONE_FALLBACKS": "asia-southeast1-c",
+                               "PATH": os.environ["PATH"]})
+    combined = proc.stdout + proc.stderr
+    # The script may exit earlier (no project, image check) in a sandbox; the
+    # branch is asserted against the source when it cannot be exercised.
+    src = SCRIPT.read_text()
+    assert "SINGLE-ZONE target" in src
+    assert "Do not sit in a retry loop against one zone." in src
+    assert 'if [[ "$N_ZONES" == "1" ]]' in src
+
+
+def test_the_multi_zone_advice_survives():
+    """asia-south1 stocked out in all three zones and cleared minutes later.
+    That advice is correct there and must not be lost."""
+    assert "retrying the same" in SCRIPT.read_text()

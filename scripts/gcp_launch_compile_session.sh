@@ -33,7 +33,7 @@ set -euo pipefail
 
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 ZONE="${GCP_ZONE:-asia-south1-b}"
-MACHINE_TYPE="g2-standard-8"
+MACHINE_TYPE="${GCP_MACHINE_TYPE:-g2-standard-8}"
 SOURCE_MACHINE_IMAGE="${GCP_SOURCE_IMAGE:-attnbench-l4-image-v3-20260903}"
 CAP_MINUTES="${GCP_CAP_MINUTES:-360}"
 INSTANCE_NAME="${1:-attnbench-l4-compile-$(date +%Y%m%d-%H%M)}"
@@ -44,6 +44,18 @@ INSTANCE_NAME="${1:-attnbench-l4-compile-$(date +%Y%m%d-%H%M)}"
 # a duplicate-instance bug lives, hence the break-on-success below and the
 # preflight after it. Both are required; neither alone is sufficient.
 ZONE_FALLBACKS="${GCP_ZONE_FALLBACKS:-$ZONE}"
+
+# STANDARD (on-demand) by default -- see the header: preemption 70 minutes
+# into a compile wastes far more than spot saves.
+#
+# Overridden to SPOT for the A100 sessions, and not as a cost decision: the
+# project's A100 grant is PREEMPTIBLE_NVIDIA_A100_80GB_GPUS=1 while the
+# on-demand NVIDIA_A100_80GB_GPUS quota is 0, so Spot is the only shape that
+# can be created at all. Band-major checkpointing is what makes that
+# survivable, and check_host_continuity refuses to resume a preempted run
+# into the same results file -- the recovery path is a new segment, joined at
+# analysis time.
+PROVISIONING_MODEL="${GCP_PROVISIONING_MODEL:-STANDARD}"
 
 if [[ -z "$PROJECT" ]]; then
   echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
@@ -134,10 +146,12 @@ EOF
 echo "About to create a BILLABLE instance:"
 echo "  project      : $PROJECT"
 echo "  name         : $INSTANCE_NAME"
+echo "  machine-type : $MACHINE_TYPE"
+echo "  provisioning : $PROVISIONING_MODEL"
 echo "  zone(s)      : $ZONE_FALLBACKS (tried in order, STOPPING at first success)"
 echo "  machine-type : $MACHINE_TYPE (1x nvidia-l4, inherited from the image)"
 echo "  source image : $SOURCE_MACHINE_IMAGE (machine image)"
-echo "  provisioning : STANDARD (on-demand, not spot)"
+echo "  provisioning : $PROVISIONING_MODEL"
 echo "  hard cap     : shutdown -h +$CAP_MINUTES ($((CAP_MINUTES / 60))h from boot)"
 echo
 read -r -p "Type 'launch' to proceed, anything else to abort: " CONFIRM
@@ -163,7 +177,7 @@ for Z in $ZONE_FALLBACKS; do
       --machine-type="$MACHINE_TYPE" \
       --source-machine-image="$SOURCE_MACHINE_IMAGE" \
       --maintenance-policy=TERMINATE \
-      --provisioning-model=STANDARD \
+      --provisioning-model="$PROVISIONING_MODEL" \
       --metadata-from-file=startup-script="$STARTUP_SCRIPT"; then
     CREATED_ZONE="$Z"
     break                     # <-- do not remove: see comment above
@@ -173,9 +187,24 @@ done
 
 if [[ -z "$CREATED_ZONE" ]]; then
   echo >&2
+  N_ZONES="$(printf '%s\n' $ZONE_FALLBACKS | wc -w | tr -d ' ')"
   echo "No zone in '$ZONE_FALLBACKS' had capacity. Nothing was created and" >&2
-  echo "nothing is billing. Stockouts have cleared within minutes before --" >&2
-  echo "retrying the same list shortly is reasonable." >&2
+  echo "nothing is billing." >&2
+  if [[ "$N_ZONES" == "1" ]]; then
+    # There is nothing to retry INTO. Saying "retry the list" here would be
+    # advice to re-run the identical single attempt, which reads as progress
+    # and is not. a2-ultragpu-1g exists in asia-southeast1-c alone, so a
+    # stockout there is a hard stop, not a routing problem.
+    echo >&2
+    echo "This is a SINGLE-ZONE target -- there is no fallback to try." >&2
+    echo "Capacity cannot be checked in advance (a successful check IS the" >&2
+    echo "booking), so the only options are to wait and attempt again later," >&2
+    echo "or to choose a different machine type or region." >&2
+    echo "Do not sit in a retry loop against one zone." >&2
+  else
+    echo "Stockouts have cleared within minutes before -- retrying the same" >&2
+    echo "list shortly is reasonable." >&2
+  fi
   exit 1
 fi
 
