@@ -393,8 +393,14 @@ def total_grid_flops_by_category(configs_by_backend: dict[str, list[AttnConfig]]
     unit. A task with examples but no entry here raises rather than
     silently costing zero decode.
 
-    Decode is charged to "measured" only -- the scoring pass produces
-    importance rankings and generates nothing.
+    Decode is charged to its own "decode" category, NEVER folded into
+    "measured". Folding it in was this module's own version of the bug it
+    documents: `corrected_grid_hours` divides each category's FLOPs by that
+    category's measured TFLOPS, and the measured TFLOPS are compute-bound
+    prefill figures. On 2026-09-06 the probe printed "grid decode ~= 5.35 h"
+    from the bandwidth model and "+0.03 h (0.18%)" from this path, three
+    lines apart, both from the same run. A separate category is what forces
+    the caller to cost it with `decode_seconds` instead.
     """
     missing = sorted({task for task, _ in examples_by_task_length}
                      - set(decode_steps_by_task)) if decode_steps_by_task else []
@@ -407,7 +413,7 @@ def total_grid_flops_by_category(configs_by_backend: dict[str, list[AttnConfig]]
     n_examples = {(task, seq_len): len(examples)
                   for (task, seq_len), examples in examples_by_task_length.items()}
 
-    totals: dict[PhaseCategory, int] = {"scoring": 0, "measured": 0}
+    totals: dict[PhaseCategory, int] = {"scoring": 0, "measured": 0, "decode": 0}
     tasks = sorted({task for task, _ in examples_by_task_length})
 
     scored_seq_lens = {cfg.seq_len for cfg in configs_by_backend.get("block_sparse", [])}
@@ -434,8 +440,8 @@ def total_grid_flops_by_category(configs_by_backend: dict[str, list[AttnConfig]]
                 if n == 0:
                     continue
                 steps = decode_steps_by_task.get(task, 0)
-                totals["measured"] += n * (
-                    measured_flops + decode_flops(real_cfg, arch, n_steps=steps))
+                totals["measured"] += n * measured_flops
+                totals["decode"] += n * decode_flops(real_cfg, arch, n_steps=steps)
 
     return totals
 
@@ -451,6 +457,14 @@ def corrected_grid_hours(total_flops_by_category: dict[PhaseCategory, int],
     """
     hours: dict[str, float] = {}
     for category, flops in total_flops_by_category.items():
+        if category == "decode" and flops:
+            raise ValueError(
+                "refusing to convert decode FLOPs to hours through a TFLOPS "
+                "figure. A batch-1 decode step is BANDWIDTH-bound and the "
+                "measured TFLOPS here are compute-bound prefill figures; the "
+                "two are ~177x apart on this model. Use "
+                "timing_probe.decode_seconds, or a measured per-step time. "
+                "See docs/silent_failure_patterns.md #15.")
         if flops == 0:
             hours[category] = 0.0
             continue

@@ -319,11 +319,15 @@ def main():
         configs_by_backend, examples_by_task_length, arch=arch,
         decode_steps_by_task={}, dense_backend=args.dense_backend)
 
-    measured_hours = corrected_grid_hours(total_flops, measured_tflops)
+    # Decode is dropped from every FLOPs-costed total on purpose: it is
+    # bandwidth-bound and corrected_grid_hours now refuses to price it. It is
+    # priced below, from the MEASURED per-step time.
+    def _prefill_only(t):
+        return {k: v for k, v in t.items() if k != "decode"}
+
+    measured_hours = corrected_grid_hours(_prefill_only(total_flops), measured_tflops)
     assumed_hours = corrected_grid_hours(
-        total_flops, {cat: ASSUMED_TFLOPS for cat in total_flops})
-    at_cap_hours = corrected_grid_hours(at_cap_flops, measured_tflops)
-    prefill_only_hours = corrected_grid_hours(prefill_only_flops, measured_tflops)
+        _prefill_only(total_flops), {cat: ASSUMED_TFLOPS for cat in total_flops})
 
     print(f"\n{'category':<10} {'assumed_15TFLOPS_h':>20} {'measured_h':>12}")
     for category in sorted(total_flops):
@@ -352,15 +356,29 @@ def main():
               f"{floor_ms:.2f} ms/step; the grid's decode term is a bracket "
               f"until this is measured -- see scripts/reestimate_stage3.py.")
 
-    decode_h = measured_hours["total"] - prefill_only_hours["total"]
     print(f"\nunit of work   : 1 prefill + greedy decode "
           f"({DECODE_STEPS_BY_TASK} steps by task)")
-    print(f"  prefill only : {prefill_only_hours['total']:.2f} h")
-    print(f"  + decode     : {decode_h:+.2f} h "
-          f"({decode_h / prefill_only_hours['total'] * 100:.2f}%)")
-    print(f"  every example to its cap: {at_cap_hours['total']:.2f} h "
-          f"({(at_cap_hours['total'] / measured_hours['total'] - 1) * 100:+.2f}% "
-          f"vs expected) -- the bound if the newline stop never fires")
+    print(f"  prefill      : {measured_hours['total']:.2f} h "
+          f"(FLOPs / measured TFLOPS -- compute-bound)")
+    if decode_ms is not None:
+        n_cfg = 1 + len(grid.sparsities) + 1
+        expected_steps = sum(
+            len(examples_by_task_length.get((task, sl), [])) * k * n_cfg
+            for task, k in DECODE_STEPS_BY_TASK.items() for sl in grid.seq_lens)
+        cap_steps = sum(
+            len(examples_by_task_length.get((task, sl), [])) * k * n_cfg
+            for task, k in DECODE_STEPS_BY_TASK_AT_CAP.items() for sl in grid.seq_lens)
+        dec_h = expected_steps * decode_ms / 1000 / 3600
+        cap_h = cap_steps * decode_ms / 1000 / 3600
+        print(f"  + decode     : {dec_h:.2f} h at the MEASURED "
+              f"{decode_ms:.2f} ms/step ({expected_steps} steps) "
+              f"= {dec_h / measured_hours['total'] * 100:.1f}% of prefill")
+        print(f"  GRID TOTAL   : {measured_hours['total'] + dec_h:.2f} h")
+        print(f"  if no example ever stops early: "
+              f"{measured_hours['total'] + cap_h:.2f} h")
+    else:
+        print("  + decode     : NOT MEASURED -- the grid total is unknown, not "
+              "the prefill figure above")
 
 
 if __name__ == "__main__":

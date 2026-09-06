@@ -294,7 +294,14 @@ def test_a_sparse_config_is_charged_dense_decode_because_that_is_what_runs():
             < whole_model_flops(_with_real_heads(dense, arch), arch))
 
 
-def test_grid_total_charges_decode_per_task_and_only_to_measured():
+def test_grid_total_charges_decode_per_task_into_its_own_category():
+    """Its own category, never folded into "measured".
+
+    Folding it in was this module's own version of the bug it documents:
+    corrected_grid_hours divides each category by that category's TFLOPS, and
+    those are compute-bound prefill figures. On 2026-09-06 the probe printed
+    "grid decode ~= 5.35 h" from the bandwidth model and "+0.03 h (0.18%)"
+    from the FLOPs path, three lines apart, in the same run."""
     arch = _arch()
     cfg = _cfg(seq_len=2048)
     examples = {("niah_single", 2048): list(range(5)),
@@ -310,10 +317,13 @@ def test_grid_total_charges_decode_per_task_and_only_to_measured():
         decode_steps_by_task={"niah_single": 8, "vt": 17})
 
     assert with_decode["scoring"] == prefill_only["scoring"]   # scoring generates nothing
+    assert with_decode["measured"] == prefill_only["measured"], (
+        "decode must not be folded into the compute-bound category")
     real = _with_real_heads(cfg, arch)
-    expected_extra = 2 * 5 * (decode_flops(real, arch, n_steps=8)
-                              + decode_flops(real, arch, n_steps=17))
-    assert with_decode["measured"] - prefill_only["measured"] == expected_extra
+    expected = 2 * 5 * (decode_flops(real, arch, n_steps=8)
+                        + decode_flops(real, arch, n_steps=17))
+    assert with_decode["decode"] == expected
+    assert prefill_only["decode"] == 0
 
 
 def test_a_task_with_examples_but_no_step_count_raises():
@@ -417,3 +427,16 @@ def test_the_overhead_term_is_zero_only_when_asked_for():
                           peak_bandwidth_bytes_per_s=bw,
                           per_step_overhead_s=0.015)
     assert real - floor == pytest.approx(0.15)
+
+
+def test_corrected_grid_hours_refuses_to_price_decode_from_tflops():
+    """The guard that makes the separation load-bearing rather than tidy.
+    Dividing decode FLOPs by a prefill TFLOPS figure is wrong by ~177x on
+    this model, and it produced a plausible sub-1% number that sat three
+    lines from the correct 5.35 h."""
+    with pytest.raises(ValueError, match="BANDWIDTH-bound"):
+        corrected_grid_hours({"measured": 10**15, "decode": 10**13},
+                             {"measured": 40.0, "decode": 40.0})
+    # zero decode is not an error -- a prefill-only estimate is legitimate
+    assert corrected_grid_hours({"measured": 10**15, "decode": 0},
+                                {"measured": 40.0})["total"] > 0
