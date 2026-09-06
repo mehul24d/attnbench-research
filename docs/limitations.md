@@ -121,6 +121,43 @@ For a study about sparsity, losing that axis costs more than the cleaner
 distractor design gains. Adding it as a *second* task was also rejected on
 cost -- it would add Stage 3 GPU-hours the budget does not have spare.
 
+## Sparsity is applied during prefill only
+
+Stage 3 generates text, and generation has two phases with very different
+costs. **Sparse attention is applied to the prefill; generation runs full
+attention over the KV cache.**
+
+**Why.** The scoring pass ranks the *prompt's* blocks against each other. A
+token being generated does not exist when that ranking is computed, so a
+sparse decode needs a mask row for it that was never scored. Three ways to
+supply one were considered:
+
+| | what it does | why not |
+|---|---|---|
+| reuse the last scored row | treats generated tokens as belonging to the final prompt block | defensible on adjacency, but the approximation sits exactly where sparsity's harm would show. "Sparse attention degraded the answer" and "our mask extrapolation degraded the answer" become inseparable |
+| re-score incrementally | computes the new token's ranking against cached keys | more faithful, and what a deployed method does -- but it puts the estimator inside the measured path, which the section below explicitly excludes. Stage 3 would then measure two different things depending on phase |
+| **dense decode** (chosen) | sparse prefill, full attention while generating | states exactly what was tested, with no approximation to caveat |
+
+**Why the cost argument settles it.** At 8192 context with the measured
+generation lengths (8-33 tokens; see
+`docs/stage3_generation_decision.md`), decode is **under 1% of total
+compute**. Sparsifying it saves nothing measurable and adds a confound to the
+part that can be measured. Prefill is where the quadratic cost lives and where
+every sparse-attention method aims.
+
+**What the claim becomes.** "Does sparse *prefill* change the answer" — not
+"does sparse inference change the answer". That is narrower, and it is the
+axis the compute argument says matters. Sparse Frontier separates prefill and
+decode sparsity as distinct axes for the same reason.
+
+**It is recorded per row, not just here.** `GenerationResult` carries
+`prefill_backend` and `decode_backend`, and they differ for every
+block_sparse row (`block_sparse` / `sdpa_math`). A reader does not have to
+know this section exists to see which backend produced a row's text — and
+`AttentionBackend.supports_decode()` makes the fallback explicit rather than
+an except-clause: a backend with no decode path refuses to pick one silently,
+because a silent fallback would make this design indistinguishable from a bug.
+
 ## Importance scores are an upper bound, and their cost is excluded
 
 `SwappableAttentionModel.compute_importance_scores` runs a full dense

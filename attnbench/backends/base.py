@@ -223,6 +223,17 @@ class AttentionBackend(abc.ABC):
         """
         raise UnsupportedConfig(f"{self.name}: no decode support")
 
+    @classmethod
+    def supports_decode(cls) -> bool:
+        """Whether this backend has its own decode path.
+
+        Asked, not assumed. Stage 3 generates with the measured backend where
+        it can and with a named dense backend where it cannot, and which of
+        those happened is recorded on every row -- so the question has to have
+        an answer that is not "call it and see what raises".
+        """
+        return "state_from_prefill" in vars(cls)
+
     def state_from_prefill(self, k: torch.Tensor, v: torch.Tensor,
                             cfg: AttnConfig) -> "KVCacheState":
         """Build decode state from a REAL prefill's K/V, not synthetic inputs.

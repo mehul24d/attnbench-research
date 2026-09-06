@@ -71,7 +71,7 @@ def _logits_to_keep_kwarg(version: str) -> str:
 
 _LOGITS_TO_KEEP_KWARG = _logits_to_keep_kwarg(transformers.__version__)
 
-Mode = Literal["score", "measured"]
+Mode = Literal["score", "measured", "decode"]
 
 
 class UnsupportedModelArchitecture(Exception):
@@ -127,6 +127,21 @@ class _ModeState:
     # Populated by the scoring pass, one entry per layer_idx, each
     # (n_heads_kv, n_blocks_finest, n_blocks_finest) fp32.
     scores: dict = field(default_factory=dict)
+
+    # ---- decode ------------------------------------------------------
+    # The backend generation runs through, which is NOT always the backend
+    # being measured. Sparsity is applied during prefill only (decision C,
+    # docs/stage3_generation_decision.md): at 8192 context with 33 generated
+    # tokens decode is under 1% of the work, so sparsifying it buys nothing
+    # measurable and would add a mask-extrapolation confound to the thing
+    # that can be measured -- the scoring pass ranked the prompt's blocks and
+    # never scored a token that does not exist yet.
+    decode_backend: Optional[AttentionBackend] = None
+    # layer_idx -> KVCacheState. Captured during prefill, advanced per step.
+    decode_states: dict = field(default_factory=dict)
+    # Set during a measured prefill to capture state for the decode that
+    # follows. Off by default so correctness runs pay nothing for it.
+    capture_decode_state: bool = False
 
 
 def _scoring_forward_chunked(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -255,7 +270,16 @@ class SwappedAttention(nn.Module):
         state = self._state
         cfg = replace(state.cfg_template, seq_len=q.shape[2], batch=q.shape[0])
 
-        if state.mode == "score":
+        if state.mode == "decode":
+            # Full attention over the cache, regardless of cfg.mask. The new
+            # token legitimately attends to every cached position, and the
+            # sparsity decision is made once during prefill -- see
+            # _ModeState.decode_backend.
+            prior = state.decode_states[self.layer_idx]
+            out, new_state = state.decode_backend.decode_step(
+                q, k, v, prior, replace(cfg, mask="causal"))
+            state.decode_states[self.layer_idx] = new_state
+        elif state.mode == "score":
             out, layer_scores = _scoring_forward_chunked(
                 q, k, v, block_size=cfg.block_size or 64,
                 chunk_blocks=state.chunk_blocks)
@@ -274,6 +298,12 @@ class SwappedAttention(nn.Module):
                 importance = pooled.mean(dim=0)
                 mask = masks.mask_for(cfg, importance_scores=importance)
             out = state.backend.forward(q, k, v, cfg, mask=mask)
+            if state.capture_decode_state:
+                # k/v here are un-expanded (B, n_heads_kv, S, D), which is
+                # what state_from_prefill wants and what keeps the cache-size
+                # measurement honest -- see SDPABackend.state_from_prefill.
+                state.decode_states[self.layer_idx] = (
+                    state.decode_backend.state_from_prefill(k, v, cfg))
 
         out = out.transpose(1, 2).reshape(*input_shape, -1).contiguous()
         out = self.o_proj(out)
@@ -285,6 +315,28 @@ class SwappedAttention(nn.Module):
         if _TRANSFORMERS_SELF_ATTN_RETURNS_3TUPLE:
             return out, None, None
         return out, None
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    """What one greedy decode produced, and under what contract.
+
+    `stop_reason` and `decode_backend` travel with the text for the same
+    reason `check_kind` travels with a correctness verdict: the standard a
+    result was produced under cannot be reconstructed from the result. A
+    prediction that hit its cap and one that terminated on a newline are
+    different events, and only one of them is a model failing to answer.
+    """
+
+    token_ids: list
+    stop_reason: str        # eos | newline | cap
+    n_generated: int
+    decode_backend: str
+    prefill_backend: str
+
+    @property
+    def truncated(self) -> bool:
+        return self.stop_reason == "cap"
 
 
 class SwappableAttentionModel:
@@ -363,7 +415,8 @@ class SwappableAttentionModel:
 
     def run_measured(self, input_ids: torch.Tensor, backend: AttentionBackend,
                       *, cfg: AttnConfig, layer_scores: Optional[dict] = None,
-                      logits_to_keep: int = 0):
+                      logits_to_keep: int = 0,
+                      decode_backend: Optional[AttentionBackend] = None):
         """Run the model with every layer's attention going through
         `backend`, using `cfg` (mask/sparsity/block_size/dtype) and, for
         block_sparse configs, the per-layer importance rankings from
@@ -384,8 +437,95 @@ class SwappableAttentionModel:
         self._state.mode = "measured"
         self._state.backend = backend
         self._state.cfg_template = cfg
+        self._state.decode_backend = decode_backend
+        self._state.capture_decode_state = decode_backend is not None
+        self._state.decode_states = {}
         if layer_scores is not None:
             self._state.scores = layer_scores
-        with torch.no_grad():
-            return self.model(input_ids=input_ids, use_cache=False,
-                              **{_LOGITS_TO_KEEP_KWARG: logits_to_keep})
+        try:
+            with torch.no_grad():
+                return self.model(input_ids=input_ids, use_cache=False,
+                                  **{_LOGITS_TO_KEEP_KWARG: logits_to_keep})
+        finally:
+            self._state.capture_decode_state = False
+
+    def generate(self, input_ids: torch.Tensor, backend: AttentionBackend, *,
+                 cfg: AttnConfig, max_new_tokens: int,
+                 eos_token_ids: frozenset = frozenset(),
+                 newline_token_ids: frozenset = frozenset(),
+                 layer_scores: Optional[dict] = None,
+                 decode_backend: Optional[AttentionBackend] = None,
+                 ) -> "GenerationResult":
+        """Greedy decode from a prefilled prompt.
+
+        Deterministic by construction -- argmax, no sampling, no temperature.
+        Sampling noise would swamp the effect Stage 3 measures (whether sparse
+        attention changes the answer) and would make a re-run disagree with
+        itself, so there is no knob for it.
+
+        `decode_backend` defaults to `backend` where the backend has its own
+        decode path and must be named explicitly where it does not. Nothing
+        falls back silently: `block_sparse` decodes densely by design, and
+        which backend generated a row's text is recorded on the row.
+
+        Stopping: EOS, or any token whose text contains a newline, or
+        `max_new_tokens`. The newline stop is load-bearing rather than
+        belt-and-braces -- RULER prompts are completion-style and end
+        mid-sentence, so an instruct model's EOS (`<|im_end|>`, which closes
+        an assistant turn that never opened) is essentially never emitted.
+        Without it every example would exit on the cap, and "hit its cap"
+        would carry no information about any backend. See
+        docs/stage3_generation_decision.md.
+        """
+        if decode_backend is None:
+            if not type(backend).supports_decode():
+                raise UnsupportedModelArchitecture(
+                    f"{backend.name} has no decode path, so generation needs "
+                    f"an explicit decode_backend. This is deliberate: the "
+                    f"choice changes what a row means and is recorded on it.")
+            decode_backend = backend
+
+        prefill_len = int(input_ids.shape[-1])
+        out = self.run_measured(input_ids, backend, cfg=cfg,
+                                layer_scores=layer_scores, logits_to_keep=1,
+                                decode_backend=decode_backend)
+        next_id = int(out.logits[0, -1].argmax())
+
+        generated: list[int] = []
+        stop_reason = "cap"
+        self._state.mode = "decode"
+        # q_len=1 per step. The cfg the decode path sees keeps the prompt's
+        # head geometry and dtype; only the query length changes.
+        decode_cfg = replace(cfg, mask="causal")
+        try:
+            for step in range(max_new_tokens):
+                generated.append(next_id)
+                if next_id in eos_token_ids:
+                    stop_reason = "eos"
+                    break
+                if next_id in newline_token_ids:
+                    stop_reason = "newline"
+                    break
+                if len(generated) >= max_new_tokens:
+                    stop_reason = "cap"
+                    break
+                # position_ids is not optional here. With use_cache=False and
+                # a one-token input, transformers derives position 0, so RoPE
+                # would rotate every generated token as though it were the
+                # start of the sequence. No error, plausible text, wrong
+                # output -- the same shape as is_causal on a single query.
+                pos = prefill_len + len(generated) - 1
+                step_ids = torch.tensor([[next_id]], device=input_ids.device)
+                position_ids = torch.tensor([[pos]], device=input_ids.device)
+                with torch.no_grad():
+                    out = self.model(input_ids=step_ids,
+                                     position_ids=position_ids, use_cache=False,
+                                     **{_LOGITS_TO_KEEP_KWARG: 1})
+                next_id = int(out.logits[0, -1].argmax())
+        finally:
+            self._state.mode = "measured"
+
+        return GenerationResult(token_ids=generated, stop_reason=stop_reason,
+                                n_generated=len(generated),
+                                decode_backend=decode_backend.name,
+                                prefill_backend=backend.name)
