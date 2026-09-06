@@ -98,7 +98,8 @@ def main():
     ap.add_argument("--model", choices=("primary", "alternate"), default="primary")
     ap.add_argument("--include-sage", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--dense-backend", default="sdpa_math")
+    ap.add_argument("--dense-backend", default=None,
+                    help="defaults to the grid's pinned dense_backend")
     ap.add_argument("--seq-len", type=int, default=None,
                     help="defaults to the grid's longest configured length "
                          "(the worst case); pass one of the grid's other "
@@ -110,6 +111,7 @@ def main():
                           "ceiling for what this study targets")
 
     grid = load_grid(args.grid)
+    args.dense_backend = args.dense_backend or grid.dense_backend
     task = args.task or grid.tasks[0]
     if args.seq_len is not None:
         if args.seq_len not in grid.seq_lens:

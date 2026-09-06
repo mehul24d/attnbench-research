@@ -32,7 +32,8 @@ def _example(task="niah_single", example_id="ex0", context_length=1024) -> Ruler
 
 def test_accuracy_result_round_trips_through_parquet(tmp_path):
     result = AccuracyResult(
-        backend="sdpa_math", config_key="abc123", task="niah_single",
+        backend="sdpa_math", backend_role="block_sparse", config_key="abc123",
+        task="niah_single",
         example_id="ex0", context_length=1024, mask_source="importance",
         sparsity=0.5, score_source="dense_softmax_fp32",
         haystack_mode="noise", predicted="42", expected="42", score=100.0,
@@ -51,7 +52,8 @@ def test_dense_config_has_no_score_source_or_mask_source():
     """A dense (non-block-sparse) row never ran a scoring pass -- both
     fields must be None, not a stale value from a different cell."""
     result = AccuracyResult(
-        backend="sdpa_math", config_key="abc123", task="niah_single",
+        backend="sdpa_math", backend_role="dense_reference", config_key="abc123",
+        task="niah_single",
         example_id="ex0", context_length=1024, mask_source=None,
         sparsity=None, score_source=None, haystack_mode="noise",
         predicted="42", expected="42", score=100.0, correct=True,
@@ -421,3 +423,41 @@ def test_generation_facts_are_null_not_invented_when_absent(tmp_path):
     assert row["stop_reason"] is None
     assert pd.isna(row["n_generated"])
     assert row["decode_backend"] is None
+
+
+# --- the study's design, visible in the data --------------------------------
+
+def test_backend_role_is_derived_from_the_config_not_the_name():
+    """A sparse config measured on any kernel is still a sparsity point, and
+    it is the MASK that decides -- not what the backend is called."""
+    from attnbench.accuracy.runner import backend_role
+    sparse = _cfg(mask="block_sparse", sparsity=0.5, block_size=128,
+                  mask_source="importance")
+    assert backend_role("sdpa_flash", _cfg()) == "dense_reference"
+    assert backend_role("sdpa_flash", sparse) == "block_sparse"
+    assert backend_role("block_sparse", sparse) == "block_sparse"
+    assert backend_role("gla", _cfg()) == "linear"
+    assert backend_role("sage", _cfg()) == "quantized"
+
+
+def test_the_dense_arm_is_answerable_from_the_parquet_alone(tmp_path):
+    """The point of the column. A reader holding only the results must be
+    able to ask 'which backend was the dense reference, and was it the same
+    one in every band' -- not have to find a docstring. A dense baseline that
+    changed kernel mid-grid would split the data into two differently-composed
+    halves, which composition.py refuses to aggregate across."""
+    examples = [_example(example_id=f"ex{i}") for i in range(2)]
+    sparse = _cfg(mask="block_sparse", sparsity=0.5, block_size=128,
+                  mask_source="importance")
+    cells = build_cells(
+        configs_by_backend={"sdpa_flash": [_cfg()], "block_sparse": [sparse],
+                            "gla": [_cfg()]},
+        examples_by_task_length={("niah_single", 1024): examples})
+    run_accuracy(cells, out_dir=tmp_path,
+                 examples_by_id={("niah_single", e.example_id): e for e in examples},
+                 generate_fn=lambda c, b, ex: Generated(ex.answer[0]),
+                 provenance_fn=_clean_prov())
+    df = pd.read_parquet(tmp_path / "accuracy.parquet")
+    dense = df[df["backend_role"] == "dense_reference"]["backend"].unique()
+    assert list(dense) == ["sdpa_flash"], dense
+    assert set(df["backend_role"]) == {"dense_reference", "block_sparse", "linear"}

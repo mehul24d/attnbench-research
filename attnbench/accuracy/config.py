@@ -43,6 +43,7 @@ class AccuracyGrid:
     tasks: tuple[str, ...]
     score_dtype: str
     score_cache_dir: str
+    dense_backend: str
 
     @property
     def finest_block_size(self) -> int:
@@ -73,7 +74,7 @@ def load_grid(path: str | Path) -> AccuracyGrid:
         raw = yaml.safe_load(f)
 
     required = ("model", "seq_lens", "block_sizes", "sparsities", "tasks",
-                "score_dtype", "score_cache_dir")
+                "score_dtype", "score_cache_dir", "dense_backend")
     missing = [k for k in required if k not in raw]
     if missing:
         raise KeyError(f"{p}: missing required key(s) {missing}")
@@ -102,4 +103,5 @@ def load_grid(path: str | Path) -> AccuracyGrid:
         tasks=tuple(raw["tasks"]),
         score_dtype=raw["score_dtype"],
         score_cache_dir=raw["score_cache_dir"],
+        dense_backend=raw["dense_backend"],
     )

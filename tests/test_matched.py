@@ -27,6 +27,7 @@ def _grid(**overrides) -> AccuracyGrid:
         block_sizes=(128,), sparsities=(0.5, 0.75, 0.9),
         tasks=("niah_single",), score_dtype="fp16",
         score_cache_dir="results/accuracy/score_cache",
+        dense_backend="sdpa_flash",
     )
     fields.update(overrides)
     return AccuracyGrid(**fields)

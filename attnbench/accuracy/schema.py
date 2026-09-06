@@ -36,6 +36,22 @@ HaystackMode = Literal["noise", "needle", "essay"]
 # row, because a truncated answer and a wrong answer both just score 0.
 StopReason = Literal["eos", "newline", "cap"]
 
+# What a backend is DOING in this study, as opposed to what it is called.
+#
+# Stage 3's backends have curated, asymmetric roles rather than a uniform
+# sweep: exactly one dense arm supplies the sparsity=0 reference every other
+# arm is compared against, block_sparse supplies the sparsity sweep, gla the
+# linear-attention point, sage the quantized one. Until 2026-09-06 that lived
+# only in a docstring, so a row said `backend="sdpa_flash"` and nothing in the
+# data said it was THE reference arm.
+#
+# That matters because the identity of the dense arm is a study-design fact
+# that must hold across every band: if it ever changed mid-grid, the halves
+# would not be comparable, and a reader holding only the parquet could not
+# tell. With this column that question is `df.groupby("backend_role")
+# ["backend"].nunique()` -- one row, one answer.
+BackendRole = Literal["dense_reference", "block_sparse", "linear", "quantized"]
+
 
 @dataclass(frozen=True)
 class Generated:
@@ -86,6 +102,7 @@ class AccuracyResult:
     """
 
     backend: str
+    backend_role: BackendRole
     config_key: str
     task: str
     example_id: str

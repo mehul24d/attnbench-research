@@ -43,8 +43,14 @@ def test_build_configs_by_backend_curated_lists_match_pinned_cell_count():
     grid = load_grid(GRID_PATH)
     configs = build_configs_by_backend(grid, include_sage=False)
 
-    assert set(configs) == {"sdpa_math", "block_sparse", "gla"}
-    assert len(configs["sdpa_math"]) == len(grid.seq_lens)
+    # sdpa_flash, not sdpa_math: the dense arm is pinned in the grid as data
+    # (see stage3_grid.yaml's dense_backend). It was an unexamined "sdpa_math"
+    # keyword default until 2026-09-06, while the grid's whole hour estimate
+    # rested on a measured sdpa_flash anchor -- 9.2x apart on 68% of the
+    # prefill work, and the two never met.
+    assert set(configs) == {grid.dense_backend, "block_sparse", "gla"}
+    assert grid.dense_backend == "sdpa_flash"
+    assert len(configs[grid.dense_backend]) == len(grid.seq_lens)
     assert len(configs["gla"]) == len(grid.seq_lens)
     assert len(configs["block_sparse"]) == len(grid.seq_lens) * len(grid.sparsities)
 

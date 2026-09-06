@@ -66,7 +66,7 @@ def build_examples_by_task_length(grid: AccuracyGrid, seed: int, *,
 
 
 def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
-                              dense_backend: str = "sdpa_math",
+                              dense_backend: str | None = None,
                               seq_lens: tuple[int, ...] | None = None,
                               ) -> dict[str, list[AttnConfig]]:
     """Each backend's own curated config list.
@@ -79,7 +79,16 @@ def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
 
     `seq_lens` restricts which lengths get configs -- defaults to every
     length in the grid; the timing probe passes just the longest one.
+
+    `dense_backend` defaults to the GRID's pinned choice, not to a value
+    written here. It was `"sdpa_math"` as a script default until 2026-09-06,
+    while the grid's whole hour estimate rested on a `sdpa_flash` throughput
+    anchor -- a 9.2x disagreement on 68% of the prefill work, hidden in a
+    keyword default. The dense arm is study design and belongs in the pinned
+    data with the rest of it.
     """
+    if dense_backend is None:
+        dense_backend = grid.dense_backend
     configs_by_backend: dict[str, list[AttnConfig]] = {
         dense_backend: [], "block_sparse": [], "gla": [],
     }

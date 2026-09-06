@@ -20,7 +20,29 @@ from .. import provenance
 from ..checkpoint import append_checkpoint
 from ..config import AttnConfig
 from . import ruler
-from .schema import AccuracyResult, Generated
+from .schema import AccuracyResult, BackendRole, Generated
+
+
+# Derived from the config, never passed in: a role that could disagree with
+# the cfg it sits next to is a second source of truth for the same fact.
+_ROLE_BY_BACKEND: dict[str, "BackendRole"] = {
+    "gla": "linear",
+    "sage": "quantized",
+    "block_sparse": "block_sparse",
+}
+
+
+def backend_role(backend_name: str, cfg: AttnConfig) -> "BackendRole":
+    """What this cell contributes to the study.
+
+    `block_sparse` is keyed on the CONFIG's mask rather than the backend
+    name, because the two can come apart: a sparse config can legitimately be
+    measured on a different kernel, and it is the mask that decides whether a
+    row is a sparsity point or a reference point.
+    """
+    if cfg.mask == "block_sparse":
+        return "block_sparse"
+    return _ROLE_BY_BACKEND.get(backend_name, "dense_reference")
 
 
 @dataclass(frozen=True)
@@ -305,6 +327,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
 
         result = AccuracyResult(
             backend=cell.backend_name,
+            backend_role=backend_role(cell.backend_name, cell.cfg),
             config_key=cell.cfg.key(),
             task=cell.task,
             example_id=cell.example_id,

@@ -191,3 +191,31 @@ tasks:
 
 score_dtype: fp16
 score_cache_dir: results/accuracy/score_cache
+
+# The dense (sparsity=0) reference arm, for ALL of Stage 3. Data, not a script
+# default, because it is a study-design decision and it must be the same in
+# every band -- a dense baseline that changed kernel partway through the grid
+# would split the accuracy data into two differently-composed halves, which is
+# precisely what analysis/composition.py refuses to aggregate across.
+#
+# Every exact-math kernel computes identical attention and Stage 1 verifies
+# that against a float64 reference, so which one runs is a COST question, not
+# an accuracy one. Measured on the L4, 2026-09-06, one 8192-token prefill:
+#
+#   sdpa_math    5.536 s   10.17 GiB peak   (materialises the S x S matrix)
+#   sdpa_flash   0.600 s                    9.2x faster, same answer
+#
+# It was sdpa_math until 2026-09-06 and that was simply an unexamined default:
+# the 42.151 TFLOPS anchor this whole grid's hour estimate rests on is a
+# SDPA-FLASH figure, so the estimate and the run disagreed by 9x on 68% of the
+# prefill work, and the estimate was the honest one.
+#
+# PREDICTION, NOT MEASUREMENT -- to be checked when S3 has hardware up:
+# sdpa_math peaked at 10.17 GiB at 8192 and the S x S term is quadratic, which
+# projects to ~40 GiB at 16384 and an OOM on a 23 GiB L4. That is arithmetic.
+# This project has been wrong twice about exactly this kind of arithmetic (the
+# oracle length cutoff, off by 16x at batch 16; the device-aware budget,
+# verified only against a simulated card), so it is recorded here as a
+# prediction to test, not as a settled reason. The anchor-consistency and
+# same-kernel-across-bands arguments stand on their own without it.
+dense_backend: sdpa_flash

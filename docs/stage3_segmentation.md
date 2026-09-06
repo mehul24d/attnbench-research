@@ -89,6 +89,33 @@ and splitting it would help, but it puts a cut inside a band, which is the one
 place the score cache has to survive to avoid repaying 3.03 h of scoring.
 Revisit only if the measured decode step lands in the worst column.
 
+## An open prediction, to be tested at S3
+
+**`sdpa_math` is projected to OOM at 16384 on a 23 GiB L4. That is arithmetic,
+not a measurement, and it is written here so it gets checked rather than
+assumed.**
+
+Measured on 2026-09-06 at 8192: `sdpa_math` peaked at **10.17 GiB**, because
+the math kernel materialises the S x S attention matrix. The term is
+quadratic, so 16384 projects to ~40 GiB and 32768 to ~160 GiB.
+
+It is *not* the reason the dense arm is `sdpa_flash`. That rests on two
+measured/structural arguments which stand without it: the grid's hour estimate
+was anchored on a `sdpa_flash` throughput figure, and a dense baseline that
+changed kernel partway through the grid would split the accuracy data into two
+differently-composed halves.
+
+Why it is a prediction and not a fact: **this project has been wrong twice
+about exactly this kind of memory arithmetic** -- the oracle length cutoff,
+which was off by 16x at batch 16, and the device-aware budget, which was
+verified only against a simulated card. A quadratic projection from one
+measured point is the same shape as both.
+
+**Test at S3, on hardware that is already up:** one `sdpa_math` prefill at
+16384 with `torch.cuda.max_memory_allocated()`. It costs seconds. Record the
+answer here either way -- a confirmed OOM is worth knowing, and so is a
+projection that was 4x pessimistic.
+
 ## What must be carried between segments
 
 **`accuracy.parquet` — hard requirement.** `runner.load_done_keys` reads it to
