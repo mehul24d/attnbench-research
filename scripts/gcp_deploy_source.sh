@@ -64,9 +64,23 @@ gcloud compute scp "$BUNDLE" "$NAME:/tmp/deploy.bundle" --zone="$ZONE" >/dev/nul
 # 2. Check the bundle out on the instance. `-f` and `clean -fd` because the
 #    instance may be carrying a previous tarball deploy's edits; `clean` is
 #    deliberately WITHOUT -x, so gitignored measurement output survives.
+#
+#    The detach is required on the SECOND deploy of a session and every one
+#    after it. git refuses to fetch into the branch a non-bare repo currently
+#    has checked out -- `--force` does not override it:
+#
+#      fatal: Refusing to fetch into current branch refs/heads/deployed
+#             of non-bare repository
+#
+#    The first deploy always works (HEAD is on the image's own branch), so
+#    this was invisible until a session deployed twice. It would have fired
+#    at Stage 3 segment 2 regardless: the segmentation plan pins a commit per
+#    segment and re-deploys each time, and a mid-session fix is exactly the
+#    hazard `check_code_continuity` exists to catch.
 gcloud compute ssh "$NAME" --zone="$ZONE" --command="
 set -euo pipefail
 cd $REMOTE_DIR
+git checkout --quiet --detach
 git fetch --quiet /tmp/deploy.bundle HEAD:refs/heads/deployed --force
 git checkout --quiet --force deployed
 git clean -qfd

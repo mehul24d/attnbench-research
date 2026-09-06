@@ -132,3 +132,82 @@ def test_clean_does_not_take_x():
     src = SCRIPT.read_text()
     assert "git clean -qfd" in src
     assert "-fdx" not in src and "-xfd" not in src
+
+
+# ---------------------------------------------------------------------------
+# The remote git sequence, run for real against a local repo
+#
+# The failure this covers is in the git commands, not in the ssh wrapper, so
+# the honest test runs those commands -- twice, because the bug only exists
+# on the second deploy.
+# ---------------------------------------------------------------------------
+
+def _remote_sequence(script_text: str) -> list[str]:
+    """The git lines the deploy script sends to the instance."""
+    import re
+    block = re.search(r'gcloud compute ssh "\$NAME" --zone="\$ZONE" --command="\n'
+                      r'set -euo pipefail\n'
+                      r'cd \$REMOTE_DIR\n'
+                      r'(.*?)"\n', script_text, re.S)
+    assert block, "could not find the remote checkout block in the deploy script"
+    return [ln for ln in block.group(1).splitlines()
+            if ln.strip() and not ln.strip().startswith("rm ")]
+
+
+def test_deploying_twice_in_one_session_works(tmp_path):
+    """The regression, found live on 2026-09-06 mid-session.
+
+    git refuses to fetch into the branch a non-bare repo currently has
+    checked out, and --force does not override it:
+
+        fatal: Refusing to fetch into current branch refs/heads/deployed
+               of non-bare repository
+
+    The FIRST deploy always works, because HEAD is still on the image's own
+    branch -- so this was invisible until a session deployed twice. Stage 3
+    runs in four segments and re-deploys each time, so it would have fired
+    regardless; it just happened to fire on a mid-session fix instead.
+    """
+    import subprocess
+
+    def git(repo, *args, **kw):
+        return subprocess.run(["git", "-C", str(repo), *args],
+                              capture_output=True, text=True, **kw)
+
+    source = tmp_path / "source"
+    source.mkdir()
+    git(source, "init", "-q", "-b", "main")
+    git(source, "config", "user.email", "t@t")
+    git(source, "config", "user.name", "t")
+    (source / "f.txt").write_text("one\n")
+    git(source, "add", "-A")
+    git(source, "commit", "-qm", "one")
+
+    instance = tmp_path / "instance"
+    subprocess.run(["git", "clone", "-q", str(source), str(instance)], check=True)
+    git(instance, "config", "user.email", "t@t")
+    git(instance, "config", "user.name", "t")
+
+    lines = _remote_sequence(
+        (Path(__file__).resolve().parents[1] / "scripts" / "gcp_deploy_source.sh").read_text())
+
+    for round_n, content in enumerate(("two\n", "three\n"), start=1):
+        (source / "f.txt").write_text(content)
+        git(source, "add", "-A")
+        git(source, "commit", "-qm", f"round {round_n}")
+        want = git(source, "rev-parse", "HEAD").stdout.strip()
+
+        bundle = tmp_path / f"deploy{round_n}.bundle"
+        subprocess.run(["git", "-C", str(source), "bundle", "create", str(bundle), "HEAD"],
+                       capture_output=True, check=True)
+
+        for line in lines:
+            cmd = line.strip().replace("/tmp/deploy.bundle", str(bundle))
+            r = subprocess.run(cmd, shell=True, cwd=instance,
+                               capture_output=True, text=True)
+            assert r.returncode == 0, (
+                f"deploy round {round_n} failed on: {cmd}\n{r.stderr}")
+
+        got = git(instance, "rev-parse", "HEAD").stdout.strip()
+        assert got == want, f"round {round_n}: instance at {got}, wanted {want}"
+        assert git(instance, "status", "--porcelain").stdout.strip() == ""
