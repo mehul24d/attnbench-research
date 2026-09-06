@@ -57,6 +57,7 @@ from attnbench.accuracy.grid_configs import (                          # noqa: E
 from attnbench.accuracy.sizing import approximate_token_count  # noqa: E402
 from attnbench.accuracy.runner import build_cells, run_accuracy        # noqa: E402
 from attnbench.accuracy import stopping                                # noqa: E402
+from attnbench import provenance                                       # noqa: E402
 from attnbench.config import AttnConfig                                # noqa: E402
 
 
@@ -160,10 +161,30 @@ def main():
                     help="run from, or resume into, a tree with uncommitted "
                          "changes. The commit stamped on those rows then "
                          "does not establish what code produced them.")
+    ap.add_argument("--lock-clocks", action="store_true",
+                    help="pin SM clocks before measuring, and stamp the "
+                         "OUTCOME on every row. Not the intent -- "
+                         "provenance.lock_clocks returns whether it actually "
+                         "worked, which it did not do until 2026-09-06.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     grid = load_grid(args.grid)
+
+    # Clocks: attempt, then stamp what HAPPENED, never what was asked for.
+    # Every row in this project so far carries clocks_locked=False because
+    # nothing has ever passed the flag -- capture() takes it as a parameter
+    # defaulting to False and does not observe it. So a run whose clocks ARE
+    # pinned would be recorded as unpinned, and the fact would be lost.
+    clocks_locked = False
+    if args.lock_clocks and not args.dry_run:
+        clocks_locked = provenance.lock_clocks()
+        print(f"clocks        : lock {'SUCCEEDED' if clocks_locked else 'FAILED'} "
+              f"-- stamped on every row as clocks_locked={clocks_locked}")
+
+    def provenance_fn():
+        return provenance.capture(clocks_locked=clocks_locked)
+
     print(f"grid          : {args.grid}")
     print(f"model primary : {grid.model_primary}")
     print(f"model alt     : {grid.model_alternate}")
@@ -221,6 +242,7 @@ def main():
         report = run_accuracy(cells, out_dir=Path(args.out),
                               examples_by_id=examples_by_id,
                               generate_fn=generate_fn, dry_run=args.dry_run,
+                              provenance_fn=provenance_fn,
                               allow_mixed_commits=args.allow_mixed_commits,
                               allow_dirty=args.allow_dirty)
     finally:

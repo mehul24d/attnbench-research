@@ -306,24 +306,43 @@ def stamp_integrity_problems(stamp) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def lock_clocks(sm_mhz: Optional[int] = None) -> bool:
-    """Pin SM clocks and enable persistence mode.
+    """Pin SM clocks and enable persistence mode. Returns whether it worked.
 
     Needs root or an admin-granted permission, so it will often fail on shared
     university clusters and on some rental hosts. Failure is returned, not
     raised, but an unlocked run must be flagged in the results: unlocked clocks
     on a shared host produce variance that is easy to mistake for a real effect.
+
+    **This returned True on a lock that did not happen, until 2026-09-06.** It
+    ended with `res = _sh([...]); return res is not None`, and `_sh` returns
+    `stdout.strip() or None` -- it never looks at the exit code. Run without
+    root, `nvidia-smi -lgc` exits 4 and prints
+
+        The current user does not have permission to change clocks for GPU ...
+
+    to STDOUT. Non-empty stdout, so `_sh` returned a string, so this returned
+    True. Measured on the 2026-09-06 L4: returned True, clock unchanged at
+    2040 MHz (the unlocked maximum) rather than the 1734 requested.
+
+    Third instance of stdout being read as an outcome (see
+    docs/silent_failure_patterns.md): `git rev-parse HEAD` echoing "HEAD" on
+    failure, `--query-compute-apps` printing nothing on success, and now this.
+    `_sh_result` exists precisely because `_sh` cannot answer "did it work" --
+    the fix is to use it, and the reason this one is worse than the other two
+    is its direction: it reports a control as ESTABLISHED when it is absent,
+    so every row it stamps overstates how well the run was controlled.
     """
     if shutil.which("nvidia-smi") is None:
         return False
-    _sh(["nvidia-smi", "-pm", "1"])
+    _sh_result(["nvidia-smi", "-pm", "1"])
     if sm_mhz is None:
-        q = _sh(["nvidia-smi", "--query-gpu=clocks.max.sm",
-                 "--format=csv,noheader,nounits"])
-        if not q:
+        ok, q = _sh_result(["nvidia-smi", "--query-gpu=clocks.max.sm",
+                            "--format=csv,noheader,nounits"])
+        if not ok or not q.strip():
             return False
         sm_mhz = int(int(q.splitlines()[0].strip()) * 0.85)  # headroom, avoids throttle
-    res = _sh(["nvidia-smi", "-lgc", f"{sm_mhz},{sm_mhz}"])
-    return res is not None
+    ok, _ = _sh_result(["nvidia-smi", "-lgc", f"{sm_mhz},{sm_mhz}"])
+    return ok
 
 
 def unlock_clocks() -> None:

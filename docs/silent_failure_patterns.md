@@ -6,11 +6,11 @@ machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
 model is self-inflicted, and this file is the record of it, kept because
-fifteen instances in six days is no longer a coincidence.
+sixteen instances in six days is no longer a coincidence.
 
 ---
 
-## The fifteen
+## The sixteen
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -551,6 +551,64 @@ stated rather than defaulted; and `scripts/time_one_accuracy_example.py` now
 commits, which collapses a five-hour bracket in two minutes.
 
 
+### 16. A clock lock that reported success while the clocks stayed unlocked
+
+Found in Phase 1 of the 2026-09-06 Stage 3 session, on the first instance in
+this project where root actually works — so the first time the claim could be
+checked against reality rather than assumed to be failing.
+
+`provenance.lock_clocks()` ended:
+
+```python
+res = _sh(["nvidia-smi", "-lgc", f"{sm_mhz},{sm_mhz}"])
+return res is not None
+```
+
+`_sh` returns `stdout.strip() or None` and **never looks at the exit code**.
+Run without root, `nvidia-smi -lgc` exits 4 and prints
+
+```
+The current user does not have permission to change clocks for GPU 00000000:00:03.0.
+```
+
+to **stdout**. Non-empty stdout, so `_sh` returns a string, so `lock_clocks()`
+returns `True`.
+
+Measured directly on the L4 rather than reasoned about: reset to unlocked,
+called `lock_clocks()` unprivileged, got `True` back, and read the clock at
+**2040 MHz** — the unlocked maximum, not the 1734 MHz requested.
+
+**Third instance of stdout being read as an outcome**, and the family is now
+unmistakable:
+
+| | stdout | truth |
+|---|---|---|
+| `git rev-parse HEAD` (#3) | echoes `"HEAD"` | failure |
+| `--query-compute-apps` | prints nothing | success (GPU is clean) |
+| `nvidia-smi -lgc` (#16) | prints a permission error | failure |
+
+`_sh_result` was written for exactly this and already existed; `lock_clocks`
+simply never used it.
+
+**This one is the worst of the three by direction.** The other two produced a
+blocked run and a confusing error. This reports a *control* as established
+when it is absent, so every row it stamps overstates how well the run was
+controlled — and it would only ever be believed, never questioned, because
+"clocks locked" is the answer everyone wants.
+
+**Second finding, in the same place:** `provenance.capture(clocks_locked=False)`
+takes the flag as a **parameter**, not an observation, and no caller in the
+project has ever passed it. So every result row ever written says
+`clocks_locked=False` regardless of the machine's actual state. Harmless while
+the lock genuinely never worked; wrong the moment it does. `run_accuracy.py`
+now attempts the lock and stamps the returned outcome.
+
+**Fixed by:** `lock_clocks` using `_sh_result` (exit status, not stdout
+truthiness), three tests driving a fake `nvidia-smi` that reproduces the real
+one's exit-4-with-stdout behaviour, and `--lock-clocks` on `run_accuracy.py`
+passing the measured outcome into every row's provenance.
+
+
 ## The general hazards, stated once
 
 **A divide-by-zero guard is not a resolution floor, and they are the same line
@@ -741,3 +799,10 @@ modelling one.** The 13.35 h estimate was re-checked thoroughly and every
 input held; what had changed was the *unit of work* — a row stopped being one
 forward pass. Re-checking an estimate means asking what one unit is, not only
 whether the numbers behind it are current.
+
+**Read the exit code. Three times now, stdout has been the wrong witness.**
+Instances 3 and 16 and the exclusivity check. A command's stdout answers "what
+did it say", never "did it work" — and the two diverge exactly where a tool
+reports a problem on stdout instead of stderr, which is common. `_sh` cannot
+answer the second question; `_sh_result` exists for it. Any new `_sh` call site
+whose result is used as a *verdict* rather than as *data* is this bug again.

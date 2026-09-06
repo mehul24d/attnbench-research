@@ -28,6 +28,7 @@ All CPU-only.
 from __future__ import annotations
 
 import dataclasses
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -157,3 +158,61 @@ def test_capture_records_both_gated_git_fields():
     p = provenance.capture()
     d = p.to_dict()
     assert "git_commit" in d and "git_dirty" in d
+
+
+# ---------------------------------------------------------------------------
+# lock_clocks must report what happened, not what was attempted
+# ---------------------------------------------------------------------------
+
+def _fake_nvidia_smi(tmp_path, *, lgc_exit: int, lgc_stdout: str = ""):
+    """A stand-in nvidia-smi on PATH. The real one prints its PERMISSION
+    ERROR to stdout and exits 4, which is the whole trap."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    smi = bin_dir / "nvidia-smi"
+    smi.write_text(
+        "#!/usr/bin/env bash\n"
+        'for a in "$@"; do case "$a" in\n'
+        '  -lgc) printf "%s" "' + lgc_stdout + f'"; exit {lgc_exit} ;;\n'
+        '  --query-gpu=clocks.max.sm) echo 2040; exit 0 ;;\n'
+        "esac; done\n"
+        "exit 0\n")
+    smi.chmod(0o755)
+    return bin_dir
+
+
+def test_lock_clocks_reports_failure_when_the_lock_is_refused(tmp_path, monkeypatch):
+    """The measured failure, 2026-09-06 on an L4: returned True, clock
+    unchanged at 2040 MHz. nvidia-smi -lgc exits 4 and prints its permission
+    error to STDOUT, and `_sh` returns stdout-or-None without ever looking at
+    the exit code -- so non-empty stdout read as success.
+
+    Worse than the other two stdout-as-outcome bugs because of its direction:
+    it reports a control as ESTABLISHED when it is absent, so every row it
+    stamps overstates how well the run was controlled.
+    """
+    from attnbench import provenance
+    bin_dir = _fake_nvidia_smi(
+        tmp_path, lgc_exit=4,
+        lgc_stdout="The current user does not have permission to change clocks")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    assert provenance.lock_clocks() is False
+
+
+def test_lock_clocks_reports_success_when_the_lock_is_granted(tmp_path, monkeypatch):
+    """The other half -- the fix must not have turned it into a constant
+    False, which would be the same defect pointing the other way."""
+    from attnbench import provenance
+    bin_dir = _fake_nvidia_smi(tmp_path, lgc_exit=0,
+                               lgc_stdout="GPU clocks set to ...\nAll done.")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    assert provenance.lock_clocks() is True
+
+
+def test_lock_clocks_reports_success_on_silent_success(tmp_path, monkeypatch):
+    """Exit 0 with EMPTY stdout is still success. The old implementation got
+    this wrong too, in the opposite direction -- it is the same conflation."""
+    from attnbench import provenance
+    bin_dir = _fake_nvidia_smi(tmp_path, lgc_exit=0, lgc_stdout="")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    assert provenance.lock_clocks() is True
