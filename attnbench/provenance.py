@@ -334,14 +334,37 @@ def lock_clocks(sm_mhz: Optional[int] = None) -> bool:
     """
     if shutil.which("nvidia-smi") is None:
         return False
-    _sh_result(["nvidia-smi", "-pm", "1"])
+
+    def _smi(args: list[str]) -> tuple[bool, str]:
+        """nvidia-smi, escalating to passwordless sudo for the calls that
+        need it.
+
+        Clock control needs root; the measurement itself must NOT run as
+        root (it would write results/ owned by root and leave the next
+        segment unable to append). So the two split, and the escalation
+        lives here rather than in the caller -- otherwise every caller
+        either runs the whole run as root or ASSERTS the lock state on the
+        command line, and an asserted control is the thing this function
+        was just fixed for.
+
+        `sudo -n` never prompts: no sudo, no rights, or a password required
+        all fail immediately and return False, which is the truthful answer.
+        """
+        ok, out = _sh_result(["nvidia-smi", *args])
+        if ok:
+            return True, out
+        if shutil.which("sudo") is None:
+            return False, out
+        return _sh_result(["sudo", "-n", "nvidia-smi", *args])
+
+    _smi(["-pm", "1"])
     if sm_mhz is None:
         ok, q = _sh_result(["nvidia-smi", "--query-gpu=clocks.max.sm",
                             "--format=csv,noheader,nounits"])
         if not ok or not q.strip():
             return False
         sm_mhz = int(int(q.splitlines()[0].strip()) * 0.85)  # headroom, avoids throttle
-    ok, _ = _sh_result(["nvidia-smi", "-lgc", f"{sm_mhz},{sm_mhz}"])
+    ok, _ = _smi(["-lgc", f"{sm_mhz},{sm_mhz}"])
     return ok
 
 

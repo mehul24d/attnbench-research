@@ -216,3 +216,58 @@ def test_lock_clocks_reports_success_on_silent_success(tmp_path, monkeypatch):
     bin_dir = _fake_nvidia_smi(tmp_path, lgc_exit=0, lgc_stdout="")
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     assert provenance.lock_clocks() is True
+
+
+def test_lock_clocks_escalates_to_passwordless_sudo(tmp_path, monkeypatch):
+    """Clock control needs root; the measurement must not run as root, or
+    results/ ends up root-owned and the next segment cannot append to it.
+
+    The escalation lives inside lock_clocks so the caller neither runs the
+    whole job as root nor ASSERTS the lock state on a command line -- an
+    asserted control being exactly what this function was fixed for.
+    """
+    from attnbench import provenance
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    (bin_dir / "nvidia-smi").write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "smi $*" >> {calls}\n'
+        'for a in "$@"; do case "$a" in\n'
+        '  -lgc) echo "permission denied"; exit 4 ;;\n'
+        '  --query-gpu=clocks.max.sm) echo 2040; exit 0 ;;\n'
+        "esac; done\nexit 0\n")
+    (bin_dir / "sudo").write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "sudo $*" >> {calls}\n'
+        '[ "$1" = "-n" ] && shift\n'
+        'for a in "$@"; do case "$a" in -lgc) echo "All done."; exit 0 ;; esac; done\n'
+        "exit 0\n")
+    for f in ("nvidia-smi", "sudo"):
+        (bin_dir / f).chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    assert provenance.lock_clocks() is True
+    log = calls.read_text()
+    assert "smi -lgc" in log, "must try unprivileged first"
+    assert "sudo -n nvidia-smi -lgc" in log, "must escalate when refused"
+
+
+def test_lock_clocks_stays_false_when_sudo_is_refused_too(tmp_path, monkeypatch):
+    """sudo -n never prompts. No rights, or a password required, must come
+    back as False rather than hanging or claiming success."""
+    from attnbench import provenance
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "nvidia-smi").write_text(
+        "#!/usr/bin/env bash\n"
+        'for a in "$@"; do case "$a" in\n'
+        '  -lgc) echo "permission denied"; exit 4 ;;\n'
+        '  --query-gpu=clocks.max.sm) echo 2040; exit 0 ;;\n'
+        "esac; done\nexit 0\n")
+    (bin_dir / "sudo").write_text(
+        "#!/usr/bin/env bash\necho 'sudo: a password is required' >&2\nexit 1\n")
+    for f in ("nvidia-smi", "sudo"):
+        (bin_dir / f).chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    assert provenance.lock_clocks() is False
