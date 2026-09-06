@@ -164,24 +164,49 @@ def test_capture_records_both_gated_git_fields():
 # lock_clocks must report what happened, not what was attempted
 # ---------------------------------------------------------------------------
 
-def _fake_nvidia_smi(tmp_path, *, lgc_exit: int, lgc_stdout: str = ""):
-    """A stand-in nvidia-smi on PATH. The real one prints its PERMISSION
-    ERROR to stdout and exits 4, which is the whole trap."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    smi = bin_dir / "nvidia-smi"
-    smi.write_text(
-        "#!/usr/bin/env bash\n"
-        'for a in "$@"; do case "$a" in\n'
-        '  -lgc) printf "%s" "' + lgc_stdout + f'"; exit {lgc_exit} ;;\n'
-        '  --query-gpu=clocks.max.sm) echo 2040; exit 0 ;;\n'
-        "esac; done\n"
-        "exit 0\n")
-    smi.chmod(0o755)
-    return bin_dir
+def _fake_smi(monkeypatch, *, lgc_ok: bool, sudo_lgc_ok: bool = False,
+              has_sudo: bool = True):
+    """Intercept at `provenance._sh_result`, NOT via PATH.
+
+    A PATH fake was the first attempt and it escaped to real hardware. `sudo`
+    resets PATH to its compiled-in `secure_path`, so `sudo -n nvidia-smi`
+    found the REAL binary, ran it as root on a machine with passwordless
+    sudo, and actually changed the GPU's clocks -- while the test believed it
+    was talking to a shell script in tmp_path. It failed on the instance and
+    passed on the laptop, which is the only reason it was noticed.
+
+    That is silent-failure instance 12's shape exactly: a green test reaching
+    real infrastructure. There the test created billable GPU instances; here
+    it mutates the clock state of a GPU that is mid-session. Intercepting the
+    seam inside the process cannot escape to anything.
+
+    Returns the recorded argv list so a test can assert the escalation order.
+    """
+    from attnbench import provenance
+    calls: list[list[str]] = []
+
+    def fake(cmd):
+        calls.append(list(cmd))
+        is_sudo = cmd[0] == "sudo"
+        if is_sudo and not has_sudo:
+            return False, ""
+        if "-lgc" in cmd:
+            if is_sudo:
+                return sudo_lgc_ok, "All done." if sudo_lgc_ok else ""
+            return lgc_ok, ("All done." if lgc_ok else
+                            "The current user does not have permission "
+                            "to change clocks for GPU 00000000:00:03.0.")
+        if any(a.startswith("--query-gpu=clocks.max.sm") for a in cmd):
+            return True, "2040"
+        return True, ""
+
+    monkeypatch.setattr(provenance, "_sh_result", fake)
+    monkeypatch.setattr(provenance.shutil, "which",
+                        lambda n: None if (n == "sudo" and not has_sudo) else f"/usr/bin/{n}")
+    return calls
 
 
-def test_lock_clocks_reports_failure_when_the_lock_is_refused(tmp_path, monkeypatch):
+def test_lock_clocks_reports_failure_when_the_lock_is_refused(monkeypatch):
     """The measured failure, 2026-09-06 on an L4: returned True, clock
     unchanged at 2040 MHz. nvidia-smi -lgc exits 4 and prints its permission
     error to STDOUT, and `_sh` returns stdout-or-None without ever looking at
@@ -192,82 +217,39 @@ def test_lock_clocks_reports_failure_when_the_lock_is_refused(tmp_path, monkeypa
     stamps overstates how well the run was controlled.
     """
     from attnbench import provenance
-    bin_dir = _fake_nvidia_smi(
-        tmp_path, lgc_exit=4,
-        lgc_stdout="The current user does not have permission to change clocks")
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    _fake_smi(monkeypatch, lgc_ok=False, sudo_lgc_ok=False)
     assert provenance.lock_clocks() is False
 
 
-def test_lock_clocks_reports_success_when_the_lock_is_granted(tmp_path, monkeypatch):
+def test_lock_clocks_reports_success_when_the_lock_is_granted(monkeypatch):
     """The other half -- the fix must not have turned it into a constant
     False, which would be the same defect pointing the other way."""
     from attnbench import provenance
-    bin_dir = _fake_nvidia_smi(tmp_path, lgc_exit=0,
-                               lgc_stdout="GPU clocks set to ...\nAll done.")
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    _fake_smi(monkeypatch, lgc_ok=True)
     assert provenance.lock_clocks() is True
 
 
-def test_lock_clocks_reports_success_on_silent_success(tmp_path, monkeypatch):
-    """Exit 0 with EMPTY stdout is still success. The old implementation got
-    this wrong too, in the opposite direction -- it is the same conflation."""
-    from attnbench import provenance
-    bin_dir = _fake_nvidia_smi(tmp_path, lgc_exit=0, lgc_stdout="")
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    assert provenance.lock_clocks() is True
-
-
-def test_lock_clocks_escalates_to_passwordless_sudo(tmp_path, monkeypatch):
+def test_lock_clocks_escalates_to_passwordless_sudo(monkeypatch):
     """Clock control needs root; the measurement must not run as root, or
-    results/ ends up root-owned and the next segment cannot append to it.
-
-    The escalation lives inside lock_clocks so the caller neither runs the
-    whole job as root nor ASSERTS the lock state on a command line -- an
-    asserted control being exactly what this function was fixed for.
-    """
+    results/ ends up root-owned and the next segment cannot append to it."""
     from attnbench import provenance
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    calls = tmp_path / "calls.txt"
-    (bin_dir / "nvidia-smi").write_text(
-        "#!/usr/bin/env bash\n"
-        f'echo "smi $*" >> {calls}\n'
-        'for a in "$@"; do case "$a" in\n'
-        '  -lgc) echo "permission denied"; exit 4 ;;\n'
-        '  --query-gpu=clocks.max.sm) echo 2040; exit 0 ;;\n'
-        "esac; done\nexit 0\n")
-    (bin_dir / "sudo").write_text(
-        "#!/usr/bin/env bash\n"
-        f'echo "sudo $*" >> {calls}\n'
-        '[ "$1" = "-n" ] && shift\n'
-        'for a in "$@"; do case "$a" in -lgc) echo "All done."; exit 0 ;; esac; done\n'
-        "exit 0\n")
-    for f in ("nvidia-smi", "sudo"):
-        (bin_dir / f).chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-
+    calls = _fake_smi(monkeypatch, lgc_ok=False, sudo_lgc_ok=True)
     assert provenance.lock_clocks() is True
-    log = calls.read_text()
-    assert "smi -lgc" in log, "must try unprivileged first"
-    assert "sudo -n nvidia-smi -lgc" in log, "must escalate when refused"
+    lgc = [c for c in calls if "-lgc" in c]
+    assert lgc[0][0] == "nvidia-smi", "must try unprivileged first"
+    assert lgc[1][:3] == ["sudo", "-n", "nvidia-smi"], "must escalate when refused"
 
 
-def test_lock_clocks_stays_false_when_sudo_is_refused_too(tmp_path, monkeypatch):
+def test_lock_clocks_stays_false_when_sudo_is_refused_too(monkeypatch):
     """sudo -n never prompts. No rights, or a password required, must come
     back as False rather than hanging or claiming success."""
     from attnbench import provenance
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "nvidia-smi").write_text(
-        "#!/usr/bin/env bash\n"
-        'for a in "$@"; do case "$a" in\n'
-        '  -lgc) echo "permission denied"; exit 4 ;;\n'
-        '  --query-gpu=clocks.max.sm) echo 2040; exit 0 ;;\n'
-        "esac; done\nexit 0\n")
-    (bin_dir / "sudo").write_text(
-        "#!/usr/bin/env bash\necho 'sudo: a password is required' >&2\nexit 1\n")
-    for f in ("nvidia-smi", "sudo"):
-        (bin_dir / f).chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    _fake_smi(monkeypatch, lgc_ok=False, sudo_lgc_ok=False)
+    assert provenance.lock_clocks() is False
+
+
+def test_lock_clocks_survives_a_host_with_no_sudo_at_all(monkeypatch):
+    """A shared cluster with no sudo binary must return False, not raise."""
+    from attnbench import provenance
+    _fake_smi(monkeypatch, lgc_ok=False, has_sudo=False)
     assert provenance.lock_clocks() is False
