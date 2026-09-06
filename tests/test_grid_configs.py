@@ -63,3 +63,55 @@ def test_build_configs_by_backend_restricts_to_requested_seq_lens():
     configs = build_configs_by_backend(grid, include_sage=False, seq_lens=(32768,))
     assert all(cfg.seq_len == 32768 for cfgs in configs.values() for cfg in cfgs)
     assert len(configs["block_sparse"]) == len(grid.sparsities)
+
+
+# ---------------------------------------------------------------------------
+# Band-aligned segments
+#
+# Stage 3 runs in four segments cut on band boundaries. A segment is expressed
+# by restricting which bands run, never by editing the pinned grid -- every
+# segment has to agree about what the whole experiment is or the segments
+# cannot be joined.
+# ---------------------------------------------------------------------------
+
+def test_a_bands_examples_are_identical_whether_other_bands_run_or_not():
+    """The invariant the segmentation rests on.
+
+    Resume works by (config_key, backend, task, example_id), so if running
+    band 2048 alone produced different examples than running it alongside
+    4096, segment 2 would resume-skip against rows describing different
+    prompts -- and nothing downstream could tell, because the ids would still
+    line up. Generation is per (task, seq_len) from the same seed, so this
+    holds; it is asserted rather than assumed.
+    """
+    from attnbench.accuracy.config import load_grid
+    from attnbench.accuracy.sizing import approximate_token_count
+
+    grid = load_grid("configs/accuracy/stage3_grid.yaml")
+    small = {2048: 4}
+    together = {2048: 4, 4096: 4}
+
+    alone = build_examples_by_task_length(
+        grid, seed=0, count_tokens=approximate_token_count,
+        tasks=("niah_single",), seq_lens=small)
+    with_others = build_examples_by_task_length(
+        grid, seed=0, count_tokens=approximate_token_count,
+        tasks=("niah_single",), seq_lens=together)
+
+    a = alone[("niah_single", 2048)]
+    b = with_others[("niah_single", 2048)]
+    assert [e.example_id for e in a] == [e.example_id for e in b]
+    assert [e.context for e in a] == [e.context for e in b]
+    assert [e.answer for e in a] == [e.answer for e in b]
+
+
+def test_restricting_bands_restricts_configs_to_the_same_set():
+    """A config at a band with no examples contributes no cells, so a
+    mismatch here would be silent rather than an error -- it would just
+    quietly plan a segment of the wrong size."""
+    from attnbench.accuracy.config import load_grid
+    grid = load_grid("configs/accuracy/stage3_grid.yaml")
+    configs = build_configs_by_backend(grid, include_sage=False,
+                                       seq_lens=(2048, 4096))
+    seen = {cfg.seq_len for cfgs in configs.values() for cfg in cfgs}
+    assert seen == {2048, 4096}

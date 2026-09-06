@@ -161,6 +161,14 @@ def main():
                     help="run from, or resume into, a tree with uncommitted "
                          "changes. The commit stamped on those rows then "
                          "does not establish what code produced them.")
+    ap.add_argument("--seq-lens", default=None,
+                    help="comma-separated bands to run, e.g. 2048,4096. "
+                         "Defaults to every band in the grid. Stage 3 runs in "
+                         "band-aligned segments (docs/stage3_segmentation.md) "
+                         "because a band boundary leaves no partially-scored "
+                         "band to reconstruct -- so a segment is expressed "
+                         "here rather than by editing the pinned grid, which "
+                         "would change what every OTHER segment measured.")
     ap.add_argument("--lock-clocks", action="store_true",
                     help="pin SM clocks before measuring, and stamp the "
                          "OUTCOME on every row. Not the intent -- "
@@ -170,6 +178,27 @@ def main():
     args = ap.parse_args()
 
     grid = load_grid(args.grid)
+
+    # Band restriction. Applied to the LOADED grid, never to the file: the
+    # grid is pinned data and every segment must agree about what the whole
+    # experiment is, or the segments cannot be joined.
+    #
+    # Examples are generated per (task, seq_len) from the same seed, so a
+    # band's examples are identical whether or not other bands run alongside
+    # it -- asserted in tests/test_grid_configs.py rather than assumed, since
+    # a segment that silently re-randomised its own band would produce rows
+    # that resume-skip against nothing.
+    if args.seq_lens:
+        requested = [int(x) for x in args.seq_lens.split(",") if x.strip()]
+        unknown = [s for s in requested if s not in grid.seq_lens]
+        if unknown:
+            raise SystemExit(
+                f"--seq-lens {unknown} are not in the pinned grid "
+                f"({sorted(grid.seq_lens)}). A band this study did not plan "
+                f"is not a band it can report.")
+        selected_seq_lens = {s: grid.seq_lens[s] for s in sorted(requested)}
+    else:
+        selected_seq_lens = dict(grid.seq_lens)
 
     # Clocks: attempt, then stamp what HAPPENED, never what was asked for.
     # Every row in this project so far carries clocks_locked=False because
@@ -191,7 +220,10 @@ def main():
     print(f"tasks         : {', '.join(grid.tasks)}")
     print("seq_lens (n)  : " + ", ".join(
         f"{s}{'*' if grid.is_directional(s) else ''}={n}"
-        for s, n in sorted(grid.seq_lens.items())))
+        for s, n in sorted(selected_seq_lens.items()))
+        + ("" if len(selected_seq_lens) == len(grid.seq_lens)
+           else f"   [SEGMENT: {len(grid.seq_lens) - len(selected_seq_lens)} "
+                f"of {len(grid.seq_lens)} bands held back]"))
     print("                (* = directional/underpowered point, see stage3_grid.yaml)")
 
     # Contexts are sized against a real tokenizer so a grid seq_len is an
@@ -213,14 +245,17 @@ def main():
         print(f"sizing        : exact, via {grid.model_primary} tokenizer")
 
     examples_by_task_length = build_examples_by_task_length(
-        grid, seed=args.seed, count_tokens=count_tokens)
+        grid, seed=args.seed, count_tokens=count_tokens,
+        seq_lens=selected_seq_lens)
     examples_by_id = {
         (task, ex.example_id): ex
         for (task, _seq_len), exs in examples_by_task_length.items()
         for ex in exs
     }
 
-    configs_by_backend = build_configs_by_backend(grid, include_sage=args.include_sage)
+    configs_by_backend = build_configs_by_backend(
+        grid, include_sage=args.include_sage,
+        seq_lens=tuple(selected_seq_lens))
     print(f"backends      : {', '.join(configs_by_backend)}")
     print("caps (tokens) : " + ", ".join(
         f"{t}={stopping.token_cap(t)}" for t in grid.tasks))
