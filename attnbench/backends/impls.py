@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from ..config import AttnConfig
-from .base import (AttentionBackend, Capability, FAULT_REASON_PREFIX,
+from .base import (AttentionBackend, Capability, FAULT_REASON_PREFIX, KVCacheState,
                    UnsupportedConfig, register)
 
 
@@ -256,6 +256,52 @@ class SDPABackend(AttentionBackend):
             # SDPA raises when the requested backend rejects the shape. That is
             # an unsupported config, not a crash.
             raise UnsupportedConfig(f"sdpa/{self.kernel}: {e}") from e
+
+    # ---- decode: a growing KV cache, the unbounded arm ------------------
+
+    def state_from_prefill(self, k, v, cfg):
+        """Payload is the prompt's K/V, kept in GQA layout.
+
+        Stored un-expanded on purpose. Expanding here would multiply the
+        cache by `group_size` -- 6x on Qwen2.5-1.5B (12 query heads, 2 KV
+        heads) -- and the SIZE of this payload is one half of the
+        bounded-vs-unbounded comparison this study is built to make. Inflating
+        it with a convenience copy would corrupt the measurement, not just
+        waste memory.
+        """
+        return KVCacheState(backend=self.name,
+                            payload={"k": k.contiguous(), "v": v.contiguous()})
+
+    def make_decode_state(self, cfg: AttnConfig, device: str = "cuda",
+                           seed: int = 0) -> KVCacheState:
+        """Synthetic state for a Stage 2 decode sweep. See
+        `state_from_prefill` for the real-prompt path."""
+        _, k, v = self.make_inputs(cfg, device=device, seed=seed)
+        return self.state_from_prefill(k, v, cfg)
+
+    def decode_step(self, q_new, k_new, v_new, state: KVCacheState, cfg: AttnConfig):
+        if state.backend != self.name:
+            raise ValueError(
+                f"state from backend {state.backend!r} passed to "
+                f"{self.name}.decode_step")
+
+        k = torch.cat([state.payload["k"], k_new], dim=2)
+        v = torch.cat([state.payload["v"], v_new], dim=2)
+
+        # is_causal=False, and this is the one line in the decode path that
+        # must not be got wrong. With q_len=1 against kv_len=S+1, PyTorch
+        # aligns a causal mask to the TOP-LEFT, so is_causal=True would let
+        # the new token see position 0 and nothing else. It raises no error
+        # and produces fluent, wrong text -- the failure this project keeps
+        # cataloguing. The new token legitimately attends to every cached
+        # position because they all precede it, so no mask is needed at all.
+        try:
+            with self._ctx():
+                out = F.scaled_dot_product_attention(
+                    q_new, k, v, is_causal=False, enable_gqa=cfg.is_gqa)
+        except RuntimeError as e:
+            raise UnsupportedConfig(f"sdpa/{self.kernel}: {e}") from e
+        return out, KVCacheState(backend=self.name, payload={"k": k, "v": v})
 
 
 # ---------------------------------------------------------------------------

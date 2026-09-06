@@ -115,6 +115,33 @@ class GatedLinearAttention(AttentionBackend):
             raise UnsupportedConfig(f"gla: {e}") from e
         return out.transpose(1, 2)   # back to (B, H, S, D)
 
+    def state_from_prefill(self, k, v, cfg) -> KVCacheState:
+        """Fixed-size recurrent state from a real prompt's K/V.
+
+        The bounded arm of the comparison, and the reason `KVCacheState.payload`
+        is deliberately unconstrained. SDPA's payload grows with every token
+        decoded; this one is `(B, H, D, D)` and does not change size no matter
+        how long the context or the generation. That difference is the result
+        Stage 3 can show and a single-forward kernel benchmark cannot.
+
+        Q is required by `chunk_gla`'s signature but contributes nothing to
+        `final_state` -- the recurrence folds only K and V into it -- so zeros
+        of the right shape are passed rather than inventing query content that
+        would look meaningful in a debugger.
+        """
+        from fla.ops.gla import chunk_gla
+
+        k_, v_ = _expand_kv(k, v, cfg)
+        k_, v_ = k_.transpose(1, 2), v_.transpose(1, 2)     # (B,S,H,D)
+        q_ = torch.zeros_like(k_)
+        g_ = self._gate_for(cfg, k_)
+        try:
+            _, final_state = chunk_gla(q_, k_, v_, g_, initial_state=None,
+                                        output_final_state=True)
+        except RuntimeError as e:
+            raise UnsupportedConfig(f"gla: {e}") from e
+        return KVCacheState(backend=self.name, payload=final_state)
+
     def make_decode_state(self, cfg: AttnConfig, device: str = "cuda",
                            seed: int = 0) -> KVCacheState:
         from fla.ops.gla import chunk_gla

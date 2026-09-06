@@ -223,6 +223,28 @@ class AttentionBackend(abc.ABC):
         """
         raise UnsupportedConfig(f"{self.name}: no decode support")
 
+    def state_from_prefill(self, k: torch.Tensor, v: torch.Tensor,
+                            cfg: AttnConfig) -> "KVCacheState":
+        """Build decode state from a REAL prefill's K/V, not synthetic inputs.
+
+        The distinction from `make_decode_state` is the whole reason this
+        exists, and it is easy to miss because the return type is identical.
+        `make_decode_state` allocates its own `make_inputs` tensors: correct
+        for a Stage 2 decode sweep, which times decode against a state of the
+        right *shape* and does not care what is in it. Stage 3 generates text
+        from a real prompt, so its state has to carry that prompt's actual
+        keys and values -- synthetic ones would decode fluent nonsense with no
+        error anywhere.
+
+        Takes k/v in the house layout `(B, n_heads_kv, S, D)`, un-expanded for
+        GQA, matching what `forward` receives. Any expansion a kernel needs
+        happens inside the backend, per the same rule.
+
+        Default raises, so a backend without decode support says so through
+        the existing claim/probe machinery rather than silently degrading.
+        """
+        raise UnsupportedConfig(f"{self.name}: no decode support")
+
     def decode_step(self, q_new: torch.Tensor, k_new: torch.Tensor,
                      v_new: torch.Tensor, state: "KVCacheState",
                      cfg: AttnConfig) -> tuple[torch.Tensor, "KVCacheState"]:

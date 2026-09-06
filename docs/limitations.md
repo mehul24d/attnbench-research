@@ -41,6 +41,47 @@ The stricter metric would be a reasonable thing to add later as a second
 scoring column, since it needs no new data -- only a re-score of stored
 predictions.
 
+### And `vt`'s prompt carries another model's chat markup
+
+Found 2026-09-06, while settling the generation contract. The `vt` prompt ends:
+
+```
+Question: Find all variables that are assigned the value 55280 in the text
+above. [/INST] Answer: According to the chain(s) of variable assignment in
+the text above, 5 variables are assgined the value 55280, they are:
+```
+
+`[/INST]` is Mistral / Llama-2 chat markup, vendored verbatim from RULER,
+being fed to **Qwen2.5-1.5B-Instruct**, whose markup is `<|im_start|>` /
+`<|im_end|>`. RULER templates per model; this study does not, and applies no
+chat template at all (see `docs/stage3_generation_decision.md` for why adding
+one now would be a second deviation compounding on the first).
+
+**Deliberately not patched.** Changing a prompt mid-project is worse than
+carrying a known defect: it would split the dataset into pre- and post-change
+halves that cannot be pooled, for a fix whose benefit is unmeasured.
+
+**What it cannot do.** Manufacture a difference *between* backends. Every
+backend sees the identical prompt, so the between-backend comparison -- the
+study's actual claim -- is untouched, exactly as with the permissive scoring
+above.
+
+**What it can do, and this is the part to watch.** Depress `vt`'s absolute
+accuracy for everyone. That matters beyond comparability, because Stage 4's
+non-inferiority protocol needs headroom: if the dense baseline scores near the
+floor on `vt`, there is little room for sparsity to *degrade* into, and the
+matched test loses the ability to distinguish "sparsity is harmless here" from
+"nothing could have shown a difference here". A ceiling effect and a floor
+effect break a non-inferiority test in the same way.
+
+**Prediction recorded in advance, to be checked at Segment 1.** If `vt`'s
+dense-baseline accuracy comes back materially below `niah_single` and
+`niah_multikey`, the markup mismatch is the first explanation to test -- not a
+finding about variable tracking being intrinsically hard. Written down now
+because a prediction made after seeing the number is not a prediction, and
+because "vt is hard for these models" is exactly the plausible-sounding
+conclusion this project keeps having to guard against.
+
 ## Task construction is RULER's algorithm, not RULER's benchmark
 
 Two substitutions, both forced by dependencies deliberately not added
