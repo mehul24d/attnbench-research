@@ -37,9 +37,26 @@ ARGS="$*"
 case "$ARGS" in
   *"config get-value project"*) echo "test-project"; exit 0 ;;
   *"sourceInstanceProperties"*)
+      # A disk image genuinely has no sourceInstanceProperties -- the fake has
+      # to say so, or it hides the very confusion the launcher exists to
+      # resolve.
+      if [ "$FAKE_IMAGE_KIND" != "machine-image" ]; then exit 1; fi
       printf '%s\t%s\n' "${FAKE_IMAGE_MACHINE_TYPE-g2-standard-8}" \
                           "${FAKE_IMAGE_ACCELERATOR-nvidia-l4}"; exit 0 ;;
-  *"machine-images describe"*)  echo "READY"; exit 0 ;;
+  *"machine-images describe"*)
+      # A plain DISK image is not a machine image, and the API says "not
+      # found" rather than "wrong kind" -- which is exactly how the launcher
+      # came to fail closed on the image that is the fix for the family lock.
+      if [ "$FAKE_IMAGE_KIND" = "machine-image" ]; then echo "READY"; exit 0; fi
+      echo "ERROR: The resource was not found" >&2; exit 1 ;;
+  *"images describe"*"format=json"*)
+      if [ "$FAKE_IMAGE_KIND" = "disk-image" ]; then
+        printf '%s\n' "$FAKE_DISK_IMAGE_JSON"; exit 0
+      fi
+      exit 1 ;;
+  *"images describe"*)
+      if [ "$FAKE_IMAGE_KIND" = "disk-image" ]; then echo "READY"; exit 0; fi
+      exit 1 ;;
   *"machine-images list"*)      exit 0 ;;
   *"instances list"*)           printf '%s' "${FAKE_EXISTING_INSTANCES:-}"; exit 0 ;;
   *"instances create"*)
@@ -84,6 +101,8 @@ def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = "", **extra_e
         FAKE_IMAGE_MACHINE_TYPE="g2-standard-8",
         FAKE_IMAGE_ACCELERATOR="nvidia-l4",
         FAKE_EXISTING_INSTANCES=existing,
+        FAKE_IMAGE_KIND="machine-image",
+        FAKE_DISK_IMAGE_JSON='{"status": "READY", "diskSizeGb": "200"}',
         GCP_ZONE_FALLBACKS=zones,
         GCP_PROJECT="test-project",
     )
@@ -398,3 +417,98 @@ def test_an_image_with_no_recorded_machine_type_does_not_block(tmp_path):
                        FAKE_IMAGE_MACHINE_TYPE="", FAKE_IMAGE_ACCELERATOR="")
     assert proc.returncode == 0, proc.stderr
     assert tried == ["zone-a"]
+
+
+# ---------------------------------------------------------------------------
+# The plain-disk-image path
+#
+# attnbench-env-v5-20260905 is a plain DISK image -- the durable fix for the
+# family lock recorded in docs/machine_image_family_lock.md. Until 2026-09-06
+# this launcher assumed "machine image" unconditionally, so pointed at the
+# fix it failed closed with "missing or not READY": true of no machine image
+# by that name, false of the resource. Free, and unfixable by any flag.
+#
+# These tests cover the path an actual Stage 3 session takes.
+# ---------------------------------------------------------------------------
+
+def test_a_disk_image_creates_with_image_flags_not_source_machine_image(tmp_path):
+    """--source-machine-image restores an instance shape; --image restores
+    disk contents. They are not interchangeable and gcloud rejects the wrong
+    one against the wrong resource."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a",
+                       FAKE_IMAGE_KIND="disk-image")
+    assert proc.returncode == 0, proc.stderr
+    argv = proc.create_argv                       # type: ignore[attr-defined]
+    assert "--image=" in argv and "--image-project=" in argv
+    assert "--source-machine-image" not in argv
+    # A disk image carries no disk record, so the boot disk has to be sized.
+    assert "--boot-disk-size=200GB" in argv
+    assert "--boot-disk-type=pd-balanced" in argv
+
+
+def test_a_machine_image_still_uses_source_machine_image(tmp_path):
+    """The other half. Adding the disk-image path must not have quietly
+    changed the path four earlier sessions ran on."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a",
+                       FAKE_IMAGE_KIND="machine-image")
+    assert proc.returncode == 0, proc.stderr
+    argv = proc.create_argv                       # type: ignore[attr-defined]
+    assert "--source-machine-image=" in argv
+    assert "--image=" not in argv
+
+
+def test_a_disk_image_gets_an_explicit_accelerator_for_g2(tmp_path):
+    """A machine image records guestAccelerators; a disk image carries none,
+    so an inherited-accelerator assumption silently produces a GPU-less
+    instance that boots fine and fails every gate."""
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
+                   FAKE_IMAGE_KIND="disk-image")
+    assert "--accelerator=type=nvidia-l4,count=1" in proc.create_argv  # type: ignore[attr-defined]
+
+
+def test_a_disk_image_on_an_unknown_family_refuses_rather_than_guessing(tmp_path):
+    """g2 is defaulted because it is the family this project runs. Anything
+    else has to say what card it wants -- an accelerator guessed onto an A2
+    is the exact shape that lost a session on 2026-09-05."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a",
+                       FAKE_IMAGE_KIND="disk-image",
+                       GCP_MACHINE_TYPE="a2-ultragpu-1g")
+    assert proc.returncode != 0
+    assert "carries no accelerator" in proc.stderr
+    assert tried == [], "refused after attempting a create"
+
+
+def test_an_image_that_is_neither_kind_fails_closed(tmp_path):
+    """The failure mode must stay 'nothing created' rather than 'boot a bare
+    DLVM and spend the cap reinstalling'."""
+    proc, tried = _run(tmp_path, fail_zones="", zones="zone-a",
+                       FAKE_IMAGE_KIND="absent")
+    assert proc.returncode != 0
+    assert "not a READY machine image" in proc.stderr
+    assert tried == []
+
+
+def test_a_disk_image_carrying_instance_properties_is_refused(tmp_path):
+    """The guard observes the artefact rather than trusting the resource
+    type. 'A disk image has no machineType' was also true of every image
+    this script had ever seen, right up until the assumption broke."""
+    proc, tried = _run(
+        tmp_path, fail_zones="", zones="zone-a", FAKE_IMAGE_KIND="disk-image",
+        FAKE_DISK_IMAGE_JSON='{"status": "READY", "machineType": "g2-standard-8"}')
+    assert proc.returncode != 0
+    assert "instance-shaped properties" in proc.stderr
+    assert tried == []
+
+
+def test_the_cap_is_passed_not_defaulted(tmp_path):
+    """660 minutes for the three-band Stage 3 session is a deliberate one-off.
+    The 360 default stays put: a forgotten instance has already cost this
+    project Rs 218."""
+    import re
+    script = SCRIPT.read_text()
+    assert 'CAP_MINUTES="${GCP_CAP_MINUTES:-360}"' in script, (
+        "the default cap changed -- it is the backstop against a forgotten "
+        "instance and a raised session cap must be passed, not baked in")
+    proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
+                   FAKE_IMAGE_KIND="disk-image", GCP_CAP_MINUTES="660")
+    assert "shutdown -h +660 (11h from boot)" in proc.stdout

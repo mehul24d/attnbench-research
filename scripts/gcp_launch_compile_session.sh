@@ -91,6 +91,13 @@ ACCELERATOR="${GCP_ACCELERATOR:-}"
 # where it goes.
 BOOT_DISK_INTERFACE="${GCP_BOOT_DISK_INTERFACE:-}"
 
+# Boot disk shape, used ONLY on the plain-disk-image path. A machine image
+# carries its own disk record and these are ignored there; a disk image
+# carries only contents, so gcloud creates the boot disk and needs to be told
+# how big and of what type.
+BOOT_DISK_SIZE="${GCP_BOOT_DISK_SIZE:-200GB}"
+BOOT_DISK_TYPE="${GCP_BOOT_DISK_TYPE:-pd-balanced}"
+
 if [[ -z "$PROJECT" ]]; then
   echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
   exit 1
@@ -144,6 +151,38 @@ fi
 # docs/machine_image_family_lock.md. This check exists so that until that is
 # done, the failure arrives here in one second with an explanation, rather
 # than as a sequence of unrelated-looking API rejections.
+# WHICH KIND OF IMAGE IS THIS?
+#
+# A machine image and a plain disk image are different resources with
+# different create flags, and asking the wrong API returns "not found" rather
+# than "wrong kind". Until 2026-09-06 this script assumed machine image
+# unconditionally: pointed at attnbench-env-v5 -- the plain disk image that
+# is the DURABLE FIX for the family lock this preflight exists to catch --
+# it failed closed at the READY check below with "missing or not READY",
+# which is true of no machine image by that name and false of the resource.
+# Failing closed cost nothing; it also could not be fixed by any flag.
+#
+# Detected rather than declared, because the answer is a property of the
+# resource and a GCP_SOURCE_IMAGE_KIND variable would just be one more thing
+# to leave stale next to GCP_SOURCE_IMAGE.
+IMAGE_KIND=""
+if gcloud compute machine-images describe "$SOURCE_MACHINE_IMAGE" \
+     --project="$PROJECT" --format="value(status)" 2>/dev/null | grep -q READY; then
+  IMAGE_KIND="machine-image"
+elif gcloud compute images describe "$SOURCE_MACHINE_IMAGE" \
+     --project="$PROJECT" --format="value(status)" 2>/dev/null | grep -q READY; then
+  IMAGE_KIND="disk-image"
+else
+  echo "Source image '$SOURCE_MACHINE_IMAGE' is not a READY machine image or" >&2
+  echo "a READY disk image in project '$PROJECT'." >&2
+  echo "Booting this session from a bare DLVM family image instead would" >&2
+  echo "spend most of the cap redoing an install, so this fails closed." >&2
+  echo >&2
+  echo "  machine images: gcloud compute machine-images list --project=$PROJECT" >&2
+  echo "  disk images   : gcloud compute images list --project=$PROJECT --no-standard-images" >&2
+  exit 1
+fi
+
 IMAGE_PROPS="$(gcloud compute machine-images describe "$SOURCE_MACHINE_IMAGE" \
     --project="$PROJECT" \
     --format="value(sourceInstanceProperties.machineType,sourceInstanceProperties.guestAccelerators[0].acceleratorType)" \
@@ -153,7 +192,12 @@ IMAGE_ACCELERATOR="$(printf '%s' "$IMAGE_PROPS" | awk '{print $2}')"
 IMAGE_FAMILY="${IMAGE_MACHINE_TYPE%%-*}"
 TARGET_FAMILY="${MACHINE_TYPE%%-*}"
 
-if [[ -n "$IMAGE_MACHINE_TYPE" ]] && [[ "$IMAGE_FAMILY" != "$TARGET_FAMILY" ]] \
+# Scoped to machine images explicitly. It would also be skipped implicitly --
+# a disk image has no sourceInstanceProperties, so IMAGE_PROPS comes back
+# empty -- but "this check happens not to fire" is not the same statement as
+# "this check does not apply", and only the second one survives an edit.
+if [[ "$IMAGE_KIND" == "machine-image" ]] \
+   && [[ -n "$IMAGE_MACHINE_TYPE" ]] && [[ "$IMAGE_FAMILY" != "$TARGET_FAMILY" ]] \
    && [[ "${GCP_ALLOW_CROSS_FAMILY_IMAGE:-0}" != "1" ]]; then
   echo "REFUSING TO LAUNCH -- cross-family machine image." >&2
   echo >&2
@@ -180,12 +224,46 @@ if [[ -n "$IMAGE_MACHINE_TYPE" ]] && [[ "$IMAGE_FAMILY" != "$TARGET_FAMILY" ]] \
   exit 1
 fi
 
-if ! gcloud compute machine-images describe "$SOURCE_MACHINE_IMAGE" \
-      --project="$PROJECT" --format="value(status)" 2>/dev/null | grep -q READY; then
-  echo "Source machine image '$SOURCE_MACHINE_IMAGE' is missing or not READY." >&2
-  echo "Booting this session from a bare DLVM image instead would spend most" >&2
-  echo "of the 6-hour cap redoing an install, so this fails closed." >&2
-  exit 1
+# On the disk-image path, VERIFY the absence of the three locking properties
+# rather than assuming it. "A disk image carries no machineType" is true of
+# the resource type, but this project's rule is that the guard observes the
+# artefact in front of it -- the machine-image assumption above was also true
+# of every image this script had ever been pointed at, right up until it
+# wasn't. If any of the three ever appears, that is a resource this script
+# does not understand and it should stop, not improvise.
+if [[ "$IMAGE_KIND" == "disk-image" ]]; then
+  DISK_IMAGE_LOCKS="$(gcloud compute images describe "$SOURCE_MACHINE_IMAGE" \
+      --project="$PROJECT" --format="json" 2>/dev/null \
+      | grep -Eo '"(machineType|guestAccelerators|sourceInstanceProperties)"' \
+      | sort -u || true)"
+  # `|| true` is load-bearing under `set -euo pipefail`: grep exits 1 when it
+  # finds nothing, which is the GOOD case here, and a bare command
+  # substitution propagates that as the assignment's status. Without it this
+  # script exits silently -- no message, no create -- exactly when the image
+  # is clean. Caught by running the disk-image path against a fake gcloud
+  # before spending an instance on it.
+  if [[ -n "$DISK_IMAGE_LOCKS" ]]; then
+    echo "REFUSING TO LAUNCH -- '$SOURCE_MACHINE_IMAGE' describes itself as a" >&2
+    echo "disk image but carries instance-shaped properties:" >&2
+    echo "$DISK_IMAGE_LOCKS" >&2
+    echo "See docs/machine_image_family_lock.md." >&2
+    exit 1
+  fi
+  # A disk image carries no accelerator, so one has to be asked for. G2
+  # bundles its L4 with the machine type and also accepts the explicit form
+  # (scripts/gcp_launch_l4.sh has created G2s this way against a DLVM disk
+  # image); other families need it stated. Defaulted only for g2 -- an
+  # unrecognised family must say what card it wants rather than inherit a
+  # guess.
+  if [[ -z "$ACCELERATOR" ]] && [[ "${MACHINE_TYPE%%-*}" == "g2" ]]; then
+    ACCELERATOR="type=nvidia-l4,count=1"
+  fi
+  if [[ -z "$ACCELERATOR" ]]; then
+    echo "REFUSING TO LAUNCH -- a plain disk image carries no accelerator and" >&2
+    echo "none was given for machine type '$MACHINE_TYPE'." >&2
+    echo "Set GCP_ACCELERATOR, e.g. type=nvidia-a100-80gb,count=1" >&2
+    exit 1
+  fi
 fi
 
 STARTUP_SCRIPT="$(mktemp)"
@@ -256,7 +334,7 @@ echo "  zone(s)      : $ZONE_FALLBACKS (tried in order, STOPPING at first succes
 echo "  machine-type : $MACHINE_TYPE"
 echo "  accelerator  : ${ACCELERATOR:-inherited from the machine image}"
 echo "  boot disk    : ${BOOT_DISK_INTERFACE:-interface inherited from the machine image}"
-echo "  source image : $SOURCE_MACHINE_IMAGE (machine image)"
+echo "  source image : $SOURCE_MACHINE_IMAGE ($IMAGE_KIND)"
 echo "  provisioning : $PROVISIONING_MODEL"
 echo "  hard cap     : shutdown -h +$CAP_MINUTES ($((CAP_MINUTES / 60))h from boot)"
 echo
@@ -286,11 +364,21 @@ for Z in $ZONE_FALLBACKS; do
   [[ -n "$ACCELERATOR" ]] && ACCEL_FLAG=(--accelerator="$ACCELERATOR")
   [[ -n "$BOOT_DISK_INTERFACE" ]] && \
     ACCEL_FLAG+=(--boot-disk-interface="$BOOT_DISK_INTERFACE")
+  # The source flags differ by kind and are not interchangeable:
+  # --source-machine-image restores a whole instance shape; --image restores
+  # disk contents only, so the boot disk has to be sized here.
+  if [[ "$IMAGE_KIND" == "disk-image" ]]; then
+    SOURCE_FLAG=(--image="$SOURCE_MACHINE_IMAGE" --image-project="$PROJECT"
+                 --boot-disk-size="$BOOT_DISK_SIZE"
+                 --boot-disk-type="$BOOT_DISK_TYPE")
+  else
+    SOURCE_FLAG=(--source-machine-image="$SOURCE_MACHINE_IMAGE")
+  fi
   if gcloud compute instances create "$INSTANCE_NAME" \
       --project="$PROJECT" \
       --zone="$Z" \
       --machine-type="$MACHINE_TYPE" \
-      --source-machine-image="$SOURCE_MACHINE_IMAGE" \
+      "${SOURCE_FLAG[@]}" \
       --maintenance-policy=TERMINATE \
       --provisioning-model="$PROVISIONING_MODEL" \
       ${ACCEL_FLAG[@]+"${ACCEL_FLAG[@]}"} \
