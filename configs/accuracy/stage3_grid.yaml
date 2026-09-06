@@ -149,6 +149,34 @@ sparsities: [0.5, 0.75, 0.9]
 # faster and its boot path is now known to work, but it is Spot-only in a
 # contended zone. Stage 3's grid was also estimated FROM L4 measurements, so
 # running it on an L4 keeps the estimate and the run on the same instrument.
+#
+# ---------------------------------------------------------------------------
+# SUPERSEDED 2026-09-06. 13.35 h is the PREFILL cost. It is not the grid.
+#
+# A Stage 3 row is a prefill plus greedy decode, because Stage 3 scores
+# generated TEXT. The 14.85 h above priced one forward pass per row.
+#
+# The decode term was then priced a second time, and wrongly, as the FLOPs
+# ratio k/seq_len -- "under 1%". That is a time ratio only if decode runs at
+# the prefill's throughput, and it cannot: a batch-1 decode step reads all
+# 3.09 GB of this model's bf16 weights to produce one token and is
+# BANDWIDTH-bound, where an 8192-token prefill is compute-bound. Same unit,
+# different regime, 177x apart. See docs/silent_failure_patterns.md #15.
+#
+# Corrected, from scripts/reestimate_stage3.py:
+#
+#   prefill (unchanged, measured)                        13.35 h
+#   decode, bandwidth floor -> worst case          1.47 -> 6.60 h
+#   grid total                                    14.82 -> 19.96 h
+#   + 1.5 h overhead per session x 4 sessions            6.00 h
+#   BOOK                                          20.82 -> 25.96 h  ~Rs 1,670-2,080
+#
+# The answer is a BRACKET because this implementation's per-step dispatch
+# cost is unknown (eager HF forward per step, custom attention module per
+# layer, no CUDA graphs). scripts/time_one_accuracy_example.py now measures a
+# decode step against the bandwidth floor; two minutes on the instance
+# collapses a five-hour range. Segments are re-cut in
+# docs/stage3_segmentation.md and S1 carries a go/no-go on that measurement.
 
 # RULER task construction, not RULER's benchmark -- see
 # attnbench/_vendor/ruler/VENDORED.md. niah_single/niah_multikey/vt are

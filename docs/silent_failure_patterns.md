@@ -6,11 +6,11 @@ machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
 model is self-inflicted, and this file is the record of it, kept because
-fourteen instances in five days is no longer a coincidence.
+fifteen instances in six days is no longer a coincidence.
 
 ---
 
-## The fourteen
+## The fifteen
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -503,6 +503,54 @@ FA2/GLA ratios run from 0.11 to 3.7 and sit far from parity -- with the single
 exception of the matched 8192 cell, which missed by 0.007 and was the cell the
 headline had been resting on.
 
+### 15. A cost model that divided a bandwidth-bound phase by a compute-bound throughput
+
+Stage 3 scores generated text, so a row is a prefill plus `k` greedy decode
+steps. Once the KV cache existed,
+`docs/stage3_generation_decision.md` priced the remaining decode tax as the
+FLOPs ratio `k / seq_len` — 19.3 steps against 8192 tokens, **0.24%** — and
+concluded the 13.35 h estimate survived intact.
+
+The ratio is arithmetically correct. It is a *time* ratio only if both phases
+run at the same throughput, and they cannot:
+
+| | FLOPs per byte of weight read | regime |
+|---|---|---|
+| prefill, 8192 tokens | ~8192 | compute-bound |
+| decode, batch 1 | 2 | **bandwidth-bound** |
+
+A batch-1 decode step reads all **3.09 GB** of Qwen2.5-1.5B's bf16 weights to
+produce one token. On an L4 that is a **~13 ms floor**. Priced at the
+prefill's measured 42.2 TFLOPS, the same 3.09 GFLOP step "takes" **0.074 ms**.
+**177×.**
+
+Corrected, the decode term is **1.5–6.6 h on a 13.35 h grid (11–49%)**, not
+under 1%. And it is worst where prefill is cheapest — the weight read does not
+depend on context, so at the 2048 band decode costs **more than the prefill it
+follows** (+70% at the floor, +328% at the worst case).
+
+Nothing raised. The estimate was internally consistent, built on real measured
+TFLOPS, and produced a plausible number that would have been discovered as a
+session overrunning its window at hour four.
+
+**What makes this the third of its kind.** The unit matched every time and the
+regime did not:
+
+- attention-**kernel** TFLOPS read as whole-**model** TFLOPS — a 42% phantom
+  speedup (recorded in `configs/accuracy/stage3_grid.yaml`);
+- GLA's 1.7 "TFLOPS" against FA2's 61.8, concluding GLA is slow when it is
+  faster in wall clock and simply issues ~30× fewer FLOPs;
+- and now prefill TFLOPS applied to decode.
+
+**Fixed by:** modelling decode from bytes rather than FLOPs
+(`timing_probe.decode_memory_traffic_bytes` / `decode_seconds`), with the trap
+written at the top of that section; `decode_steps_by_task` made a **required**
+argument of `total_grid_flops_by_category`, so the unit of work has to be
+stated rather than defaulted; and `scripts/time_one_accuracy_example.py` now
+**measures** a decode step against the bandwidth floor before the grid
+commits, which collapses a five-hour bracket in two minutes.
+
+
 ## The general hazards, stated once
 
 **A divide-by-zero guard is not a resolution floor, and they are the same line
@@ -679,3 +727,17 @@ reports no drift, a parametrised test that collected zero cases, a pass set
 filtered to nothing — all report success. Where a check can be vacuous, assert
 it is not: `test_every_script_is_actually_covered`,
 `test_an_empty_canary_raises_instead_of_passing`.
+
+**A ratio between two regimes is not a ratio.** Instance 15, and the third of
+its shape. Two quantities sharing a unit — TFLOPS, tokens, bytes — invites
+dividing one by the other, and the division is meaningless when the two sit in
+different regimes: kernel vs whole model, compute-bound vs bandwidth-bound,
+one backend's issued FLOPs vs another's. Before dividing, ask what *limits*
+each side. If the answers differ, the ratio has no physical meaning however
+well the units cancel.
+
+**"Confirm the inputs are still valid" is the arithmetic question, not the
+modelling one.** The 13.35 h estimate was re-checked thoroughly and every
+input held; what had changed was the *unit of work* — a row stopped being one
+forward pass. Re-checking an estimate means asking what one unit is, not only
+whether the numbers behind it are current.

@@ -90,3 +90,30 @@ def load(cache_dir: str | Path, key: str, *, expected_n_layers: int,
             f"wrong-shaped tensor. Delete the entry if it's genuinely stale."
         )
     return scores
+
+
+# Bytes per stored element. fp16, per `save` above.
+_STORED_DTYPE_BYTES = 2
+
+
+def cache_bytes_for_grid(grid, *, n_layers: int, n_heads_kv: int) -> dict[int, int]:
+    """Bytes the score cache will occupy, per seq_len, for a whole grid.
+
+    A function rather than a table in a planning doc. The grid has moved
+    twice since the 4.09 GiB figure was first written down (the two-sided
+    rule restored 16384 to n=300 and sparsity 0.75), and a doc table cannot
+    notice that. This recomputes from whatever the grid says today, and a
+    test asserts the total against the pinned grid so a future edit that
+    outgrows the disk fails on CPU rather than at hour four of a rented
+    session.
+
+    Independent of sparsity: one entry per (model, task, example, seq_len)
+    holds every layer, and every sparsity level at that cell reads it.
+    """
+    out: dict[int, int] = {}
+    for seq_len, n_per_length in grid.seq_lens.items():
+        n_blocks = seq_len // grid.finest_block_size
+        per_example = (n_layers * n_heads_kv * n_blocks * n_blocks
+                       * _STORED_DTYPE_BYTES)
+        out[seq_len] = per_example * n_per_length * len(grid.tasks)
+    return out

@@ -10,6 +10,8 @@ grid" that could silently drift from the real one.
 
 from __future__ import annotations
 
+from .. import backends
+from ..backends.base import AttentionBackend
 from .config import AccuracyGrid
 from .ruler import RulerExample, generate_examples
 from .sizing import TokenCounter
@@ -102,3 +104,39 @@ def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
                 head_dim=128, mask="causal", quant_scheme=SAGE_QUANT_SCHEME))
 
     return configs_by_backend
+
+
+# Every backend in this study that has no decode path of its own decodes
+# through this one. Named, not implicit: decision C is that sparsity applies
+# during prefill only and generation runs full attention over the cache, and
+# a row records which backend produced its text (see docs/limitations.md,
+# "Sparsity is applied during prefill only").
+DENSE_DECODE_BACKEND = "sdpa_math"
+
+
+def backend_instance(name: str) -> AttentionBackend:
+    """A backend by the name a result row carries.
+
+    SDPA is one registered class with a pinned kernel per instance, so a row
+    labelled `sdpa_math` and one labelled `sdpa_flash` are the same class and
+    different kernels -- which is exactly the confound SDPABackend exists to
+    remove, and why the kernel is part of the name rather than left to
+    torch's internal dispatch.
+    """
+    if name.startswith("sdpa_"):
+        return backends.get("sdpa")(kernel=name[len("sdpa_"):])
+    return backends.get(name)()
+
+
+def decode_backend_for(backend: AttentionBackend) -> AttentionBackend:
+    """The backend that will generate this row's text.
+
+    Itself where it has a decode path (`gla` keeps its own fixed-size
+    recurrent state, which is the bounded-vs-unbounded comparison Stage 3
+    exists to make visible); the dense fallback otherwise. Never silent:
+    `generate()` refuses to choose for a backend with no decode path, so
+    this function is where the choice is made and it is recorded on the row.
+    """
+    if type(backend).supports_decode():
+        return backend
+    return backend_instance(DENSE_DECODE_BACKEND)

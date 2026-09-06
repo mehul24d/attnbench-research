@@ -310,8 +310,10 @@ class SwappedAttention(nn.Module):
         # Tuple arity the calling decoder layer unpacks depends on the
         # installed transformers version -- see
         # _TRANSFORMERS_SELF_ATTN_RETURNS_3TUPLE above. Neither slot beyond
-        # `out` is ever real: this wrapper computes no attention weights and
-        # supports no KV cache (no incremental-decode path yet).
+        # `out` is ever real: this wrapper computes no attention weights, and
+        # its decode cache lives in _ModeState.decode_states rather than in
+        # transformers' own past_key_values (which this deliberately ignores
+        # -- two caches, one of them stale, is worse than none).
         if _TRANSFORMERS_SELF_ATTN_RETURNS_3TUPLE:
             return out, None, None
         return out, None
@@ -453,6 +455,7 @@ class SwappableAttentionModel:
                  cfg: AttnConfig, max_new_tokens: int,
                  eos_token_ids: frozenset = frozenset(),
                  newline_token_ids: frozenset = frozenset(),
+                 whitespace_token_ids: frozenset = frozenset(),
                  layer_scores: Optional[dict] = None,
                  decode_backend: Optional[AttentionBackend] = None,
                  ) -> "GenerationResult":
@@ -476,6 +479,13 @@ class SwappableAttentionModel:
         Without it every example would exit on the cap, and "hit its cap"
         would carry no information about any backend. See
         docs/stage3_generation_decision.md.
+
+        The newline stop does not arm until a non-whitespace token has been
+        produced (`whitespace_token_ids`). Without that, a model that opened
+        with a newline would stop having generated nothing, and every row of
+        every backend would score 0 for a reason unrelated to attention.
+        accuracy/stopping.first_stop_index is the pure statement of this rule
+        and tests hold the two to the same answer.
         """
         if decode_backend is None:
             if not type(backend).supports_decode():
@@ -493,6 +503,7 @@ class SwappableAttentionModel:
 
         generated: list[int] = []
         stop_reason = "cap"
+        seen_content = False
         self._state.mode = "decode"
         # q_len=1 per step. The cfg the decode path sees keeps the prompt's
         # head geometry and dtype; only the query length changes.
@@ -503,9 +514,11 @@ class SwappableAttentionModel:
                 if next_id in eos_token_ids:
                     stop_reason = "eos"
                     break
-                if next_id in newline_token_ids:
+                if next_id in newline_token_ids and seen_content:
                     stop_reason = "newline"
                     break
+                if next_id not in newline_token_ids and next_id not in whitespace_token_ids:
+                    seen_content = True
                 if len(generated) >= max_new_tokens:
                     stop_reason = "cap"
                     break

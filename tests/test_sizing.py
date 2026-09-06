@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from attnbench.accuracy.ruler import generate_examples
+from attnbench.accuracy.schema import Generated
 from attnbench.accuracy.sizing import (
     BudgetTooSmallError, approximate_token_count, fit_units_to_budget)
 
@@ -190,7 +191,7 @@ def test_real_run_refuses_approximately_sized_examples():
     with pytest.raises(ValueError, match="approximate token counter"):
         run_accuracy(cells, out_dir="/tmp/should-never-be-written",
                      examples_by_id=examples_by_id,
-                     generate_fn=lambda *a: ("x", None), dry_run=False)
+                     generate_fn=lambda *a: Generated("x"), dry_run=False)
 
 
 def test_dry_run_still_allows_approximate_sizing():
@@ -208,7 +209,7 @@ def test_dry_run_still_allows_approximate_sizing():
     report = run_accuracy(
         cells, out_dir="/tmp/should-never-be-written",
         examples_by_id={("niah_single", e.example_id): e for e in examples},
-        generate_fn=lambda *a: ("x", None), dry_run=True)
+        generate_fn=lambda *a: Generated("x"), dry_run=True)
     assert report.total == 1
 
 

@@ -25,6 +25,39 @@ ScoreSource = Literal["dense_softmax_fp32"]
 # identical inputs. "essay" is reserved for when that path is wired up.
 HaystackMode = Literal["noise", "needle", "essay"]
 
+# Why a generation stopped. Recorded per row rather than reconstructed
+# afterwards from `len(predicted)`, which cannot distinguish "the model
+# finished its answer in 7 tokens" from "the model was cut off at 7".
+#
+# "cap" is the one that carries information about a BACKEND rather than
+# about an example: if sparse backends hit the cap more often than dense
+# ones on the same prompts, that is a finding (sparsity made the model
+# ramble) and not a scoring artefact -- but only if the reason is on the
+# row, because a truncated answer and a wrong answer both just score 0.
+StopReason = Literal["eos", "newline", "cap"]
+
+
+@dataclass(frozen=True)
+class Generated:
+    """What a `generate_fn` hands back to the runner.
+
+    Was a bare `(text, latency_ms)` tuple. It stopped being one when
+    generation became real: the stopping reason and the decode backend are
+    facts about how a row was produced that nothing downstream can recover
+    from the text, and a tuple has no room for them that does not silently
+    change meaning when a field is added.
+
+    Every field except `text` is optional so a test stub stays one line --
+    but they arrive as nulls in the parquet, visibly absent, rather than
+    being inferred.
+    """
+
+    text: str
+    latency_ms: Optional[float] = None
+    stop_reason: Optional[StopReason] = None
+    n_generated: Optional[int] = None
+    decode_backend: Optional[str] = None
+
 
 @dataclass
 class AccuracyResult:
@@ -41,6 +74,15 @@ class AccuracyResult:
     `expected` is a semicolon-joined string of the accepted answer(s) --
     ruler.score() takes the underlying list directly; this field is the
     flattened form for a parquet row, matching every other field here.
+
+    `backend` is the PREFILL backend, which is the cell's identity and the
+    thing under test. `decode_backend` is separate because they differ by
+    design: sparsity is applied during prefill only, so a block_sparse row
+    generates its text with a dense kernel over the cache (see
+    docs/limitations.md, "Sparsity is applied during prefill only"). There
+    is deliberately no `prefill_backend` field duplicating `backend` -- two
+    columns that must always agree eventually disagree, and then neither
+    can be trusted.
     """
 
     backend: str
@@ -56,6 +98,13 @@ class AccuracyResult:
     expected: str
     score: float
     correct: bool
+    # Generation facts, carried rather than reconstructed. A query for the
+    # per-backend truncation rate is `df[df.stop_reason == "cap"]`, not an
+    # inference from answer length against a per-task cap table that would
+    # have to be kept in sync with the one generation actually used.
+    stop_reason: Optional[StopReason] = None
+    n_generated: Optional[int] = None
+    decode_backend: Optional[str] = None
     latency_ms: Optional[float] = None
     detail: str = ""
 

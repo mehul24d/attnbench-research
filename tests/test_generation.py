@@ -231,26 +231,119 @@ NOT_EXERCISED_ON_CPU = {
 # different kernel pinned, and are covered on the instance.
 
 
+def _run_capturing_logits(wrapped, ids, backend, cfg, **kw):
+    """Every logits tensor the model produced -- prefill and each decode
+    step -- alongside the tokens. Bitwise comparison of these is what gives
+    the determinism check any resolution at all; see the two tests below."""
+    seen = []
+    real_forward = wrapped.model.forward
+
+    def spy(*args, **kwargs):
+        out = real_forward(*args, **kwargs)
+        seen.append(out.logits.detach().clone())
+        return out
+
+    wrapped.model.forward = spy
+    try:
+        result = wrapped.generate(ids, backend, cfg=cfg, **kw)
+    finally:
+        wrapped.model.forward = real_forward
+    return result, seen
+
+
 @pytest.mark.parametrize("name", sorted(CPU_BACKENDS))
 def test_decode_is_deterministic_per_backend(name):
     """Per backend, not once.
 
     A single-backend determinism test passes while a backend with
     nondeterministic reductions silently poisons the comparison -- and the
-    comparison is the entire study. Greedy decode makes this a byte-identity
-    check: the same prompt, backend and cfg must produce the same token ids
-    twice, because a single flipped argmax is a different sentence.
+    comparison is the entire study.
+
+    Bitwise on the LOGITS, not only on the tokens, and the difference is not
+    cosmetic. Measured on this toy model: perturbing a backend's output by
+    1e-1 relative does not flip a single token over six steps, because a
+    2-layer random-init model over a 64-token vocabulary has enormous logit
+    gaps. A token-only check here would have had no resolution whatsoever
+    against the failure it names -- green forever, guarding nothing, the same
+    shape as the position_ids test above. The bitwise logits check resolves
+    one fp32 ULP, and test_the_determinism_check_resolves_one_ulp holds it
+    to that.
     """
     model, ids = _toy(), _ids()
     backend = CPU_BACKENDS[name]()
     wrapped = SwappableAttentionModel(model, _cfg(), model_id="toy",
                                       finest_block_size=8)
-    a = wrapped.generate(ids, backend, cfg=_cfg(), max_new_tokens=6,
-                         decode_backend=SDPABackend("math"))
-    b = wrapped.generate(ids, backend, cfg=_cfg(), max_new_tokens=6,
-                         decode_backend=SDPABackend("math"))
+    a, logits_a = _run_capturing_logits(wrapped, ids, backend, _cfg(),
+                                        max_new_tokens=6,
+                                        decode_backend=SDPABackend("math"))
+    b, logits_b = _run_capturing_logits(wrapped, ids, backend, _cfg(),
+                                        max_new_tokens=6,
+                                        decode_backend=SDPABackend("math"))
     assert a.token_ids == b.token_ids, f"{name} decoded differently twice"
     assert a.stop_reason == b.stop_reason
+    assert len(logits_a) == len(logits_b) > 1, "prefill plus at least one step"
+    for step, (x, y) in enumerate(zip(logits_a, logits_b)):
+        assert torch.equal(x, y), f"{name} differed bitwise at step {step}"
+
+
+class _Jitter(SDPABackend):
+    """A backend that returns a slightly different answer each call -- the
+    shape a nondeterministic reduction has, scaled relative to the values so
+    it is a real ULP-level perturbation rather than an absolute nudge."""
+
+    def __init__(self, rel: float):
+        super().__init__("math")
+        self._rel = rel
+        self._sign = 1.0
+
+    def next_call(self):
+        self._sign = -self._sign
+
+    def forward(self, q, k, v, cfg, mask=None):
+        return super().forward(q, k, v, cfg, mask=mask) * (1.0 + self._sign * self._rel)
+
+
+def test_the_determinism_check_resolves_one_ulp():
+    """The companion to the test above: assert the mechanism, and separately
+    assert the mechanism is observable.
+
+    A determinism check that cannot detect a perturbation detects nothing,
+    and there is no way to tell those apart from a passing test. This
+    measures what the check actually resolves rather than assuming it
+    resolves everything. Both halves matter:
+
+      * 1e-7 relative (about one fp32 ULP) IS caught bitwise -- so the check
+        above has real resolution against nondeterministic reductions.
+      * 1e-1 relative -- a million times larger -- is NOT caught by comparing
+        tokens, which is why the check above cannot rest on tokens alone.
+    """
+    model, ids = _toy(), _ids()
+    wrapped = SwappableAttentionModel(model, _cfg(), model_id="toy",
+                                      finest_block_size=8)
+
+    one_ulp = _Jitter(1e-7)
+    one_ulp.next_call()
+    _, a = _run_capturing_logits(wrapped, ids, one_ulp, _cfg(), max_new_tokens=6,
+                                 decode_backend=SDPABackend("math"))
+    one_ulp.next_call()
+    _, b = _run_capturing_logits(wrapped, ids, one_ulp, _cfg(), max_new_tokens=6,
+                                 decode_backend=SDPABackend("math"))
+    assert any(not torch.equal(x, y) for x, y in zip(a, b)), (
+        "a one-ULP perturbation went undetected, so the bitwise check in "
+        "test_decode_is_deterministic_per_backend is not resolving anything")
+
+    huge = _Jitter(1e-1)
+    huge.next_call()
+    t1 = wrapped.generate(ids, huge, cfg=_cfg(), max_new_tokens=6,
+                          decode_backend=SDPABackend("math")).token_ids
+    huge.next_call()
+    t2 = wrapped.generate(ids, huge, cfg=_cfg(), max_new_tokens=6,
+                          decode_backend=SDPABackend("math")).token_ids
+    assert t1 == t2, (
+        "tokens now resolve a 1e-1 perturbation on this toy model. Good "
+        "news, but the comment in test_decode_is_deterministic_per_backend "
+        "explaining why the bitwise check is load-bearing is then stale -- "
+        "re-measure the token-level resolution and rewrite it.")
 
 
 def test_every_registered_backend_is_either_exercised_or_named():

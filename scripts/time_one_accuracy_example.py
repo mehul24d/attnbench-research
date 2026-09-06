@@ -47,8 +47,10 @@ from attnbench.accuracy.grid_configs import (  # noqa: E402
     SAGE_QUANT_SCHEME, build_configs_by_backend, build_examples_by_task_length)
 from attnbench.accuracy.model import SwappableAttentionModel  # noqa: E402
 from attnbench.accuracy.timing_probe import (  # noqa: E402
-    ModelArchitecture, PhaseTiming, blended_tflops_by_category,
-    corrected_grid_hours, total_grid_flops_by_category, whole_model_flops)
+    DECODE_STEPS_BY_TASK, DECODE_STEPS_BY_TASK_AT_CAP,
+    PEAK_BANDWIDTH_BYTES_PER_S, ModelArchitecture, PhaseTiming,
+    blended_tflops_by_category, corrected_grid_hours, decode_seconds,
+    total_grid_flops_by_category, whole_model_flops)
 from attnbench.backends.block_sparse import BlockSparseAttention  # noqa: E402
 from attnbench.backends.impls import SDPABackend  # noqa: E402
 from attnbench.backends.linear import GatedLinearAttention  # noqa: E402
@@ -237,6 +239,47 @@ def main():
     finally:
         wrapped.unwrap()
 
+    # --- the decode step, measured -----------------------------------------
+    #
+    # This is the one number that cannot be projected. A Stage 3 row is a
+    # prefill plus greedy decode, and decode is BANDWIDTH-bound at batch 1
+    # while prefill is compute-bound -- so the measured prefill TFLOPS above
+    # says nothing about it. The planning estimate brackets 1.5-6.6 h for the
+    # whole grid's decode purely because this implementation's per-step
+    # dispatch overhead is unknown. Two minutes here closes that.
+    decode_ms = None
+    try:
+        dense = SDPABackend(kernel=args.dense_backend.removeprefix("sdpa_"))
+        wrapped_for_decode = SwappableAttentionModel(
+            model, cfg_template, model_id=model_id,
+            finest_block_size=grid.finest_block_size)
+        gen_cfg = replace(cfg_template, mask="causal")
+        n_steps = 8
+        # Warm first: the first decode step pays one-time allocation and any
+        # JIT, and charging that to a per-step average would inflate the whole
+        # grid's decode estimate. Same reason _timed takes a warmup.
+        wrapped_for_decode.generate(input_ids, dense, cfg=gen_cfg,
+                                    max_new_tokens=2, decode_backend=dense)
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        result = wrapped_for_decode.generate(input_ids, dense, cfg=gen_cfg,
+                                             max_new_tokens=n_steps,
+                                             decode_backend=dense)
+        torch.cuda.synchronize()
+        wall = time.perf_counter() - t0
+        # The prefill is inside that timer; subtract the measured dense
+        # prefill so what is left is decode.
+        prefill_s = next(p.wall_seconds for p in phases
+                         if p.label == f"measured_{args.dense_backend}")
+        decode_ms = max(wall - prefill_s, 0.0) / max(result.n_generated, 1) * 1000
+    except Exception as e:                       # noqa: BLE001
+        print(f"[skip] decode step not measured: {type(e).__name__}: {e}")
+    finally:
+        try:
+            wrapped_for_decode.unwrap()
+        except Exception:                        # noqa: BLE001
+            pass
+
     print("\nphase                          wall_s   eff_TFLOPS   peak_mem_GiB")
     for p in phases:
         mem_gib = (p.peak_memory_bytes or 0) / (1024 ** 3)
@@ -258,19 +301,66 @@ def main():
     # closely the probed example actually landed, as a check on that claim.
     print(f"\nsizing accuracy at {seq_len}: {actual_seq_len} tokens "
           f"({actual_seq_len / seq_len:.4f}x budget)")
+    # A row is a prefill plus its greedy decode steps, not one forward.
+    # Both step tables are priced: the expected one assumes the model emits
+    # a newline where the measured answer lengths say it will, the cap one
+    # assumes it never does. The gap between them is the estimate's exposure
+    # to that assumption, and it belongs on the probe's output rather than
+    # in a doc nobody re-reads at 2am in a rented session.
     total_flops = total_grid_flops_by_category(
         configs_by_backend, examples_by_task_length, arch=arch,
+        decode_steps_by_task=DECODE_STEPS_BY_TASK,
         dense_backend=args.dense_backend)
+    at_cap_flops = total_grid_flops_by_category(
+        configs_by_backend, examples_by_task_length, arch=arch,
+        decode_steps_by_task=DECODE_STEPS_BY_TASK_AT_CAP,
+        dense_backend=args.dense_backend)
+    prefill_only_flops = total_grid_flops_by_category(
+        configs_by_backend, examples_by_task_length, arch=arch,
+        decode_steps_by_task={}, dense_backend=args.dense_backend)
 
     measured_hours = corrected_grid_hours(total_flops, measured_tflops)
     assumed_hours = corrected_grid_hours(
         total_flops, {cat: ASSUMED_TFLOPS for cat in total_flops})
+    at_cap_hours = corrected_grid_hours(at_cap_flops, measured_tflops)
+    prefill_only_hours = corrected_grid_hours(prefill_only_flops, measured_tflops)
 
     print(f"\n{'category':<10} {'assumed_15TFLOPS_h':>20} {'measured_h':>12}")
     for category in sorted(total_flops):
         print(f"{category:<10} {assumed_hours[category]:20.2f} "
               f"{measured_hours[category]:12.2f}")
     print(f"{'total':<10} {assumed_hours['total']:20.2f} {measured_hours['total']:12.2f}")
+
+    floor_ms = decode_seconds(
+        replace(cfg_template, mask="causal"), arch, n_steps=1,
+        peak_bandwidth_bytes_per_s=PEAK_BANDWIDTH_BYTES_PER_S["L4"]) * 1000
+    if decode_ms is not None:
+        print(f"\ndecode step    : {decode_ms:.2f} ms measured vs "
+              f"{floor_ms:.2f} ms bandwidth floor "
+              f"({decode_ms / floor_ms:.2f}x) at seq_len {actual_seq_len}")
+        overhead_ms = max(decode_ms - floor_ms, 0.0)
+        total_steps = sum(
+            len(examples_by_task_length.get((task, sl), [])) * k
+            * (1 + len(grid.sparsities) + 1)
+            for task, k in DECODE_STEPS_BY_TASK.items()
+            for sl in grid.seq_lens)
+        print(f"                 per-step dispatch overhead {overhead_ms:.2f} ms; "
+              f"grid decode ~= {total_steps * decode_ms / 1000 / 3600:.2f} h "
+              f"over {total_steps} steps")
+    else:
+        print(f"\ndecode step    : NOT MEASURED. Bandwidth floor is "
+              f"{floor_ms:.2f} ms/step; the grid's decode term is a bracket "
+              f"until this is measured -- see scripts/reestimate_stage3.py.")
+
+    decode_h = measured_hours["total"] - prefill_only_hours["total"]
+    print(f"\nunit of work   : 1 prefill + greedy decode "
+          f"({DECODE_STEPS_BY_TASK} steps by task)")
+    print(f"  prefill only : {prefill_only_hours['total']:.2f} h")
+    print(f"  + decode     : {decode_h:+.2f} h "
+          f"({decode_h / prefill_only_hours['total'] * 100:.2f}%)")
+    print(f"  every example to its cap: {at_cap_hours['total']:.2f} h "
+          f"({(at_cap_hours['total'] / measured_hours['total'] - 1) * 100:+.2f}% "
+          f"vs expected) -- the bound if the newline stop never fires")
 
 
 if __name__ == "__main__":

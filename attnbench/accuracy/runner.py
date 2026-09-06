@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 import pandas as pd
 
@@ -20,7 +20,7 @@ from .. import provenance
 from ..checkpoint import append_checkpoint
 from ..config import AttnConfig
 from . import ruler
-from .schema import AccuracyResult
+from .schema import AccuracyResult, Generated
 
 
 @dataclass(frozen=True)
@@ -230,18 +230,18 @@ class AccuracyReport:
 def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                   examples_by_id: dict[tuple[str, str], "ruler.RulerExample"],
                   generate_fn: Callable[[AttnConfig, str, "ruler.RulerExample"],
-                                         tuple[str, Optional[float]]],
+                                         Generated],
                   provenance_fn: Callable[[], "provenance.Provenance"] = provenance.capture,
                   dry_run: bool = False, checkpoint_every: int = 1,
                   allow_mixed_commits: bool = False, allow_dirty: bool = False,
                   ) -> AccuracyReport:
     """Stage 3 entry point.
 
-    `generate_fn(cfg, backend_name, example) -> (predicted_text,
-    latency_ms_or_None)` is injected so this driver -- planning, resume,
-    checkpoint -- is testable on CPU without a real model. Production
-    callers pass a function that runs SwappableAttentionModel.run_measured
-    and decodes the output; tests pass a stub.
+    `generate_fn(cfg, backend_name, example) -> Generated` is injected so
+    this driver -- planning, resume, checkpoint -- is testable on CPU
+    without a real model. Production callers pass a function that runs
+    SwappableAttentionModel.generate and decodes the output; tests pass a
+    stub. A `Generated` and not a tuple: see schema.Generated.
 
     `examples_by_id` keys on (task, example_id) -- the same identity
     load_done_keys/plan use -- so a caller only has to build it once from
@@ -290,8 +290,18 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             continue
         cell = d.cell
         example = examples_by_id[(cell.task, cell.example_id)]
-        predicted, latency_ms = generate_fn(cell.cfg, cell.backend_name, example)
-        example_score = ruler.score(cell.task, predicted, example.answer)
+        gen = generate_fn(cell.cfg, cell.backend_name, example)
+        if not isinstance(gen, Generated):
+            # Named explicitly rather than unpacked-and-hoped. The old
+            # contract was a 2-tuple, which unpacks silently into
+            # (predicted, latency) and would drop stop_reason on the floor
+            # for a whole 13-hour run.
+            raise TypeError(
+                f"generate_fn returned {type(gen).__name__}, expected "
+                f"schema.Generated -- the (text, latency_ms) tuple contract "
+                f"was replaced when generation started carrying a stopping "
+                f"reason, and unpacking one here would discard it silently.")
+        example_score = ruler.score(cell.task, gen.text, example.answer)
 
         result = AccuracyResult(
             backend=cell.backend_name,
@@ -303,11 +313,14 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             sparsity=cell.cfg.sparsity,
             score_source="dense_softmax_fp32" if cell.cfg.mask == "block_sparse" else None,
             haystack_mode=ruler.haystack_mode_for(cell.task),
-            predicted=predicted,
+            predicted=gen.text,
             expected="; ".join(example.answer),
             score=example_score,
             correct=example_score >= 100.0,
-            latency_ms=latency_ms,
+            stop_reason=gen.stop_reason,
+            n_generated=gen.n_generated,
+            decode_backend=gen.decode_backend,
+            latency_ms=gen.latency_ms,
         )
         row = {**result.to_dict(), **prov.to_dict()}
         buffer.append(row)

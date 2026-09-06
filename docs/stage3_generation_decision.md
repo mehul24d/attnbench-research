@@ -140,8 +140,64 @@ cost roughly `k / seq_len` of a prefill:
 | 4096 | 19.3 / 4096 | 0.47% |
 | 8192 | 19.3 / 8192 | 0.24% |
 
-**Under 1% on the measured half. The 13.35 h estimate survives intact** — which
-is the whole argument for building the cache rather than working around it.
+**Under 1% on the measured half. The 13.35 h estimate survives intact.**
+
+### CORRECTION, 2026-09-06: that table is wrong, and by ~20x
+
+The FLOPs ratio above is arithmetically correct and the conclusion drawn from
+it is not, because `k / seq_len` is only a *time* ratio if decode and prefill
+run at the same throughput. **They do not, and they cannot.**
+
+A batch-1 decode step reads all **3.09 GB** of Qwen2.5-1.5B's bf16 weights to
+produce one token. On an L4 (~300 GB/s, ~80% achieved) that is a **~13 ms
+floor** — before any attention over the cache, before any Python dispatch.
+Priced at the prefill's measured 42.2 TFLOPS, the same step's 3.09 GFLOP
+"takes" **0.074 ms**.
+
+**177×.** Prefill at 8192 tokens does ~8192 FLOPs per byte of weight read and
+is compute-bound. A batch-1 decode step does 2, and is bandwidth-bound. One
+throughput number cannot describe both regimes.
+
+This is the same shape as two errors already recorded in this project —
+attention-kernel TFLOPS read as whole-model TFLOPS (a 42% phantom speedup),
+and GLA's 1.7 "TFLOPS" against FA2's 61.8. Every time, the unit matched and
+the regime did not.
+
+**The corrected cost**, from `scripts/reestimate_stage3.py`, modelled from
+bandwidth rather than FLOPs:
+
+| band | prefill h | decode h (floor) | tax |
+|---|---|---|---|
+| 2048 | 0.45 | 0.32 | **+70%** |
+| 4096 | 0.95 | 0.32 | +34% |
+| 8192 | 2.09 | 0.33 | +16% |
+| 16384 | 4.77 | 0.36 | +7.5% |
+| 32768 | 5.10 | 0.14 | +2.7% |
+| **total** | **13.35** | **1.47** | **+11%** |
+
+**The tax is largest where prefill is cheapest, and that is structural.** The
+weight-read term does not depend on context, so decode costs about the same
+per row at 2048 as at 32768 while prefill grows quadratically. The 2048 band
+pays more to generate ~58 tokens per row than to attend 2048 of them.
+
+**The answer is a bracket, not a number**, because this implementation's
+per-step dispatch cost is unknown — an eager HF forward per step, a custom
+attention module per layer, no CUDA graphs:
+
+| scenario | grid decode | total | S1 wall |
+|---|---|---|---|
+| expected stops, bandwidth floor | 1.47 h | 14.82 h | 5.96 h |
+| expected stops, +15 ms/step | 3.04 h | 16.39 h | 7.05 h |
+| every example to its cap, floor | 3.19 h | 16.54 h | 7.10 h |
+| every example to its cap, +15 ms/step | 6.60 h | 19.96 h | 9.46 h |
+
+**What closes it: one measured decode step**, which
+`scripts/time_one_accuracy_example.py` now takes before the grid commits. Two
+minutes on the instance collapses a 5-hour range.
+
+**What it changes about the plan:** S1 as booked was 4.99 h wall against a
+five-hour window. It is now 5.96 h at best and 9.46 h at worst. The
+segmentation is redone in `docs/stage3_segmentation.md`.
 
 ## 7. What the cache buys beyond cost
 

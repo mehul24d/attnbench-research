@@ -171,3 +171,25 @@ def test_every_configured_length_is_buildable_for_every_task():
         grid, seed=0, count_tokens=approximate_token_count,
         seq_lens={min(grid.seq_lens): 1})
     assert set(built) == {(t, min(grid.seq_lens)) for t in grid.tasks}
+
+
+def test_score_cache_still_fits_the_disk_the_plan_budgeted():
+    """4.09 GiB, recomputed from the grid rather than trusted from a doc.
+
+    The score cache is what makes a mid-band crash survivable -- without it,
+    restarting 16384 repays ~3 h of scoring. The 4.09 GiB figure was written
+    down before the two-sided rule restored 16384 to n=300 and sparsity 0.75,
+    and a table in a planning doc cannot notice a grid edit. This can.
+    """
+    from attnbench.accuracy.config import load_grid
+    from attnbench.accuracy.score_cache import cache_bytes_for_grid
+
+    grid = load_grid("configs/accuracy/stage3_grid.yaml")
+    # Qwen2.5-1.5B-Instruct, verified against its config.json.
+    by_length = cache_bytes_for_grid(grid, n_layers=28, n_heads_kv=2)
+    total_gib = sum(by_length.values()) / 1024 ** 3
+    assert total_gib == pytest.approx(4.09, abs=0.02), by_length
+    # 32768 is the single largest band despite n=100, because the cache is
+    # quadratic in n_blocks. Worth pinning: it is the band a "just drop the
+    # directional point" decision would remove, and it takes half the disk.
+    assert by_length[32768] == max(by_length.values())

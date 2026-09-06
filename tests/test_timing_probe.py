@@ -5,11 +5,14 @@ test_matched.py's synthetic-array discipline for Stage 4.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from attnbench.accuracy.timing_probe import (
     ModelArchitecture, PhaseTiming, _with_real_heads, blended_tflops_by_category,
-    corrected_grid_hours, total_grid_flops_by_category, whole_model_flops)
+    corrected_grid_hours, decode_flops, total_grid_flops_by_category,
+    whole_model_flops)
 from attnbench.config import AttnConfig
 
 
@@ -119,6 +122,13 @@ def test_gqa_reduces_kv_projection_flops_versus_mha():
 
 # ---------------------------------------------------------------------------
 # total_grid_flops_by_category
+#
+# The tests in this section pass `decode_steps_by_task={}` deliberately: they
+# assert properties of the PREFILL term (scoring amortization, real head
+# geometry, no token inflation) and adding a decode term to them would only
+# make the arithmetic harder to read. The decode term has its own section
+# below. `{}` is spelled out at each call rather than defaulted, which is the
+# whole point of the argument being required.
 # ---------------------------------------------------------------------------
 
 def test_scoring_pass_amortized_once_per_example_not_per_sparsity():
@@ -135,7 +145,7 @@ def test_scoring_pass_amortized_once_per_example_not_per_sparsity():
     }
     examples_by_task_length = {("niah_single", 1024): list(range(10))}  # 10 examples
 
-    totals = total_grid_flops_by_category(configs_by_backend, examples_by_task_length, arch=arch)
+    totals = total_grid_flops_by_category(configs_by_backend, examples_by_task_length, arch=arch, decode_steps_by_task={})
 
     dense_cfg = configs_by_backend["sdpa_math"][0]
     expected_scoring = 10 * whole_model_flops(_with_real_heads(dense_cfg, arch), arch,
@@ -151,7 +161,7 @@ def test_measured_flops_sums_every_backend_config_and_example():
     configs_by_backend = {"sdpa_math": [dense_cfg], "block_sparse": [sparse_cfg]}
     examples_by_task_length = {("niah_single", 1024): list(range(4))}
 
-    totals = total_grid_flops_by_category(configs_by_backend, examples_by_task_length, arch=arch)
+    totals = total_grid_flops_by_category(configs_by_backend, examples_by_task_length, arch=arch, decode_steps_by_task={})
 
     expected_measured = (4 * whole_model_flops(_with_real_heads(dense_cfg, arch), arch,
                                                logits_to_keep=1)
@@ -171,10 +181,10 @@ def test_total_grid_flops_uses_real_heads_not_config_placeholder_heads():
 
     totals_1_head = total_grid_flops_by_category(
         configs_by_backend, examples_by_task_length,
-        arch=_arch(n_heads_q=1, n_heads_kv=1))
+        arch=_arch(n_heads_q=1, n_heads_kv=1), decode_steps_by_task={})
     totals_12_head = total_grid_flops_by_category(
         configs_by_backend, examples_by_task_length,
-        arch=_arch(n_heads_q=12, n_heads_kv=2))
+        arch=_arch(n_heads_q=12, n_heads_kv=2), decode_steps_by_task={})
 
     assert totals_12_head["measured"] > totals_1_head["measured"]
 
@@ -188,7 +198,8 @@ def test_seq_len_is_taken_as_a_real_token_count_with_no_inflation_applied():
     arch = _arch()
     cfg = _cfg(seq_len=8192)
     totals = total_grid_flops_by_category(
-        {"sdpa_math": [cfg]}, {("niah_single", 8192): [object()]}, arch=arch)
+        {"sdpa_math": [cfg]}, {("niah_single", 8192): [object()]}, arch=arch,
+        decode_steps_by_task={})
     assert totals["measured"] == whole_model_flops(
         _with_real_heads(cfg, arch), arch, logits_to_keep=1)
 
@@ -196,7 +207,7 @@ def test_seq_len_is_taken_as_a_real_token_count_with_no_inflation_applied():
 def test_missing_examples_for_a_config_seq_len_contributes_zero_not_a_crash():
     configs_by_backend = {"sdpa_math": [_cfg(seq_len=2048)]}
     totals = total_grid_flops_by_category(configs_by_backend, examples_by_task_length={},
-                                          arch=_arch())
+                                          arch=_arch(), decode_steps_by_task={})
     assert totals["measured"] == 0
     assert totals["scoring"] == 0
 
@@ -227,3 +238,182 @@ def test_corrected_grid_hours_raises_on_missing_measurement_for_nonzero_category
     measured_tflops = {"measured": 1.0}  # scoring never probed
     with pytest.raises(KeyError):
         corrected_grid_hours(totals, measured_tflops)
+
+
+# ---------------------------------------------------------------------------
+# decode_flops -- the unit-of-work term
+#
+# The estimate that was wrong by ~20x had no arithmetic error in it. Every
+# input was still valid; a Stage 3 row was simply not one forward pass. These
+# tests are about the unit, not the number.
+# ---------------------------------------------------------------------------
+
+def test_zero_decode_steps_cost_nothing():
+    assert decode_flops(_cfg(seq_len=8192), _arch(), n_steps=0) == 0
+
+
+def test_decode_is_linear_in_context_where_prefill_is_quadratic():
+    """The whole reason the cache makes generation affordable. Doubling
+    context roughly doubles a decode step's attention but roughly quadruples
+    a prefill's -- so the decode SHARE shrinks as the grid gets longer, and
+    the band where decode matters most is the shortest one."""
+    arch = _arch()
+    share = {}
+    for s in (2048, 4096, 8192):
+        cfg = _cfg(seq_len=s)
+        d = decode_flops(cfg, arch, n_steps=19)
+        share[s] = d / whole_model_flops(_with_real_heads(cfg, arch), arch)
+    assert share[2048] > share[4096] > share[8192]
+
+
+def test_a_decode_step_attends_the_growing_cache_not_a_fixed_one():
+    """Step i attends seq_len + i keys. If this were charged at a constant
+    seq_len the error would be tiny at these step counts and invisible --
+    which is exactly why it is asserted rather than eyeballed."""
+    arch = _arch()
+    cfg = _cfg(seq_len=1024)
+    one = decode_flops(cfg, arch, n_steps=1)
+    two = decode_flops(cfg, arch, n_steps=2)
+    # the second step costs one more key's worth of attention than the first
+    per_key = 4 * cfg.batch * arch.n_heads_q * arch.head_dim * arch.n_layers
+    assert (two - one) - one == per_key
+
+
+def test_a_sparse_config_is_charged_dense_decode_because_that_is_what_runs():
+    """Decision C: sparsity is applied during prefill only. A block_sparse
+    row's decode really does run full attention over the cache, so charging
+    it the dense cost is the model being right, not the model being lazy."""
+    arch = _arch()
+    dense = _cfg(seq_len=4096)
+    sparse = _cfg(seq_len=4096, mask="block_sparse", sparsity=0.9,
+                  block_size=128, mask_source="importance")
+    assert (decode_flops(dense, arch, n_steps=19)
+            == decode_flops(sparse, arch, n_steps=19))
+    # ... while their PREFILL costs do differ, so the test is not vacuous
+    assert (whole_model_flops(_with_real_heads(sparse, arch), arch)
+            < whole_model_flops(_with_real_heads(dense, arch), arch))
+
+
+def test_grid_total_charges_decode_per_task_and_only_to_measured():
+    arch = _arch()
+    cfg = _cfg(seq_len=2048)
+    examples = {("niah_single", 2048): list(range(5)),
+                ("vt", 2048): list(range(5))}
+    configs = {"sdpa_math": [cfg],
+               "block_sparse": [_cfg(seq_len=2048, mask="block_sparse", sparsity=0.5,
+                                     block_size=128, mask_source="importance")]}
+
+    prefill_only = total_grid_flops_by_category(
+        configs, examples, arch=arch, decode_steps_by_task={})
+    with_decode = total_grid_flops_by_category(
+        configs, examples, arch=arch,
+        decode_steps_by_task={"niah_single": 8, "vt": 17})
+
+    assert with_decode["scoring"] == prefill_only["scoring"]   # scoring generates nothing
+    real = _with_real_heads(cfg, arch)
+    expected_extra = 2 * 5 * (decode_flops(real, arch, n_steps=8)
+                              + decode_flops(real, arch, n_steps=17))
+    assert with_decode["measured"] - prefill_only["measured"] == expected_extra
+
+
+def test_a_task_with_examples_but_no_step_count_raises():
+    """Silently costing an unlisted task at zero decode steps is a claim
+    about the model's stopping behaviour. It has to be written down."""
+    with pytest.raises(KeyError, match="decode_steps_by_task"):
+        total_grid_flops_by_category(
+            {"sdpa_math": [_cfg(seq_len=2048)]},
+            {("niah_single", 2048): [object()], ("vt", 2048): [object()]},
+            arch=_arch(), decode_steps_by_task={"niah_single": 8})
+
+
+def test_the_cap_bound_is_strictly_worse_than_the_expected_case():
+    """Both tables are priced because the expected one depends on the model
+    emitting a newline where we predict it will, and the cap one does not."""
+    from attnbench.accuracy.timing_probe import (
+        DECODE_STEPS_BY_TASK, DECODE_STEPS_BY_TASK_AT_CAP)
+    assert set(DECODE_STEPS_BY_TASK) == set(DECODE_STEPS_BY_TASK_AT_CAP)
+    for task, expected in DECODE_STEPS_BY_TASK.items():
+        assert DECODE_STEPS_BY_TASK_AT_CAP[task] > expected, task
+
+
+# ---------------------------------------------------------------------------
+# Decode is bandwidth-bound
+#
+# The FLOPs count above is right. Dividing it by a prefill throughput is not
+# a decode time, and the error is 177x, not a rounding difference. These
+# tests pin the regime distinction rather than the numbers.
+# ---------------------------------------------------------------------------
+
+QWEN_1_5B = ModelArchitecture(n_layers=28, hidden_size=1536,
+                              intermediate_size=8960, n_heads_q=12,
+                              n_heads_kv=2, head_dim=128, vocab_size=151936)
+
+
+def test_parameter_bytes_matches_the_real_model_size():
+    """Qwen2.5-1.5B is 1.54B parameters, 3.09 GB in bf16. If this drifts,
+    every decode estimate built on it drifts with it and nothing else
+    would notice."""
+    from attnbench.accuracy.timing_probe import model_parameter_bytes
+    assert 3.0e9 < model_parameter_bytes(QWEN_1_5B) < 3.2e9
+
+
+def test_the_flops_view_and_the_bandwidth_view_disagree_by_two_orders():
+    """The finding, asserted so it cannot quietly stop being true.
+
+    Pricing a decode step at the prefill's measured 42.2 TFLOPS gives ~0.07
+    ms. The bandwidth floor is ~14 ms. A cost model that used the first
+    number would report generation as free -- which is exactly what the
+    'under 1% decode tax' in docs/stage3_generation_decision.md did before
+    this was caught.
+    """
+    from attnbench.accuracy.timing_probe import (
+        PEAK_BANDWIDTH_BYTES_PER_S, decode_seconds)
+    cfg = _cfg(seq_len=8192)
+    as_flops = decode_flops(cfg, QWEN_1_5B, n_steps=1) / 42.151e12
+    as_bandwidth = decode_seconds(
+        cfg, QWEN_1_5B, n_steps=1,
+        peak_bandwidth_bytes_per_s=PEAK_BANDWIDTH_BYTES_PER_S["L4"])
+    assert as_bandwidth / as_flops > 100
+
+
+def test_decode_cost_is_nearly_flat_in_context_while_prefill_is_quadratic():
+    """Why the tax is largest where prefill is cheapest. The weight-read term
+    does not depend on context, so a 16x longer context costs a decode step
+    only a little more -- while the prefill it follows costs ~256x more."""
+    from attnbench.accuracy.timing_probe import (
+        PEAK_BANDWIDTH_BYTES_PER_S, decode_seconds)
+    bw = PEAK_BANDWIDTH_BYTES_PER_S["L4"]
+    short = decode_seconds(_cfg(seq_len=2048), QWEN_1_5B, n_steps=19,
+                           peak_bandwidth_bytes_per_s=bw)
+    long = decode_seconds(_cfg(seq_len=32768), QWEN_1_5B, n_steps=19,
+                          peak_bandwidth_bytes_per_s=bw)
+    assert 1.0 < long / short < 1.5, (long, short)
+
+
+def test_the_kv_term_is_gqa_shaped_not_expanded():
+    """SDPABackend.state_from_prefill keeps the cache un-expanded, which is
+    what makes the cache-size claim honest -- so the traffic model has to
+    count n_heads_kv, not n_heads_q. Counting the expanded form would
+    overstate the cache read 6x on this model."""
+    from attnbench.accuracy.timing_probe import decode_memory_traffic_bytes
+    cfg = _cfg(seq_len=32768)
+    gqa = decode_memory_traffic_bytes(cfg, QWEN_1_5B, n_steps=1)
+    mha = decode_memory_traffic_bytes(
+        cfg, replace(QWEN_1_5B, n_heads_kv=QWEN_1_5B.n_heads_q), n_steps=1)
+    assert mha > gqa
+
+
+def test_the_overhead_term_is_zero_only_when_asked_for():
+    """A floor is a floor. This implementation runs a Python-level HF forward
+    per step with no CUDA graphs, so real per-step cost is above it -- and
+    the difference is the whole width of the estimate's bracket."""
+    from attnbench.accuracy.timing_probe import (
+        PEAK_BANDWIDTH_BYTES_PER_S, decode_seconds)
+    bw = PEAK_BANDWIDTH_BYTES_PER_S["L4"]
+    cfg = _cfg(seq_len=8192)
+    floor = decode_seconds(cfg, QWEN_1_5B, n_steps=10,
+                           peak_bandwidth_bytes_per_s=bw)
+    real = decode_seconds(cfg, QWEN_1_5B, n_steps=10,
+                          peak_bandwidth_bytes_per_s=bw,
+                          per_step_overhead_s=0.015)
+    assert real - floor == pytest.approx(0.15)

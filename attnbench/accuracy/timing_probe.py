@@ -119,6 +119,184 @@ def _with_real_heads(cfg: AttnConfig, arch: ModelArchitecture) -> AttnConfig:
                    head_dim=arch.head_dim)
 
 
+# ---------------------------------------------------------------------------
+# The unit of work
+# ---------------------------------------------------------------------------
+#
+# A Stage 3 row is NOT one forward pass. It is one prefill plus `k` greedy
+# decode steps, because Stage 3 scores generated text against a RULER answer
+# and the answer is several tokens long. The estimate that missed this was
+# not out by a rounding factor -- with no KV cache it was out by ~20x, and
+# the error was not in any arithmetic. Every input was still valid; the unit
+# was wrong. That is why the decode term lives here, in the cost model, with
+# `decode_steps_by_task` a REQUIRED argument rather than a default: a caller
+# has to say what a row costs, and "no decode" has to be written down as a
+# claim rather than arrived at by omission.
+#
+# See docs/stage3_generation_decision.md for where these come from.
+
+# Expected steps = measured answer length + 1, for the newline the model
+# emits to end the line (see the stopping rule -- EOS essentially never
+# fires on completion-style prompts). Measured over 200 examples per task
+# with the real Qwen tokenizer, and independent of seq_len: the answer is a
+# fixed-shape payload, so only BPE splitting varies.
+DECODE_STEPS_BY_TASK: dict[str, int] = {
+    "niah_single": 8,       # 7 answer tokens, exactly, on all 200
+    "niah_multikey": 33,    # 27-36 observed
+    "vt": 17,               # 12-20 observed
+}
+
+# The other end of the bracket. If the newline stop never fires, every
+# example runs to its per-task cap, and these are what a row costs then.
+# Pricing both is the point: the expected figure is a point estimate that
+# depends on the model behaving, the cap figure is a bound that does not.
+DECODE_STEPS_BY_TASK_AT_CAP: dict[str, int] = {
+    "niah_single": 14,
+    "niah_multikey": 72,
+    "vt": 40,
+}
+
+
+def decode_flops(cfg: AttnConfig, arch: ModelArchitecture, *, n_steps: int) -> int:
+    """FLOPs for `n_steps` cached greedy decode steps after a prefill of
+    `cfg.seq_len` tokens.
+
+    Each step runs the whole model over ONE position -- projections, MLP and
+    lm_head all at `seq_len`-independent cost -- and attends that single
+    query against a cache that has grown to `seq_len + i` keys. So the
+    per-step attention term is linear in context where prefill's is
+    quadratic, which is the entire reason the cache makes generation
+    affordable: `k` steps cost roughly `k / seq_len` of a prefill.
+
+    Two things this deliberately does NOT do, both conservative:
+
+    1. It charges DENSE attention over the full cache even for a
+       block_sparse cfg. That is not an approximation, it is decision C:
+       sparsity is applied during prefill only and generation runs full
+       attention over the cache (docs/limitations.md). A sparse row's decode
+       really does cost this.
+    2. It charges the same to GLA, whose decode is a fixed-size recurrent
+       state update costing O(head_dim^2) per step with no dependence on
+       context at all. GLA's real decode is far cheaper, so its rows are
+       overcharged here. An estimate that is too high on one backend is a
+       schedule that finishes early; the reverse is a session that runs out
+       of hours mid-band.
+    """
+    if n_steps < 0:
+        raise ValueError(f"n_steps must be >= 0, got {n_steps}")
+    b, s, k = cfg.batch, cfg.seq_len, n_steps
+    per_pos_qkvo = 2 * b * arch.hidden_size * (
+        arch.hidden_size + 2 * arch.n_heads_kv * arch.head_dim + arch.hidden_size)
+    per_pos_mlp = 6 * b * arch.hidden_size * arch.intermediate_size
+    # sum over i of (s + i) keys attended, x2 matmuls (QK^T, PV) x 2 FLOPs
+    cache_keys = k * s + k * (k - 1) // 2
+    attention = 4 * b * arch.n_heads_q * arch.head_dim * cache_keys
+    lm_head = k * 2 * b * arch.hidden_size * arch.vocab_size
+    return arch.n_layers * (k * (per_pos_qkvo + per_pos_mlp) + attention) + lm_head
+
+
+# ---------------------------------------------------------------------------
+# Decode is bandwidth-bound, and dividing its FLOPs by a prefill throughput
+# is a category error
+# ---------------------------------------------------------------------------
+#
+# `decode_flops` above counts decode FLOPs correctly. Dividing that count by
+# the measured PREFILL TFLOPS does not give a decode time, and the gap is not
+# a rounding error: on Qwen2.5-1.5B at batch 1, a decode step is 3.09 GFLOP,
+# which at the prefill's measured 42 TFLOPS would take 0.074 ms. The real
+# floor is ~13 ms, because the step reads all 3.09 GB of bf16 weights to
+# produce one token and an L4 has ~300 GB/s of bandwidth. **177x.**
+#
+# The two phases sit in different regimes. A prefill at 8192 tokens does
+# ~8192 FLOPs of work per byte of weight it reads and is compute-bound; a
+# batch-1 decode step does 2 and is bandwidth-bound. One throughput figure
+# cannot describe both, and using the compute-bound one for the
+# bandwidth-bound phase makes generation look free.
+#
+# This is the third appearance of the same shape in this project, and the
+# most expensive of the three had the same signature -- a ratio taken across
+# two regimes that look comparable because they share a unit:
+#   * attention-KERNEL TFLOPS read as whole-MODEL TFLOPS (a 42% phantom
+#     speedup);
+#   * GLA's 1.7 "TFLOPS" against FA2's 61.8, concluding GLA is slow when it
+#     is faster in wall clock and simply issues ~30x fewer FLOPs;
+#   * and now prefill TFLOPS applied to decode.
+# The unit matches every time. The regime does not.
+
+# Fraction of peak memory bandwidth a real kernel achieves. 0.80 is the
+# conventional figure for a large streaming read and is an ASSUMPTION, not a
+# measurement -- flagged here because the whole point of this module is that
+# assumptions must be visible. It sets a FLOOR: real decode also pays Python
+# dispatch and kernel-launch latency per layer, which this does not model.
+ACHIEVED_BANDWIDTH_FRACTION = 0.80
+
+
+def model_parameter_bytes(arch: ModelArchitecture, *, dtype_bytes: int = 2) -> int:
+    """Weight bytes read to produce one token.
+
+    Counts the lm_head projection (`vocab_size x hidden_size`) once. Where
+    embeddings are tied -- as they are on Qwen2.5-1.5B -- that matrix is read
+    for the output projection whether or not it is also the input table, so
+    it belongs here either way.
+    """
+    per_layer = (arch.hidden_size * arch.hidden_size                      # q_proj
+                 + 2 * arch.hidden_size * arch.n_heads_kv * arch.head_dim  # k, v
+                 + arch.hidden_size * arch.hidden_size                     # o_proj
+                 + 3 * arch.hidden_size * arch.intermediate_size)          # gated MLP
+    return dtype_bytes * (arch.n_layers * per_layer
+                          + arch.vocab_size * arch.hidden_size)
+
+
+def decode_memory_traffic_bytes(cfg: AttnConfig, arch: ModelArchitecture, *,
+                                 n_steps: int, dtype_bytes: int = 2) -> int:
+    """Bytes read across `n_steps` decode steps: the weights, every step,
+    plus the KV cache, which grows.
+
+    The weight term does not depend on context and dominates: at 8192 it is
+    3.09 GB against 235 MB of cache. That is why the decode tax is nearly
+    FLAT per row rather than proportional to context -- and therefore why it
+    is largest, in relative terms, exactly where prefill is cheapest. At the
+    2048 band it is a bigger cost than the prefill it follows.
+    """
+    if n_steps < 0:
+        raise ValueError(f"n_steps must be >= 0, got {n_steps}")
+    weights = n_steps * model_parameter_bytes(arch, dtype_bytes=dtype_bytes)
+    # K and V, both, un-expanded in GQA layout -- which is how
+    # SDPABackend.state_from_prefill really stores them.
+    per_token_kv = 2 * arch.n_layers * arch.n_heads_kv * arch.head_dim * dtype_bytes
+    cache = per_token_kv * (n_steps * cfg.seq_len + n_steps * (n_steps - 1) // 2)
+    return weights + cfg.batch * cache
+
+
+def decode_seconds(cfg: AttnConfig, arch: ModelArchitecture, *, n_steps: int,
+                   peak_bandwidth_bytes_per_s: float,
+                   per_step_overhead_s: float = 0.0,
+                   achieved_fraction: float = ACHIEVED_BANDWIDTH_FRACTION,
+                   dtype_bytes: int = 2) -> float:
+    """Wall seconds for `n_steps` decode steps, from bandwidth rather than
+    from FLOPs.
+
+    `per_step_overhead_s` is the term that separates the floor from a real
+    measurement: this implementation runs one Python-level HF forward per
+    step with a custom attention module per layer and no CUDA graphs, so
+    dispatch and launch latency are real and are not bandwidth. Pass 0 for
+    the hardware floor; pass a measured value once the pre-flight probe has
+    one. Do not guess it and then quote the result as an estimate -- quote
+    the bracket.
+    """
+    bytes_read = decode_memory_traffic_bytes(cfg, arch, n_steps=n_steps,
+                                             dtype_bytes=dtype_bytes)
+    return (bytes_read / (peak_bandwidth_bytes_per_s * achieved_fraction)
+            + n_steps * per_step_overhead_s)
+
+
+# Peak memory bandwidth, for the devices this study actually rents.
+PEAK_BANDWIDTH_BYTES_PER_S: dict[str, float] = {
+    "L4": 300e9,        # GDDR6, 192-bit
+    "A100-80GB": 2039e9,  # HBM2e
+}
+
+
 # NOTE: `MEASURED_TOKEN_INFLATION` and `_at_real_tokens` used to live here.
 # They corrected for a generator that sized haystacks by word count, so a
 # grid seq_len of 16384 produced ~19821 real tokens and every FLOPs estimate
@@ -176,6 +354,7 @@ def blended_tflops_by_category(phases: list[PhaseTiming]) -> dict[PhaseCategory,
 def total_grid_flops_by_category(configs_by_backend: dict[str, list[AttnConfig]],
                                   examples_by_task_length: dict[tuple[str, int], list[RulerExample]],
                                   *, arch: ModelArchitecture,
+                                  decode_steps_by_task: dict[str, int],
                                   dense_backend: str = "sdpa_math",
                                   logits_to_keep: int = 1,
                                   ) -> dict[PhaseCategory, int]:
@@ -204,7 +383,27 @@ def total_grid_flops_by_category(configs_by_backend: dict[str, list[AttnConfig]]
     once per example, never once per block_sparse sparsity level, even
     though `configs_by_backend["block_sparse"]` lists one config per
     sparsity level.
+
+    `decode_steps_by_task` is REQUIRED and has no default, including no
+    empty one. A measured row is a prefill plus that many greedy decode
+    steps (see `decode_flops` and the note above it); passing `{}` is the
+    legitimate way to price the prefill term alone, but it has to be
+    written down. The estimate this parameter exists to prevent was wrong
+    by ~20x with every input still valid, purely because nobody stated the
+    unit. A task with examples but no entry here raises rather than
+    silently costing zero decode.
+
+    Decode is charged to "measured" only -- the scoring pass produces
+    importance rankings and generates nothing.
     """
+    missing = sorted({task for task, _ in examples_by_task_length}
+                     - set(decode_steps_by_task)) if decode_steps_by_task else []
+    if missing:
+        raise KeyError(
+            f"{missing} have examples but no entry in decode_steps_by_task. "
+            f"A missing task would be costed at zero decode steps, which is a "
+            f"claim about the model's stopping behaviour and must be made "
+            f"explicitly -- pass 0 for it, or {{}} to price prefill alone.")
     n_examples = {(task, seq_len): len(examples)
                   for (task, seq_len), examples in examples_by_task_length.items()}
 
@@ -229,9 +428,14 @@ def total_grid_flops_by_category(configs_by_backend: dict[str, list[AttnConfig]]
     for backend_name, configs in configs_by_backend.items():
         for cfg in configs:
             measured_flops = _costed(cfg)
+            real_cfg = _with_real_heads(cfg, arch)
             for task in tasks:
                 n = n_examples.get((task, cfg.seq_len), 0)
-                totals["measured"] += n * measured_flops
+                if n == 0:
+                    continue
+                steps = decode_steps_by_task.get(task, 0)
+                totals["measured"] += n * (
+                    measured_flops + decode_flops(real_cfg, arch, n_steps=steps))
 
     return totals
 

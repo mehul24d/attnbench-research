@@ -14,7 +14,7 @@ import pytest
 from attnbench import provenance as prov_mod
 from attnbench.accuracy.ruler import RulerExample
 from attnbench.accuracy.runner import build_cells, run_accuracy
-from attnbench.accuracy.schema import AccuracyResult
+from attnbench.accuracy.schema import AccuracyResult, Generated
 from attnbench.config import AttnConfig
 
 
@@ -149,7 +149,7 @@ def test_resume_after_simulated_crash(tmp_path):
         calls["n"] += 1
         if calls["n"] > 2:
             raise RuntimeError("simulated process death")
-        return example.answer[0], 1.0
+        return Generated(example.answer[0], latency_ms=1.0)
 
     with pytest.raises(RuntimeError):
         run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
@@ -163,7 +163,7 @@ def test_resume_after_simulated_crash(tmp_path):
 
     def count_calls(cfg, backend_name, example):
         calls2["n"] += 1
-        return example.answer[0], 1.0
+        return Generated(example.answer[0], latency_ms=1.0)
 
     report = run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
                           generate_fn=count_calls, checkpoint_every=1,
@@ -192,7 +192,7 @@ def test_resume_works_across_a_host_change_unlike_stage2():
     examples_by_id = {("niah_single", "ex0"): examples[0]}
 
     def gen(cfg, backend_name, example):
-        return example.answer[0], 1.0
+        return Generated(example.answer[0], latency_ms=1.0)
 
     with tempfile.TemporaryDirectory() as out_dir:
         # Same commit, different host -- the case accuracy deliberately
@@ -207,7 +207,7 @@ def test_resume_works_across_a_host_change_unlike_stage2():
 
         def counting_gen(cfg, backend_name, example):
             calls["n"] += 1
-            return example.answer[0], 1.0
+            return Generated(example.answer[0], latency_ms=1.0)
 
         report = run_accuracy(cells, out_dir=out_dir, examples_by_id=examples_by_id,
                               generate_fn=counting_gen, provenance_fn=prov_b)
@@ -245,7 +245,7 @@ def test_resuming_at_a_different_commit_refuses(tmp_path):
 
     cells = _one_cell()
     examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
-    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+    gen = lambda cfg, backend, ex: Generated(ex.answer[0], latency_ms=1.0)
 
     run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
                  generate_fn=gen, provenance_fn=_clean_prov(commit="a" * 40))
@@ -264,7 +264,7 @@ def test_a_dirty_tree_refuses_in_both_directions(tmp_path):
 
     cells = _one_cell()
     examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
-    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+    gen = lambda cfg, backend, ex: Generated(ex.answer[0], latency_ms=1.0)
 
     dirty = lambda: dc_replace(prov_mod.capture(), git_commit="a" * 40,
                                git_dirty=True, host="h")
@@ -298,7 +298,7 @@ def test_a_fresh_run_from_a_dirty_tree_is_not_blocked(tmp_path):
     (analysis.cross_arch) refuses it there."""
     cells = _one_cell()
     examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
-    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+    gen = lambda cfg, backend, ex: Generated(ex.answer[0], latency_ms=1.0)
     from dataclasses import replace as dc_replace
 
     r = run_accuracy(
@@ -312,7 +312,7 @@ def test_a_fresh_run_from_a_dirty_tree_is_not_blocked(tmp_path):
 def test_the_override_is_available_and_has_to_be_asked_for(tmp_path):
     cells = _one_cell()
     examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
-    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+    gen = lambda cfg, backend, ex: Generated(ex.answer[0], latency_ms=1.0)
 
     run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
                  generate_fn=gen, provenance_fn=_clean_prov(commit="a" * 40))
@@ -328,7 +328,7 @@ def test_a_fresh_out_dir_is_never_blocked(tmp_path):
     error message offers, so it must actually work."""
     cells = _one_cell()
     examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
-    gen = lambda cfg, backend, ex: (ex.answer[0], 1.0)
+    gen = lambda cfg, backend, ex: Generated(ex.answer[0], latency_ms=1.0)
 
     for commit, sub in (("a" * 40, "seg1"), ("b" * 40, "seg2")):
         out = tmp_path / sub
@@ -342,3 +342,82 @@ def _one_cell():
     return build_cells(
         configs_by_backend={"fake": [_cfg()]},
         examples_by_task_length={("niah_single", 1024): [_example(example_id="ex0")]})
+
+
+# --- generation facts on the row -------------------------------------------
+#
+# Decision C (docs/limitations.md, "Sparsity is applied during prefill only")
+# makes the decode backend differ from the backend under test on every sparse
+# row, and the stopping rule makes "hit the cap" a per-backend quantity rather
+# than a per-example one. Both are recorded, not reconstructed.
+
+def test_generation_facts_reach_the_parquet(tmp_path):
+    cells = _one_cell()
+    examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
+
+    def gen(cfg, backend, ex):
+        return Generated(ex.answer[0], latency_ms=1.0, stop_reason="cap",
+                         n_generated=14, decode_backend="sdpa_math")
+
+    run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
+                 generate_fn=gen, provenance_fn=_clean_prov())
+    row = pd.read_parquet(tmp_path / "accuracy.parquet").iloc[0]
+    assert row["stop_reason"] == "cap"
+    assert row["n_generated"] == 14
+    assert row["decode_backend"] == "sdpa_math"
+    # The backend under test is the PREFILL backend and stays the row's
+    # identity; the decode backend is a separate column precisely because
+    # they disagree by design.
+    assert row["backend"] != row["decode_backend"]
+
+
+def test_truncation_rate_is_a_query_not_a_reconstruction(tmp_path):
+    """The question this field exists to answer: does one backend hit the
+    cap more often than another on the same prompts? Answer-length alone
+    cannot tell a finished 7-token answer from one cut off at 7."""
+    examples = [_example(example_id=f"ex{i}") for i in range(4)]
+    cells = build_cells(
+        configs_by_backend={"dense": [_cfg()], "sparse": [_cfg()]},
+        examples_by_task_length={("niah_single", 1024): examples})
+    examples_by_id = {("niah_single", ex.example_id): ex for ex in examples}
+
+    def gen(cfg, backend, ex):
+        # Same answer, same length, different reason for stopping -- so a
+        # reconstruction from `predicted` would find nothing at all.
+        capped = backend == "sparse" and ex.example_id in ("ex0", "ex1", "ex2")
+        return Generated(ex.answer[0], stop_reason="cap" if capped else "newline",
+                         n_generated=7, decode_backend="sdpa_math")
+
+    run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
+                 generate_fn=gen, provenance_fn=_clean_prov())
+    df = pd.read_parquet(tmp_path / "accuracy.parquet")
+    rate = df.groupby("backend")["stop_reason"].apply(lambda s: (s == "cap").mean())
+    assert rate["sparse"] == 0.75 and rate["dense"] == 0.0
+    assert df["predicted"].nunique() == 1   # the text carries none of this
+
+
+def test_a_tuple_returning_generate_fn_is_refused(tmp_path):
+    """The old contract. A 2-tuple unpacks silently into (text, latency) and
+    would have dropped stop_reason for a whole 13-hour run, so it is a
+    TypeError rather than a shrug."""
+    cells = _one_cell()
+    examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
+    with pytest.raises(TypeError, match="schema.Generated"):
+        run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
+                     generate_fn=lambda cfg, b, ex: (ex.answer[0], 1.0),
+                     provenance_fn=_clean_prov())
+
+
+def test_generation_facts_are_null_not_invented_when_absent(tmp_path):
+    """A stub that reports no stopping reason must leave the column null.
+    Defaulting it to "cap" or "" would put a value in the truncation-rate
+    query that nothing measured."""
+    cells = _one_cell()
+    examples_by_id = {("niah_single", "ex0"): _example(example_id="ex0")}
+    run_accuracy(cells, out_dir=tmp_path, examples_by_id=examples_by_id,
+                 generate_fn=lambda cfg, b, ex: Generated(ex.answer[0]),
+                 provenance_fn=_clean_prov())
+    row = pd.read_parquet(tmp_path / "accuracy.parquet").iloc[0]
+    assert row["stop_reason"] is None
+    assert pd.isna(row["n_generated"])
+    assert row["decode_backend"] is None
