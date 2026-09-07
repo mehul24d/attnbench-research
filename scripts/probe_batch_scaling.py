@@ -96,7 +96,7 @@ def main():
     print(f"weights only  : {torch.cuda.memory_allocated() / 2**30:.2f} GiB")
 
     backends = [("sdpa_flash", SDPABackend(kernel="flash"), batches),
-                ("gla", GatedLinearAttention(), batches)]
+                ("gla", GatedLinearAttention(gate_source="synthetic"), batches)]
     try:
         from attnbench.backends.block_sparse import BlockSparseAttention
         # batch=1 only -- see module docstring.

@@ -164,6 +164,37 @@ a blanket answer was wrong because it was yes for seven backends and no for
 two. Here the segments are one experiment split for scheduling, so any change
 to the code that produced a row makes the remainder a different run.
 
+## Every long phase arms its own teardown
+
+**A cap sized for the session cannot bound an idle window inside it.** On
+2026-09-06 the 660-minute cap was armed and correct, band 2048 finished on
+time, and the instance then idled ~7.2 h before anyone noticed — because the
+band-completion watcher fired into a session that was not active. The
+notification channel and the billing channel do not both run overnight.
+
+So every phase that can outlive attention ends with a halt, not a signal:
+
+```bash
+python3 -u scripts/run_accuracy.py --out results/... --seq-lens 2048 ... ; \
+  sudo shutdown -h +5
+```
+
+`shutdown -h`, not a kill or a flag a wrapper reads: it halts regardless of
+what the wrapper does with the exit status, and it halts on failure as well as
+success — a crashed run should not idle either. `+5` leaves a window to cancel
+with `sudo shutdown -c` if someone IS watching and wants the next band.
+
+Chain bands rather than supervising between them, so the idle window between
+phases is zero:
+
+```bash
+for B in 2048 4096 8192; do
+  python3 -u scripts/run_accuracy.py --out results/stage3_s1 --seq-lens $B ... || break
+done ; sudo shutdown -h +5
+```
+
+This is the only fix that does not depend on someone being awake.
+
 ## Per-session checklist
 
 1. `bash scripts/gcp_cleanup_check.sh` — confirm nothing is already running.
@@ -178,7 +209,8 @@ to the code that produced a row makes the remainder a different run.
    against the bandwidth floor and reports the grid's decode hours from that
    measurement instead of the bracket. On S1 this is the go/no-go above; on
    later segments it confirms the number the segment was booked against.
-7. Run the segment's bands.
+7. Run the segment's bands **chained, with `; sudo shutdown -h +5` on the
+   end of the chain** — see "Every long phase arms its own teardown" above.
 8. Sync `accuracy.parquet` and the score cache down **before** teardown.
 9. Tear down. Re-run `gcp_cleanup_check.sh`.
 10. Record minutes and estimated spend in `docs/spend_ledger.md`.

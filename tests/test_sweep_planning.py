@@ -188,7 +188,7 @@ def test_stage1_probes_exactly_the_configs_stage2_runs():
     probe_keys = {c.key() for c in run_probe.probe_configs(32768)}
     cells = build_cells(SweepGrid(),
                         [SDPABackend("flash"), NaiveAttention(),
-                         FlexAttentionBackend(), GatedLinearAttention()],
+                         FlexAttentionBackend(), GatedLinearAttention(gate_source="synthetic")],
                         mask_source="random")
     sweep_keys = {c.cfg.key() for c in cells}
 

@@ -6,11 +6,11 @@ machinery that appeared to be working, with no error raised anywhere.**
 
 Nobody is going to tamper with these results. The entire realistic threat
 model is self-inflicted, and this file is the record of it, kept because
-sixteen instances in six days is no longer a coincidence.
+seventeen instances in seven days is no longer a coincidence.
 
 ---
 
-## The sixteen
+## The seventeen
 
 ### 1. A correctness oracle computing a different function than the kernel
 
@@ -609,6 +609,66 @@ one's exit-4-with-stdout behaviour, and `--lock-clocks` on `run_accuracy.py`
 passing the measured outcome into every row's provenance.
 
 
+### 17. A forget gate made of random numbers, and 900 rows that meant nothing
+
+Stage 3 segment 1 measured GLA against 300 distinct 2048-token prompts per
+task and wrote 900 rows scoring **0.0 on every task**. Nothing raised. Every
+row had fluent text, a real `latency_ms`, a real `stop_reason`, a valid
+provenance stamp and `clocks_locked=True`.
+
+**The tell was not the garbage text, it was input-dependence:**
+
+| | distinct predictions / 300 prompts |
+|---|---|
+| `sdpa_flash` (niah_single / multikey / vt) | **300 / 300 / 300** |
+| `gla` | **15 / 81 / 27** |
+
+A model that merely *could not retrieve* would still say something different
+for a different prompt. Near-constant output means the context is not
+reaching the computation. And the first generated token — which comes from
+the **prefill** logits, before any decode step — was already near-constant,
+which eliminated the KV-state handoff as a cause before any code was read.
+
+**The cause.** GLA's forget gate has no analogue in the `(q, k, v)` triple
+`AttentionBackend.forward` carries, so `linear.py` synthesized it:
+
+```python
+self._gate = F.logsigmoid(torch.randn(k.shape, generator=seeded_from_cfg_key))
+```
+
+`logsigmoid(randn)` averages **-0.81 per step**, so the recurrent state is
+multiplied by 0.45 at every token — an effective memory horizon of **1.24
+tokens**. At seq_len 2048 the prompt survives at `exp(-1654)`, which is zero.
+The model answered from the last token or two of a prompt whose final ~20
+tokens are the same template in all 300 examples, and the gate is cached on
+`cfg.key()` so every example got the *identical* random decay. Hence a
+handful of attractor outputs.
+
+**Nothing here was a mistake when it was written.** For Stage 2 a synthesized
+gate is exactly right: a kernel's throughput cannot depend on the values in
+its gate tensor, only its shape and dtype. The module docstring said so
+plainly. What was missing was a boundary — the timing-only path was reachable
+by omission from an accuracy runner, and it produced output-shaped output.
+
+**There is no correct gate to supply.** Qwen2.5 has no gate projection; its
+weights were never trained with one. So this is not a bug with a fix, it is a
+scope boundary that was never enforced, and the honest conclusion is that
+**GLA may have no accuracy arm at all** — its results may be timing-only.
+
+**Fixed by:** `gate_source` with no safe default — `"learned"` refuses,
+`"synthetic"` must be asked for by name, and the refusal happens *before* the
+optional `fla` import so it fires on any machine. Stage 2's call sites now say
+`gate_source="synthetic"` at the point of use.
+
+**And by the cheapest test in this repo**,
+`tests/test_output_depends_on_input.py`: every backend's output must differ
+for two different inputs, and — the specific shape of this failure — rewriting
+only the **first half** of the context must still change the **last**
+position's output. GLA's output did vary; it varied with the last token or
+two. A long-context benchmark whose backend cannot see the start of its own
+prompt is measuring nothing, and one assertion catches it.
+
+
 ## The general hazards, stated once
 
 **A divide-by-zero guard is not a resolution floor, and they are the same line
@@ -806,3 +866,17 @@ did it say", never "did it work" — and the two diverge exactly where a tool
 reports a problem on stdout instead of stderr, which is common. `_sh` cannot
 answer the second question; `_sh_result` exists for it. Any new `_sh` call site
 whose result is used as a *verdict* rather than as *data* is this bug again.
+
+**Check that the output depends on the input.** Instance 17. It is one
+assertion, it costs nothing, and it separates "this backend is bad at the
+task" from "this backend is not reading the task" — which are indistinguishable
+in any score, because both produce a low number. Where the claim is about long
+context, strengthen it: changing the *distant* past must change the answer.
+A near-constant output across varied inputs is not a weak result, it is an
+absent one.
+
+**A path that is correct for one stage is not thereby safe for another.** The
+synthesized gate was right for timing and catastrophic for accuracy, and
+nothing in between said so. Where a component is valid only under a stage's
+assumptions, name the assumption in its constructor and make the default
+refuse — a docstring cannot fail a run.

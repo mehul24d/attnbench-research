@@ -32,13 +32,34 @@ Everything below is confirmed from fla-org/flash-linear-attention's source
   than "causal" rather than silently computing a causal result for a
   "full"-attention request.
 
+THE FORGET GATE IS SYNTHETIC, AND THAT MAKES THIS BACKEND TIMING-ONLY.
+
 The `g` (forget-gate) tensor has no analogue in the (q, k, v) triple
 AttentionBackend.forward's signature carries, and a real GLA layer would
-have it come from a learned projection. Synthesized here instead, seeded
-from cfg.key() so it's deterministic per config -- and cached on the
+have it come from a learned projection. It is synthesized here instead,
+seeded from cfg.key() so it's deterministic per config -- and cached on the
 instance, not regenerated on every timed_call rep, for the same reason
 Phase A's run_once/timed_call split exists: reallocating it every rep would
 pollute every latency sample with allocation cost unrelated to the kernel.
+
+For Stage 2 that is correct and sufficient: a kernel's throughput does not
+depend on the VALUES in its gate tensor, only its shape and dtype.
+
+For Stage 3 it is fatal, and it was allowed to run there on 2026-09-06.
+`F.logsigmoid(randn)` averages -0.81 per step, so the recurrent state is
+multiplied by 0.45 EVERY token: an effective memory horizon of **1.24
+tokens**. At seq_len 2048 the prompt survives at exp(-1654), which is zero.
+The model therefore answered from the last token or two of a prompt whose
+final ~20 tokens are the same template in every example, and produced 15
+distinct predictions across 300 distinct 2048-token contexts (the dense arm
+produced 300 of 300). Fluent-looking garbage, a real latency, a real
+stop_reason, and 900 result rows that meant nothing.
+
+Qwen2.5 has no gate projection to borrow -- its weights were never trained
+with one -- so there is no correct gate to supply, and this is not a bug
+with a fix so much as a scope boundary that was not enforced. It is
+enforced now: `gate_source` must be named explicitly, and the synthetic
+path has to be asked for by a caller that knows it is only measuring time.
 
 Unverified end-to-end: not yet run against an installed package (`pip
 install flash-linear-attention`). Triton-based, so plausibly runs on a
@@ -80,6 +101,32 @@ class GatedLinearAttention(AttentionBackend):
     def _import_check():
         import fla.ops.gla  # noqa: F401
 
+    def __init__(self, gate_source: str = "learned"):
+        """`gate_source` has no safe default, so the default is the one that
+        REFUSES.
+
+        "synthetic" must be asked for by name. It produces a kernel-accurate
+        latency and a meaningless output, which is exactly the shape of thing
+        that should never be reachable by omission -- see the module
+        docstring for the 900 rows it produced before this existed.
+        """
+        if gate_source not in ("learned", "synthetic"):
+            raise ValueError(
+                f"gate_source must be 'learned' or 'synthetic', got "
+                f"{gate_source!r}")
+        self.gate_source = gate_source
+
+    def _require_usable_gate(self) -> None:
+        if self.gate_source == "synthetic":
+            return
+        raise UnsupportedConfig(
+            "gla: no learned forget gate is available. This backend "
+            "synthesizes g from cfg.key(), which gives a memory horizon of "
+            "~1.24 tokens -- kernel-accurate for TIMING and meaningless for "
+            "anything that reads the output. Qwen2.5 has no gate projection "
+            "to borrow. Pass gate_source='synthetic' if you are measuring "
+            "time only; there is no correct value for accuracy work.")
+
     def _gate_for(self, cfg: AttnConfig, k_btwd: torch.Tensor) -> torch.Tensor:
         """Deterministic forget-gate tensor for this config, cached on the
         instance across calls -- see module docstring."""
@@ -95,6 +142,10 @@ class GatedLinearAttention(AttentionBackend):
         return self._gate
 
     def forward(self, q, k, v, cfg: AttnConfig, mask=None):
+        # Before the import, deliberately: a backend that cannot produce a
+        # meaningful answer should say so on any machine, not only on one
+        # where the optional CUDA dependency happens to be installed.
+        self._require_usable_gate()
         from fla.ops.gla import chunk_gla
 
         if cfg.mask != "causal":
@@ -118,6 +169,11 @@ class GatedLinearAttention(AttentionBackend):
     def state_from_prefill(self, k, v, cfg) -> KVCacheState:
         """Fixed-size recurrent state from a real prompt's K/V.
 
+        Gated by the same check as forward(): a state folded through a
+        synthetic gate has forgotten the prompt before it is even handed
+        over, so producing one for an accuracy caller would move the failure
+        one step downstream rather than prevent it.
+
         The bounded arm of the comparison, and the reason `KVCacheState.payload`
         is deliberately unconstrained. SDPA's payload grows with every token
         decoded; this one is `(B, H, D, D)` and does not change size no matter
@@ -129,6 +185,7 @@ class GatedLinearAttention(AttentionBackend):
         of the right shape are passed rather than inventing query content that
         would look meaningful in a debugger.
         """
+        self._require_usable_gate()
         from fla.ops.gla import chunk_gla
 
         k_, v_ = _expand_kv(k, v, cfg)

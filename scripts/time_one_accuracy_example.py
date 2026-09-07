@@ -219,8 +219,13 @@ def main():
 
         try:
             gla_cfg = replace(cfg_template, mask="causal")
+            # gate_source="synthetic" is correct HERE and only here: this is a
+            # throughput probe and a kernel's speed does not depend on the
+            # values in its gate. The same call inside an accuracy run is what
+            # produced 900 meaningless rows on 2026-09-06.
             _, wall, peak = _timed(warmup=1, fn=lambda: wrapped.run_measured(
-                input_ids, GatedLinearAttention(), cfg=gla_cfg, logits_to_keep=1))
+                input_ids, GatedLinearAttention(gate_source="synthetic"),
+                cfg=gla_cfg, logits_to_keep=1))
             phases.append(PhaseTiming(label="measured_gla", category="measured",
                                       flops=whole_model_flops(gla_cfg, arch, logits_to_keep=1),
                                       wall_seconds=wall, peak_memory_bytes=peak))
