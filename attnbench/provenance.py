@@ -245,6 +245,61 @@ RECORDED_FIELDS = frozenset({
 })
 
 
+def stamp_onto(df, stamp: dict) -> None:
+    """Merge a provenance stamp onto a frame of measured rows, in place.
+
+    A stamp fills in what the harness did NOT measure. Where the rows already
+    carry a field, the rows own it, and a stamp that disagrees is an error --
+    raised, not resolved by preferring one side.
+
+    Why this is a function and not three lines at a call site
+    --------------------------------------------------------
+    On 2026-09-07 Stage 5 measured `clocks_locked` correctly, threaded it
+    through `measure_band` onto every PhaseMeasurement, and then destroyed it
+    on the last write:
+
+        prov = provenance.capture().to_dict()     # clocks_locked defaults False
+        for k, v in prov.items():
+            df[k] = v                             # measured True -> stamped False
+
+    `capture()` defaults `clocks_locked` to False, so the loop wrote a
+    plausible falsehood over a measurement, in a GATED field --
+    `cross_arch.Speedup` and `canary.CanaryDrift` both read it. Three other
+    columns of the same file contradicted it (persistence_mode Enabled,
+    sm_clock_mhz pinned at 1740 against a requested 1734, and the run log's
+    success branch), and nothing looked at them.
+
+    `scripts/run_accuracy.py` had already fixed exactly this in its own body,
+    with a comment naming the failure mode -- "a run whose clocks ARE pinned
+    would be recorded as unpinned, and the fact would be lost". Stage 5 was
+    written afterwards and did not inherit it, because the fix lived in a
+    call site rather than in the thing every call site uses. That is the
+    single-source-of-truth asymmetry this project keeps meeting: the fix was
+    correct and local, so the next harness reproduced the bug from scratch.
+
+    A caller that genuinely measured a field passes it to `capture()` too, at
+    which point the two agree and this never fires. It can only fire on a
+    real inconsistency, so raising costs a correct run nothing -- and callers
+    write their per-band output before this, so a raise here cannot destroy a
+    completed measurement.
+    """
+    conflicts = []
+    for k, v in stamp.items():
+        if k in df.columns:
+            existing = df[k].unique()
+            if len(existing) != 1 or existing[0] != v:
+                conflicts.append(f"  {k}: rows={list(existing)} stamp={v!r}")
+            continue
+        df[k] = v
+    if conflicts:
+        raise ValueError(
+            "provenance stamp disagrees with measured rows:\n"
+            + "\n".join(conflicts)
+            + "\n\nThe rows own any field they measured. Pass the measured "
+              "value to provenance.capture() so the stamp agrees, rather "
+              "than letting the stamp's default overwrite it.")
+
+
 def stamp_integrity_problems(stamp) -> list[str]:
     """Reasons the provenance on a row cannot be trusted to describe the code.
 

@@ -163,10 +163,12 @@ def main():
             pd.DataFrame([r.to_dict() for r in recs]).to_parquet(
                 out / "reconciliation.parquet", index=False)
 
-    prov = provenance.capture().to_dict()
+    # The measured value goes INTO the stamp, so the stamp and the rows agree
+    # and `stamp_onto` has nothing to object to. Calling capture() bare here
+    # is what stamped clocks_locked=False over a locked run on 2026-09-07.
+    prov = provenance.capture(clocks_locked=clocks_locked).to_dict()
     df = pd.DataFrame([r.to_dict() for r in rows])
-    for k, v in prov.items():
-        df[k] = v
+    provenance.stamp_onto(df, prov)
     df.to_parquet(out / "phases.parquet", index=False)
     if recs:
         pd.DataFrame([r.to_dict() for r in recs]).to_parquet(

@@ -129,3 +129,59 @@ def test_scoring_overhead_is_undefined_when_sparsity_saved_nothing():
     report, and a huge finite number would read as a measurement."""
     assert math.isnan(scoring_overhead_ratio(900.0, 400.0, 580.0))
     assert math.isnan(scoring_overhead_ratio(900.0, 400.0, 400.0))
+
+
+# --------------------------------------------------------------------------
+# The provenance stamp must not overwrite what the harness measured.
+#
+# 2026-09-07: Stage 5 ran with clocks locked, threaded clocks_locked=True onto
+# every PhaseMeasurement, and then wrote clocks_locked=False to all 27 rows --
+# `provenance.capture()` defaults the flag to False and the final merge loop
+# assigned every stamp key over the frame. The field is GATED (cross_arch,
+# canary read it), and the falsehood was plausible, so nothing downstream
+# could have caught it.
+#
+# These drive the STAMPING path, not measure_band. The measurement was already
+# correct; the bug lived entirely in the write, which no test reached.
+# --------------------------------------------------------------------------
+
+def test_stamp_fills_in_fields_the_rows_do_not_have():
+    import pandas as pd
+    from attnbench import provenance
+    df = pd.DataFrame([{"phase": "prefill", "ms_mean": 1.0}])
+    provenance.stamp_onto(df, {"git_commit": "abc123", "gpu_name": "NVIDIA L4"})
+    assert df.git_commit.tolist() == ["abc123"]
+    assert df.gpu_name.tolist() == ["NVIDIA L4"]
+
+
+def test_stamp_does_not_overwrite_a_measured_field():
+    """The exact 2026-09-07 loss: measured True, stamp default False."""
+    import pandas as pd
+    from attnbench import provenance
+    df = pd.DataFrame([{"phase": "prefill", "clocks_locked": True}])
+    with pytest.raises(ValueError, match="clocks_locked"):
+        provenance.stamp_onto(df, {"clocks_locked": False})
+    # and it is still True -- the raise happens before any assignment to it
+    assert df.clocks_locked.tolist() == [True]
+
+
+def test_stamp_is_silent_when_the_measured_value_agrees():
+    """A caller that passes its measured value to capture() sees nothing.
+    This is what makes raising safe at the end of a 19-minute GPU run: it
+    cannot fire on a correct run."""
+    import pandas as pd
+    from attnbench import provenance
+    df = pd.DataFrame([{"phase": "prefill", "clocks_locked": True}])
+    provenance.stamp_onto(df, {"clocks_locked": True, "git_commit": "abc"})
+    assert df.clocks_locked.tolist() == [True]
+    assert df.git_commit.tolist() == ["abc"]
+
+
+def test_capture_still_defaults_clocks_locked_to_False():
+    """Pinning the default that made the overwrite plausible rather than
+    loud. The default is not wrong -- most callers genuinely do not lock --
+    but it means `capture()` ALWAYS has an opinion about a field some
+    callers measure, which is why the merge has to refuse rather than
+    trust the stamp."""
+    from attnbench import provenance
+    assert provenance.capture.__defaults__[0] is False

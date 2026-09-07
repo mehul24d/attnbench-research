@@ -1077,3 +1077,94 @@ Applied here twice in one sitting, and it earned its place both times:
 
 Make this the standard move on any test guarding a property that matters,
 not a habit that happens to have been applied when someone remembered.
+
+
+## 23. A provenance stamp that overwrites what the harness measured
+
+**2026-09-07, Stage 5.** The run locked clocks successfully. `lock_clocks()`
+returned True, the script printed `clocks locked -- stamped on every row`,
+and `measure_band` threaded `clocks_locked=True` onto all 27
+`PhaseMeasurement` rows. Every row in the written parquet says
+**`clocks_locked=False`**.
+
+The last five lines of the script:
+
+```python
+prov = provenance.capture().to_dict()     # clocks_locked DEFAULTS to False
+df = pd.DataFrame([r.to_dict() for r in rows])
+for k, v in prov.items():
+    df[k] = v                             # measured True -> stamped False
+df.to_parquet(out / "phases.parquet", index=False)
+```
+
+`capture()` takes `clocks_locked` as a parameter defaulting to `False`. Called
+bare, it does not observe the GPU — it *asserts* the default. The merge loop
+then assigns every stamp key over the frame, so the assertion silently
+replaced the measurement.
+
+### Why nothing caught it
+
+`clocks_locked` is a **GATED** field: `cross_arch.Speedup` and
+`canary.CanaryDrift` both read it, precisely because an unlocked run's
+variance is easy to mistake for a real effect. So the wrong value is the kind
+things act on.
+
+Three columns of the same file contradicted it, and no check compares them:
+
+| column | value | what it implies |
+|---|---|---|
+| `persistence_mode` | `Enabled` | set only by `_smi(["-pm","1"])` inside `lock_clocks()` — so the sudo escalation worked |
+| `sm_clock_mhz` | `1740` | nearest supported step above the requested `int(2040*0.85)=1734`, held across a 19-minute run |
+| `clocks_locked` | `False` | contradicts both |
+
+### The direction matters, and it is the opposite of the last one
+
+Instance 3 of "stdout is not an outcome" was `lock_clocks()` returning True on
+a lock that never happened — a control reported as ESTABLISHED when absent,
+which overstates how well a run was controlled. This one is the mirror: a
+control reported as ABSENT when established, which understates it. Both come
+from the same root — **`clocks_locked` had two sources of truth**, the
+measurement and the stamp — and the stamp ran last.
+
+Neither direction is the safe one. An overstated control invites trust that
+was not earned; an understated one invites a re-run that costs money and
+changes no number, or gets the data discarded by a gate that was right to be
+suspicious.
+
+### The asymmetry that let it survive — a fix in a call site is not a fix
+
+`scripts/run_accuracy.py` had **already fixed this exact bug** in its own
+body, months of project-time earlier, with a comment naming the failure mode:
+
+> Clocks: attempt, then stamp what HAPPENED, never what was asked for. Every
+> row in this project so far carries clocks_locked=False because nothing has
+> ever passed the flag — capture() takes it as a parameter defaulting to
+> False and does not observe it. So a run whose clocks ARE pinned would be
+> recorded as unpinned, and the fact would be lost.
+
+Stage 5 was written afterwards and reproduced the bug from scratch. The fix
+was correct, local, and therefore invisible to the next harness. **A lesson
+that lives in a call site protects that call site only.** It has to live in
+the thing every call site uses, or the second harness re-derives the bug —
+which is the same single-source-of-truth asymmetry as #22, one layer up.
+
+### The fix
+
+`provenance.stamp_onto(df, stamp)` fills in fields the rows do NOT have and
+**raises** where the rows already carry one that disagrees. The rows own any
+field they measured; a stamp fills in the rest. A caller that measured a
+field passes it to `capture()` too, at which point the two agree and the
+guard never fires — so raising costs a correct run nothing, and per-band
+output is written before it, so a raise cannot destroy a completed
+measurement.
+
+### Detection method, per #22
+
+Reverting `stamp_onto` to the naive `for k, v in stamp.items(): df[k] = v`
+turns `test_stamp_does_not_overwrite_a_measured_field` red with
+`DID NOT RAISE`. Restored, it passes. The guard guards what it claims to.
+
+The generalisable check: **anywhere a wholesale stamp, default, or config
+merge is applied over rows a harness produced, ask which fields both sides
+have an opinion about.** Those are exactly the fields where the merge order
+decides the truth, and merge order is not a fact anyone reviews.
