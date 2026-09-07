@@ -17,8 +17,10 @@ corrupts. Its outcome is stamped on every row and reported loudly if it fails.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -118,9 +120,23 @@ def main():
             finest_block_size=grid.finest_block_size)
         try:
             # --- scoring: the study's excluded estimator, finally priced ---
+            #
+            # A UNIQUE example_id per call, into a scratch cache dir. Two
+            # things this is defending against, and the second is the
+            # dangerous one:
+            #   - cache_dir=None is not a supported "don't cache" sentinel;
+            #     score_cache._path_for calls Path() on it.
+            #   - reusing one id would MISS on the first call and HIT on
+            #     every subsequent one, so the reported scoring cost would be
+            #     the price of a disk read. It would not error. It would
+            #     report ~0 ms for the single number this session exists to
+            #     put on the study's largest acknowledged caveat.
+            scratch = tempfile.mkdtemp(prefix=f"phase_scoring_{band}_")
+            _n = itertools.count()
             sc = time_repeated(
                 lambda: wrapped.compute_importance_scores(
-                    ids, task="phase_probe", example_id=f"b{band}", cache_dir=None),
+                    ids, task="phase_probe",
+                    example_id=f"b{band}_{next(_n)}", cache_dir=scratch),
                 warmup=1, reps=max(3, args.reps // 3), synchronize=sync)
             rows.append(summarize(sc, backend="dense_softmax_fp32", sparsity=None,
                                    context_length=band, phase="scoring", n_warmup=1,
@@ -131,7 +147,8 @@ def main():
             scoring_ms = rows[-1].ms_mean
             print(f"  scoring          {scoring_ms:9.1f} ms", flush=True)
             scores = wrapped.compute_importance_scores(
-                ids, task="phase_probe", example_id=f"b{band}", cache_dir=None)
+                ids, task="phase_probe", example_id=f"b{band}_final",
+                cache_dir=scratch)
 
             arms = [("sdpa_flash", None)] + [("block_sparse", sp) for sp in sparsities]
             prefill_ms = {}
