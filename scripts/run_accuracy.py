@@ -54,6 +54,7 @@ from attnbench.accuracy.generation import (                            # noqa: E
     ModelGeometry, StopTokens, generate_one)
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
     backend_instance, build_configs_by_backend, build_examples_by_task_length)
+from attnbench.accuracy.schema import GATED_BACKENDS                   # noqa: E402
 from attnbench.accuracy.sizing import approximate_token_count  # noqa: E402
 from attnbench.accuracy.runner import build_cells, run_accuracy        # noqa: E402
 from attnbench.accuracy import stopping                                # noqa: E402
@@ -69,7 +70,8 @@ def _dry_run_only(cfg, backend_name, example):
 
 
 def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
-                      dtype: str, score_cache_dir: str, verbose: bool = True):
+                      dtype: str, score_cache_dir: str, verbose: bool = True,
+                      gla_gate_source: str | None = None):
     """The real execution path: load the model once, wrap it once, and
     return the per-cell closure `run_accuracy` calls.
 
@@ -129,7 +131,12 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
     def generate_fn(cfg, backend_name, example):
         backend = backends_by_name.get(backend_name)
         if backend is None:
-            backend = backends_by_name[backend_name] = backend_instance(backend_name)
+            # Only the gated backends take the keyword; backend_instance
+            # refuses it for the rest rather than ignoring it.
+            kw = ({"gate_source": gla_gate_source}
+                  if gla_gate_source and backend_name in GATED_BACKENDS else {})
+            backend = backends_by_name[backend_name] = backend_instance(
+                backend_name, **kw)
         return generate_one(wrapped, tokenizer, cfg=cfg, backend=backend,
                             example=example, geometry=geometry,
                             stop_tokens=stop_tokens,
@@ -174,6 +181,19 @@ def main():
                          "OUTCOME on every row. Not the intent -- "
                          "provenance.lock_clocks returns whether it actually "
                          "worked, which it did not do until 2026-09-06.")
+    ap.add_argument("--gla-gate-source", default=None,
+                    choices=("synthetic", "ungated"),
+                    help="which forget gate the gla arm runs with. NO "
+                         "DEFAULT: omitted leaves the backend on 'learned', "
+                         "which refuses to run, because Qwen2.5 has no gate "
+                         "projection to borrow and there is no correct value "
+                         "(docs/gla_arm_decision.md). 'ungated' is the only "
+                         "one that can produce a readable accuracy row, and "
+                         "only if the pre-registered rule returned KEEP. "
+                         "'learned' is deliberately not offered here -- it is "
+                         "the thing this study does not have, not a choice. "
+                         "Whatever is passed lands in the gate_source column "
+                         "of every gla row.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -270,7 +290,8 @@ def main():
         generate_fn = build_generate_fn(
             grid, model_id=grid.model_primary, tokenizer=tokenizer,
             device=args.device, dtype=args.dtype,
-            score_cache_dir=grid.score_cache_dir)
+            score_cache_dir=grid.score_cache_dir,
+            gla_gate_source=args.gla_gate_source)
         teardown = generate_fn.unwrap
 
     try:

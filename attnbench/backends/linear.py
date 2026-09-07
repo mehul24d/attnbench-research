@@ -78,6 +78,13 @@ from .base import AttentionBackend, Capability, KVCacheState, UnsupportedConfig,
 from .impls import _expand_kv
 
 
+# The three gates this backend can run, in one place so the result schema's
+# `GateSource` literal can be checked against it rather than kept in sync by
+# hand -- see tests/test_gate_source_on_rows.py. A fourth value would be a
+# fourth thing a row could mean, and the row schema has to know about it.
+GATE_SOURCES = ("learned", "synthetic", "ungated")
+
+
 @register
 class GatedLinearAttention(AttentionBackend):
     capability = Capability(
@@ -110,9 +117,9 @@ class GatedLinearAttention(AttentionBackend):
         that should never be reachable by omission -- see the module
         docstring for the 900 rows it produced before this existed.
         """
-        if gate_source not in ("learned", "synthetic", "ungated"):
+        if gate_source not in GATE_SOURCES:
             raise ValueError(
-                f"gate_source must be 'learned', 'synthetic' or 'ungated', "
+                f"gate_source must be one of {GATE_SOURCES}, "
                 f"got {gate_source!r}")
         self.gate_source = gate_source
 

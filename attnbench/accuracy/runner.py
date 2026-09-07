@@ -343,6 +343,11 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             stop_reason=gen.stop_reason,
             n_generated=gen.n_generated,
             decode_backend=gen.decode_backend,
+            # Carried, not re-derived. The runner holds a backend NAME; only
+            # generate_fn held the instance, and the instance is the only
+            # thing that knows which gate ran. AccuracyResult.__post_init__
+            # refuses the row if a gated backend arrives without one.
+            gate_source=gen.gate_source,
             latency_ms=gen.latency_ms,
         )
         row = {**result.to_dict(), **prov.to_dict()}

@@ -92,3 +92,10 @@ retrieval."* That claim needs weights trained for linear attention. What this
 study can say is narrower and true: *substituting GLA into a softmax-trained
 model at inference time does not preserve retrieval* — which is a statement
 about substitution, and is the honest form of the finding.
+
+That sentence is not left here to be found. It is the first entry in
+**`docs/claims.md`**, the ledger the write-up is drafted from: each supported
+sentence paired with the paraphrase one qualifier away that the data does not
+license. A caveat in a limitations file survives until someone compresses the
+study into a paragraph; a sentence written once and copied rather than
+rephrased survives that.

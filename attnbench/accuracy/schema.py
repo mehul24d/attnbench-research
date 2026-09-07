@@ -52,6 +52,32 @@ StopReason = Literal["eos", "newline", "cap"]
 # ["backend"].nunique()` -- one row, one answer.
 BackendRole = Literal["dense_reference", "block_sparse", "linear", "quantized"]
 
+# Which forget gate produced a row, for the backends that have one.
+#
+# The third field of this kind, and it exists for the same reason as the
+# other two: a caveat that lives in a docstring does not travel with the
+# data. `score_source` says a mask's ranking came from a dense pass rather
+# than a cheap estimator; `haystack_mode` says the context was attnbench's
+# filler rather than RULER's essays; `gate_source` says which gate a linear
+# row's recurrence used -- and that is the difference between a number worth
+# reading and 900 rows of fluent noise (silent_failure_patterns.md #17).
+#
+# "learned" is unreachable today and deliberately still listed: Qwen2.5 has
+# no gate projection to borrow, so the value exists as the thing the study
+# does NOT have, not as an option waiting to be selected.
+GateSource = Literal["learned", "synthetic", "ungated"]
+
+# Backends whose output depends on a forget gate, and which therefore may
+# not write a row without naming it. Gated DeltaNet joins this set the day
+# backends/linear.py grows it (see that module's docstring).
+#
+# A name set rather than `backend_role == "linear"`: an ungated linear
+# backend would be role "linear" and have no gate to record, and demanding
+# one from it would push a caller toward inventing a value. Kept honest from
+# the other side by test_gate_source_on_rows.py, which asserts every
+# registered backend carrying a `gate_source` attribute is named here.
+GATED_BACKENDS = frozenset({"gla"})
+
 
 @dataclass(frozen=True)
 class Generated:
@@ -73,6 +99,11 @@ class Generated:
     stop_reason: Optional[StopReason] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
+    # Read off the backend instance that actually ran, in generation.py --
+    # never passed in alongside it. A gate named by a caller can disagree
+    # with the gate the recurrence used, and the disagreement is invisible
+    # in the output, which is precisely how #17 happened.
+    gate_source: Optional[GateSource] = None
 
 
 @dataclass
@@ -122,8 +153,48 @@ class AccuracyResult:
     stop_reason: Optional[StopReason] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
+    # None for every backend without a forget gate, and required for every
+    # backend with one -- enforced below rather than trusted, because the
+    # whole point of the column is that a linear row is uninterpretable
+    # without it.
+    gate_source: Optional[GateSource] = None
     latency_ms: Optional[float] = None
     detail: str = ""
+
+    def __post_init__(self) -> None:
+        """Refuse to exist as a row that cannot be read correctly.
+
+        Both directions, because both have a failure mode:
+
+        - A `gla` row with no `gate_source` is the 2026-09-06 parquet again:
+          900 rows that look like every other row and mean nothing, with the
+          reason recorded only in a commit message. The arm decision
+          (docs/gla_arm_decision.md) can end in KEEP, and a kept arm is
+          reported with a caveat that has to be attached to the data, not to
+          the paper draft -- summaries drop caveats, columns survive them.
+
+        - A non-gated backend carrying a `gate_source` asserts a mechanism
+          that is not there. `sdpa_flash` has no recurrence and no gate; a
+          value in that column would make a reader believe the dense arm was
+          configured, and would break the one query the column exists for
+          (`df.groupby("gate_source")`).
+
+        Raised at construction, so the bad row never reaches the buffer, let
+        alone the parquet.
+        """
+        gated = self.backend in GATED_BACKENDS
+        if gated and self.gate_source is None:
+            raise ValueError(
+                f"backend {self.backend!r} has a forget gate, so a row from it "
+                f"must record which one ran. A linear-attention score is not "
+                f"interpretable without it: the same backend produced 100.0 "
+                f"and 0.0 from the same weights depending on this field. See "
+                f"docs/gla_arm_decision.md.")
+        if not gated and self.gate_source is not None:
+            raise ValueError(
+                f"backend {self.backend!r} has no forget gate, so "
+                f"gate_source={self.gate_source!r} on its row claims a "
+                f"mechanism that did not run. Leave it None.")
 
     def to_dict(self) -> dict:
         return asdict(self)

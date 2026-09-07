@@ -195,6 +195,36 @@ done ; sudo shutdown -h +5
 
 This is the only fix that does not depend on someone being awake.
 
+## Bands 4096/8192 go to their own out_dir, and why that is not bookkeeping
+
+Band 2048 is banked at `d27c650`. The code has moved since — the GLA gate fix,
+and the `gate_source` column that came with it (`schema.py`, `runner.py`,
+`generation.py`, `grid_configs.py`). `check_code_continuity` will therefore
+refuse to append the remaining bands to `results/stage3_s1/accuracy.parquet`,
+which is the guard working, not a problem to route around.
+
+There are two ways past it and they are not equivalent:
+
+- `--allow-mixed-commits` into the same file. That asserts the change cannot
+  affect these rows. For the **gla fix alone** the assertion is trivially
+  checkable — `git diff --stat d27c650..HEAD` touched no file on the
+  sdpa_flash or block_sparse row path. For the **gate_source change** it is
+  weaker: those four files *are* on the path for every backend. The change
+  adds a column and alters no computed value, which is true and which someone
+  has to take on trust from a diff.
+- **A separate out_dir**, so each file stays single-commit and the join is an
+  explicit, dated step. Nothing is asserted that a reader cannot re-derive.
+
+Take the second. `--out results/stage3_s1b` for bands 4096 and 8192; the join
+happens at analysis time with both commits recorded on their own rows, which
+is exactly what the `git_commit` column is for. The override exists for the
+case where the alternative is re-running measured hours, and that is not this
+case — the alternative here costs one directory.
+
+The 2048 rows keep their `gate_source` as null, correctly: they were written
+before the column existed, and they include 900 gla rows already excluded by
+`INVALID_ROWS.md`. A null there means "not recorded", which is the truth.
+
 ## Per-session checklist
 
 1. `bash scripts/gcp_cleanup_check.sh` — confirm nothing is already running.

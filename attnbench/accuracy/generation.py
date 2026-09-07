@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from typing import Optional
 
 from . import stopping
-from .grid_configs import decode_backend_for
+from .grid_configs import decode_backend_for, gate_source_of
 from .schema import Generated
 from ..backends.base import AttentionBackend
 from ..config import AttnConfig
@@ -126,4 +126,5 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     return Generated(text=tokenizer.decode(result.token_ids, skip_special_tokens=True),
                      latency_ms=latency_ms, stop_reason=result.stop_reason,
                      n_generated=result.n_generated,
-                     decode_backend=result.decode_backend)
+                     decode_backend=result.decode_backend,
+                     gate_source=gate_source_of(backend))

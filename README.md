@@ -55,6 +55,14 @@ on identical inputs. Every row records this explicitly
 (`AccuracyResult.haystack_mode`), rather than leaving it as a caveat someone
 has to go find.
 
+That pattern generalises, and `docs/claims.md` is where it is written down:
+one row per claim, pairing the sentence this study's data supports with the
+near-paraphrase it must not become. **Any write-up drawn from these results
+should be drafted from that file.** Three columns exist so the qualifiers
+travel with the data rather than only in prose -- `haystack_mode`,
+`score_source`, and `gate_source` -- because a summary drops a caveat and a
+column does not.
+
 ## Quick start
 
 ```bash

@@ -1,5 +1,12 @@
 # Limitations
 
+> **Drafting the write-up? Start from `docs/claims.md`, not here.** This file
+> records *why* each limit exists and is written to be read in full. That one
+> records the *sentences* — each supported claim beside the near-paraphrase it
+> must not become — because the qualifiers below are what get dropped when 900
+> lines are compressed into a paragraph.
+
+
 Things a reader of this study's numbers needs to know before comparing them
 to anything else. Each entry names what is affected and what is not.
 

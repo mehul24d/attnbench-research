@@ -11,6 +11,7 @@ grid" that could silently drift from the real one.
 from __future__ import annotations
 
 from .. import backends
+from .schema import GATED_BACKENDS
 from ..backends.base import AttentionBackend
 from .config import AccuracyGrid
 from .ruler import RulerExample, generate_examples
@@ -123,7 +124,7 @@ def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
 DENSE_DECODE_BACKEND = "sdpa_math"
 
 
-def backend_instance(name: str) -> AttentionBackend:
+def backend_instance(name: str, *, gate_source: str | None = None) -> AttentionBackend:
     """A backend by the name a result row carries.
 
     SDPA is one registered class with a pinned kernel per instance, so a row
@@ -131,10 +132,49 @@ def backend_instance(name: str) -> AttentionBackend:
     different kernels -- which is exactly the confound SDPABackend exists to
     remove, and why the kernel is part of the name rather than left to
     torch's internal dispatch.
+
+    `gate_source` is passed through to backends that have a forget gate and
+    REFUSED for those that do not, rather than accepted and ignored. An
+    ignored keyword is how a run ends up believing it configured something it
+    did not -- and here the thing it would believe it configured is the one
+    that decides whether the rows mean anything.
+
+    Omitting it leaves the gated backend on its own default, which is the
+    value that refuses to run (backends/linear.py). That is deliberate: the
+    absence of a choice must not resolve to a choice.
     """
     if name.startswith("sdpa_"):
-        return backends.get("sdpa")(kernel=name[len("sdpa_"):])
-    return backends.get(name)()
+        cls, kwargs = backends.get("sdpa"), {"kernel": name[len("sdpa_"):]}
+    else:
+        cls, kwargs = backends.get(name), {}
+    if gate_source is not None:
+        if name not in GATED_BACKENDS:
+            raise ValueError(
+                f"gate_source={gate_source!r} passed for backend {name!r}, "
+                f"which has no forget gate. Accepting it here would silently "
+                f"do nothing while reading as though the backend had been "
+                f"configured.")
+        kwargs["gate_source"] = gate_source
+    return cls(**kwargs)
+
+
+def gate_source_of(backend: AttentionBackend) -> str | None:
+    """Which forget gate this backend instance is configured with, or None
+    if it has no gate at all.
+
+    Read off the OBJECT that ran, which is the whole point. The alternative
+    -- threading the choice down beside the backend as a second parameter --
+    creates two places that name the gate and no way to notice when they
+    disagree, and a disagreement here is invisible in the output. That is
+    exactly the shape of silent_failure_patterns.md #17.
+
+    `getattr` rather than an isinstance check on GatedLinearAttention: the
+    property being recorded is "this backend has a configurable gate", and a
+    second gated backend (Gated DeltaNet is planned) should be picked up by
+    having the attribute, not by being added to a list here as well as to
+    schema.GATED_BACKENDS.
+    """
+    return getattr(backend, "gate_source", None)
 
 
 def decode_backend_for(backend: AttentionBackend) -> AttentionBackend:

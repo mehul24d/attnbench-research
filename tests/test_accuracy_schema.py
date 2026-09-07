@@ -455,9 +455,17 @@ def test_the_dense_arm_is_answerable_from_the_parquet_alone(tmp_path):
         examples_by_task_length={("niah_single", 1024): examples})
     run_accuracy(cells, out_dir=tmp_path,
                  examples_by_id={("niah_single", e.example_id): e for e in examples},
-                 generate_fn=lambda c, b, ex: Generated(ex.answer[0]),
+                 generate_fn=lambda c, b, ex: Generated(
+                     ex.answer[0],
+                     # A gla row may not be written without naming its gate;
+                     # the real path reads this off the backend instance in
+                     # generation.py. See tests/test_gate_source_on_rows.py.
+                     gate_source="ungated" if b == "gla" else None),
                  provenance_fn=_clean_prov())
     df = pd.read_parquet(tmp_path / "accuracy.parquet")
     dense = df[df["backend_role"] == "dense_reference"]["backend"].unique()
     assert list(dense) == ["sdpa_flash"], dense
     assert set(df["backend_role"]) == {"dense_reference", "block_sparse", "linear"}
+    # The same reader, one column over: which gate produced the linear rows.
+    assert set(df[df["backend"] == "gla"]["gate_source"]) == {"ungated"}
+    assert df[df["backend"] != "gla"]["gate_source"].isna().all()
