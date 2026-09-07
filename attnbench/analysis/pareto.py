@@ -175,6 +175,23 @@ def compute_pareto_frontiers(matched_results: list[MatchedAccuracyResult],
     """
     points = build_operating_points(matched_results, latency_ms_by_key)
     by_group: dict[tuple[str, int, float], list[OperatingPoint]] = {}
+
+    # Seed EVERY cell the matched results mention, including cells where no
+    # sparsity level cleared non-inferiority.
+    #
+    # Without this, a cell with no matched sparse point forms no group and
+    # vanishes from the output. `niah_multikey` did exactly that on
+    # 2026-09-07: no sparsity level is non-inferior at any epsilon, so the
+    # task disappeared from the decision map entirely -- and an absent row
+    # reads as "not measured" when it means "dense, unambiguously, and we
+    # checked every level". That is the strongest recommendation in the table
+    # and it was the one being dropped.
+    #
+    # Same rule as matched.best_matched_sparsity_budget's `matched_sparsity
+    # =None`: an empty result is a result and is always emitted.
+    for r in matched_results:
+        by_group.setdefault((r.task, r.context_length, r.epsilon), [])
+
     for p in points:
         by_group.setdefault((p.task, p.context_length, p.epsilon), []).append(p)
 
@@ -192,7 +209,10 @@ def compute_pareto_frontiers(matched_results: list[MatchedAccuracyResult],
             pts = pts + [dense_reference_point(
                 task, context_length, epsilon, backend=dense_backend,
                 latency_ms=latency_ms_by_key[key],
-                directional=pts[0].directional if pts else False)]
+                directional=(pts[0].directional if pts else
+                             next((r.directional for r in matched_results
+                                   if (r.task, r.context_length, r.epsilon)
+                                   == (task, context_length, epsilon)), False)))]
             dense = pts[-1]
             pts = [p if p.is_dense_reference else
                    replace(p, dominated_by_dense=_dominates(dense, p))

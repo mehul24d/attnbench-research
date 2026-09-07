@@ -183,3 +183,26 @@ def test_a_missing_dense_latency_is_refused():
     lat = {("block_sparse", "vt", 8192, 0.5): 2000.0}
     with pytest.raises(KeyError, match="dense reference"):
         compute_pareto_frontiers(m, lat, dense_backend="sdpa_flash")
+
+
+def test_a_cell_with_no_matched_sparse_point_still_gets_a_row():
+    """`niah_multikey`, 2026-09-07: no sparsity level is non-inferior at any
+    epsilon, so no operating point exists and the cell formed no group. The
+    task vanished from the decision map entirely.
+
+    An absent row reads as "not measured". It meant "dense, unambiguously,
+    and every level was checked" -- the strongest recommendation in the
+    table, and the one being dropped. Same rule as
+    best_matched_sparsity_budget's matched_sparsity=None: an empty result is
+    a result.
+    """
+    m = [_dense_ref_case("niah_multikey", 8192, s, ci_lower=-20.0)
+         for s in (0.5, 0.75, 0.9)]
+    assert not any(r.matched for r in m)
+    lat = {("sdpa_flash", "niah_multikey", 8192, None): 1140.0}
+    res = compute_pareto_frontiers(m, lat, dense_backend="sdpa_flash")
+
+    assert len(res) == 1, "the cell must still appear"
+    pts = res[0].all_points
+    assert len(pts) == 1 and pts[0].is_dense_reference
+    assert res[0].frontier == pts, "dense alone is the frontier"
