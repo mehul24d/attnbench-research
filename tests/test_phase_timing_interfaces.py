@@ -33,7 +33,8 @@ torch = pytest.importorskip("torch")
 from transformers import LlamaConfig, LlamaForCausalLM   # noqa: E402
 
 from attnbench.accuracy.model import SwappableAttentionModel   # noqa: E402
-from attnbench.accuracy.phase_timing import measure_band       # noqa: E402
+from attnbench.accuracy.phase_timing import (                  # noqa: E402
+    arms_for, measure_band)
 from attnbench.backends.impls import SDPABackend               # noqa: E402
 from attnbench.config import AttnConfig                        # noqa: E402
 
@@ -56,6 +57,27 @@ def _cfg_for(band, mask, sparsity):
                       head_dim=8, mask=mask, sparsity=sparsity,
                       block_size=BLOCK, dtype="float32",
                       mask_source="importance" if mask == "block_sparse" else None)
+
+
+# The arms under test, built from the SAME function the script uses -- the
+# dense name differs only because the toy model runs on CPU where
+# sdpa_flash's kernel is unavailable.
+_ARMS_UNDER_TEST = [("sdpa_math", None)] + [
+    a for a in arms_for("sdpa_flash", (0.5, 0.75, 0.9)) if a[0] == "block_sparse"]
+
+
+def _backend(name):
+    """CPU-runnable stand-ins. block_sparse's CUDA kernel cannot run here, so
+    its PREFILL is served by SDPA-math under a block_sparse config -- which is
+    the point: what is under test is the harness's call sequence and the
+    decode_backend contract, not the sparse kernel's arithmetic."""
+    return SDPABackend(kernel="math")
+
+
+def _decode_backend(be):
+    """Mirrors grid_configs.decode_backend_for's contract: a backend with no
+    decode path must be given a dense one, never itself."""
+    return SDPABackend(kernel="math")
 
 
 def _wrapped(model):
@@ -152,3 +174,84 @@ def test_importance_scores_indexing_is_per_head_not_per_layer(tmp_path):
     # One more index. This is the call a mask_build phase would need.
     m = masks.mask_for(cfg, importance_scores=layer0[0])
     assert m is not None
+
+
+# --------------------------------------------------------------------------
+# COVERAGE, not regression. The two tests above pin failures that happened;
+# these assert the test exercises what the code actually does.
+# --------------------------------------------------------------------------
+
+def test_the_test_covers_every_arm_the_script_runs():
+    """The 2026-09-07 gap, made structural.
+
+    The interface test ran `[("sdpa_math", None)]` while the script ran dense
+    plus three sparsities. Everything below dense passed; the run died on the
+    instance at the first block_sparse `generate`. Two lists of the same fact,
+    maintained in parallel -- the exact violation this project refuses in data
+    (`gate_source` off the instance, `backend_role` off the config) and had
+    not applied to tests.
+
+    The asymmetry is why it survived: in data that violation makes visibly
+    wrong rows; in tests it makes a green suite.
+    """
+    script_arms = arms_for("sdpa_flash", (0.5, 0.75, 0.9))
+    covered = _ARMS_UNDER_TEST
+    assert [a[1] for a in covered] == [a[1] for a in script_arms], (
+        f"test covers sparsities {[a[1] for a in covered]}, script runs "
+        f"{[a[1] for a in script_arms]}")
+    assert any(a[0] == "block_sparse" for a in covered), (
+        "no sparse arm under test: decode_backend is never reached")
+
+
+def test_measure_band_runs_every_arm_including_sparse(tmp_path):
+    """Drives measure_band across the real arm list, with decode_backend
+    resolved the way the run resolves it. This is the test that would have
+    caught the third failure."""
+    model = _toy()
+    wrapped = _wrapped(model)
+    ids = torch.randint(0, 64, (1, BAND))
+    try:
+        rows, recs, scoring_ms, prefill_ms = measure_band(
+            wrapped, ids, band=BAND, arms=_ARMS_UNDER_TEST, cfg_for=_cfg_for,
+            scratch_dir=str(tmp_path), warmup=1, reps=2, scoring_reps=2,
+            gen_lo=1, gen_hi=3,
+            backend_factory=_backend, decode_backend_factory=_decode_backend)
+    finally:
+        wrapped.unwrap()
+
+    assert len(prefill_ms) == len(_ARMS_UNDER_TEST)
+    assert len(recs) == len(_ARMS_UNDER_TEST)
+    assert {r.phase for r in rows} == {"scoring", "prefill", "decode_step"}
+
+
+def test_block_sparse_really_needs_a_separate_decode_backend():
+    """The third failure, pinned against the REAL registry.
+
+    An earlier draft of this test tried to trigger the refusal through
+    `measure_band` with a deliberately-wrong decode_backend_factory. It did
+    not raise -- the CPU stand-in for block_sparse is SDPA-math, which has a
+    decode path, so the test could not fail and would have passed for the
+    wrong reason.
+
+    That is the detection move working: break what the test guards and check
+    it turns red. It did not, so the test was wrong, not the code.
+
+    The contract is checkable on CPU against the real classes -- block_sparse
+    constructs fine, only its kernel needs CUDA, and `supports_decode` is a
+    classmethod. So assert the fact directly.
+    """
+    from attnbench.accuracy.grid_configs import backend_instance, decode_backend_for
+
+    bs = backend_instance("block_sparse")
+    assert not type(bs).supports_decode(), (
+        "block_sparse gained a decode path; measure_band's decode_backend "
+        "wiring and docs/limitations.md's prefill-only scope both assume it "
+        "has none")
+    dec = decode_backend_for(bs)
+    assert dec is not bs, "a backend with no decode path must not decode itself"
+    assert type(dec).supports_decode()
+
+    # And the dense arm resolves to itself -- so the helper discriminates
+    # rather than always handing back a dense backend.
+    dense = backend_instance("sdpa_flash")
+    assert decode_backend_for(dense) is dense

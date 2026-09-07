@@ -1018,3 +1018,62 @@ holding GPU-path logic no test reaches are `time_one_accuracy_example.py`
 apply to each is the same: move the body into a module and drive it from a
 toy-model test. Not done yet; recorded so it is a known debt rather than a
 surprise.
+
+## 22. A regression test and a coverage test are different properties
+
+**Recorded 2026-09-07, after being caught by the gap twice.**
+
+A **regression** test pins a failure you found. A **coverage** test asserts
+the test exercises what the code actually does. Having the first is not
+having the second, and this project has now shipped that confusion twice:
+
+- `test_position_ids_are_load_bearing` asserted a mechanism against a premise
+  that did not hold, so it passed vacuously.
+- `test_phase_timing_interfaces.py` was written as "the test that would have
+  caught both failures for free." It did. Its arm list was
+  `[("sdpa_math", None)]` — **dense only** — while the script ran dense plus
+  three sparsities. The third failure lived in the sparse arm and reached a
+  rented instance.
+
+**The root cause is one this project refuses everywhere else.** The test's
+arm list and the script's arm list were two sources of truth for the same
+fact. `gate_source` is read off the backend instance, `backend_role` is
+derived from the config, the GLA verdict is read from its own JSON — the
+principle was applied to the data and not to the tests.
+
+**The asymmetry that let it survive:** a single-source-of-truth violation in
+DATA produces visibly wrong rows. In TESTS it produces a green suite. The
+same bug is loud in one place and silent in the other, which is why the test
+layer was the one that went uncorrected.
+
+Fixed structurally: `phase_timing.arms_for()` is the one list, and
+`test_the_test_covers_every_arm_the_script_runs` asserts the test's coverage
+against it. **Generalise it — anywhere a test enumerates cases that
+production code also enumerates, check the two lists against each other
+rather than maintaining them in parallel.**
+
+### The detection method, which is the transferable part
+
+**A vacuous test is one where breaking the thing it guards does not turn it
+red.** That is checkable on demand, in about a minute, and it is what caught
+`position_ids`, the determinism tests, and both halves of this entry:
+
+1. Break the guarded property deliberately — revert the fix, drop a case
+   from a list, feed a degenerate input.
+2. Run the test.
+3. If it still passes, the test asserts nothing about that property.
+
+Applied here twice in one sitting, and it earned its place both times:
+
+- Reintroducing the exact gap (arm list back to dense-only) turned
+  `test_the_test_covers_every_arm_the_script_runs` red. It guards what it
+  claims to.
+- A first draft of the decode-backend test tried to trigger the refusal
+  through a deliberately-wrong factory and **did not raise** — the CPU
+  stand-in for block_sparse has a decode path, so the test could not fail.
+  The check said the test was wrong, not the code, before it was committed.
+  It was rewritten to assert the contract against the real registry, where
+  `supports_decode()` is a classmethod and needs no CUDA.
+
+Make this the standard move on any test guarding a property that matters,
+not a habit that happens to have been applied when someone remembered.

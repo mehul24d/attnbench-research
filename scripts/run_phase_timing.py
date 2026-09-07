@@ -32,7 +32,7 @@ from attnbench.accuracy.config import load_grid                        # noqa: E
 from attnbench.accuracy.generation import ModelGeometry                # noqa: E402
 from attnbench.accuracy.grid_configs import backend_instance           # noqa: E402
 from attnbench.accuracy.phase_timing import (                          # noqa: E402
-    measure_band, scoring_overhead_ratio)
+    arms_for, measure_band, scoring_overhead_ratio)
 from attnbench.config import AttnConfig                                # noqa: E402
 
 
@@ -112,7 +112,9 @@ def main():
     K_LO, K_HI = 1, 8
 
     scratch = tempfile.mkdtemp(prefix="stage5_scores_")
-    arms = [("sdpa_flash", None)] + [("block_sparse", sp) for sp in sparsities]
+    # From phase_timing, not built here: the test asserts against this same
+    # function, so the two cannot drift (see arms_for's docstring).
+    arms = arms_for(grid.dense_backend, sparsities)
 
     for band in bands:
         print(f"\n===== band {band} =====", flush=True)

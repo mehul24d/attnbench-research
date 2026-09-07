@@ -65,6 +65,23 @@ PHASES = ("scoring", "mask_build", "prefill", "decode_step")
 PER_CALL_PHASES = ("prefill", "decode_step")
 
 
+def arms_for(dense_backend: str, sparsities) -> list:
+    """The (backend_name, sparsity) list a Stage 5 run measures.
+
+    Here, not in the script, because a test that builds its own arm list is a
+    second source of truth for the same fact -- and on 2026-09-07 that is
+    exactly what let a three-arm gap survive: the interface test ran
+    `[("sdpa_math", None)]` while the script ran dense plus three sparsities,
+    so `decode_backend` was never reached and the run died on the instance.
+
+    The asymmetry worth naming: a single-source-of-truth violation in DATA
+    produces visibly wrong rows. In TESTS it produces a green suite, which is
+    why that one survived where `gate_source` and `backend_role` did not.
+    """
+    return [(dense_backend, None)] + [("block_sparse", float(sp))
+                                       for sp in sparsities]
+
+
 @dataclass(frozen=True)
 class PhaseMeasurement:
     """One phase, one operating point, aggregated over repeats."""
@@ -246,7 +263,7 @@ def measure_band(wrapped, input_ids, *, band: int, arms, cfg_for,
                   reps: int = 10, scoring_reps: int = 3,
                   gen_lo: int = 1, gen_hi: int = 8,
                   synchronize=lambda: None, clocks_locked: bool = False,
-                  backend_factory=None):
+                  backend_factory=None, decode_backend_factory=None):
     """Measure every phase for one band. Returns (rows, reconciliations).
 
     `arms` is a list of (backend_name, sparsity). `cfg_for(band, mask,
@@ -265,6 +282,13 @@ def measure_band(wrapped, input_ids, *, band: int, arms, cfg_for,
 
     if backend_factory is None:
         from .grid_configs import backend_instance as backend_factory
+    if decode_backend_factory is None:
+        # block_sparse REFUSES to generate without one -- sparsity is
+        # prefill-only and decode runs dense over the cache, and the choice
+        # changes what a row means so nothing falls back silently. Stage 3
+        # resolves it with this same helper; not calling it is what killed
+        # the 2026-09-07 re-run on the instance.
+        from .grid_configs import decode_backend_for as decode_backend_factory
 
     rows, recs = [], []
     observed = observed or {}
@@ -292,6 +316,7 @@ def measure_band(wrapped, input_ids, *, band: int, arms, cfg_for,
     prefill_ms = {}
     for name, sparsity in arms:
         be = backend_factory(name)
+        dec = decode_backend_factory(be)
         cfg = cfg_for(band, "causal" if sparsity is None else "block_sparse", sparsity)
         layer_scores = None if sparsity is None else scores
 
@@ -310,7 +335,7 @@ def measure_band(wrapped, input_ids, *, band: int, arms, cfg_for,
             return time_repeated(
                 lambda: wrapped.generate(
                     input_ids, be, cfg=cfg, max_new_tokens=k,
-                    layer_scores=layer_scores,
+                    layer_scores=layer_scores, decode_backend=dec,
                     eos_token_ids=frozenset(), newline_token_ids=frozenset(),
                     whitespace_token_ids=frozenset()),
                 warmup=max(1, warmup - 1), reps=max(2, reps // 2),
