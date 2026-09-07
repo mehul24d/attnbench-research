@@ -194,8 +194,36 @@ def main():
                          "the thing this study does not have, not a choice. "
                          "Whatever is passed lands in the gate_source column "
                          "of every gla row.")
+    ap.add_argument("--no-gla", action="store_true",
+                    help="drop the gla arm entirely. This is what a DROP "
+                         "verdict from docs/gla_arm_decision.md does; without "
+                         "it the rule could reach a decision the pipeline had "
+                         "no way to act on.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    # The gla arm is decided by docs/gla_arm_decision.md, and this is where
+    # either verdict becomes an action. First thing after parsing, before the
+    # grid, the tokenizer or the model: the failure it prevents is a 4-hour
+    # band dying on its last 900 cells and taking the chained bands after it,
+    # and a guard that fires late has already let the cost happen. gla's
+    # default gate refuses, so an unstated choice is not a quiet skip.
+    if args.no_gla and args.gla_gate_source:
+        raise SystemExit(
+            "--no-gla and --gla-gate-source are contradictory: one drops the "
+            "arm, the other configures it. Pass whichever the verdict in "
+            "results/.../gla_arm_verdict.json calls for, not both.")
+    if not args.no_gla and not args.gla_gate_source and not args.dry_run:
+        raise SystemExit(
+            "the gla arm is included but no --gla-gate-source was given.\n\n"
+            "gla's default gate refuses to run (Qwen2.5 has no gate "
+            "projection to borrow), so this would raise on the first gla "
+            "cell -- after every dense and sparse row of the band had "
+            "already been paid for.\n\n"
+            "Run scripts/decide_gla_arm.py first, then pass either\n"
+            "  --gla-gate-source ungated   (verdict KEEP)\n"
+            "  --no-gla                    (verdict DROP)\n"
+            "See docs/gla_arm_decision.md.")
 
     grid = load_grid(args.grid)
 
@@ -275,7 +303,8 @@ def main():
 
     configs_by_backend = build_configs_by_backend(
         grid, include_sage=args.include_sage,
-        seq_lens=tuple(selected_seq_lens))
+        seq_lens=tuple(selected_seq_lens),
+        include_gla=not args.no_gla)
     print(f"backends      : {', '.join(configs_by_backend)}")
     print("caps (tokens) : " + ", ".join(
         f"{t}={stopping.token_cap(t)}" for t in grid.tasks))

@@ -170,3 +170,32 @@ def test_the_column_distinguishes_the_two_gates(tmp_path):
     a = _run(tmp_path / "a", Generated(text="x", gate_source="ungated"))
     b = _run(tmp_path / "b", Generated(text="x", gate_source="synthetic"))
     assert a.iloc[0]["gate_source"] != b.iloc[0]["gate_source"]
+
+
+# --------------------------------------------------------------------------
+# A DROP verdict has to be expressible, or the rule decides nothing.
+# --------------------------------------------------------------------------
+
+def test_the_gla_arm_can_be_dropped_from_the_grid():
+    """What a DROP verdict does.
+
+    Found in Phase 0 of the S2 booking: `build_configs_by_backend` included
+    `gla` unconditionally, so the pre-registered rule could return DROP and
+    the pipeline had no way to act on it. And because gla's default gate
+    REFUSES, an unactioned DROP is not a quiet skip -- it raises on the first
+    gla cell, which is the LAST 900 cells of a 4-hour band, taking every
+    chained band after it.
+    """
+    from attnbench.accuracy.config import load_grid
+    from attnbench.accuracy.grid_configs import build_configs_by_backend
+
+    grid = load_grid("configs/accuracy/stage3_grid.yaml")
+    kept = build_configs_by_backend(grid, include_sage=False, seq_lens=(4096,))
+    dropped = build_configs_by_backend(grid, include_sage=False,
+                                        seq_lens=(4096,), include_gla=False)
+
+    assert "gla" in kept
+    assert "gla" not in dropped
+    # The rest of the study is untouched by the verdict.
+    assert set(kept) - {"gla"} == set(dropped)
+    assert dropped["block_sparse"] and dropped[grid.dense_backend]

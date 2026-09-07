@@ -69,6 +69,7 @@ def build_examples_by_task_length(grid: AccuracyGrid, seed: int, *,
 def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
                               dense_backend: str | None = None,
                               seq_lens: tuple[int, ...] | None = None,
+                              include_gla: bool = True,
                               ) -> dict[str, list[AttnConfig]]:
     """Each backend's own curated config list.
 
@@ -91,8 +92,17 @@ def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
     if dense_backend is None:
         dense_backend = grid.dense_backend
     configs_by_backend: dict[str, list[AttnConfig]] = {
-        dense_backend: [], "block_sparse": [], "gla": [],
+        dense_backend: [], "block_sparse": [],
     }
+    # `include_gla` is what a DROP verdict from docs/gla_arm_decision.md
+    # actually does. Without it the pre-registered rule could reach a
+    # decision the pipeline had no way to act on -- and since gla's default
+    # gate REFUSES, an unactioned DROP does not skip the arm quietly, it
+    # raises UnsupportedConfig on the first gla cell and takes the rest of
+    # the chained bands with it. A decision procedure whose outcome cannot
+    # be expressed is not a decision procedure.
+    if include_gla:
+        configs_by_backend["gla"] = []
     if include_sage:
         configs_by_backend["sage"] = []
 
@@ -100,9 +110,10 @@ def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
         configs_by_backend[dense_backend].append(AttnConfig(
             seq_len=seq_len, batch=1, n_heads_q=1, n_heads_kv=1,
             head_dim=128, mask="causal"))
-        configs_by_backend["gla"].append(AttnConfig(
-            seq_len=seq_len, batch=1, n_heads_q=1, n_heads_kv=1,
-            head_dim=128, mask="causal"))
+        if include_gla:
+            configs_by_backend["gla"].append(AttnConfig(
+                seq_len=seq_len, batch=1, n_heads_q=1, n_heads_kv=1,
+                head_dim=128, mask="causal"))
         for sparsity in grid.sparsities:
             configs_by_backend["block_sparse"].append(AttnConfig(
                 seq_len=seq_len, batch=1, n_heads_q=1, n_heads_kv=1,
