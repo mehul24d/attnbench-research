@@ -101,6 +101,7 @@ minutes was:
 |---|---|
 | Phase 0–2 (launcher fix, deploy fix, clock-lock fix, gates) | ~1.6 h |
 | band 2048 generation (sum of `latency_ms` over 4500 rows) | **1.75 h** |
+| — of which the 3600 rows that survived `INVALID_ROWS.md` | **1.40 h** |
 | importance scoring, 900 examples at ~0.9 s | ~0.25 h |
 | **idle, after the band finished and before teardown** | **~7.2 h** |
 
