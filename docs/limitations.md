@@ -919,3 +919,35 @@ Detection is sticky at process scope, because the dynamo warning fires once —
 at the crossing — and every call after it is silent. Per-call detection alone
 would void the one cell that happened to cross and clear the hundreds that
 followed, which is the exact inverse of the truth.
+
+## An open discrepancy: prefill + decode do not sum to the measured total
+
+**Recorded 2026-09-07, unresolved, deliberately not reconciled.**
+
+Dense `generate()` at 8192 costs **62.1 ms per generated token** end-to-end
+(n=900, clocks locked). The session's slope-based decode measurement put a
+decode step at **55.5 ms** at that band. Those together leave ~6.6 ms per
+token for an 8192-token prefill amortised over ~30 tokens — about 200 ms
+total — against roughly **580 ms** implied by the model's own FLOPs at the
+measured 42 TFLOPS prefill throughput.
+
+The three numbers do not close, and one of them means something other than
+what it has been used for.
+
+**No reconciliation is offered here on purpose.** This project has made the
+regime-vs-unit error three times (kernel vs whole-model TFLOPS; GLA's 1.7
+against FA2's 61.8; prefill TFLOPS applied to decode), and each time the
+plausible arithmetic fix was wrong because a quantity was being read in the
+wrong regime. The prior strongly favours a fourth instance of that over a
+slip in the multiplication. Guessing which input is misinterpreted, and
+adjusting it until the sum closes, would produce a decomposition that agrees
+with itself and with nothing else.
+
+**What does not depend on it:** the end-to-end comparison. Dense and sparse
+were measured the same way on the same rows, so the ~30% gap and the
+domination result stand regardless of how the total divides internally.
+
+**What does:** any per-phase attribution — "sparsity saves X% of prefill",
+"decode is Y% of the bill". Stage 5's instrumented timing, with the phases
+measured separately rather than inferred by subtraction, is what settles it.
+Until then no phase split should be quoted from this data.

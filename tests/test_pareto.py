@@ -132,3 +132,54 @@ def test_to_dataframe_marks_frontier_membership():
     optimal = set(df[df["is_pareto_optimal"]]["sparsity"])
     assert optimal == {0.5, 0.9}
     assert 0.75 not in optimal
+
+
+# --------------------------------------------------------------------------
+# The dense baseline as a point. Without it a frontier cannot say
+# "none of these is worth taking".
+# --------------------------------------------------------------------------
+
+def _dense_ref_case(task, cl, sparsity, ci_lower, epsilon=1.0, backend="block_sparse"):
+    return MatchedAccuracyResult(
+        task=task, context_length=cl, sparsity=sparsity, epsilon=epsilon,
+        dense_backend="sdpa_flash", sparse_backend=backend, n=300,
+        mean_diff=ci_lower + 1.0, ci_lower=ci_lower,
+        matched=ci_lower > -epsilon, exceeds_dense=ci_lower > 0.0,
+        directional=False)
+
+
+def test_a_slower_sparse_point_is_marked_dominated_by_dense():
+    """The 2026-09-07 situation: block_sparse matched on accuracy and slower
+    end-to-end. The frontier must record that the baseline beats it, not
+    quietly rank it against other sparse options."""
+    m = [_dense_ref_case("niah_single", 8192, 0.5, ci_lower=-0.5)]
+    lat = {("block_sparse", "niah_single", 8192, 0.5): 1415.0,
+           ("sdpa_flash", "niah_single", 8192, None): 1140.0}
+    res = compute_pareto_frontiers(m, lat, dense_backend="sdpa_flash")
+    pts = {(p.backend, p.is_dense_reference): p for p in res[0].all_points}
+    assert pts[("sdpa_flash", True)].margin == 1.0        # ci_lower 0 + epsilon
+    assert pts[("block_sparse", False)].dominated_by_dense is True
+
+
+def test_a_sparse_point_that_exceeds_dense_is_not_dominated_even_when_slower():
+    """`vt`. A point whose ci_lower > 0 has margin > epsilon, so it beats the
+    dense reference on the accuracy axis and survives domination despite
+    being slower. This is the oracle showing through, and the frontier must
+    represent it rather than flatten it away."""
+    m = [_dense_ref_case("vt", 8192, 0.75, ci_lower=12.2)]
+    lat = {("block_sparse", "vt", 8192, 0.75): 2505.0,
+           ("sdpa_flash", "vt", 8192, None): 1995.0}
+    res = compute_pareto_frontiers(m, lat, dense_backend="sdpa_flash")
+    sp = [p for p in res[0].all_points if not p.is_dense_reference][0]
+    assert sp.margin > 1.0
+    assert sp.dominated_by_dense is False
+    assert sp.latency_ms > 1995.0        # slower, and still not dominated
+
+
+def test_a_missing_dense_latency_is_refused():
+    """A frontier without its baseline cannot answer the only question that
+    matters, so it must not be produced."""
+    m = [_dense_ref_case("vt", 8192, 0.5, ci_lower=-0.5)]
+    lat = {("block_sparse", "vt", 8192, 0.5): 2000.0}
+    with pytest.raises(KeyError, match="dense reference"):
+        compute_pareto_frontiers(m, lat, dense_backend="sdpa_flash")

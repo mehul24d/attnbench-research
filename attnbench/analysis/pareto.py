@@ -29,7 +29,7 @@ forgot to check `matched` first.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Optional
 
 import pandas as pd
@@ -56,6 +56,23 @@ class OperatingPoint:
     latency_ms: float
     margin: float
     directional: bool
+    # The dense baseline, carried as a point rather than left implicit.
+    #
+    # Without it the frontier is computed among sparse options only, and a
+    # reader of pareto.parquet sees a tidy frontier with no indication that
+    # the baseline beats every point on it. On the 2026-09-07 data that is
+    # exactly the situation: block_sparse is ~30% slower end-to-end than
+    # dense at every band and every sparsity level. A frontier that cannot
+    # express "none of these is worth taking" is a fabricated artifact.
+    #
+    # Dense enters with ci_lower = 0 by construction (it is the reference,
+    # compared against itself), so margin = epsilon. Domination then falls
+    # out of the ordinary rule with no special case -- which matters because
+    # a sparse point that EXCEEDS dense gets margin > epsilon and is
+    # correctly NOT dominated on the accuracy axis even when slower. See
+    # `vt` in docs/claims.md.
+    is_dense_reference: bool = False
+    dominated_by_dense: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -111,6 +128,22 @@ def build_operating_points(matched_results: list[MatchedAccuracyResult],
     return points
 
 
+def dense_reference_point(task: str, context_length: int, epsilon: float, *,
+                           backend: str, latency_ms: float,
+                           directional: bool = False) -> OperatingPoint:
+    """The dense baseline as a comparable point.
+
+    `margin = epsilon` because dense's difference from itself is exactly zero,
+    so `ci_lower = 0` and `margin = ci_lower + epsilon`. Not a fudge: it is
+    the same formula every other point uses, evaluated at the reference.
+    """
+    return OperatingPoint(
+        task=task, context_length=context_length, epsilon=epsilon,
+        backend=backend, sparsity=None, latency_ms=latency_ms,
+        margin=0.0 + epsilon, directional=directional,
+        is_dense_reference=True, dominated_by_dense=False)
+
+
 def _dominates(a: OperatingPoint, b: OperatingPoint) -> bool:
     """True if `a` is at least as good as `b` on both axes (lower latency,
     higher margin) and strictly better on at least one -- the standard
@@ -135,6 +168,7 @@ def pareto_frontier(points: list[OperatingPoint]) -> list[OperatingPoint]:
 
 def compute_pareto_frontiers(matched_results: list[MatchedAccuracyResult],
                               latency_ms_by_key: dict[LatencyKey, float],
+                              dense_backend: Optional[str] = None,
                               ) -> list[ParetoResult]:
     """One ParetoResult per (task, context_length, epsilon) grid cell --
     "Pareto frontiers per grid cell", per the README's stage table.
@@ -146,6 +180,23 @@ def compute_pareto_frontiers(matched_results: list[MatchedAccuracyResult],
 
     out = []
     for (task, context_length, epsilon), pts in sorted(by_group.items()):
+        if dense_backend is not None:
+            key = (dense_backend, task, context_length, None)
+            if key not in latency_ms_by_key:
+                raise KeyError(
+                    f"no latency for the dense reference {key}. The baseline "
+                    f"must be timed wherever sparse points are, or the "
+                    f"frontier cannot say whether taking any of them is worth "
+                    f"it -- and a frontier that cannot say that is worse than "
+                    f"none.")
+            pts = pts + [dense_reference_point(
+                task, context_length, epsilon, backend=dense_backend,
+                latency_ms=latency_ms_by_key[key],
+                directional=pts[0].directional if pts else False)]
+            dense = pts[-1]
+            pts = [p if p.is_dense_reference else
+                   replace(p, dominated_by_dense=_dominates(dense, p))
+                   for p in pts]
         out.append(ParetoResult(
             task=task, context_length=context_length, epsilon=epsilon,
             all_points=tuple(pts), frontier=tuple(pareto_frontier(pts)),

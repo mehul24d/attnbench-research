@@ -133,6 +133,51 @@ inferior to dense when the mask is chosen with full knowledge of the
 attention scores"*, never *"this budget is free"*. Carried in
 `analysis/matched.py`'s docstring so it reaches the code that computes it.
 
+## End-to-end speedup, which is the point of the whole study
+
+**Measured 2026-09-07 from Stage 3's `generate()` latency, n=900 per arm.**
+Stage 5's dedicated timing does not exist yet; this instrument is weaker in
+stated ways (no warmup control, scoring pass excluded, no prefill/decode
+split) and the run order biases *against* the finding — the dense arm runs
+first in every band, so warmup penalises the baseline.
+
+| | |
+|---|---|
+| **Supported** | *At batch 1 with prefill-only sparsity and dense decode, the best end-to-end speedup any accuracy-matched block-sparse operating point achieves is **1.06×** — `vt`, 0.5 sparsity, 4096. On `niah_single` every matched point is **slower** than dense (0.8–0.9×) and dominated by it on both axes.* |
+| **Not supported** | *Block-sparse attention is slower than dense.* |
+| **Also not supported** | *Block-sparse attention gives a 1.24× speedup.* |
+
+**Why the second is a different claim.** It drops the regime, and the regime
+is doing all the work. Sparsity is applied during **prefill only**; decode
+runs dense over the cache in both arms. At batch 1 generating ~30 tokens,
+decode is the larger share of end-to-end cost and sparsity does not touch
+it — so this measures a setting in which prefill sparsity attacks the smaller
+part of the bill *by construction*. That is the regime a single-stream
+interactive deployment runs in, which is why it is worth measuring, but a
+batched or long-generation regime is a different measurement this study has
+not made.
+
+**Why the third is a different claim, and this is the study's thesis.** 1.24×
+is a **kernel** number, at 90% sparsity, from Stage 2. End-to-end, at the
+operating points that actually preserve accuracy, it becomes **≤1.06× and
+usually <1.0×**. A kernel speedup is not an end-to-end speedup, and the
+distance between them is the gap this study exists to measure. Reporting the
+kernel figure as a system result is the same regime-vs-unit error that has
+already appeared three times in this project's own analysis.
+
+**16 of 31 accuracy-matched sparse operating points are dominated by the
+dense baseline** on both axes. All 15 `niah_single` points are dominated.
+The survivors are all `vt` — and `vt` is the `oracle_sensitive` task, so most
+of what keeps them on the frontier is the oracle rather than the sparsity.
+Only **two distinct operating points** are genuinely faster than dense.
+
+This is recorded as data, not prose: `dominated_by_dense` on every Stage 6
+row, and the dense baseline carried as a point (`is_dense_reference`) so a
+reader of `pareto.parquet` cannot see a tidy frontier without seeing that the
+baseline beats most of it.
+
+---
+
 ## Cross-architecture timing
 
 | | |
