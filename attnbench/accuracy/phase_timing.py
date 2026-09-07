@@ -224,3 +224,117 @@ def scoring_overhead_ratio(scoring_ms: float, dense_prefill_ms: float,
     if saved <= 0:
         return float("nan")
     return scoring_ms / saved
+
+
+# --------------------------------------------------------------------------
+# The measured body, here rather than in the script.
+#
+# Both failures of the 2026-09-07 Stage 5 session were signature errors --
+# `cache_dir=None`, and `scores[0]` where `scores[0][0]` was wanted. Both
+# were in a script body that no test could reach without a GPU and a
+# downloaded model, so "tested on CPU" covered the timing protocol and the
+# reconciliation arithmetic and touched neither real interface.
+#
+# Extracted so a CPU test drives THIS function against a toy model at tiny
+# shapes. A test that merely calls the same methods in its own code would
+# re-encode the same assumption; the point is that there is one body and the
+# test runs it.
+# --------------------------------------------------------------------------
+
+def measure_band(wrapped, input_ids, *, band: int, arms, cfg_for,
+                  scratch_dir: str, observed=None, warmup: int = 3,
+                  reps: int = 10, scoring_reps: int = 3,
+                  gen_lo: int = 1, gen_hi: int = 8,
+                  synchronize=lambda: None, clocks_locked: bool = False,
+                  backend_factory=None):
+    """Measure every phase for one band. Returns (rows, reconciliations).
+
+    `arms` is a list of (backend_name, sparsity). `cfg_for(band, mask,
+    sparsity)` builds the AttnConfig. `backend_factory(name)` returns a
+    backend instance -- injected so a CPU test can hand back an SDPA/naive
+    backend without importing the grid's registry choices.
+
+    `mask_build` is deliberately NOT measured here. It was a phase added for
+    interest, it is excluded from the reconciliation identity anyway (nothing
+    paid per token belongs there), and it was the only thing that failed on
+    the sparse path. Measuring it needs the correct per-head scores indexing,
+    which is a question to answer with a test that instantiates the real
+    objects -- not on a rented instance.
+    """
+    import itertools
+
+    if backend_factory is None:
+        from .grid_configs import backend_instance as backend_factory
+
+    rows, recs = [], []
+    observed = observed or {}
+
+    # Scoring: unique example_id per call so every rep is a real cache MISS.
+    # Reusing one id hits after the first call and times a disk read -- ~0 ms
+    # reported for the number that prices the study's largest caveat.
+    counter = itertools.count()
+    sc = time_repeated(
+        lambda: wrapped.compute_importance_scores(
+            input_ids, task="phase_probe",
+            example_id=f"b{band}_{next(counter)}", cache_dir=scratch_dir),
+        warmup=1, reps=scoring_reps, synchronize=synchronize)
+    rows.append(summarize(sc, backend="dense_softmax_fp32", sparsity=None,
+                           context_length=band, phase="scoring", n_warmup=1,
+                           clocks_locked=clocks_locked,
+                           detail="excluded from every latency number in the "
+                                  "study; measured so the exclusion can be "
+                                  "priced rather than trusted"))
+    scoring_ms = rows[-1].ms_mean
+    scores = wrapped.compute_importance_scores(
+        input_ids, task="phase_probe", example_id=f"b{band}_final",
+        cache_dir=scratch_dir)
+
+    prefill_ms = {}
+    for name, sparsity in arms:
+        be = backend_factory(name)
+        cfg = cfg_for(band, "causal" if sparsity is None else "block_sparse", sparsity)
+        layer_scores = None if sparsity is None else scores
+
+        pf = time_repeated(
+            lambda: wrapped.run_measured(input_ids, be, cfg=cfg,
+                                          layer_scores=layer_scores,
+                                          logits_to_keep=1),
+            warmup=warmup, reps=reps, synchronize=synchronize)
+        rows.append(summarize(pf, backend=name, sparsity=sparsity,
+                               context_length=band, phase="prefill",
+                               n_warmup=warmup, clocks_locked=clocks_locked,
+                               detail="logits_to_keep=1"))
+        prefill_ms[(name, sparsity)] = rows[-1].ms_mean
+
+        def _gen(k):
+            return time_repeated(
+                lambda: wrapped.generate(
+                    input_ids, be, cfg=cfg, max_new_tokens=k,
+                    layer_scores=layer_scores,
+                    eos_token_ids=frozenset(), newline_token_ids=frozenset(),
+                    whitespace_token_ids=frozenset()),
+                warmup=max(1, warmup - 1), reps=max(2, reps // 2),
+                synchronize=synchronize)
+
+        g_lo, g_hi = _gen(gen_lo), _gen(gen_hi)
+        lo, hi = sum(g_lo) / len(g_lo), sum(g_hi) / len(g_hi)
+        step = (hi - lo) / (gen_hi - gen_lo)
+        rows.append(summarize([step], backend=name, sparsity=sparsity,
+                               context_length=band, phase="decode_step",
+                               n_warmup=warmup, clocks_locked=clocks_locked,
+                               detail=f"slope over max_new_tokens {gen_lo}->{gen_hi} "
+                                      f"({lo:.1f} -> {hi:.1f} ms), stops disabled"))
+
+        recs.append(reconcile(prefill_ms=prefill_ms[(name, sparsity)],
+                               decode_step_ms=step, n_generated=gen_hi,
+                               observed_total_ms=hi, context_length=band,
+                               backend=name, sparsity=sparsity))
+        key = (name, sparsity, band)
+        if key in observed:
+            obs, ngen = observed[key]
+            recs.append(reconcile(prefill_ms=prefill_ms[(name, sparsity)],
+                                   decode_step_ms=step, n_generated=ngen,
+                                   observed_total_ms=obs, context_length=band,
+                                   backend=name, sparsity=sparsity))
+
+    return rows, recs, scoring_ms, prefill_ms

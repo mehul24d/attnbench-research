@@ -32,9 +32,8 @@ from attnbench.accuracy.config import load_grid                        # noqa: E
 from attnbench.accuracy.generation import ModelGeometry                # noqa: E402
 from attnbench.accuracy.grid_configs import backend_instance           # noqa: E402
 from attnbench.accuracy.phase_timing import (                          # noqa: E402
-    reconcile, scoring_overhead_ratio, summarize, time_repeated)
+    measure_band, scoring_overhead_ratio)
 from attnbench.config import AttnConfig                                # noqa: E402
-from attnbench import masks                                            # noqa: E402
 
 
 def main():
@@ -112,6 +111,9 @@ def main():
                     whitespace_token_ids=frozenset())
     K_LO, K_HI = 1, 8
 
+    scratch = tempfile.mkdtemp(prefix="stage5_scores_")
+    arms = [("sdpa_flash", None)] + [("block_sparse", sp) for sp in sparsities]
+
     for band in bands:
         print(f"\n===== band {band} =====", flush=True)
         ids = torch.randint(0, model.config.vocab_size, (1, band), device=args.device)
@@ -119,128 +121,45 @@ def main():
             model, cfg_for(band, "causal", None), model_id=grid.model_primary,
             finest_block_size=grid.finest_block_size)
         try:
-            # --- scoring: the study's excluded estimator, finally priced ---
-            #
-            # A UNIQUE example_id per call, into a scratch cache dir. Two
-            # things this is defending against, and the second is the
-            # dangerous one:
-            #   - cache_dir=None is not a supported "don't cache" sentinel;
-            #     score_cache._path_for calls Path() on it.
-            #   - reusing one id would MISS on the first call and HIT on
-            #     every subsequent one, so the reported scoring cost would be
-            #     the price of a disk read. It would not error. It would
-            #     report ~0 ms for the single number this session exists to
-            #     put on the study's largest acknowledged caveat.
-            scratch = tempfile.mkdtemp(prefix=f"phase_scoring_{band}_")
-            _n = itertools.count()
-            sc = time_repeated(
-                lambda: wrapped.compute_importance_scores(
-                    ids, task="phase_probe",
-                    example_id=f"b{band}_{next(_n)}", cache_dir=scratch),
-                warmup=1, reps=max(3, args.reps // 3), synchronize=sync)
-            rows.append(summarize(sc, backend="dense_softmax_fp32", sparsity=None,
-                                   context_length=band, phase="scoring", n_warmup=1,
-                                   clocks_locked=clocks_locked,
-                                   detail="excluded from every latency number in "
-                                          "the study; measured so the exclusion "
-                                          "can be priced rather than trusted"))
-            scoring_ms = rows[-1].ms_mean
-            print(f"  scoring          {scoring_ms:9.1f} ms", flush=True)
-            scores = wrapped.compute_importance_scores(
-                ids, task="phase_probe", example_id=f"b{band}_final",
-                cache_dir=scratch)
-
-            arms = [("sdpa_flash", None)] + [("block_sparse", sp) for sp in sparsities]
-            prefill_ms = {}
-            for name, sp in arms:
-                be = backend_instance(name)
-                cfg = cfg_for(band, "causal" if sp is None else "block_sparse", sp)
-                ls = None if sp is None else scores
-
-                if sp is not None:
-                    mb = time_repeated(
-                        lambda: masks.mask_for(cfg, importance_scores=scores[0]),
-                        warmup=args.warmup, reps=args.reps, synchronize=sync)
-                    rows.append(summarize(mb, backend=name, sparsity=sp,
-                                           context_length=band, phase="mask_build",
-                                           n_warmup=args.warmup,
-                                           clocks_locked=clocks_locked,
-                                           detail="per config, NOT per call -- see "
-                                                  "tests/test_timed_region_setup.py"))
-
-                pf = time_repeated(
-                    lambda: wrapped.run_measured(ids, be, cfg=cfg,
-                                                  layer_scores=ls, logits_to_keep=1),
-                    warmup=args.warmup, reps=args.reps, synchronize=sync)
-                rows.append(summarize(pf, backend=name, sparsity=sp,
-                                       context_length=band, phase="prefill",
-                                       n_warmup=args.warmup, clocks_locked=clocks_locked,
-                                       detail="logits_to_keep=1"))
-                prefill_ms[(name, sp)] = rows[-1].ms_mean
-
-                # Decode by SLOPE across two generation lengths, in the same
-                # instrument and the same session. The difference cancels the
-                # prefill and any fixed per-call overhead, so the step cost is
-                # not obtained by subtracting one measurement from another
-                # taken a different way -- which is how the 55.5 ms figure was
-                # produced, and it is one of the three numbers that would not
-                # reconcile.
-                def _gen(k):
-                    return time_repeated(
-                        lambda: wrapped.generate(ids, be, cfg=cfg, max_new_tokens=k,
-                                                  layer_scores=ls, **NO_STOPS),
-                        warmup=max(1, args.warmup - 1),
-                        reps=max(3, args.reps // 2), synchronize=sync)
-                g_lo, g_hi = _gen(K_LO), _gen(K_HI)
-                lo = sum(g_lo) / len(g_lo)
-                hi = sum(g_hi) / len(g_hi)
-                step = (hi - lo) / (K_HI - K_LO)
-                rows.append(summarize([step], backend=name, sparsity=sp,
-                                       context_length=band, phase="decode_step",
-                                       n_warmup=args.warmup, clocks_locked=clocks_locked,
-                                       detail=f"slope over max_new_tokens {K_LO}->{K_HI} "
-                                              f"({lo:.1f} -> {hi:.1f} ms), stops disabled"))
-                print(f"  {name:<13}{'' if sp is None else sp:>5}  "
-                      f"prefill {prefill_ms[(name, sp)]:8.1f}  "
-                      f"decode/step {step:7.2f}", flush=True)
-
-                # (a) INTERNAL check: same instrument, same session. This is
-                #     the decisive one -- if the phases do not compose here,
-                #     they do not compose at all.
-                r = reconcile(prefill_ms=prefill_ms[(name, sp)], decode_step_ms=step,
-                               n_generated=K_HI, observed_total_ms=hi,
-                               context_length=band, backend=name, sparsity=sp)
-                recs.append(r)
-                print(f"    internal  {r.render()}", flush=True)
-
-                # (b) EXTERNAL check: against Stage 3's banked end-to-end mean.
-                #     Tests whether THAT number means what it has been used for.
-                key = (name, sp, band)
-                if key in observed:
-                    obs, ngen = observed[key]
-                    r2 = reconcile(prefill_ms=prefill_ms[(name, sp)],
-                                    decode_step_ms=step, n_generated=ngen,
-                                    observed_total_ms=obs, context_length=band,
-                                    backend=name, sparsity=sp)
-                    recs.append(r2)
-                    print(f"    stage3    {r2.render()}", flush=True)
-
-            for sp in sparsities:
-                ratio = scoring_overhead_ratio(
-                    scoring_ms, prefill_ms[("sdpa_flash", None)],
-                    prefill_ms[("block_sparse", sp)])
-                if ratio == ratio:
-                    print(f"  scoring costs {ratio:.1f}x what sparsity {sp:g} "
-                          f"saved on prefill", flush=True)
-                else:
-                    print(f"  sparsity {sp:g} saved NOTHING on prefill -- the "
-                          f"scoring overhead ratio is undefined, which is "
-                          f"itself the finding", flush=True)
+            # The SAME body tests/test_phase_timing_interfaces.py drives
+            # against a toy model. Both 2026-09-07 failures were in a script
+            # body no test could reach.
+            band_rows, band_recs, scoring_ms, prefill_ms = measure_band(
+                wrapped, ids, band=band, arms=arms, cfg_for=cfg_for,
+                scratch_dir=scratch, observed=observed, warmup=args.warmup,
+                reps=args.reps, scoring_reps=max(3, args.reps // 3),
+                synchronize=sync, clocks_locked=clocks_locked,
+                backend_factory=backend_instance)
         finally:
             wrapped.unwrap()
 
+        rows.extend(band_rows)
+        recs.extend(band_recs)
+        print(f"  scoring          {scoring_ms:9.1f} ms", flush=True)
+        for (name, sp), pf in prefill_ms.items():
+            step = [r for r in band_rows if r.phase == "decode_step"
+                    and r.backend == name and r.sparsity == sp][0].ms_mean
+            print(f"  {name:<13}{'' if sp is None else sp:>5}  "
+                  f"prefill {pf:8.1f}  decode/step {step:7.2f}", flush=True)
+        for r in band_recs:
+            print("    " + r.render(), flush=True)
+        for sp in sparsities:
+            ratio = scoring_overhead_ratio(
+                scoring_ms, prefill_ms[("sdpa_flash", None)],
+                prefill_ms[("block_sparse", sp)])
+            if ratio == ratio:
+                print(f"  scoring costs {ratio:.1f}x what sparsity {sp:g} saved "
+                      f"on prefill", flush=True)
+            else:
+                print(f"  sparsity {sp:g} saved NOTHING on prefill -- scoring "
+                      f"overhead ratio undefined, which is itself the finding",
+                      flush=True)
+
         pd.DataFrame([r.to_dict() for r in rows]).to_parquet(
             out / "phases.parquet", index=False)
+        if recs:
+            pd.DataFrame([r.to_dict() for r in recs]).to_parquet(
+                out / "reconciliation.parquet", index=False)
 
     prov = provenance.capture().to_dict()
     df = pd.DataFrame([r.to_dict() for r in rows])

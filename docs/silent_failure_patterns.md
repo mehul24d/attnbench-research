@@ -973,3 +973,48 @@ forget it.
 cardinality you expect. `df.groupby(keys).size().min()` is one line and would
 have caught this instantly. A column that identifies an *example* cannot
 identify a *cell*.
+
+## 21. "Tested on CPU" that tests the arithmetic and not the interfaces
+
+**2026-09-07. Two failures in one 7-minute session, both mine, both the same
+shape.**
+
+`scripts/run_phase_timing.py` failed twice on a rented L4:
+
+1. `compute_importance_scores(..., cache_dir=None)` — `None` is not a
+   supported "don't cache" sentinel; `score_cache._path_for` calls `Path()`
+   on it.
+2. `masks.mask_for(cfg, importance_scores=scores[0])` — one index short.
+   `scores[layer]` is `(n_heads_kv, n_blocks, n_blocks)`; the function wants
+   one head's `(n_blocks, n_blocks)`.
+
+`tests/test_phase_timing.py` was green through both. It covers the timing
+protocol and the reconciliation arithmetic, which are correct, and touches
+neither `SwappableAttentionModel` nor `masks`. **The claim "tested on CPU"
+was narrower than it sounded**, and the part it did not cover is the part
+that only fails where it costs money.
+
+**A mock would not have helped.** What broke was a signature, and a mock
+encodes the author's belief about the signature rather than the signature
+itself — it would have agreed with the bug.
+
+**The fix, and it generalises.** The measured body moved out of the script
+into `phase_timing.measure_band`, and a CPU test drives *that function*
+against a real 2-layer `LlamaForCausalLM` at hidden size 32. One body, run by
+both the script and the test. A test that merely called the same methods in
+its own code would re-encode the same assumption; the point is that there is
+one body.
+
+`tests/test_phase_timing_interfaces.py` also pins each failure individually —
+the cache-entry count proves every scoring rep is a real miss (a shared id
+would time a disk read and report ~0 ms), and the shapes are asserted both
+ways round.
+
+**Remaining exposure, audited not assumed.** Of the repo's scripts, the ones
+holding GPU-path logic no test reaches are `time_one_accuracy_example.py`
+(398 lines — and it *did* fail on hardware this session with `KeyError:
+'decode'`), `decide_gla_arm.py`, `flex_session_recheck.py`,
+`probe_batch_scaling.py` and `flex_kernel_options_probe.py`. The pattern to
+apply to each is the same: move the body into a module and drive it from a
+toy-model test. Not done yet; recorded so it is a known debt rather than a
+surprise.
