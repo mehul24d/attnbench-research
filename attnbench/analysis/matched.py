@@ -77,7 +77,16 @@ class MatchedAccuracyResult:
     mean_diff: float
     ci_lower: float
     matched: bool
-    directional: bool
+    # Superiority, from the SAME one-sided bound `matched` uses. Non-inferiority
+    # asks `ci_lower > -epsilon`; this asks `ci_lower > 0`. No second bootstrap
+    # and no new threshold -- inventing one would be a knob to tune after
+    # seeing the answer, and the bound needed is already computed.
+    #
+    # A sparse arm cannot beat dense by discarding computation, so a True here
+    # is evidence about where the MASK came from, not about the kernel. See
+    # docs/claims.md, "The oracle can put sparse ABOVE dense".
+    exceeds_dense: bool = False
+    directional: bool = False
     detail: str = ""
 
     def to_dict(self) -> dict:
@@ -100,7 +109,18 @@ class MatchedSparsityBudget:
     dense_backend: str
     sparse_backend: str
     matched_sparsity: Optional[float]
-    directional: bool
+    # True when ANY sparsity level at this (task, context_length) beat dense
+    # beyond noise. Derived from `exceeds_dense`, never passed in.
+    #
+    # It marks the budget as partly oracle-driven: where the ranking can push
+    # sparse above dense, some of what cleared the non-inferiority bar was
+    # supplied by full knowledge of the attention scores rather than by the
+    # sparsity being harmless. The budget stays reportable -- dropping such a
+    # task would hide the very effect that makes the oracle caveat
+    # load-bearing -- but it is queryable rather than prose, the same way
+    # score_source, haystack_mode and gate_source are.
+    oracle_sensitive: bool = False
+    directional: bool = False
     detail: str = ""
 
     def to_dict(self) -> dict:
@@ -180,6 +200,42 @@ def _paired_arrays(dense_rows: pd.DataFrame, sparse_rows: pd.DataFrame,
     return dense_by_id.loc[common].to_numpy(), sparse_by_id.loc[common].to_numpy()
 
 
+def band_for(context_length: int, seq_lens) -> int:
+    """The grid BAND a row belongs to, from its real tokenized length.
+
+    Stage 3 records `context_length` as the exact token count, which was a
+    deliberate fix (docs/limitations.md, "Context lengths are exact token
+    counts") -- so it varies per example: 224 distinct values across three
+    bands, e.g. 1972-2062 around 2048 and 8010-8196 around 8192. There is no
+    band column on the row.
+
+    Grouping on `context_length` therefore produces one cell per token count.
+    On the real data that is ~7 paired examples per cell instead of 300, and
+    the paired bootstrap runs on n=1 without complaining -- it printed a full
+    table of sparsity budgets on 2026-09-07 before anyone checked the cell
+    sizes. See docs/silent_failure_patterns.md #20.
+
+    Assignment is by nearest band and is ASSERTED unambiguous rather than
+    assumed: the observed spread is tens of tokens against band gaps of
+    thousands, so anything landing near a midpoint means the row did not come
+    from this grid and must not be silently filed under the closer half.
+    """
+    bands = sorted(int(s) for s in seq_lens)
+    if not bands:
+        raise ValueError("no seq_lens in grid: cannot assign a band")
+    nearest = min(bands, key=lambda b: abs(b - context_length))
+    # 25% of the band is far wider than any real tokenizer overshoot (the
+    # largest observed is 2062 against 2048, 0.7%) and far narrower than half
+    # the gap to the next band.
+    if abs(nearest - context_length) > 0.25 * nearest:
+        raise ValueError(
+            f"context_length {context_length} is not within 25% of any grid "
+            f"band {bands} -- nearest is {nearest}. Refusing to assign it: a "
+            f"row this far from every band did not come from this grid, and "
+            f"filing it under the closer one would silently mix populations.")
+    return nearest
+
+
 def _sparsity_levels_present(rows: pd.DataFrame) -> list[Optional[float]]:
     """Distinct sparsity values a backend's rows actually use in this cell.
 
@@ -227,12 +283,17 @@ def run_matched_analysis(df: pd.DataFrame, grid: AccuracyGrid, *,
     can never silently look fully powered downstream.
     """
     results: list[MatchedAccuracyResult] = []
+    # Band, not raw token count -- see band_for(). Computed once here rather
+    # than by each caller, so a caller cannot forget it and get n=1 cells.
+    df = df.copy()
+    df["_band"] = [band_for(int(c), grid.seq_lens) for c in df["context_length"]]
+
     tasks = sorted(df["task"].unique())
-    context_lengths = sorted(int(c) for c in df["context_length"].unique())
+    context_lengths = sorted(int(c) for c in df["_band"].unique())
 
     for task in tasks:
         for context_length in context_lengths:
-            cell = df[(df["task"] == task) & (df["context_length"] == context_length)]
+            cell = df[(df["task"] == task) & (df["_band"] == context_length)]
             dense_rows = cell[cell["backend"] == dense_backend]
             if dense_rows.empty:
                 continue
@@ -258,7 +319,9 @@ def run_matched_analysis(df: pd.DataFrame, grid: AccuracyGrid, *,
                             epsilon=epsilon, dense_backend=dense_backend,
                             sparse_backend=sparse_backend, n=len(dense_scores),
                             mean_diff=mean_diff, ci_lower=ci_lower,
-                            matched=ci_lower > -epsilon, directional=directional,
+                            matched=ci_lower > -epsilon,
+                            exceeds_dense=ci_lower > 0.0,
+                            directional=directional,
                             detail=("directional point: n reduced below the main "
                                      "grid's power-adequate budget, see stage3_grid.yaml"
                                      if directional else ""),
@@ -297,12 +360,23 @@ def best_matched_sparsity_budget(matched_results: list[MatchedAccuracyResult],
     for (task, context_length, epsilon, sparse_backend), rows in sorted(by_group.items()):
         matched_sparsities = [r.sparsity for r in rows if r.matched]
         best = max(matched_sparsities) if matched_sparsities else None
+        oracle_sensitive = any(r.exceeds_dense for r in rows)
+        notes = []
+        if best is None:
+            notes.append("no tested sparsity level was non-inferior to dense "
+                         "at this epsilon")
+        if oracle_sensitive:
+            notes.append("oracle-sensitive: at least one sparsity level "
+                         "EXCEEDED dense beyond noise, so this budget is "
+                         "partly oracle-driven -- it certifies non-inferiority "
+                         "when the mask is chosen with full knowledge of the "
+                         "attention scores, not that the budget is free")
         out.append(MatchedSparsityBudget(
             task=task, context_length=context_length, epsilon=epsilon,
             dense_backend=rows[0].dense_backend, sparse_backend=sparse_backend,
-            matched_sparsity=best, directional=rows[0].directional,
-            detail=("" if best is not None else
-                    "no tested sparsity level was non-inferior to dense at this epsilon"),
+            matched_sparsity=best, oracle_sensitive=oracle_sensitive,
+            directional=rows[0].directional,
+            detail="; ".join(notes),
         ))
     return out
 

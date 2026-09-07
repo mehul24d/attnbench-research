@@ -240,3 +240,116 @@ def test_to_dataframe_round_trips_both_result_types():
     df_budgets = to_dataframe(budgets)
     assert list(df_matched["sparsity"]) == [0.5]
     assert list(df_budgets["matched_sparsity"]) == [0.5]
+
+
+# --------------------------------------------------------------------------
+# oracle_sensitive: the flag that keeps `vt` reportable rather than dropped.
+# --------------------------------------------------------------------------
+
+def _paired_arm(task, n=200, dense_mean=70.0, sparse_mean=70.0, seed=0):
+    """Paired rows where the sparse arm sits a fixed offset from dense."""
+    rng = np.random.default_rng(seed)
+    base = rng.normal(dense_mean, 5.0, n)
+    rows = []
+    for i, b in enumerate(base):
+        rows.append(dict(task=task, context_length=2048, backend="sdpa_flash",
+                         sparsity=np.nan, example_id=f"e{i}", score=b))
+        rows.append(dict(task=task, context_length=2048, backend="block_sparse",
+                         sparsity=0.75, example_id=f"e{i}",
+                         score=b + (sparse_mean - dense_mean)))
+    return pd.DataFrame(rows)
+
+
+def test_superiority_reuses_the_non_inferiority_bound():
+    """`exceeds_dense` is `ci_lower > 0`; `matched` is `ci_lower > -epsilon`.
+    One bootstrap, one bound, two thresholds. A second estimator here would be
+    a knob available for tuning after the answer is known."""
+    rng = np.random.default_rng(1)
+    dense = rng.normal(70, 5, 300)
+    mean_diff, ci_lower = paired_bootstrap_diff_ci(dense, dense + 14.6)
+    assert mean_diff == pytest.approx(14.6, abs=0.01)
+    assert ci_lower > 0.0
+
+
+def test_a_task_where_sparse_beats_dense_is_flagged_and_still_reported():
+    """The `vt` case, measured 2026-09-07: block_sparse at 0.75 beat dense by
+    14.6 points at 8192, ~9 SEs.
+
+    It must still produce a matched budget. Dropping the one task where the
+    oracle shows through would hand a reader a cleaner picture than the data
+    supports, and would make the oracle caveat read as boilerplate.
+    """
+    df = _paired_arm("vt", dense_mean=70.5, sparse_mean=85.1)
+    res = run_matched_analysis(df, _grid(sparsities=(0.75,), tasks=("vt",)),
+                               dense_backend="sdpa_flash",
+                               sparse_backends=("block_sparse",), n_resamples=2000)
+    budgets = best_matched_sparsity_budget(res)
+    assert any(r.exceeds_dense for r in res)
+    assert budgets
+    for b in budgets:
+        assert b.oracle_sensitive is True
+        assert b.matched_sparsity is not None       # reported, not excluded
+        assert "oracle-sensitive" in b.detail
+
+
+def test_a_task_where_sparse_merely_matches_is_not_flagged():
+    """The flag has to discriminate or it carries no information -- the same
+    reason the gate_source column has a test that two gates differ."""
+    df = _paired_arm("niah_single", dense_mean=70.0, sparse_mean=70.0, seed=7)
+    res = run_matched_analysis(df, _grid(sparsities=(0.75,)),
+                               dense_backend="sdpa_flash",
+                               sparse_backends=("block_sparse",), n_resamples=2000)
+    budgets = best_matched_sparsity_budget(res)
+    assert not any(r.exceeds_dense for r in res)
+    assert all(b.oracle_sensitive is False for b in budgets)
+
+
+# --------------------------------------------------------------------------
+# Cells are bands, not token counts. The test whose absence let n=1 through.
+# --------------------------------------------------------------------------
+
+def test_varying_token_counts_collapse_into_one_band_cell():
+    """The bug this file did not catch until Stage 4's first real run.
+
+    Every fixture above uses `context_length=2048` exactly, so grouping on the
+    raw column looked correct. Real Stage 3 rows carry the EXACT tokenized
+    length -- 224 distinct values across three bands -- and the same grouping
+    produced ~7 paired examples per cell instead of 300. The bootstrap ran on
+    n=1 and printed a full table of budgets.
+
+    The premise the old fixtures asserted was "context_length identifies a
+    cell". This asserts the thing that actually has to hold: rows spread
+    across a band's real token counts form ONE cell.
+    """
+    rng = np.random.default_rng(0)
+    rows = []
+    for i in range(120):
+        cl = int(rng.integers(1972, 2063))        # the real observed spread
+        base = float(rng.normal(70, 5))
+        rows.append(dict(task="niah_single", context_length=cl,
+                         backend="sdpa_flash", sparsity=np.nan,
+                         example_id=f"e{i}", score=base))
+        rows.append(dict(task="niah_single", context_length=cl,
+                         backend="block_sparse", sparsity=0.75,
+                         example_id=f"e{i}", score=base))
+    df = pd.DataFrame(rows)
+
+    res = run_matched_analysis(df, _grid(sparsities=(0.75,)),
+                               dense_backend="sdpa_flash",
+                               sparse_backends=("block_sparse",), n_resamples=500)
+    assert len(res) > 0
+    assert {r.context_length for r in res} == {2048}, "rows must land in one band"
+    assert all(r.n == 120 for r in res), (
+        f"cell sizes {[r.n for r in res]} -- every paired example belongs to "
+        f"the one band cell, not to its own token count")
+
+
+def test_a_length_far_from_every_band_is_refused():
+    """Nearest-band assignment must not quietly absorb a row from a different
+    grid. Refusing is the only safe answer -- filing it under the closer half
+    mixes populations invisibly."""
+    from attnbench.analysis.matched import band_for
+    assert band_for(2062, (2048, 4096, 8192)) == 2048
+    assert band_for(8010, (2048, 4096, 8192)) == 8192
+    with pytest.raises(ValueError, match="not within 25%"):
+        band_for(3000, (2048, 4096, 8192))

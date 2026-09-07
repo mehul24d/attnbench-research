@@ -938,3 +938,38 @@ correct to run and established a real fact. It is that **a mechanism with one
 global slot cannot be exercised without occupying that slot.** Test the
 authorisation (`sudo -n true`) rather than the effect, or snapshot and restore
 the slot in the same breath.
+
+## 20. Grouping analysis cells on a column that identifies examples, not cells
+
+**2026-09-07, Stage 4's first run against real data.**
+
+`run_matched_analysis` grouped on `context_length`. Stage 3 records that as
+the **exact tokenized length**, which was itself a deliberate correctness fix
+(docs/limitations.md, "Context lengths are exact token counts") — so it
+varies per example: **224 distinct values** across three bands, 1972–2062
+around 2048, 8010–8196 around 8192.
+
+So each "cell" was one token count. **Mean 7 paired examples instead of 300,
+minimum 1.** `paired_bootstrap_diff_ci` accepts n=1 without complaint — a
+one-element resample has zero variance and a lower bound equal to the point
+estimate, so every such cell reports a confident result. The script printed a
+288-column table of sparsity budgets and a plausible `oracle_sensitive` list.
+Nothing raised, nothing warned.
+
+**Why the tests did not catch it.** Every fixture in `test_matched.py` used
+`context_length=2048` *exactly*, so grouping on the raw column was correct
+under the test's premise and wrong under reality's. Same shape as the
+`position_ids` catch: the test asserted a mechanism against a premise that
+does not hold in production. The regression test now asserts the property
+that actually has to hold — rows spread across a band's real token counts
+form **one** cell — and it fails against the old code.
+
+**Fix:** `band_for(context_length, grid.seq_lens)`, nearest-band with the
+assignment *asserted* unambiguous (refuses anything beyond 25% of a band)
+rather than assumed, applied inside `run_matched_analysis` so a caller cannot
+forget it.
+
+**The generalisable rule:** before grouping, check that the group key has the
+cardinality you expect. `df.groupby(keys).size().min()` is one line and would
+have caught this instantly. A column that identifies an *example* cannot
+identify a *cell*.
