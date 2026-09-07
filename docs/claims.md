@@ -176,6 +176,39 @@ row, and the dense baseline carried as a point (`is_dense_reference`) so a
 reader of `pareto.parquet` cannot see a tidy frontier without seeing that the
 baseline beats most of it.
 
+### The dominance result carries a decode-kernel handicap, measured 2026-09-07
+
+**Stage 5 decomposed the end-to-end totals and found a confound in them.**
+`block_sparse` has no decode path, so `decode_backend_for` falls back to
+`DENSE_DECODE_BACKEND = "sdpa_math"`. The dense arm is `sdpa_flash` and
+decodes through **itself**. So the two arms' decode steps run *different
+kernels*, and decode is the larger share of the bill:
+
+| band | dense decode (`sdpa_flash`) | sparse decode (`sdpa_math`) | penalty | share of the sparse arm's total |
+|---|---|---|---|---|
+| 2048 | 34.80 ms/token | 43.00 | **+23.5%** | 18.2% |
+| 4096 | 34.60 ms/token | 42.25 | **+22.1%** | 15.5% |
+| 8192 | 34.16 ms/token | 55.48 | **+62.4%** | **29.2%** |
+
+| | |
+|---|---|
+| **Supported** | *At 8192, **29% of the block-sparse arm's end-to-end time is a decode-kernel penalty unrelated to sparsity** — the fallback decodes through `sdpa_math` while the dense baseline decodes through `sdpa_flash`.* |
+| **Not supported** | *Block-sparse is 1.06× at best because sparsity does not pay off.* Part of the gap is this handicap, and the study has not yet measured the arm without it. |
+| **Not supported either** | *Correcting for it would make block-sparse win.* Removing the full penalty at 8192 closes some of the gap; it is not established that it closes all of it, and the `oracle_sensitive` caveat on `vt` is untouched by any of this. |
+
+`grid_configs.py` names this hazard in its own docstring — *"a row labelled
+`sdpa_math` and one labelled `sdpa_flash` are the same class and different
+kernels, which is exactly the confound `SDPABackend` exists to remove"* — and
+the decode fallback then reintroduces it **between arms**. The choice is
+recorded per row, so it was always visible; nothing compared the two arms'
+decode backends until the phases were measured separately.
+
+**This is what Stage 5 was for.** An end-to-end number cannot show that a
+third of a gap is a kernel-choice artifact; a decomposition can. The honest
+statement of the speedup result now carries this qualifier, and the
+unconfounded comparison — both arms decoding through the same dense kernel —
+is a measurement this study has **not** made.
+
 ---
 
 ## Cross-architecture timing
