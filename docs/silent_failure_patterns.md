@@ -880,3 +880,61 @@ synthesized gate was right for timing and catastrophic for accuracy, and
 nothing in between said so. Where a component is valid only under a stage's
 assumptions, name the assumption in its constructor and make the default
 refuse — a docstring cannot fail a run.
+
+## 18. A pipeline's exit status is the last command's, so `| tail` eats the verdict
+
+**2026-09-07, Stage 3 S1b, found within twenty minutes of predicting it.**
+
+The session wrapper ran the Stage 1 gate as:
+
+```bash
+python3 -u scripts/check_stage1_against_diagnostic.py --correctness ... | tail -20
+```
+
+`--correctness` is a *positional* argument. argparse exited **2**. `tail`
+exited 0, so the pipeline exited 0, the chain continued, and the next line
+printed `PHASE 2 DONE rc=$?` — where `$?` was also `tail`'s. **The Stage 1
+gate did not run and nothing said so.** Had success been inferred from the
+chain continuing, seven hours of bands would have been measured with the gate
+never having executed.
+
+Fourth instance of *stdout is not an outcome*, and the first in shell rather
+than Python. The earlier three: `git rev-parse HEAD` echoing "HEAD",
+`--query-compute-apps` printing nothing on success, `nvidia-smi -lgc`
+printing its permission error to stdout.
+
+Found only because the log was read deliberately. The compensating control —
+"no news is not good news, read the verdict out of the log" — was adopted
+*before* the failure, because the bug was spotted by reading the wrapper.
+
+**Fix:** `set -o pipefail`, and prefer `cmd > file; rc=$?` over `cmd | tail`
+wherever the exit status carries a decision.
+
+## 19. A test of a safety mechanism, run against the live instance of it
+
+**2026-09-07. The hard cap was unarmed for about ninety seconds.**
+
+Verifying that the self-teardown could actually fire — passwordless `sudo`
+was a real question, and a self-teardown that cannot execute is a fiction —
+the check was:
+
+```bash
+sudo -n shutdown -h +99   # can we schedule?
+sudo -n shutdown -c       # undo the test
+```
+
+`shutdown -c` cancels **every** scheduled shutdown. The 570-minute hard cap
+armed by the startup script at boot lives in the same single global slot, and
+went with it. Caught by checking `/run/systemd/shutdown/scheduled` in the
+same command, and re-armed at the original wall-clock deadline (40 s early,
+the safe direction).
+
+Second instance of this exact shape: the `lock_clocks` test escaping to real
+hardware because `sudo` resets PATH to `secure_path`, bypassing a PATH-based
+fake and changing a live GPU's clocks.
+
+The generalisation is not "don't test safety mechanisms" — the check was
+correct to run and established a real fact. It is that **a mechanism with one
+global slot cannot be exercised without occupying that slot.** Test the
+authorisation (`sudo -n true`) rather than the effect, or snapshot and restore
+the slot in the same breath.

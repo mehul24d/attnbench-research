@@ -199,3 +199,27 @@ def test_the_gla_arm_can_be_dropped_from_the_grid():
     # The rest of the study is untouched by the verdict.
     assert set(kept) - {"gla"} == set(dropped)
     assert dropped["block_sparse"] and dropped[grid.dense_backend]
+
+
+def test_the_hours_reporter_cannot_enumerate_a_category_it_cannot_price():
+    """Regression for KeyError: 'decode' (2026-09-07, on billed hardware).
+
+    `total_grid_flops_by_category` grew a "decode" key; `corrected_grid_hours`
+    deliberately RAISES rather than price a bandwidth-bound phase from TFLOPS,
+    so the priced dicts are built from a stripped copy. The reporter still
+    enumerated the unstripped one and indexed the stripped result.
+
+    Asserted as a general property rather than about "decode" specifically:
+    whatever categories a future version adds, the set the reporter walks must
+    be a subset of the set it can look up.
+    """
+    from attnbench.accuracy.timing_probe import corrected_grid_hours
+
+    total_flops = {"scoring": 10**15, "measured": 10**15, "decode": 10**15}
+    prefill_only = {k: v for k, v in total_flops.items() if k != "decode"}
+    hours = corrected_grid_hours(prefill_only, {c: 15.0 for c in prefill_only})
+
+    assert set(prefill_only) <= set(hours), (
+        "every category the reporter walks must be priceable")
+    assert "decode" not in hours, (
+        "decode must NOT acquire a TFLOPS price -- the raise is the point")

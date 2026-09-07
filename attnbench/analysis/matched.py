@@ -21,6 +21,27 @@ rather than leave implicit in the code:
   that (task, context_length, epsilon), not a gap in the data. It is always
   emitted as a row, never silently dropped from the output the way an
   empty-result skip would.
+
+WHAT A MATCHED BUDGET CERTIFIES, AND WHAT IT DOES NOT.
+
+The bar is "non-inferior to dense". On 2026-09-07 block_sparse at 0.75 was
+measured *superior* to dense on `vt` in all three bands (+10.8, +5.9, +14.6
+points against 1.0-1.4 point standard errors). A sparse method cannot beat
+dense by discarding computation; what it can do is benefit from where the
+mask came from, which here is an oracle ranking derived from the full
+attention scores (`score_source="dense_softmax_fp32"`).
+
+So on at least one task, part of what clears the non-inferiority bar is
+supplied by the oracle rather than by sparsity. Nothing about the statistics
+below is affected -- the paired bootstrap measures exactly what it claims on
+the rows it is given. What changes is the sentence a matched budget licenses:
+
+    NOT  "sparsity 0.75 is free at 8192 on vt"
+    BUT  "sparsity 0.75 is non-inferior to dense at 8192 on vt WHEN THE MASK
+          IS CHOSEN WITH FULL KNOWLEDGE OF THE ATTENTION SCORES"
+
+Callers reporting a matched budget must carry that qualifier. See
+docs/limitations.md, "The oracle is not only a ceiling", and docs/claims.md.
 """
 
 from __future__ import annotations

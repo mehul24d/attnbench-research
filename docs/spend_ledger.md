@@ -48,6 +48,8 @@ authority is the billing console.
 | 2026-09-04 | flex recheck diagnostic | **6** | **8** | `session_cost.txt` |
 | 2026-09-05 | `test-instance` ×4 — **test suite side effect** | **162** | **218** | audit log |
 | 2026-09-06 | `attnbench-stage3-s1` — Stage 3 S1, band 2048 | **651** | **868** | instance boot clock |
+| 2026-09-07 | `attnbench-stage3-s1b` — bands 4096 + 8192 | **341** | **455** | boot→guestTerminate |
+| 2026-09-07 | `attnbench-recover-1628` — e2-medium data recovery | **~25** | **~5** | CPU-only, no GPU |
 
 ### The 2026-09-05 row
 
@@ -130,3 +132,34 @@ python3 -u scripts/run_accuracy.py ... ; sudo shutdown -h +5
 That converts an unbounded idle into a 5-minute one. The 660-minute cap was
 armed and would have fired at 02:54 — it did its job as a backstop, but a
 backstop sized for the whole session cannot bound an idle window inside it.
+
+
+### The 2026-09-07 row — the self-teardown worked, and then the zone stocked out
+
+Boot 04:14:08Z, halted 09:55:49Z. GCP logged
+`compute.instances.guestTerminate — "Instance terminated by guest OS shutdown."`
+**341 minutes, ₹455**, against a booked bracket of ₹581–641. Band 4096 ran
+105 min against 143 projected; band 8192 ran 182 min against 241.
+
+The chained `; sudo shutdown -h +5` fired on its own with nobody watching.
+That is the direct fix for the ₹575 idle burn of 2026-09-06, and it is now
+demonstrated rather than argued.
+
+**What it did not cover:** `shutdown -h` halts, it does not delete, and the
+results were still on the disk. The restart to copy them off hit a
+`ZONE_RESOURCE_POOL_EXHAUSTED` stockout — the same zone that had capacity six
+hours earlier would not give the L4 back. Recovery, without retrying the
+failed start:
+
+1. `set-disk-auto-delete --no-auto-delete` **first**, so nothing downstream
+   could destroy 7200 rows.
+2. Delete the instance; the disk survived standalone.
+3. `e2-medium` (no GPU, so no stockout risk, ~₹3/h), attach the disk
+   `--mode=ro`, mount `norecovery`, copy, delete everything.
+
+**The lesson is about the gap between halt and delete.** A self-halt bounds
+the compute bill and leaves the data hostage to whatever capacity exists when
+you come back for it. The cheap fix is to sync results off at each band
+boundary to somewhere off-instance (GCS), not merely to a second file on the
+same disk — the band-boundary copies existed and were on the disk that could
+not boot.

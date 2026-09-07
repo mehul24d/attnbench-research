@@ -179,6 +179,46 @@ is recorded on every row as `score_source="dense_softmax_fp32"` rather than
 left in a docstring. A future cheap-estimator variant becomes a new
 `score_source` value, not a silent change in meaning.
 
+### The oracle is not only a ceiling. It can put sparse ABOVE dense.
+
+Stated as "an upper bound" this reads as a bound on how good sparse can be
+made to look. Measured on 2026-09-07 it is stronger than that, and the
+difference is qualitative rather than one of degree.
+
+**`block_sparse` at sparsity 0.75 beats the dense baseline on `vt` in all
+three measured bands** -- +10.8 at 2048 (86.8 vs 76.0), +5.9 at 4096 (90.6 vs
+84.7), **+14.6 at 8192** (85.1 vs 70.5) -- against standard errors of 1.0-1.4
+points on n=300 cells. At 8192 that is roughly nine standard errors, in the
+same direction, on three independent bands.
+
+Discarding computation cannot improve a model. What can is *where the mask
+comes from*: the ranking is derived from the full attention scores, so the
+mask concentrates attention on blocks that dense attention itself identified
+as important but does not preferentially attend to. On a task that requires
+following a chain of assignments, that acts as a denoiser -- it suppresses
+distractor blocks the dense model was still spending probability mass on.
+
+If that mechanism is right, **no deployable method can reproduce this
+result**, because a cheap estimator computed from partial information does
+not know which blocks matter. The oracle is not standing in for a deployable
+estimator here; it is supplying information the deployable estimator cannot
+have.
+
+Proposed mechanism, not a demonstrated one. What is demonstrated is the
+effect and its size. Distinguishing it would need the same grid under a
+genuinely cheap estimator, which is a `score_source` this study does not yet
+have.
+
+**Consequence for Stage 4 (`analysis/matched.py`).** The matched-accuracy
+protocol certifies "the smallest sparsity budget whose accuracy is
+non-inferior to dense". Where the oracle can push sparse *above* dense, part
+of what clears that bar is oracle-supplied. The protocol stays valid -- it
+measures exactly what it claims on the data it is given -- but what it
+certifies is narrower than "this budget is free". It is: *this budget is
+non-inferior to dense **when the mask is chosen with full knowledge of the
+attention scores***. That qualifier belongs in every statement of a matched
+budget, not only here.
+
 ## Batching does not help, and the reason is not the obvious one
 
 Measured at 16384 on an L4 (re-measured 2026-09-03 with token-exact sizing,

@@ -337,7 +337,13 @@ def main():
         _prefill_only(total_flops), {cat: ASSUMED_TFLOPS for cat in total_flops})
 
     print(f"\n{'category':<10} {'assumed_15TFLOPS_h':>20} {'measured_h':>12}")
-    for category in sorted(total_flops):
+    # _prefill_only, not total_flops. Both dicts above were built from the
+    # stripped version, so "decode" is a key this loop can enumerate and
+    # neither dict can answer -- it crashed the reporter on 2026-09-07 AFTER
+    # every measurement had been taken. Enumerating categories from one dict
+    # and looking them up in a narrower one is safe only while they are the
+    # same dict, which stopped being true when decode got its own category.
+    for category in sorted(_prefill_only(total_flops)):
         print(f"{category:<10} {assumed_hours[category]:20.2f} "
               f"{measured_hours[category]:12.2f}")
     print(f"{'total':<10} {assumed_hours['total']:20.2f} {measured_hours['total']:12.2f}")
