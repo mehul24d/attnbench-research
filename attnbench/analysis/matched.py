@@ -127,9 +127,28 @@ class MatchedSparsityBudget:
         return asdict(self)
 
 
+# The smallest paired sample this estimator will report a bound for.
+#
+# Chosen the way CANARY_MIN_LATENCY_MS was -- from the failure it prevents,
+# not for roundness. Below ~30 the percentile bootstrap's TAIL is estimated
+# from too few distinct resamples to mean anything, and the degenerate end is
+# actively misleading rather than merely noisy: at n=1 every resample is the
+# same element, the bootstrap distribution has zero variance, and `ci_lower`
+# comes back EQUAL to the point estimate. The smallest cells therefore look
+# the most certain. Noise does not widen the interval here, it collapses it,
+# which is why nothing looked wrong on 2026-09-07 when cells averaged 7
+# paired examples (docs/silent_failure_patterns.md #20).
+#
+# 30 cannot fire on valid data: this study's smallest planned cell is 100 (the
+# directional 32768 point) and its main bands are 300. It sits far below
+# anything legitimate and far above the 1-7 that actually occurred.
+MIN_PAIRED_N = 30
+
+
 def paired_bootstrap_diff_ci(dense_scores: np.ndarray, sparse_scores: np.ndarray,
                               *, n_resamples: int = 10000, seed: int = 0,
                               confidence: float = 0.95,
+                              min_n: int = MIN_PAIRED_N,
                               ) -> tuple[float, float]:
     """Paired bootstrap over (sparse - dense), same resampled example
     indices applied to both arms.
@@ -155,8 +174,17 @@ def paired_bootstrap_diff_ci(dense_scores: np.ndarray, sparse_scores: np.ndarray
             f"one score per example, in matching order, on both arms"
         )
     n = dense_scores.shape[0]
-    if n == 0:
-        raise ValueError("paired_bootstrap_diff_ci requires at least one paired example")
+    if n < min_n:
+        raise ValueError(
+            f"paired_bootstrap_diff_ci refuses n={n} (floor {min_n}): the "
+            f"percentile bootstrap cannot resolve a tail from this few paired "
+            f"examples, and it does not fail loudly -- at very small n the "
+            f"resample variance COLLAPSES and the bound comes back tighter "
+            f"than a large sample would give. A degenerate cell would report "
+            f"as the most confident one in the table. If this is deliberate, "
+            f"pass min_n explicitly; if it is not, check the cell sizes with "
+            f"df.groupby(keys).size().min() -- a column that identifies an "
+            f"example cannot identify a cell.")
 
     diffs = sparse_scores - dense_scores
     mean_diff = float(diffs.mean())
@@ -258,6 +286,7 @@ def run_matched_analysis(df: pd.DataFrame, grid: AccuracyGrid, *,
                           dense_backend: str = "sdpa_math",
                           sparse_backends: tuple[str, ...] = ("block_sparse", "gla", "sage"),
                           n_resamples: int = 10000, seed: int = 0,
+                          min_n: int = MIN_PAIRED_N,
                           ) -> list[MatchedAccuracyResult]:
     """Run the paired bootstrap non-inferiority test for every (task,
     context_length, sparse_backend, sparsity) cell present in `df`, at
@@ -311,7 +340,8 @@ def run_matched_analysis(df: pd.DataFrame, grid: AccuracyGrid, *,
 
                     dense_scores, sparse_scores = _paired_arrays(dense_rows, sparse_rows)
                     mean_diff, ci_lower = paired_bootstrap_diff_ci(
-                        dense_scores, sparse_scores, n_resamples=n_resamples, seed=seed)
+                        dense_scores, sparse_scores, n_resamples=n_resamples,
+                        seed=seed, min_n=min_n)
 
                     for epsilon in epsilons:
                         results.append(MatchedAccuracyResult(

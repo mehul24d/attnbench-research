@@ -1,6 +1,15 @@
 """Stage 4 (matched-accuracy operating points): paired bootstrap
 non-inferiority test, validated entirely with synthetic score arrays -- no
 model, no GPU, mirroring test_masks_determinism.py's CPU-only discipline.
+
+`min_n=1` appears in the STRUCTURAL tests -- the ones asserting how many rows
+come back, which cells are skipped, whether a flag propagates. Those use
+10-element frames because the shape of the output is what is under test, not
+the statistics. The floor (matched.MIN_PAIRED_N = 30) exists because a small
+paired sample does not merely widen the bound, it COLLAPSES it, so a
+degenerate cell reports as the most confident one in the table. Passing
+min_n=1 states that a test is opting out of a check it is not the subject of;
+the tests that do assert statistical behaviour use n >= 120 and the default.
 """
 
 from __future__ import annotations
@@ -98,7 +107,8 @@ def test_run_matched_analysis_computes_one_row_per_sparsity_per_epsilon():
         sparse_rows += _rows("niah_single", 2048, "block_sparse", sp, [90.0] * 20)
     df = pd.DataFrame(dense + sparse_rows)
 
-    results = run_matched_analysis(df, grid, epsilons=(1.0, 2.0, 5.0), n_resamples=1000)
+    results = run_matched_analysis(df, grid, epsilons=(1.0, 2.0, 5.0),
+                                   n_resamples=1000, min_n=1)
 
     assert len(results) == 3 * 3   # 3 sparsities x 3 epsilons
     assert all(isinstance(r, MatchedAccuracyResult) for r in results)
@@ -114,7 +124,7 @@ def test_run_matched_analysis_skips_cells_missing_either_arm():
     sparse_rows = _rows("niah_single", 2048, "block_sparse", 0.5, [90.0] * 10)
     df = pd.DataFrame(dense + sparse_rows)
 
-    results = run_matched_analysis(df, grid, epsilons=(1.0,))
+    results = run_matched_analysis(df, grid, epsilons=(1.0,), min_n=1)
 
     assert len(results) == 1   # only sparsity=0.5 has both arms
     assert results[0].sparsity == 0.5
@@ -130,7 +140,7 @@ def test_run_matched_analysis_covers_single_operating_point_backends():
     gla_rows = _rows("niah_single", 2048, "gla", None, [88.0] * 10)
     df = pd.DataFrame(dense + gla_rows)
 
-    results = run_matched_analysis(df, grid, epsilons=(5.0,),
+    results = run_matched_analysis(df, grid, epsilons=(5.0,), min_n=1,
                                     sparse_backends=("block_sparse", "gla"))
 
     assert len(results) == 1
@@ -147,7 +157,7 @@ def test_run_matched_analysis_handles_multiple_backends_in_one_call():
     gla_rows = _rows("niah_single", 2048, "gla", None, [90.0] * 10)
     df = pd.DataFrame(dense + block_sparse_rows + gla_rows)
 
-    results = run_matched_analysis(df, grid, epsilons=(5.0,),
+    results = run_matched_analysis(df, grid, epsilons=(5.0,), min_n=1,
                                     sparse_backends=("block_sparse", "gla"))
 
     by_backend = {}
@@ -167,7 +177,7 @@ def test_run_matched_analysis_propagates_directional_flag_from_grid():
             + _rows("niah_single", 32768, "block_sparse", 0.5, [90.0] * 10))
     df = pd.DataFrame(rows)
 
-    results = run_matched_analysis(df, grid, epsilons=(1.0,))
+    results = run_matched_analysis(df, grid, epsilons=(1.0,), min_n=1)
     by_len = {r.context_length: r.directional for r in results}
     assert by_len[2048] is False
     assert by_len[32768] is True
@@ -353,3 +363,34 @@ def test_a_length_far_from_every_band_is_refused():
     assert band_for(8010, (2048, 4096, 8192)) == 8192
     with pytest.raises(ValueError, match="not within 25%"):
         band_for(3000, (2048, 4096, 8192))
+
+
+def test_the_estimator_refuses_a_sample_it_cannot_resolve():
+    """MIN_PAIRED_N, and the reason it is not merely a warning.
+
+    At n=1 every bootstrap resample is the same element, so the resample
+    distribution has zero variance and `ci_lower` returns EQUAL to the point
+    estimate. A degenerate cell does not look noisy, it looks certain — which
+    is why 288 columns of budgets computed on ~7 paired examples raised
+    nothing on 2026-09-07.
+    """
+    from attnbench.analysis.matched import MIN_PAIRED_N
+
+    rng = np.random.default_rng(0)
+    for n in (1, 7, MIN_PAIRED_N - 1):
+        d = rng.normal(70, 5, n)
+        with pytest.raises(ValueError, match="refuses n="):
+            paired_bootstrap_diff_ci(d, d + 3.0)
+
+    # And the thing the floor is defending against, shown rather than asserted
+    # in prose: at n=1 the bound is the point estimate exactly.
+    d1 = np.array([70.0])
+    mean_diff, ci_lower = paired_bootstrap_diff_ci(d1, d1 + 3.0, min_n=1)
+    assert ci_lower == pytest.approx(mean_diff), (
+        "n=1 collapses the interval onto the point estimate -- the degenerate "
+        "cell reports as the most confident one")
+
+    # At the floor it works and the interval is real.
+    dn = rng.normal(70, 5, MIN_PAIRED_N)
+    mean_diff, ci_lower = paired_bootstrap_diff_ci(dn, dn + 3.0)
+    assert ci_lower < mean_diff
