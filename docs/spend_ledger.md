@@ -47,6 +47,7 @@ authority is the billing console.
 | 2026-09-03 | Stage 2 segment 1 | ~67 | ~90 | prose only |
 | 2026-09-04 | flex recheck diagnostic | **6** | **8** | `session_cost.txt` |
 | 2026-09-05 | `test-instance` ×4 — **test suite side effect** | **162** | **218** | audit log |
+| 2026-09-06 | `attnbench-stage3-s1` — Stage 3 S1, band 2048 | **651** | **868** | instance boot clock |
 
 ### The 2026-09-05 row
 
@@ -86,3 +87,45 @@ Machine images are billed for storage independently of any instance and are
 **not** in the table above: `attnbench-l4-image-v3-20260903` (21.5 GB) and
 `-v4-20260903` (22.0 GB). v3 is superseded by v4 and is a candidate for
 deletion.
+
+### The 2026-09-06 row — ~7 of 11 hours were idle
+
+`g2-standard-8` + L4 in `asia-south1-b`, boot 15:53:40Z, deleted 02:45:04Z.
+**651 minutes, ₹868** from `session_cost.txt`, which reads the instance's own
+boot clock.
+
+Band 2048 completed and banked 4500 valid rows. But the work inside those 651
+minutes was:
+
+| | |
+|---|---|
+| Phase 0–2 (launcher fix, deploy fix, clock-lock fix, gates) | ~1.6 h |
+| band 2048 generation (sum of `latency_ms` over 4500 rows) | **1.75 h** |
+| importance scoring, 900 examples at ~0.9 s | ~0.25 h |
+| **idle, after the band finished and before teardown** | **~7.2 h** |
+
+**Roughly ₹575 of the ₹868 bought nothing.**
+
+The cause is not a mis-estimate — the band's compute estimate was 1.71–1.97 h
+and it measured 1.75 h, the most accurate estimate this project has made. The
+cause is that the session ended a turn with the instance running, relying on a
+background watcher to report the band boundary. The watcher fired correctly.
+Its notification could only be *delivered* when the session next became
+active, which was the next morning.
+
+**A watcher that fires into an inactive session is not a watcher.** The
+standing rule — never end a turn with an instance running — exists precisely
+because the notification channel is not the billing channel, and only one of
+them keeps running overnight.
+
+**The structural fix is on the instance, not in the supervision.** A long run
+must arm its own teardown on completion, so the idle window is bounded by the
+machine rather than by whether anyone is awake:
+
+```bash
+python3 -u scripts/run_accuracy.py ... ; sudo shutdown -h +5
+```
+
+That converts an unbounded idle into a 5-minute one. The 660-minute cap was
+armed and would have fired at 02:54 — it did its job as a backstop, but a
+backstop sized for the whole session cannot bound an idle window inside it.
