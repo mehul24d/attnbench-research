@@ -110,14 +110,14 @@ class GatedLinearAttention(AttentionBackend):
         that should never be reachable by omission -- see the module
         docstring for the 900 rows it produced before this existed.
         """
-        if gate_source not in ("learned", "synthetic"):
+        if gate_source not in ("learned", "synthetic", "ungated"):
             raise ValueError(
-                f"gate_source must be 'learned' or 'synthetic', got "
-                f"{gate_source!r}")
+                f"gate_source must be 'learned', 'synthetic' or 'ungated', "
+                f"got {gate_source!r}")
         self.gate_source = gate_source
 
     def _require_usable_gate(self) -> None:
-        if self.gate_source == "synthetic":
+        if self.gate_source in ("synthetic", "ungated"):
             return
         raise UnsupportedConfig(
             "gla: no learned forget gate is available. This backend "
@@ -130,6 +130,16 @@ class GatedLinearAttention(AttentionBackend):
     def _gate_for(self, cfg: AttnConfig, k_btwd: torch.Tensor) -> torch.Tensor:
         """Deterministic forget-gate tensor for this config, cached on the
         instance across calls -- see module docstring."""
+        if self.gate_source == "ungated":
+            # g is a LOG decay applied as exp(cumsum(g)), so zeros mean a
+            # decay factor of exactly 1: nothing is ever forgotten. This is a
+            # real mechanism (ungated linear attention), not a repair of the
+            # synthetic gate -- it is simply not the mechanism Qwen's weights
+            # were trained for. It exists to answer one question: with the
+            # state retained in full, does the output depend on the context
+            # at all? See docs/gla_arm_decision.md.
+            return torch.zeros(k_btwd.shape, device=k_btwd.device,
+                               dtype=torch.float32)
         key = cfg.key()
         if getattr(self, "_gate_key", None) != key:
             seed = int(cfg.key(), 16) % (2**31)
