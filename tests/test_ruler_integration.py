@@ -116,3 +116,43 @@ def test_vt_generator_determinism_directly():
     a = variable_tracking.generate_vt_example(num_noise=20, seed=123)
     b = variable_tracking.generate_vt_example(num_noise=20, seed=123)
     assert a == b
+
+
+def test_a_smaller_n_per_length_is_the_PREFIX_of_a_larger_one():
+    """The whole reduced-n re-run design rests on this.
+
+    Examples are seeded per (seed, task, budget, index) and the filler-unit
+    count is solved from index 0's seed, so example k is byte-identical
+    whether n is 100 or 300. That is what keeps a 100-example re-run PAIRED
+    with the banked 300-example rows -- same example_ids, same contexts, same
+    answers -- rather than merely a smaller sample of a similar population.
+
+    If this ever stopped holding, a reduced re-run would silently compare
+    different prompts and the paired difference would be meaningless.
+    """
+    from attnbench.accuracy import sizing
+    big = generate_examples("niah_single", [2048], 12, seed=0,
+                            count_tokens=sizing.approximate_token_count)
+    small = generate_examples("niah_single", [2048], 4, seed=0,
+                              count_tokens=sizing.approximate_token_count)
+    assert len(small) == 4 and len(big) == 12
+    for a, b in zip(big, small):
+        assert a.example_id == b.example_id
+        assert a.context == b.context
+        assert a.answer == b.answer
+        assert a.haystack_units == b.haystack_units
+
+
+def test_the_prefix_property_holds_across_tasks_and_budgets():
+    """Not just the one task the re-run happens to use."""
+    from attnbench.accuracy import sizing
+    for task in ("niah_single", "vt"):
+        for budget in (2048, 4096):
+            big = generate_examples(task, [budget], 6, seed=0,
+                                    count_tokens=sizing.approximate_token_count)
+            small = generate_examples(task, [budget], 2, seed=0,
+                                      count_tokens=sizing.approximate_token_count)
+            assert [e.example_id for e in big[:2]] == \
+                   [e.example_id for e in small], (task, budget)
+            assert [e.context for e in big[:2]] == \
+                   [e.context for e in small], (task, budget)

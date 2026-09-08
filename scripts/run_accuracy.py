@@ -176,6 +176,17 @@ def main():
                          "band to reconstruct -- so a segment is expressed "
                          "here rather than by editing the pinned grid, which "
                          "would change what every OTHER segment measured.")
+    ap.add_argument("--tasks", default=None,
+                    help="comma-separated subset of the pinned grid's tasks. "
+                         "Like --seq-lens, a subset is expressed here rather "
+                         "than by editing the grid, which would change what "
+                         "every other segment measured.")
+    ap.add_argument("--n-per-length", type=int, default=None,
+                    help="cap examples per (task, band). Must not exceed the "
+                         "grid's own n: examples are seeded per index, so a "
+                         "smaller n is the PREFIX of the full set and stays "
+                         "paired with banked rows. A larger one would not be "
+                         "a subset of anything already measured.")
     ap.add_argument("--lock-clocks", action="store_true",
                     help="pin SM clocks before measuring, and stamp the "
                          "OUTCOME on every row. Not the intent -- "
@@ -248,6 +259,39 @@ def main():
     else:
         selected_seq_lens = dict(grid.seq_lens)
 
+    # Same reasoning as --seq-lens: a task this study did not plan is not a
+    # task it can report, and the subset must be expressed here rather than
+    # in the pinned grid.
+    if args.tasks:
+        requested_tasks = tuple(t.strip() for t in args.tasks.split(",") if t.strip())
+        unknown = [t for t in requested_tasks if t not in grid.tasks]
+        if unknown:
+            raise SystemExit(
+                f"--tasks {unknown} are not in the pinned grid "
+                f"({list(grid.tasks)}). A task this study did not plan is "
+                f"not a task it can report.")
+        selected_tasks = requested_tasks
+    else:
+        selected_tasks = tuple(grid.tasks)
+
+    # A smaller n is the prefix of the grid's set -- examples are seeded per
+    # (seed, task, budget, index) and the filler fit is solved from index 0,
+    # so example k is identical whether n is 100 or 300 (asserted in
+    # tests/test_ruler_integration.py). That is what keeps a reduced re-run
+    # PAIRED with the banked rows. A LARGER n would add examples no banked
+    # row has a partner for, so it is refused rather than silently allowed.
+    if args.n_per_length is not None:
+        if args.n_per_length < 1:
+            raise SystemExit("--n-per-length must be at least 1")
+        too_big = {s: n for s, n in selected_seq_lens.items()
+                   if args.n_per_length > n}
+        if too_big:
+            raise SystemExit(
+                f"--n-per-length {args.n_per_length} exceeds the pinned grid "
+                f"at {too_big}. A larger n is not a prefix of anything "
+                f"already measured, so those rows would be unpaired.")
+        selected_seq_lens = {s: args.n_per_length for s in selected_seq_lens}
+
     # Clocks: attempt, then stamp what HAPPENED, never what was asked for.
     # Every row in this project so far carries clocks_locked=False because
     # nothing has ever passed the flag -- capture() takes it as a parameter
@@ -265,7 +309,9 @@ def main():
     print(f"grid          : {args.grid}")
     print(f"model primary : {grid.model_primary}")
     print(f"model alt     : {grid.model_alternate}")
-    print(f"tasks         : {', '.join(grid.tasks)}")
+    print(f"tasks         : {', '.join(selected_tasks)}"
+          + ("" if len(selected_tasks) == len(grid.tasks)
+             else f"   [SUBSET of {len(grid.tasks)}]"))
     print("seq_lens (n)  : " + ", ".join(
         f"{s}{'*' if grid.is_directional(s) else ''}={n}"
         for s, n in sorted(selected_seq_lens.items()))
@@ -294,7 +340,7 @@ def main():
 
     examples_by_task_length = build_examples_by_task_length(
         grid, seed=args.seed, count_tokens=count_tokens,
-        seq_lens=selected_seq_lens)
+        tasks=selected_tasks, seq_lens=selected_seq_lens)
     examples_by_id = {
         (task, ex.example_id): ex
         for (task, _seq_len), exs in examples_by_task_length.items()
@@ -307,7 +353,7 @@ def main():
         include_gla=not args.no_gla)
     print(f"backends      : {', '.join(configs_by_backend)}")
     print("caps (tokens) : " + ", ".join(
-        f"{t}={stopping.token_cap(t)}" for t in grid.tasks))
+        f"{t}={stopping.token_cap(t)}" for t in selected_tasks))
 
     cells = build_cells(configs_by_backend=configs_by_backend,
                         examples_by_task_length=examples_by_task_length)
