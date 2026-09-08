@@ -1168,3 +1168,39 @@ The generalisable check: **anywhere a wholesale stamp, default, or config
 merge is applied over rows a harness produced, ask which fields both sides
 have an opinion about.** Those are exactly the fields where the merge order
 decides the truth, and merge order is not a fact anyone reviews.
+
+### The audit this prompted, and what it found
+
+If a fix in a call site is not a fix, the question is which other rules live
+in call sites. Auditing for it turned up one more, and it is a *decision*
+rather than a mechanism, which makes it worse:
+
+**The GLA exclusion had four definitions.** The pre-registered DROP verdict
+(`docs/gla_arm_decision.md`) decides which rows every accuracy analysis may
+read. It was restated in:
+
+| site | form | justification given |
+|---|---|---|
+| `run_pareto.py` | `EXCLUDE_BACKENDS = ("gla",)` | none |
+| `run_matched_analysis.py` | `EXCLUDE_BACKENDS = ("gla",)` | `results/stage3_s1/INVALID_ROWS.md` |
+| `run_decode_confound.py` | `EXCLUDE_BACKENDS = ("gla",)` | none |
+| `run_phase_timing.py` | `df.backend != "gla"` | none |
+
+Only `run_decision_map.py` imported it from somewhere else. Two different
+justifications, and the fourth is an inline literal that **does not answer a
+grep for the constant's name** — so an audit of "where is this rule applied"
+misses it, which is how it survived three earlier passes over these files.
+
+Consolidated to `grid_configs.ACCURACY_EXCLUDED_BACKENDS`, next to the arm
+decision that produced it. `tests/test_shared_project_rules.py` asserts there
+is exactly one definition, that no script filters by an inline literal, and
+that the shared constant carries the verdict it came from — a bare
+authoritative tuple with no explanation is worse than four local copies.
+
+**The generalisable form.** A rule with N definitions cannot be revisited; it
+can only be re-found. And the cost is not symmetric with the number of
+copies: it is set by the *least greppable* one, because that is the copy an
+audit misses. Prefer one definition; where a second is genuinely needed,
+assert the two against each other (as `decode_confound._dominates` does
+against `pareto._dominates`) rather than maintaining them in parallel by
+hope.

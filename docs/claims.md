@@ -141,9 +141,18 @@ stated ways (no warmup control, scoring pass excluded, no prefill/decode
 split) and the run order biases *against* the finding — the dense arm runs
 first in every band, so warmup penalises the baseline.
 
+> **These are the measured numbers, and they were measured under two
+> confounds Stage 5 later found — an unmatched decode kernel between arms,
+> and unequal generation length on `vt`. Read
+> ["The dominance result was measured under two confounds"](#the-dominance-result-was-measured-under-two-confounds)
+> below before quoting any figure in this section.** The headline **1.06×**
+> survives normalization unchanged; the operating point behind it and the
+> dominance counts do not.
+
 | | |
 |---|---|
-| **Supported** | *At batch 1 with prefill-only sparsity and dense decode, the best end-to-end speedup any accuracy-matched block-sparse operating point achieves is **1.06×** — `vt`, 0.5 sparsity, 4096. On `niah_single` every matched point is **slower** than dense (0.8–0.9×) and dominated by it on both axes.* |
+| **Supported, as measured** | *At batch 1 with prefill-only sparsity and dense decode, the best end-to-end speedup any accuracy-matched block-sparse operating point achieves is **1.06×** — `vt`, 0.5 sparsity, 4096. On `niah_single` every matched point is **slower** than dense (0.8–0.9×) and dominated by it on both axes.* |
+| **Superseded by the correction** | *…and that best point is `vt`/0.5/4096.* Normalized, the best point is `niah_single`/0.9/8192, at the same 1.057×. *…and every `niah_single` point is dominated.* Normalized, 9 of 15 are. |
 | **Not supported** | *Block-sparse attention is slower than dense.* |
 | **Also not supported** | *Block-sparse attention gives a 1.24× speedup.* |
 
@@ -176,38 +185,90 @@ row, and the dense baseline carried as a point (`is_dense_reference`) so a
 reader of `pareto.parquet` cannot see a tidy frontier without seeing that the
 baseline beats most of it.
 
-### The dominance result carries a decode-kernel handicap, measured 2026-09-07
+### The dominance result was measured under two confounds
 
-**Stage 5 decomposed the end-to-end totals and found a confound in them.**
-`block_sparse` has no decode path, so `decode_backend_for` falls back to
-`DENSE_DECODE_BACKEND = "sdpa_math"`. The dense arm is `sdpa_flash` and
-decodes through **itself**. So the two arms' decode steps run *different
-kernels*, and decode is the larger share of the bill:
+**Stage 5 decomposed the end-to-end totals and found confounds inside them.**
+This is the case for Stage 5 in one sentence: *an end-to-end number cannot
+surface a confound that lives inside it.*
+
+**Confound 1 — the decode kernel.** `block_sparse` has no decode path, so
+`decode_backend_for` falls back to `DENSE_DECODE_BACKEND = "sdpa_math"`. The
+dense arm is `sdpa_flash` and decodes through **itself**. Sparsity is
+prefill-only, so decode is dense in both arms — through *different kernels*,
+on the phase that dominates the bill at batch 1.
 
 | band | dense decode (`sdpa_flash`) | sparse decode (`sdpa_math`) | penalty | share of the sparse arm's total |
 |---|---|---|---|---|
-| 2048 | 34.80 ms/token | 43.00 | **+23.5%** | 18.2% |
-| 4096 | 34.60 ms/token | 42.25 | **+22.1%** | 15.5% |
-| 8192 | 34.16 ms/token | 55.48 | **+62.4%** | **29.2%** |
+| 2048 | 34.80 ms/token | 42.90–42.95 | **+23.3%** | 18.2% |
+| 4096 | 34.60 ms/token | 42.04–42.57 | **+21.5%** | 15.5% |
+| 8192 | 34.16 ms/token | 54.94–55.92 | **+60.8 to +63.7%** | **29.2%** |
+
+**Confound 2 — unequal generation length, which was already in the measured
+result.** On `vt` the arms do not generate the same number of tokens: dense
+35.2–38.8, sparse 27.7–34.6. Their mean end-to-end latencies were never
+comparable. An arm that stops earlier finishes sooner for reasons that have
+nothing to do with attention speed. `niah_single` is clean — every arm
+generates exactly 14.0.
+
+Correcting **only** the decode kernel gives 0/31 dominated and a best speedup
+of 1.28×. **Both of those are artifacts of confound 2** and neither is
+reported. The unconfounded quantity holds both arms to the same decode kernel
+*and* the same generation length.
+
+#### DERIVED, NOT MEASURED
+
+`normalized` is a model — `prefill(band, sparsity) + n × decode_dense(band)` —
+built from Stage 5 phases taken on **random token ids at exactly the band
+length**, n=10 reps, not on the RULER prompts (4000–8196 tokens inside the
+8192 band) and not at n=900. It reconstructs what the arms *would* have cost
+under a matched decode kernel. `results/stage6/decode_corrected.parquet`
+carries `measured_ms` beside `decode_corrected_ms` and `normalized_ms` on
+every row, so a corrected number cannot travel without what it was corrected
+from.
+
+#### What survives the correction, and what does not
+
+| claim | status |
+|---|---|
+| *The best end-to-end speedup at any accuracy-matched point is ≤1.06×* | **SURVIVES.** Measured best 1.057×; normalized best **1.057×**. |
+| *…and that point is `vt`, 0.5 sparsity, 4096* | **DOES NOT SURVIVE.** Normalized, the best point is **`niah_single`, 0.9 sparsity, 8192**. The number is unchanged and the operating point behind it is different. |
+| *16 of 31 matched sparse points are dominated by dense* | **DOES NOT SURVIVE.** Normalized: **12 of 31**. |
+| *All 15 `niah_single` points are dominated* | **DOES NOT SURVIVE.** Normalized: **9 of 15**. The six that leave are all at 8192. |
+| *The survivors are all `vt`* | **DOES NOT SURVIVE.** Six `niah_single` points at 8192 survive normalization. |
+| *A 1.24× kernel speedup becomes ≤1.06× end-to-end* | **SURVIVES**, and is strengthened — the gap is now measured against a matched-kernel baseline rather than one carrying a handicap. |
+| *`vt`'s matched budgets are `oracle_sensitive`* | **UNTOUCHED.** Nothing here bears on the oracle. |
+
+**Seven points leave the dominated set**, every one of them at 8192 —
+sparsity's prefill saving only becomes visible at the longest band measured:
+
+| task | band | sparsity | measured | normalized | dense (normalized) |
+|---|---|---|---|---|---|
+| niah_single | 8192 | 0.50 | 1415.1 | 1155.0 | 1173.1 |
+| niah_single | 8192 | 0.75 | 1360.8 | 1130.3 | 1173.1 |
+| niah_single | 8192 | 0.90 | 1342.6 | 1109.6 | 1173.1 |
+| vt | 8192 | 0.90 | 2155.7 | 1955.4 | 2020.3 |
+
+**Three points enter it** — `vt`, 2048, 0.5 sparsity, at all three epsilons.
+They were on the frontier only because that arm generated 27.8 tokens against
+dense's 35.2. Recorded because a correction that could only ever free points
+is a correction nobody checked.
 
 | | |
 |---|---|
-| **Supported** | *At 8192, **29% of the block-sparse arm's end-to-end time is a decode-kernel penalty unrelated to sparsity** — the fallback decodes through `sdpa_math` while the dense baseline decodes through `sdpa_flash`.* |
-| **Not supported** | *Block-sparse is 1.06× at best because sparsity does not pay off.* Part of the gap is this handicap, and the study has not yet measured the arm without it. |
-| **Not supported either** | *Correcting for it would make block-sparse win.* Removing the full penalty at 8192 closes some of the gap; it is not established that it closes all of it, and the `oracle_sensitive` caveat on `vt` is untouched by any of this. |
+| **Supported** | *Under a matched decode kernel and matched generation length, **12 of 31** accuracy-matched sparse operating points remain dominated by dense, and the best speedup is **1.057×**, at `niah_single`/8192/0.9. Sparsity's end-to-end benefit is real, small, and confined to the longest band measured.* |
+| **Not supported** | *Block-sparse beats dense once you correct for the decode kernel.* Correcting only that gives 1.28×, which is confound 2 talking. |
+| **Not supported** | *The measured Stage 6 numbers are wrong.* They are correct measurements of a system in which one arm decodes through a slower kernel. That is a real property of this harness, and the qualifier is the regime, not an error bar. |
 
-`grid_configs.py` names this hazard in its own docstring — *"a row labelled
+`grid_configs.py` names confound 1 in its own docstring — *"a row labelled
 `sdpa_math` and one labelled `sdpa_flash` are the same class and different
 kernels, which is exactly the confound `SDPABackend` exists to remove"* — and
-the decode fallback then reintroduces it **between arms**. The choice is
-recorded per row, so it was always visible; nothing compared the two arms'
-decode backends until the phases were measured separately.
+the decode fallback reintroduces it **between arms**. The choice was recorded
+on every row the whole time. Nothing compared the two arms' decode backends
+until the phases were measured apart.
 
-**This is what Stage 5 was for.** An end-to-end number cannot show that a
-third of a gap is a kernel-choice artifact; a decomposition can. The honest
-statement of the speedup result now carries this qualifier, and the
-unconfounded comparison — both arms decoding through the same dense kernel —
-is a measurement this study has **not** made.
+**The unconfounded comparison has not been measured.** Running both arms with
+`DENSE_DECODE_BACKEND = "sdpa_flash"` would settle it directly and requires
+re-running Stage 3's timing.
 
 ---
 

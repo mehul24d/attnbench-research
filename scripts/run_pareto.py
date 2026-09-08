@@ -53,7 +53,8 @@ from attnbench.analysis.matched import (                              # noqa: E4
 from attnbench.analysis.pareto import (                               # noqa: E402
     compute_pareto_frontiers, to_dataframe)
 
-EXCLUDE_BACKENDS = ("gla",)
+from attnbench.accuracy.grid_configs import (                          # noqa: E402
+    ACCURACY_EXCLUDED_BACKENDS as EXCLUDE_BACKENDS)
 
 
 def latency_table(df: pd.DataFrame, seq_lens) -> dict:

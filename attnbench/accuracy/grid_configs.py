@@ -127,6 +127,26 @@ def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
     return configs_by_backend
 
 
+# Backends whose Stage 3 rows are excluded from every accuracy ANALYSIS.
+#
+# `gla` is here because of the pre-registered DROP verdict
+# (docs/gla_arm_decision.md, decided 2026-09-07): the synthetic gate gives a
+# 1.24-token memory horizon, and Qwen2.5 has no gate projection to borrow, so
+# the rows are a measurement of a mechanism that could not retrieve rather
+# than a measurement of linear attention. `results/stage3_s1/INVALID_ROWS.md`
+# records which rows.
+#
+# This lives HERE, next to the arm decision that produced it, because it was
+# restated in four places -- run_pareto, run_matched_analysis,
+# run_decode_confound (each `EXCLUDE_BACKENDS = ("gla",)`) and
+# run_phase_timing (an inline `df.backend != "gla"`, which does not even grep
+# the same way) -- with two different justifications between them. A verdict
+# that four call sites each re-derive is a verdict that cannot be revisited:
+# reopening the GLA arm would need three of the four found by hand. See
+# docs/silent_failure_patterns.md #23 for the general form.
+ACCURACY_EXCLUDED_BACKENDS = ("gla",)
+
+
 # Every backend in this study that has no decode path of its own decodes
 # through this one. Named, not implicit: decision C is that sparsity applies
 # during prefill only and generation runs full attention over the cache, and

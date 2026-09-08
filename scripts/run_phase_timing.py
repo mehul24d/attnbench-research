@@ -30,7 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from attnbench import provenance                                       # noqa: E402
 from attnbench.accuracy.config import load_grid                        # noqa: E402
 from attnbench.accuracy.generation import ModelGeometry                # noqa: E402
-from attnbench.accuracy.grid_configs import backend_instance           # noqa: E402
+from attnbench.accuracy.grid_configs import (                          # noqa: E402
+    ACCURACY_EXCLUDED_BACKENDS, backend_instance)
 from attnbench.accuracy.phase_timing import (                          # noqa: E402
     arms_for, measure_band, scoring_overhead_ratio)
 from attnbench.config import AttnConfig                                # noqa: E402
@@ -87,7 +88,7 @@ def main():
         from attnbench.analysis.matched import band_for
         df = pd.concat([pd.read_parquet(p) for p in args.observed.split(",")],
                         ignore_index=True)
-        df = df[df.backend != "gla"]
+        df = df[~df.backend.isin(ACCURACY_EXCLUDED_BACKENDS)]
         df["_band"] = [band_for(int(c), grid.seq_lens) for c in df.context_length]
         g = df.groupby(["backend", "sparsity", "_band"], dropna=False)
         for (b, sp, band), r in g:

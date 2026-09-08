@@ -31,7 +31,8 @@ from attnbench.analysis.matched import (                       # noqa: E402
     best_matched_sparsity_budget, run_matched_analysis, to_dataframe)
 
 
-EXCLUDE_BACKENDS = ("gla",)   # see results/stage3_s1/INVALID_ROWS.md
+from attnbench.accuracy.grid_configs import (                          # noqa: E402
+    ACCURACY_EXCLUDED_BACKENDS as EXCLUDE_BACKENDS)
 
 
 def load_rows(paths: list[str]) -> pd.DataFrame:
