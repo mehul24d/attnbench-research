@@ -194,6 +194,88 @@ class Reconciliation:
                 f"  ({self.residual_frac:+6.1%})  {mark}")
 
 
+# How many generated tokens the decode step is fitted over.
+#
+# Was (1, 8) -- two points -- until 2026-09-08. A two-point slope is
+# (T(hi) - T(lo)) / (hi - lo), and T(lo) carries a full prefill, so prefill
+# NOISE (not its value, which cancels) lands in the estimate divided by
+# (hi - lo). At 8192 that made a dense decode step appear to move 8.5%
+# between two clock-locked runs of an arm that had not changed, while dense
+# prefill at the same band moved +3.5% the other way. See
+# docs/silent_failure_patterns.md #26.
+#
+# For an OLS slope the noise scales as 1/sqrt(sum((k - kbar)^2)):
+#
+#     (1, 8)             -> sqrt(24.5)  = 4.95
+#     (1, 2, 4, 8, 16)   -> sqrt(148.8) = 12.20     ~2.5x tighter
+#
+# Two points is the minimum that yields a slope, and the minimum is what
+# makes the noise term maximal.
+DECODE_FIT_STEPS = (1, 2, 4, 8, 16)
+
+
+@dataclass(frozen=True)
+class DecodeFit:
+    """A least-squares decode step, with the cross-check the two-point
+    version could not do.
+
+    T(k) = intercept + k * slope, so the fitted `intercept` is an INDEPENDENT
+    estimate of prefill. Comparing it to the separately measured prefill is
+    free and catches the case where the linear model does not hold at all --
+    which a two-point fit cannot detect, because two points always fit a line
+    exactly.
+    """
+
+    slope_ms: float
+    intercept_ms: float
+    r_squared: float
+    ks: tuple[int, ...]
+    totals_ms: tuple[float, ...]
+
+    def intercept_vs_prefill(self, prefill_ms: float) -> float:
+        """Fractional disagreement between the fitted intercept and the
+        measured prefill. Near zero means the linear model holds."""
+        return (self.intercept_ms - prefill_ms) / prefill_ms
+
+    def render(self) -> str:
+        pts = ", ".join(f"{k}:{t:.1f}" for k, t in zip(self.ks, self.totals_ms))
+        return (f"OLS over max_new_tokens {list(self.ks)} ({pts} ms), "
+                f"R^2={self.r_squared:.4f}, intercept {self.intercept_ms:.1f} ms, "
+                f"stops disabled")
+
+
+def fit_decode_step(totals_by_k: dict[int, float]) -> DecodeFit:
+    """Least-squares fit of total time against tokens generated.
+
+    Refuses fewer than three points: two always fit a line exactly, so R^2 is
+    1.0 by construction and the intercept cross-check is vacuous. A guard
+    that cannot fail is the thing this project keeps finding (#22), and a
+    two-point "fit" is that in numerical form.
+    """
+    if len(totals_by_k) < 3:
+        raise ValueError(
+            f"need at least 3 points to fit a decode step, got "
+            f"{sorted(totals_by_k)}. Two points fit a line exactly: R^2 is "
+            f"1.0 whatever the data, and the intercept-vs-prefill check "
+            f"cannot fail. See docs/silent_failure_patterns.md #26.")
+
+    ks = tuple(sorted(totals_by_k))
+    ys = tuple(float(totals_by_k[k]) for k in ks)
+    n = len(ks)
+    kbar = sum(ks) / n
+    ybar = sum(ys) / n
+    sxx = sum((k - kbar) ** 2 for k in ks)
+    if sxx == 0:
+        raise ValueError("all fit points have the same k; no slope exists")
+    slope = sum((k - kbar) * (y - ybar) for k, y in zip(ks, ys)) / sxx
+    intercept = ybar - slope * kbar
+    ss_tot = sum((y - ybar) ** 2 for y in ys)
+    ss_res = sum((y - (intercept + slope * k)) ** 2 for k, y in zip(ks, ys))
+    r2 = 1.0 if ss_tot == 0 else 1.0 - ss_res / ss_tot
+    return DecodeFit(slope_ms=slope, intercept_ms=intercept, r_squared=r2,
+                     ks=ks, totals_ms=ys)
+
+
 def reconcile(*, prefill_ms: float, decode_step_ms: float, n_generated: float,
                observed_total_ms: float, context_length: int, backend: str,
                sparsity: Optional[float] = None,
@@ -261,7 +343,7 @@ def scoring_overhead_ratio(scoring_ms: float, dense_prefill_ms: float,
 def measure_band(wrapped, input_ids, *, band: int, arms, cfg_for,
                   scratch_dir: str, observed=None, warmup: int = 3,
                   reps: int = 10, scoring_reps: int = 3,
-                  gen_lo: int = 1, gen_hi: int = 8,
+                  fit_steps: tuple[int, ...] = DECODE_FIT_STEPS,
                   synchronize=lambda: None, clocks_locked: bool = False,
                   backend_factory=None, decode_backend_factory=None):
     """Measure every phase for one band. Returns (rows, reconciliations).
@@ -341,18 +423,33 @@ def measure_band(wrapped, input_ids, *, band: int, arms, cfg_for,
                 warmup=max(1, warmup - 1), reps=max(2, reps // 2),
                 synchronize=synchronize)
 
-        g_lo, g_hi = _gen(gen_lo), _gen(gen_hi)
-        lo, hi = sum(g_lo) / len(g_lo), sum(g_hi) / len(g_hi)
-        step = (hi - lo) / (gen_hi - gen_lo)
+        totals_by_k = {}
+        for k in fit_steps:
+            g = _gen(k)
+            totals_by_k[k] = sum(g) / len(g)
+        fit = fit_decode_step(totals_by_k)
+        step = fit.slope_ms
         rows.append(summarize([step], backend=name, sparsity=sparsity,
                                context_length=band, phase="decode_step",
                                n_warmup=warmup, clocks_locked=clocks_locked,
-                               detail=f"slope over max_new_tokens {gen_lo}->{gen_hi} "
-                                      f"({lo:.1f} -> {hi:.1f} ms), stops disabled"))
+                               detail=fit.render()))
 
+        # The fitted intercept is an independent estimate of prefill, so this
+        # costs nothing and catches a linear model that does not hold. A
+        # two-point fit could not do it: two points fit a line exactly.
+        drift = fit.intercept_vs_prefill(prefill_ms[(name, sparsity)])
+        if abs(drift) > 0.10:
+            print(f"  !! {name} {sparsity}: fitted intercept "
+                  f"{fit.intercept_ms:.1f} ms disagrees with measured prefill "
+                  f"{prefill_ms[(name, sparsity)]:.1f} ms by {100 * drift:+.1f}%"
+                  f" -- total time is not linear in tokens generated here, so "
+                  f"the decode 'step' is not one number.", flush=True)
+
+        hi_k = max(fit_steps)
         recs.append(reconcile(prefill_ms=prefill_ms[(name, sparsity)],
-                               decode_step_ms=step, n_generated=gen_hi,
-                               observed_total_ms=hi, context_length=band,
+                               decode_step_ms=step, n_generated=hi_k,
+                               observed_total_ms=totals_by_k[hi_k],
+                               context_length=band,
                                backend=name, sparsity=sparsity))
         key = (name, sparsity, band)
         if key in observed:

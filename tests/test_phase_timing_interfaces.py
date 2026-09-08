@@ -99,7 +99,7 @@ def test_measure_band_runs_end_to_end_against_a_real_model(tmp_path):
         rows, recs, scoring_ms, prefill_ms = measure_band(
             wrapped, ids, band=BAND, arms=[("sdpa_math", None)],
             cfg_for=_cfg_for, scratch_dir=str(tmp_path),
-            warmup=1, reps=2, scoring_reps=2, gen_lo=1, gen_hi=3,
+            warmup=1, reps=2, scoring_reps=2, fit_steps=(1, 2, 3),
             backend_factory=lambda name: SDPABackend(kernel="math"))
     finally:
         wrapped.unwrap()
@@ -214,7 +214,7 @@ def test_measure_band_runs_every_arm_including_sparse(tmp_path):
         rows, recs, scoring_ms, prefill_ms = measure_band(
             wrapped, ids, band=BAND, arms=_ARMS_UNDER_TEST, cfg_for=_cfg_for,
             scratch_dir=str(tmp_path), warmup=1, reps=2, scoring_reps=2,
-            gen_lo=1, gen_hi=3,
+            fit_steps=(1, 2, 3),
             backend_factory=_backend, decode_backend_factory=_decode_backend)
     finally:
         wrapped.unwrap()

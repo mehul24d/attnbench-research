@@ -185,3 +185,73 @@ def test_capture_still_defaults_clocks_locked_to_False():
     trust the stamp."""
     from attnbench import provenance
     assert provenance.capture.__defaults__[0] is False
+
+
+# --------------------------------------------------------------------------
+# The decode step is fitted, not differenced (silent_failure_patterns #26).
+# --------------------------------------------------------------------------
+
+def test_a_two_point_fit_is_refused():
+    """Two points fit a line exactly: R^2 is 1.0 whatever the data and the
+    intercept cross-check cannot fail. A guard that cannot fail is the thing
+    this project keeps finding, and a two-point 'fit' is that in numerical
+    form."""
+    from attnbench.accuracy.phase_timing import fit_decode_step
+    with pytest.raises(ValueError, match="at least 3 points"):
+        fit_decode_step({1: 700.0, 8: 940.0})
+
+
+def test_the_fit_recovers_a_known_slope_and_intercept():
+    from attnbench.accuracy.phase_timing import fit_decode_step
+    f = fit_decode_step({k: 700.0 + 32.0 * k for k in (1, 2, 4, 8, 16)})
+    assert f.slope_ms == pytest.approx(32.0)
+    assert f.intercept_ms == pytest.approx(700.0)
+    assert f.r_squared == pytest.approx(1.0)
+
+
+def test_the_fitted_intercept_is_an_independent_estimate_of_prefill():
+    """T(k) = prefill + k * step, so the intercept IS prefill. Checking it
+    against the separately measured prefill is free and catches a linear
+    model that does not hold -- which the two-point version could not do."""
+    from attnbench.accuracy.phase_timing import fit_decode_step
+    f = fit_decode_step({k: 700.0 + 32.0 * k for k in (1, 2, 4, 8, 16)})
+    assert f.intercept_vs_prefill(700.0) == pytest.approx(0.0)
+    assert f.intercept_vs_prefill(350.0) == pytest.approx(1.0)   # 100% off
+
+
+def test_nonlinear_totals_show_up_as_a_poor_fit():
+    """If per-token cost grows with position, there is no single decode step,
+    and R^2 says so rather than the estimator returning a confident average
+    of two regimes."""
+    from attnbench.accuracy.phase_timing import fit_decode_step
+    quadratic = {k: 700.0 + 32.0 * k + 2.0 * k * k for k in (1, 2, 4, 8, 16)}
+    assert fit_decode_step(quadratic).r_squared < 0.995
+
+
+def test_more_points_reduce_the_slopes_sensitivity_to_noise_in_one_point():
+    """The reason for the change. Perturb the k=1 total -- the one carrying a
+    full prefill -- and see how much of that lands in the slope."""
+    from attnbench.accuracy.phase_timing import fit_decode_step
+
+    def shift(ks, delta):
+        base = {k: 700.0 + 32.0 * k for k in ks}
+        a = fit_decode_step(base).slope_ms
+        base[min(ks)] += delta
+        return abs(fit_decode_step(base).slope_ms - a)
+
+    two_ish = shift((1, 4, 8), 24.0)      # smallest allowed spread
+    many = shift((1, 2, 4, 8, 16), 24.0)
+    assert many < two_ish
+    # 24 ms of prefill noise moved the old two-point estimate by 24/7 = 3.4
+    assert many < 24.0 / 7
+
+
+def test_the_fit_steps_default_spans_a_wide_range():
+    """Sensitivity goes as 1/sqrt(sum((k - kbar)^2)), so the spread is what
+    buys precision, not the count alone."""
+    from attnbench.accuracy.phase_timing import DECODE_FIT_STEPS
+    assert len(DECODE_FIT_STEPS) >= 3
+    kbar = sum(DECODE_FIT_STEPS) / len(DECODE_FIT_STEPS)
+    sxx = sum((k - kbar) ** 2 for k in DECODE_FIT_STEPS)
+    old_sxx = 2 * (3.5 ** 2)              # the retired (1, 8)
+    assert sxx > 4 * old_sxx

@@ -349,6 +349,51 @@ and hosts to within **0.9%** at every band (+8.9 / −2.0 / +5.2 ms on 593 /
 | **Not supported** | *Block-sparse is faster than dense.* At 2048 and 4096 every point is at or below 1.0×, and at 8192 sparsity 0.5 is 0.998×. The result is confined to high sparsity at the longest band measured. |
 | **Not supported** | *1.06× was always the right number.* It was the right number by coincidence: the measured pre-correction headline was 1.057× at `vt`/0.5/4096, and the unconfounded 1.062× is at `niah_single`/0.9/8192. Same magnitude, different operating point, different task, and the survivors are no longer confined to the `oracle_sensitive` one. |
 
+#### What the study's central finding becomes
+
+The finding was: *sparse is dominated by dense at matched accuracy; best
+end-to-end speedup 1.06×.* With the kernel confound removed, it is
+**length-dependent rather than flat**:
+
+| band | does dense dominate? | best sparse speedup |
+|---|---|---|
+| 2048 | **yes** — every sparsity at or below 1.0× | 0.993× |
+| 4096 | **yes** — every sparsity at or below 1.0× | 0.997× |
+| 8192 | **no** | **1.062×** (0.9), **1.044× at no accuracy cost** (0.75) |
+
+| | |
+|---|---|
+| **Supported** | *At batch 1 with prefill-only sparsity and a decode kernel matched across arms, dense dominates block-sparse at 2048 and 4096 and **does not** at 8192, where 0.75 sparsity is **1.044× faster at identical accuracy** (100.0 vs 100.0) and 0.9 sparsity is 1.062× for one point of accuracy. The benefit appears only at the longest band measured.* |
+| **Superseded** | *Sparse is dominated by dense at matched accuracy.* True at 2048 and 4096; false at 8192. Stating it flatly reports the short-context result as the general one. |
+| **Still not supported** | *Sparsity pays off end-to-end.* One band, high sparsity, one task, 1.04–1.06×. That is a real effect and a small one. |
+
+**This aligns with the accuracy result rather than sitting beside it.** Stage
+3 found sparsity tolerance *rising* with context length (block-sparse at 0.9
+scored 26.3 at 2048, 73.0 at 4096, 69.7 at 8192 on the three-task mean; on
+`niah_single` alone, 62.0 / 93.0 / 99.0 at n=100). The latency result now has
+the same shape and the same direction: **longer context is where sparsity
+both keeps its accuracy and starts to pay.** Two independent measurements
+agreeing on a length dependence is a stronger claim than either alone, and
+neither was designed to produce it.
+
+#### The analytical method was validated where validation was possible
+
+The correction for `vt` and `niah_multikey` cannot be checked directly — that
+is the whole point of the section above. But the *method* was checked, on the
+one task where checking is possible, and it held:
+
+- Predicted vs measured speedup on all seven `niah_single` points: **errors
+  of 0.2–2.4%**.
+- On the operating point that matters most, **0.5%** (predicted 1.057×,
+  measured 1.062×).
+- The predicted best operating point **is** the measured best.
+
+So the `vt` and `niah_multikey` corrected figures are not unverifiable
+models. They are outputs of a procedure that was verified against measurement
+wherever verification was available, and they should be read with that weight
+— stronger than "modelled", weaker than "measured", and explicitly labelled
+`normalized_ms` in the data either way.
+
 **`vt` and `niah_multikey` stay analytical, permanently** — the sample size
 their generation-length variance demands is not obtainable, and that is a
 statement about the instrument, not the budget.

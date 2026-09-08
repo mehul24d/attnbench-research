@@ -110,7 +110,6 @@ def main():
     # the number of steps that ran.
     NO_STOPS = dict(eos_token_ids=frozenset(), newline_token_ids=frozenset(),
                     whitespace_token_ids=frozenset())
-    K_LO, K_HI = 1, 8
 
     scratch = tempfile.mkdtemp(prefix="stage5_scores_")
     # From phase_timing, not built here: the test asserts against this same
