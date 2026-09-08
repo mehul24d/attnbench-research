@@ -33,7 +33,7 @@ from attnbench.accuracy.generation import ModelGeometry                # noqa: E
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
     ACCURACY_EXCLUDED_BACKENDS, backend_instance)
 from attnbench.accuracy.phase_timing import (                          # noqa: E402
-    arms_for, measure_band, scoring_overhead_ratio)
+    arms_for, bias_warning, measure_band, scoring_overhead_ratio)
 from attnbench.config import AttnConfig                                # noqa: E402
 
 
@@ -176,6 +176,11 @@ def main():
         bad = [r for r in recs if not r.closes]
         print(f"\n=== RECONCILIATION: {len(recs) - len(bad)}/{len(recs)} close "
               f"within {int(100 * 0.10)}% ===")
+        # Asked separately from the per-cell tolerance, because they fail
+        # differently: every cell can close and the identity still be biased.
+        warn = bias_warning([r.residual_ms for r in recs])
+        if warn:
+            print("\n  " + warn)
         for r in bad:
             print("  " + r.render())
         if bad:

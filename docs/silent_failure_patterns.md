@@ -671,6 +671,48 @@ prompt is measuring nothing, and one assertion catches it.
 
 ## The general hazards, stated once
 
+### A tolerance bounds noise, not bias that fits inside it
+
+**Standing rule, promoted from #27 on 2026-09-08.** Any check of the form
+"is each cell within X%" is blind to a systematic error smaller than X. It
+will report every cell passing while the model is wrong in all of them, and
+it will do so consistently, which reads as robustness.
+
+So wherever a check produces residuals across N cells, **test the signs, not
+only the magnitudes**:
+
+    from attnbench.accuracy.phase_timing import bias_warning
+    warn = bias_warning([r.residual_ms for r in results])   # None if balanced
+
+Same-sign residuals across all cells are **bias by default** until shown
+otherwise. The null is symmetric, the test is a one-line binomial, and it
+costs nothing to run. 24 of 24 the same sign is p ~ 1.2e-7; that is not a
+pattern to describe in prose and move past, which is exactly what happened
+on 2026-09-07 (the residuals were called "a small fixed per-call overhead"
+and left there).
+
+Applies to every tolerance-based check in this codebase, not only the Stage 5
+reconciliation: `gates.TOL` comparisons, `canary.CanaryDrift`,
+`cross_arch.Speedup`, `RECONCILE_TOLERANCE`. Each answers "is this cell
+acceptable" and none of them answers "is this set centred".
+
+### Cheap instruments can be undiagnosable, not merely noisy
+
+Also from #27, and the more transferable half. The two-point decode estimator
+was replaced because it amplified prefill noise. But the reason it let a bug
+live for the life of the stage is different and worse: **a line through two
+points has no free parameter left over to check against anything.** Its
+intercept is whatever the arithmetic requires, so it always agreed with
+itself.
+
+Three points cost one more measurement and buy a residual — something the
+model predicts that can be compared to something measured independently.
+When choosing an instrument, ask not only how precise it is but **what it
+would look like if it were wrong**. An instrument with no answer to that
+question cannot report its own failure.
+
+
+
 **A divide-by-zero guard is not a resolution floor, and they are the same line
 of code.** Instance 14. `clamp_min(1e-8)` keeps the arithmetic finite and says
 nothing about whether the answer means anything; a floor excludes the cases the

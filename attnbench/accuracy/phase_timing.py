@@ -276,6 +276,58 @@ def fit_decode_step(totals_by_k: dict[int, float]) -> DecodeFit:
                      ks=ks, totals_ms=ys)
 
 
+# A residual set that is inside tolerance in every cell and the SAME SIGN in
+# every cell is a biased model, not a noisy one. Tolerance bounds noise; it
+# says nothing about bias that fits inside it (silent_failure_patterns #27).
+#
+# Below this p-value the sign pattern is reported as bias. 0.01 is loose on
+# purpose: this is a screen, not a hypothesis test anyone acts on directly,
+# and the cost of looking is one line.
+SIGN_BIAS_P = 0.01
+
+
+def sign_test_p(residuals) -> float:
+    """Two-sided binomial sign test that residuals are symmetric about zero.
+
+    The check that would have caught the 2026-09-08 off-by-one for free. The
+    2026-09-07 run produced 24 positive residuals out of 24 -- p = 2^-23
+    ~ 1.2e-7 -- while every cell sat inside the 10% tolerance and reported
+    CLOSES. The pattern was visible, described as "a small fixed per-call
+    overhead", and not pursued.
+
+    Zeros are dropped rather than split, which is the conservative choice:
+    an exact zero is evidence for neither sign.
+    """
+    from math import comb
+    nz = [r for r in residuals if r != 0]
+    n = len(nz)
+    if n == 0:
+        return 1.0
+    k = sum(1 for r in nz if r > 0)
+    k = min(k, n - k)
+    tail = sum(comb(n, i) for i in range(k + 1))
+    return min(1.0, 2.0 * tail / (2 ** n))
+
+
+def bias_warning(residuals) -> Optional[str]:
+    """A line to print when the residual signs say the model is biased, or
+    None. Separate from the per-cell tolerance check on purpose: they answer
+    different questions and fail differently."""
+    p = sign_test_p(residuals)
+    if p >= SIGN_BIAS_P:
+        return None
+    nz = [r for r in residuals if r != 0]
+    pos = sum(1 for r in nz if r > 0)
+    direction = "OVER" if pos > len(nz) / 2 else "UNDER"
+    mean = sum(nz) / len(nz)
+    return (f"!! SIGN BIAS: {max(pos, len(nz) - pos)}/{len(nz)} residuals have "
+            f"the same sign (p={p:.2g}), mean {mean:+.1f} ms. The identity "
+            f"{direction}STATES systematically. Every cell can sit inside "
+            f"tolerance and the model still be wrong -- a tolerance bounds "
+            f"noise, not bias that fits inside it. See "
+            f"docs/silent_failure_patterns.md #27.")
+
+
 def reconcile(*, prefill_ms: float, decode_step_ms: float, n_generated: float,
                observed_total_ms: float, context_length: int, backend: str,
                sparsity: Optional[float] = None,

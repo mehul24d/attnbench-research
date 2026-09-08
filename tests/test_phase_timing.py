@@ -289,3 +289,45 @@ def test_the_fit_steps_default_spans_a_wide_range():
     sxx = sum((k - kbar) ** 2 for k in DECODE_FIT_STEPS)
     old_sxx = 2 * (3.5 ** 2)              # the retired (1, 8)
     assert sxx > 4 * old_sxx
+
+
+# --------------------------------------------------------------------------
+# Same-sign residuals are bias by default (#27). The sign test is one line,
+# so there is no reason for it not to be standing.
+# --------------------------------------------------------------------------
+
+def test_all_same_sign_residuals_are_flagged_as_bias():
+    """The 2026-09-07 situation exactly: 24 of 24 positive, every cell inside
+    the 10% tolerance, all reporting CLOSES."""
+    from attnbench.accuracy.phase_timing import bias_warning, sign_test_p
+    assert sign_test_p([1.0] * 24) < 1e-6
+    w = bias_warning([50.0] * 24)
+    assert w is not None and "OVERSTATES" in w and "24/24" in w
+
+
+def test_balanced_residuals_are_not_flagged():
+    from attnbench.accuracy.phase_timing import bias_warning, sign_test_p
+    assert sign_test_p([1.0] * 12 + [-1.0] * 12) == pytest.approx(1.0)
+    assert bias_warning([1.0] * 12 + [-1.0] * 12) is None
+
+
+def test_the_understating_direction_is_named_too():
+    from attnbench.accuracy.phase_timing import bias_warning
+    assert "UNDERSTATES" in bias_warning([-50.0] * 24)
+
+
+def test_zeros_are_dropped_not_split():
+    """An exact zero is evidence for neither sign, so counting it as half of
+    each would manufacture symmetry the data does not have."""
+    from attnbench.accuracy.phase_timing import sign_test_p
+    assert sign_test_p([1.0] * 24 + [0.0] * 100) == pytest.approx(sign_test_p([1.0] * 24))
+    assert sign_test_p([0.0] * 10) == 1.0
+
+
+def test_bias_is_detectable_even_when_every_cell_is_inside_tolerance():
+    """The whole point. These residuals would each pass the per-cell check
+    and the set is still a biased model."""
+    from attnbench.accuracy.phase_timing import bias_warning
+    small = [0.03] * 20                      # 3% each, tolerance is 10%
+    assert all(abs(r) < RECONCILE_TOLERANCE for r in small)
+    assert bias_warning(small) is not None

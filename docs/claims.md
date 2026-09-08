@@ -375,11 +375,29 @@ CI [+322.0, +337.3]**.
 | **Not supported** | *Block-sparse gives a 1.19× speedup.* One task, one band, batch 1, prefill-only sparsity, oracle-derived masks. Every one of those qualifiers is load-bearing. |
 | **Not supported** | *The trend will continue at 32768.* Three rising points do not establish an asymptote. 32768 is unmeasured and is the band where memory, not arithmetic, may dominate. |
 
-**The oracle caveat is undiminished and matters more here, not less.** These
-masks are chosen with full knowledge of the attention scores. A larger
-speedup at higher sparsity is exactly where a cheap estimator would be least
-able to reproduce the ranking, and the scoring pass itself costs 11–13 s per
-example at 16384 — orders of magnitude more than the ~330 ms it saves.
+**The estimator costs ~36× what the sparsity saves, and that belongs here,
+not in limitations.** These masks are chosen with full knowledge of the
+attention scores. Producing that ranking is a dense attention pass measured
+at **11.4 s per example at 16384**, against the **330 ms** the resulting
+sparsity saves:
+
+| band | scoring pass | best sparsity saves | ratio |
+|---|---|---|---|
+| 2048 | 288 ms | — (nothing is faster) | undefined |
+| 4096 | 929 ms | — | undefined |
+| 8192 | 3.25 s | 67 ms | **49×** |
+| 16384 | 11.8 s | 328 ms | **36×** |
+
+| | |
+|---|---|
+| **Supported** | *The 1.186× is what block-sparse achieves **given** an oracle ranking whose own cost exceeds the saving by ~36×. No deployable estimator in this study reproduces that ranking, and none is measured.* |
+| **Not supported** | *Block-sparse attention delivers 1.186× at 16384.* Not as a system. It delivers that **given a mask nobody can afford to compute**, and the ratio does not obviously improve with length — it is 49× at 8192 and 36× at 16384. |
+
+The ratio narrowing from 49× to 36× is the only sign that scale might help,
+and two points is not a trend. **This sits beside the headline because a
+reader who takes 1.186× and leaves the 36× behind has the study backwards** —
+the speedup is the upper bound a real estimator would have to approach from
+below, while also being cheap, which nothing here demonstrates is possible.
 
 #### What the study's central finding becomes
 
