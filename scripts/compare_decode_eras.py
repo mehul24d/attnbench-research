@@ -29,7 +29,16 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from attnbench.accuracy.grid_configs import (                         # noqa: E402
+    DENSE_DECODE_BACKEND_HISTORY)
+
 CLOSE_ENOUGH_PCT = 5.0   # what counts as "landed on top of dense"
+
+# The era names come from the history constant, not from literals here. Two
+# scripts disagreeing about which kernel "before" means is the same
+# single-source-of-truth failure this whole change was about.
+ERA_BEFORE = DENSE_DECODE_BACKEND_HISTORY[0][0]
+ERA_AFTER = DENSE_DECODE_BACKEND_HISTORY[-1][0]
 
 
 def decode_table(df: pd.DataFrame) -> dict:
@@ -51,7 +60,9 @@ def main() -> int:
     after = decode_table(after_df)
 
     print("decode step, ms/token -- sparse arms before and after the fallback change")
-    print(f"{'band':>6}{'sp':>6}{'dense':>9}{'was(math)':>11}{'now(flash)':>12}"
+    print(f"{'band':>6}{'sp':>6}{'dense':>9}"
+          f"{'was(' + ERA_BEFORE.replace('sdpa_', '') + ')':>11}"
+          f"{'now(' + ERA_AFTER.replace('sdpa_', '') + ')':>12}"
           f"{'penalty was':>13}{'penalty now':>13}")
     residual = []
     for band in sorted({b for b, _ in after}):

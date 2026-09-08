@@ -1298,3 +1298,65 @@ verification scripts:** when the signal for "guard fired" is a line of output,
 absence of that line is not evidence the guard passed. Assert the positive
 case in the same run, or the harness has one failure mode indistinguishable
 from the outcome it is checking for.
+
+
+## 26. A difference estimator amplifies the noise of the quantity it cancels
+
+**2026-09-08.** Stage 5 estimates the decode step as a two-point slope
+(`K_LO, K_HI = 1, 8`):
+
+    decode_step = (T(8 tokens) - T(1 token)) / 7
+
+Differencing cancels prefill, which is the point: at 8192 prefill is ~700 ms
+and a decode step ~32 ms, so any estimator that did not cancel it would be
+measuring prefill. But it cancels prefill's **value**, not prefill's
+**noise**. `T(1)` and `T(8)` are separate timed calls, each executing its own
+prefill, so prefill variance enters both independently and lands in the slope
+divided by 7 -- amplified relative to the ~32 ms quantity being estimated.
+
+Measured, across two clock-locked L4 sessions on different hosts:
+
+| band | dense decode, run 1 | run 2 | change |
+|---|---|---|---|
+| 2048 | 34.80 ms/token | 34.96 | +0.5% |
+| 4096 | 34.60 ms/token | 34.58 | −0.1% |
+| 8192 | 34.16 ms/token | **31.25** | **−8.5%** |
+
+The dense arm did not change between runs. 2048 and 4096 reproduce to 0.5%;
+8192 moves 8.5% -- and in the *opposite direction* to dense prefill at the
+same band, which rose 3.5%. That opposition is the tell: uniform host
+variance moves both the same way.
+
+The arithmetic closes exactly:
+
+    1-token endpoint  699.9 -> 730.4 ms   (+30.5, carries the whole prefill)
+    8-token endpoint  939.0 -> 949.1 ms   (+10.1)
+    dense prefill     694.9 -> 719.0 ms   (+24.1)
+    predicted slope shift from prefill alone  -24.1/7 = -3.44 ms/token
+    observed slope shift                                -2.91 ms/token
+
+**Sensitivity, stated generally:** a 1% prefill error at 8192 (7.2 ms)
+becomes 1.03 ms/token of decode error, which is **3.2%** of the estimate. The
+amplification is `prefill / (decode x (K_HI - K_LO))`, so it grows with
+context length -- worst exactly where the measurement matters most.
+
+### What it does and does not invalidate
+
+The conclusion it was used for -- that changing `DENSE_DECODE_BACKEND`
+removed the decode penalty -- is a **within-run** comparison, where both arms
+were measured in the same session under the same clocks, so this noise does
+not accumulate across the comparison. That conclusion stands. What it bounds
+is the *precision*: the 8192 residuals of 0.5% / 3.4% / 4.3% sit inside the
+estimator's own ~3% at that band, so "removed" means "indistinguishable from
+dense to within ~3-4%", not "equal". The pre-registered 5% threshold was
+passed, and it was passed by less margin than the raw numbers suggest.
+
+**Cross-run** comparisons of a decode step at 8192 carry ~8% -- larger than
+the canary's 6% host-to-host figure, and for a reason that has nothing to do
+with hosts.
+
+**Fix for a future run:** more points and a least-squares fit (1, 2, 4, 8,
+16), or better, use the independently measured prefill from the same run
+rather than differencing two calls that each re-execute it. Two points is the
+minimum that can produce a slope, and the minimum is what makes the noise
+term maximal.
