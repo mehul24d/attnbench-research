@@ -78,8 +78,42 @@ def test_phases_that_compose_close():
     r = reconcile(prefill_ms=580.0, decode_step_ms=37.0, n_generated=29.6,
                   observed_total_ms=1677.0, context_length=8192,
                   backend="sdpa_flash")
-    assert r.implied_total_ms == pytest.approx(580.0 + 29.6 * 37.0)
+    assert r.implied_total_ms == pytest.approx(580.0 + (29.6 - 1) * 37.0)
     assert r.closes, r.render()
+
+
+def test_the_first_generated_token_comes_free_with_the_prefill():
+    """The prefill forward emits the first token's logits, so n tokens cost
+    one prefill plus n-1 decode steps -- not n.
+
+    Found 2026-09-08 by the OLS fit's intercept cross-check (#27). The old
+    `n * step` form overstated every implied total by exactly one step, and
+    all 24 of the 2026-09-07 reconciliations were positive because of it --
+    every one still inside the 10% tolerance."""
+    a = reconcile(prefill_ms=600.0, decode_step_ms=40.0, n_generated=1,
+                  observed_total_ms=600.0, context_length=8192, backend="x")
+    # one generated token is the prefill and nothing else
+    assert a.implied_total_ms == pytest.approx(600.0)
+    b = reconcile(prefill_ms=600.0, decode_step_ms=40.0, n_generated=2,
+                  observed_total_ms=640.0, context_length=8192, backend="x")
+    assert b.implied_total_ms == pytest.approx(640.0)
+
+
+def test_a_systematically_biased_identity_can_still_pass_a_loose_tolerance():
+    """Why the reconciliation did not catch its own off-by-one, stated as a
+    test so the lesson does not rest on a comment.
+
+    One decode step (~35 ms) against an ~1150 ms total is 3% -- inside the
+    10% tolerance, in the same direction, every time. `closes` is not
+    evidence that an identity is right; it is evidence it is not badly
+    wrong."""
+    wrong = 600.0 + 14 * 40.0          # the retired n * step form
+    right = 600.0 + (14 - 1) * 40.0
+    r = reconcile(prefill_ms=600.0, decode_step_ms=40.0, n_generated=14,
+                  observed_total_ms=right, context_length=8192, backend="x")
+    assert r.implied_total_ms == pytest.approx(right)
+    assert abs(wrong - right) / right < RECONCILE_TOLERANCE
+    assert r.residual_frac == pytest.approx(0.0)
 
 
 def test_the_open_discrepancy_is_reported_as_not_closing():

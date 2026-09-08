@@ -1360,3 +1360,72 @@ with hosts.
 rather than differencing two calls that each re-execute it. Two points is the
 minimum that can produce a slope, and the minimum is what makes the noise
 term maximal.
+
+
+## 27. A tolerance loose enough to absorb a systematic bias reports CLOSES
+
+**2026-09-08.** The reconciliation identity was wrong by one decode step for
+the entire life of Stage 5:
+
+    end_to_end ~= prefill + n_generated * decode_step        # what it did
+    end_to_end ~= prefill + (n_generated - 1) * decode_step  # what is true
+
+The prefill forward emits the logits for the **first generated token**, so n
+tokens cost one prefill plus n−1 decode steps. `run_measured(...,
+logits_to_keep=1)` measures exactly that prefill, and HF generation works the
+same way. Confirmed directly: at 2048, prefill alone is 141.2 ms and
+generating one token costs 141.9 ms.
+
+### The reconciliation could not catch it, by construction
+
+One decode step is ~35 ms against totals of 400–2400 ms: **1.5–9%**, inside
+the 10% tolerance, in the **same direction every time**. So every cell
+reported `CLOSES` and the identity was wrong in all of them.
+
+`closes` is not evidence that an identity is right. It is evidence it is not
+*badly* wrong, and those are different claims. A tolerance is a bound on
+noise; it says nothing about bias that fits inside it.
+
+### The signature was in the data and I explained it away
+
+The 2026-09-07 run produced **24 positive residuals out of 24**, mean +50.3
+ms. A sign test on that is p ≈ 6e-8. I saw the pattern, described it as
+*"consistent with a small fixed per-call overhead the two-term identity
+doesn't model"*, and moved on. That sentence is even the right shape — a
+fixed per-call term is exactly what one unmodelled decode step is — but
+naming a residual is not the same as pursuing it, and the check that would
+have settled it cost nothing.
+
+**Same-sign residuals are a bias, not noise.** Any reconciliation reporting
+N cells should test the sign distribution, not only whether each cell is
+inside tolerance. That is a cheap test with a known null.
+
+### What actually found it
+
+The OLS decode fit's intercept cross-check (#26), on its first hardware run.
+`T(k) = intercept + k * slope` makes the fitted intercept an independent
+estimate of prefill, and it came in **39–46 ms below** the measured prefill
+at every band and every arm — a constant offset, not a proportional one,
+which reads as −27.7% at 2048 (small prefill) and −2.8% at 16384 (large
+prefill). Deficit divided by slope clustered at **1.00**, which names the bug
+precisely: one decode step.
+
+The general lesson is about **what kind of question a check asks**. The
+reconciliation asked "do these three numbers roughly agree", and a biased
+identity agrees roughly. The intercept check asked "does the model's own
+free parameter match a quantity measured independently", which has no
+tolerance to hide in. Two checks over the same data are not redundant when
+they fail differently.
+
+And it only exists because the estimator has three or more points. The
+two-point version had no free parameter to check: two points fit a line
+exactly, so its intercept was whatever the arithmetic required. **The cheap
+design was not merely noisier — it could not have found this.**
+
+### Impact
+
+The decode *slope* is unaffected: it is the marginal cost and was estimated
+correctly. What moves is every implied total and the analytical
+`normalized_ms`. Recomputed, block-sparse operating points dominated by
+dense go from 12/31 to **10/31**. Measured end-to-end speedups are untouched
+— those are wall-clock, not identity.

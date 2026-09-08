@@ -82,8 +82,11 @@ class PhaseModel:
         """What this arm costs at `n_generated` tokens with the dense decode
         kernel -- the only term sparsity is allowed to change is prefill,
         which is the whole point of prefill-only sparsity."""
+        # (n - 1): the prefill forward emits the first token's logits, so n
+        # tokens cost one prefill plus n-1 decode steps. See
+        # phase_timing.reconcile and silent_failure_patterns #27.
         return (self.prefill_ms[(band, sparsity)]
-                + n_generated * self.dense_decode(band))
+                + (n_generated - 1) * self.dense_decode(band))
 
 
 def phase_model_from(phases: pd.DataFrame, dense_backend: str = "sdpa_flash"

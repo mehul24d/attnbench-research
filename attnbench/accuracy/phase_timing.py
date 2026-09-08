@@ -280,7 +280,22 @@ def reconcile(*, prefill_ms: float, decode_step_ms: float, n_generated: float,
                observed_total_ms: float, context_length: int, backend: str,
                sparsity: Optional[float] = None,
                tolerance: float = RECONCILE_TOLERANCE) -> Reconciliation:
-    """Check `prefill + n * decode_step` against a known end-to-end total.
+    """Check `prefill + (n - 1) * decode_step` against an end-to-end total.
+
+    THE (n - 1) IS NOT A FUDGE. The prefill forward produces the logits for
+    the FIRST generated token, so generating n tokens costs one prefill plus
+    n-1 decode steps. `run_measured(..., logits_to_keep=1)` measures exactly
+    that prefill, and HF generation works the same way.
+
+    Corrected 2026-09-08, after the OLS decode fit's intercept cross-check
+    fired (silent_failure_patterns #27). The old form used `n *
+    decode_step`, which overstates every implied total by exactly one decode
+    step -- ~35 ms here. The 2026-09-07 run's 24 reconciliations were
+    **24 positive residuals out of 24**, mean +50.3 ms, and every one still
+    landed inside the 10% tolerance. A tolerance loose enough to absorb a
+    systematic bias reports CLOSES on a wrong identity, which is why the
+    intercept check -- a different question asked of the same data -- is
+    what found it.
 
     `mask_build` and `scoring` are deliberately NOT in the sum. Neither is
     paid per generated token: mask build is per config, and the scoring pass
@@ -298,7 +313,7 @@ def reconcile(*, prefill_ms: float, decode_step_ms: float, n_generated: float,
             f"n_generated={n_generated}: a total implied by zero decode steps "
             f"is just the prefill, and comparing it to an end-to-end number "
             f"would report a residual that is entirely the decode phase.")
-    implied = prefill_ms + n_generated * decode_step_ms
+    implied = prefill_ms + (n_generated - 1) * decode_step_ms
     residual = implied - observed_total_ms
     frac = residual / observed_total_ms if observed_total_ms else float("inf")
     return Reconciliation(
