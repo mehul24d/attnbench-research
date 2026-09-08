@@ -1204,3 +1204,97 @@ audit misses. Prefer one definition; where a second is genuinely needed,
 assert the two against each other (as `decode_confound._dominates` does
 against `pareto._dominates`) rather than maintaining them in parallel by
 hope.
+
+
+## 24. A confound that is absent from the clean case and present only where the answer lives
+
+**2026-09-07, Stage 5 -> Stage 6.** Correcting the decode-kernel confound
+alone gave **0 of 31 operating points dominated** and a best speedup of
+**1.28×**, up from a measured 16/31 and 1.06×. Both numbers are artifacts,
+and the correction was one step from being reported.
+
+The second confound: on `vt` the arms do not generate the same number of
+tokens — dense 35.2–38.8, sparse 27.7–34.6 — so their mean end-to-end
+latencies were never comparable. An arm that stops earlier finishes sooner
+for reasons that have nothing to do with how fast attention is. This was in
+the **measured** result, before any correction.
+
+### Why it hid, which is the transferable part
+
+`niah_single` is clean. Every arm generates **exactly 14.0** tokens, because
+the task's answer is a fixed-length 7-digit number. So the confound is
+strictly absent from the task with the clean, easy-to-check numbers, and
+present only on `vt` — **the task where all the surviving operating points
+were**.
+
+That is the dangerous shape. A confound uniformly distributed across
+conditions is usually visible as noise; a confound *anticorrelated with the
+clean case* is invisible in exactly the place a reader would look to
+sanity-check. Checking `niah_single` and finding 14.0 across every arm is
+positive evidence, and it is positive evidence about the wrong task.
+
+**The check that finds it: for any quantity being compared as a mean, ask
+what varies per row inside each group.** Here it was the divisor — the
+comparison was ms-per-generation over generations of different lengths.
+`n_generated` was on every row the whole time (it is in the reconciliation
+identity Stage 5 checks against), and nothing had ever grouped by it.
+
+### Two confounds, both invisible end-to-end
+
+Neither the decode kernel nor the generation length is recoverable from a
+single wall-clock total. Both were recorded per row; both needed the phases
+measured *apart* before anything compared them. That is the case for Stage 5
+made twice in one measurement.
+
+### And the correction moves points in both directions
+
+Normalizing both confounds: 12/31 dominated, best speedup 1.057×. Seven
+points leave the dominated set, all at 8192 — a **length-dependence result**,
+not merely a correction: sparsity's prefill saving only becomes visible at
+the longest band measured. Three `vt` points at 2048 *enter* it, having been
+on the frontier only by generating fewer tokens.
+
+Keep both directions in the output. A correction that could only ever free
+points is a correction nobody checked.
+
+
+## 25. Verifying a guard with a fixture the guard never read
+
+**2026-09-07, while checking `repair_stage5_stamp.py`.** The repair flips a
+GATED provenance field under six preconditions, so the preconditions matter
+more than the repair. Verifying them meant corrupting one input at a time and
+confirming a refusal — the #22 detection method applied to a script.
+
+The verification harness set `SP=<scratchpad>` in the shell, then wrote its
+corrupted fixtures from a Python heredoc reading `os.environ.get('SP','/tmp')`.
+**`SP` was never exported**, so Python fell back to `/tmp` while the shell
+loop read `$SP/...` from the scratchpad. Every fixture path was missing,
+`pd.read_parquet` raised, and the output was filtered through
+`grep -E "FAIL|REFUSING"`.
+
+Result: **no output, for every case.** Which is precisely what a working set
+of preconditions that never fire would also look like.
+
+It got worse: the loop reported `exit=$?` *after a pipeline ending in `head`*,
+so it printed `exit=0` for all four cases — the exit status of `head`, not of
+the script. Entry #18 in this file, reproduced inside the tooling written to
+verify entry #23.
+
+Fifth instance of *stdout is not an outcome*, and the second in shell. The
+distinguishing feature here is that the silence was **structurally
+indistinguishable from success**: a refusal prints `REFUSING`, a pass prints
+nothing matching the filter, and a crash prints nothing matching the filter.
+Two of those three are the good case and one is a broken test, and the filter
+could not tell them apart.
+
+**Fix:** rerun with absolute paths, `rc=$?` captured directly off the script,
+and *both* the failing and the passing case asserted in the same output —
+four corrupted fixtures at `exit=1`, the genuine artefact at `exit=0`. A
+verification that only ever shows refusals cannot distinguish "refuses
+correctly" from "refuses always".
+
+**The general rule, which #22 states for tests and this states for
+verification scripts:** when the signal for "guard fired" is a line of output,
+absence of that line is not evidence the guard passed. Assert the positive
+case in the same run, or the harness has one failure mode indistinguishable
+from the outcome it is checking for.
