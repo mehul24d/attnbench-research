@@ -35,6 +35,16 @@ def main():
     ap.add_argument("--out", default="results/stage7")
     ap.add_argument("--epsilons", default="1,2,5")
     ap.add_argument("--max-depth", type=int, default=3)
+    ap.add_argument("--corrected", default=None,
+                    help="a decode_corrected.parquet. When given, the map is "
+                         "built on `normalized_ms` -- matched decode kernel "
+                         "and matched generation length -- instead of the "
+                         "banked `latency_ms`, which for vt and "
+                         "niah_multikey was measured with the sparse arms "
+                         "decoding through sdpa_math. Rebuilding the map on "
+                         "the banked column would reproduce the confound "
+                         "(claims.md, 'two confounds'). DERIVED: see "
+                         "analysis/decode_confound.py.")
     args = ap.parse_args()
 
     grid = load_grid(args.grid)
@@ -48,7 +58,17 @@ def main():
     budgets = best_matched_sparsity_budget(matched)
     oracle_tasks = frozenset(b.task for b in budgets if b.oracle_sensitive)
 
-    lat = latency_table(df, grid.seq_lens)
+    if args.corrected:
+        c = pd.read_parquet(args.corrected)
+        c = c.drop_duplicates(subset=["backend", "task", "context_length", "sparsity"])
+        lat = {(r.backend, r.task, int(r.context_length),
+                None if pd.isna(r.sparsity) else float(r.sparsity)):
+               float(r.normalized_ms) for r in c.itertuples()}
+        latency_source = f"normalized (DERIVED) from {args.corrected}"
+    else:
+        lat = latency_table(df, grid.seq_lens)
+        latency_source = "measured latency_ms as banked"
+    print(f"latency source: {latency_source}")
     pareto = compute_pareto_frontiers(matched, lat, dense_backend=grid.dense_backend)
     recs = build_decision_map(pareto, oracle_sensitive_tasks=oracle_tasks)
 

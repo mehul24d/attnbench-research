@@ -399,6 +399,50 @@ reader who takes 1.186× and leaves the 36× behind has the study backwards** �
 the speedup is the upper bound a real estimator would have to approach from
 below, while also being cheap, which nothing here demonstrates is possible.
 
+#### MEASURED 2026-09-08 at 32768: speedup continues, accuracy turns over, oracle cost does not close
+
+The full grid. `niah_single`, matched `sdpa_flash` decode, 14 tokens from
+every arm; n=100 through 16384, n=50 at 32768 (sized from the measured paired
+sd of 32–44 ms, which needs n=19 for a 10 ms standard error).
+
+| sparsity | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---|---|---|---|---|
+| 0.50 | 0.984× / 100.0 | 0.968× / 100.0 | 0.998× / 100.0 | 1.071× / 100.0 | **1.098× / 100.0** |
+| 0.75 | 0.993× / 99.0 | 0.997× / 100.0 | 1.044× / 100.0 | 1.140× / 100.0 | **1.321× / 100.0** |
+| 0.90 | 0.992× / 62.0 | 1.005× / 93.0 | 1.062× / 99.0 | 1.186× / 100.0 | **1.404× / 98.0** |
+
+Three separate things happen at 32768, and they do not all point the same way.
+
+**1. The speedup trend continues and steepens.** At 0.75 sparsity:
+0.993 → 0.997 → 1.044 → 1.140 → **1.321×**, at 100.0 accuracy in every band
+from 4096 up. Paired bootstrap at 32768, n=50: **+1091 ms saved, 95% CI
+[+1075, +1107]**. The gain is prefill: dense prefill 4018 ms against 2723 ms
+at 0.9 sparsity.
+
+**2. Accuracy at 0.9 turns over.** 62.0 → 93.0 → 99.0 → 100.0 → **98.0**.
+This is the first non-monotonic point in the accuracy series, and it means
+the two trends are not one trend. Speed keeps improving where accuracy has
+stopped. The 0.75 row holds 100.0 throughout and is the operating point that
+survives.
+
+**3. The oracle ratio flattens and does not close.** Scoring cost against the
+best latency it buys: **249× → 49× → 36× → 35×** at 4096 / 8192 / 16384 /
+32768. Measured scoring at 32768 is **44.6 s per example** against 1286 ms
+saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
+16384. Whatever asymptote it has is around 35×, not 1×.
+
+| | |
+|---|---|
+| **Supported** | *Block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* |
+| **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192. The speedup is an upper bound no measured estimator approaches.* |
+| **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× and costs 2 accuracy points at 32768, having cost none at 16384. |
+| **Not supported** | *Accuracy and speed both improve with length.* They did through 16384. At 32768 speed improves and accuracy at 0.9 does not, so the convergence claim holds for four bands, not five. |
+
+**The reconciliation identity, corrected the same day, closes at 32768 to
++0.0% / +0.0% / +0.1% / +0.3%** across the four arms — against +1.7% to +9.5%
+all-positive under the old `n * step` form. That is the `(n − 1)` fix
+confirmed by a measurement independent of the intercept check that found it.
+
 #### What the study's central finding becomes
 
 The finding was: *sparse is dominated by dense at matched accuracy; best

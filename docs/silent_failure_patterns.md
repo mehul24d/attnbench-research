@@ -696,6 +696,33 @@ reconciliation: `gates.TOL` comparisons, `canary.CanaryDrift`,
 `cross_arch.Speedup`, `RECONCILE_TOLERANCE`. Each answers "is this cell
 acceptable" and none of them answers "is this set centred".
 
+### A filtered command tells you nothing unless you also kept its exit status
+
+**Standing rule, 2026-09-08, after this shape appeared four times in one
+session.** `cmd | grep PATTERN` and `cmd | head -n` both discard the exit
+status *and* discard the error text. What is left is an absence, and an
+absence is consistent with three different worlds: the thing succeeded and
+had nothing to report, the thing failed, or the thing never ran.
+
+The four, all mine, all in tooling written to check something else:
+
+| what was filtered | what the silence meant | what it was read as |
+|---|---|---|
+| `run_probe.py \| tail -20` | argparse exit 2, gate never ran | gate passed (#18) |
+| precondition fixtures `\| grep FAIL` | crash on a missing path | preconditions held (#25) |
+| `instances describe` empty output | transient API failure | instance deleted |
+| `run_decision_map \| grep -E ...` | KeyError traceback, no file written | map unchanged |
+
+The last is the sharpest: the old output file still existed, so the
+comparison ran happily and reported *0 cells changed* — comparing the stale
+file to itself. A failed write is invisible to anything that reads the path
+afterwards.
+
+**The rule:** redirect to a file and capture `$?`, or `set -o pipefail`, any
+time the command's success is part of what you are concluding. Reserve
+`| grep` for reading, never for deciding. And when a comparison reports "no
+change", check that the thing being compared was actually regenerated.
+
 ### Cheap instruments can be undiagnosable, not merely noisy
 
 Also from #27, and the more transferable half. The two-point decode estimator
