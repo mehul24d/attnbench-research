@@ -152,7 +152,39 @@ ACCURACY_EXCLUDED_BACKENDS = ("gla",)
 # during prefill only and generation runs full attention over the cache, and
 # a row records which backend produced its text (see docs/limitations.md,
 # "Sparsity is applied during prefill only").
-DENSE_DECODE_BACKEND = "sdpa_math"
+#
+# CHANGED 2026-09-08: "sdpa_math" -> "sdpa_flash".
+#
+# The fallback decided which kernel the SPARSE arms decode through, while the
+# dense arm decodes through itself, `sdpa_flash`. Two arms, two kernels, on
+# the phase that dominates the bill at batch 1. Stage 5 priced it: +23.3% /
+# +21.5% / +60.8-63.7% per decode token at 2048 / 4096 / 8192, which is
+# 18% / 16% / 29% of the sparse arm's end-to-end total. Under a matched
+# kernel and matched generation length, 12 of 31 accuracy-matched operating
+# points remain dominated by dense rather than 16.
+#
+# `sdpa_math` carried no stated justification, and the alternative was never
+# speculative. `sdpa_math` and `sdpa_flash` are the SAME class -- SDPABackend
+# with a different pinned kernel -- so they share one `state_from_prefill`
+# and one decode path, and swapping the fallback changes which kernel runs
+# and nothing else. Every dense row in this study already decodes through
+# `sdpa_flash` by this exact path, because SDPABackend.supports_decode() is
+# True and the dense arm therefore decodes through itself.
+#
+# Rows produced BEFORE this change stamp `decode_backend="sdpa_math"` and
+# rows after stamp `"sdpa_flash"`, so the two are distinguishable in the
+# data. They are NOT comparable on latency, and
+# `analysis.decode_backend_guard` refuses to pool them.
+DENSE_DECODE_BACKEND = "sdpa_flash"
+
+# What it was, and when it stopped being that. Kept as data so an analysis
+# reading rows from either era can say which regime a row belongs to without
+# a human remembering the date. Non-comparability across a deliberate change
+# is fine when it is stamped; silent drift is what is fatal.
+DENSE_DECODE_BACKEND_HISTORY = (
+    ("sdpa_math", None, "2026-09-08"),      # value, from, until
+    ("sdpa_flash", "2026-09-08", None),
+)
 
 
 def backend_instance(name: str, *, gate_source: str | None = None) -> AttentionBackend:

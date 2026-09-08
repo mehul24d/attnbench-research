@@ -48,6 +48,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from attnbench.accuracy.config import load_grid                       # noqa: E402
+from attnbench.analysis import decode_backend_guard            # noqa: E402
 from attnbench.analysis.matched import (                              # noqa: E402
     band_for, best_matched_sparsity_budget, run_matched_analysis)
 from attnbench.analysis.pareto import (                               # noqa: E402
@@ -62,6 +63,10 @@ def latency_table(df: pd.DataFrame, seq_lens) -> dict:
     operating point has, so Stage 4 rows and these join identically."""
     d = df.copy()
     d["_band"] = [band_for(int(c), seq_lens) for c in d["context_length"]]
+    # Before any mean over latency_ms. DENSE_DECODE_BACKEND changed
+    # sdpa_math -> sdpa_flash on 2026-09-08 and the gap is 23-64% per decode
+    # token, so a cell pooling both eras describes neither.
+    decode_backend_guard.assert_uniform(d)
     out = {}
     g = d.groupby(["backend", "task", "_band", "sparsity"], dropna=False)
     for (backend, task, band, sparsity), rows in g:

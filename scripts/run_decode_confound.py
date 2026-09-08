@@ -23,6 +23,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from attnbench.accuracy.config import load_grid                # noqa: E402
+from attnbench.analysis import decode_backend_guard            # noqa: E402
 from attnbench.analysis import decode_confound                 # noqa: E402
 from attnbench.analysis.matched import band_for                # noqa: E402
 
@@ -44,6 +45,7 @@ def main():
     df = df[~df.backend.isin(EXCLUDE_BACKENDS)]
     df["_band"] = [band_for(int(c), grid.seq_lens) for c in df.context_length]
 
+    decode_backend_guard.assert_uniform(df)
     n_gen = {}
     for (b, t, band, sp), rows in df.groupby(
             ["backend", "task", "_band", "sparsity"], dropna=False):

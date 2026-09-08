@@ -266,9 +266,45 @@ the decode fallback reintroduces it **between arms**. The choice was recorded
 on every row the whole time. Nothing compared the two arms' decode backends
 until the phases were measured apart.
 
-**The unconfounded comparison has not been measured.** Running both arms with
-`DENSE_DECODE_BACKEND = "sdpa_flash"` would settle it directly and requires
-re-running Stage 3's timing.
+#### The unconfounded end-to-end comparison is not obtainable on two of three tasks
+
+`DENSE_DECODE_BACKEND` was changed to `sdpa_flash` on 2026-09-08, so future
+runs are unconfounded on the kernel. **Re-running Stage 3 to get an
+unconfounded end-to-end number does not work**, and the reason is a
+methodological finding rather than a budget one.
+
+The effect to resolve is the prefill gap: **18–63 ms**. The re-run would have
+to resolve it against the per-example spread of the paired dense-minus-sparse
+latency difference:
+
+| task | sd of the paired difference | n for a 5 ms standard error |
+|---|---|---|
+| `niah_single` | 6.6–17.8 ms | **2–13** |
+| `vt` | 320–750 ms | 4,100–22,500 |
+| `niah_multikey` | 641–1008 ms | 16,400–**40,700** |
+
+| | |
+|---|---|
+| **Supported** | *On tasks whose output length varies per example, an unconfounded end-to-end comparison of a prefill-sized effect is **not obtainable at any affordable sample size**: generation-length variance exceeds the effect by an order of magnitude. For `niah_multikey` it would take ~40,000 examples per cell.* |
+| **Not supported** | *We did not measure it because it was too expensive.* At n=300 it is not underpowered by a factor of two; it is the wrong instrument. |
+
+`niah_single` is measurable at **n=13** for the same reason it was clean of
+the generation-length confound: fixed 14-token output. So the instrument
+works exactly where output length is fixed, and fails everywhere else.
+
+**Why this matters beyond this study.** The distance between a kernel
+speedup and an end-to-end speedup is what this study exists to measure. This
+result says something about *why that distance is hard to measure honestly*:
+end-to-end wall-clock, the natural instrument for the system-level number,
+has variance from generation length that swamps prefill-sized effects on any
+variable-length workload. A kernel microbenchmark has no such variance, which
+is part of why it is the number that gets reported. Closing the gap honestly
+requires per-phase decomposition — not a bigger end-to-end sample.
+
+**What is planned instead:** measure the decode penalty directly as a Stage 5
+arm (`block_sparse` with `sdpa_flash` decode), and re-run Stage 3 end-to-end
+for `niah_single` only, where the instrument works. `vt` and `niah_multikey`
+stay analytical, permanently, and this section is why.
 
 ---
 

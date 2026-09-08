@@ -23,6 +23,7 @@ from attnbench.accuracy.generation import (
 from attnbench.accuracy.model import SwappableAttentionModel
 from attnbench.accuracy.ruler import RulerExample
 from attnbench.accuracy.schema import Generated
+from attnbench.accuracy.grid_configs import DENSE_DECODE_BACKEND
 from attnbench.backends.impls import NaiveAttention, SDPABackend
 from attnbench.config import AttnConfig
 
@@ -211,7 +212,15 @@ def test_a_backend_with_no_decode_path_gets_the_dense_one_and_says_so():
                        backend=NaiveAttention(), example=_example(),
                        geometry=geometry, stop_tokens=_stop_tokens(tokenizer),
                        score_cache_dir="unused", device="cpu")
-    assert got.decode_backend == "sdpa_math"
+    # Against the constant, not a literal. The identity of the fallback is
+    # grid_configs' decision (it changed sdpa_math -> sdpa_flash on
+    # 2026-09-08); what this test owns is that a backend with no decode path
+    # gets it and the row says so. A hardcoded name here was a fourth copy of
+    # that rule, living in the test layer -- see silent_failure_patterns #23.
+    assert got.decode_backend == DENSE_DECODE_BACKEND
+    # ...and that it is not the backend under test, which is the property a
+    # constant-valued assertion would otherwise stop checking.
+    assert got.decode_backend != NaiveAttention().name
 
 
 def test_latency_synchronizes_on_both_sides_of_the_timer():
