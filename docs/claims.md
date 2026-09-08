@@ -419,11 +419,20 @@ from 4096 up. Paired bootstrap at 32768, n=50: **+1091 ms saved, 95% CI
 [+1075, +1107]**. The gain is prefill: dense prefill 4018 ms against 2723 ms
 at 0.9 sparsity.
 
-**2. Accuracy at 0.9 turns over.** 62.0 → 93.0 → 99.0 → 100.0 → **98.0**.
-This is the first non-monotonic point in the accuracy series, and it means
-the two trends are not one trend. Speed keeps improving where accuracy has
-stopped. The 0.75 row holds 100.0 throughout and is the operating point that
-survives.
+**2. Accuracy at 0.9 stops improving — but does NOT measurably decline.**
+62.0 → 93.0 → 99.0 → 100.0 → 98.0. The final point is **one flipped example
+out of 50**: paired bootstrap on the accuracy difference gives −2.00 with 95%
+CI **[−6.00, +0.00]**, which includes zero.
+
+| | |
+|---|---|
+| **Supported** | *Accuracy at 0.9 sparsity reaches ceiling (100.0) by 16384 and is at ceiling or indistinguishable from it at 32768.* |
+| **NOT supported** | *Accuracy turns over / declines at 32768.* One example in 50, CI touching zero. An earlier draft of this section stated the turnover as fact and built a two-axes argument on it; that was a single retrieval failure read as a trend. |
+| **NOT supported either** | *Speed and accuracy are one mechanism.* Accuracy saturates at 100.0 from 16384, so beyond that band the data **cannot distinguish** "accuracy would keep rising if it could" from "accuracy has stopped". The convergence claim is untestable past 16384, not refuted. |
+
+What survives is narrower and holds: the convergence of the two trends is
+established over **2048–16384**, where both moved and neither was at ceiling.
+The 0.75 row holds 100.0 throughout and is the operating point to quote.
 
 **3. The oracle ratio flattens and does not close.** Scoring cost against the
 best latency it buys: **249× → 49× → 36× → 35×** at 4096 / 8192 / 16384 /
@@ -435,13 +444,48 @@ saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
 |---|---|
 | **Supported** | *Block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192. The speedup is an upper bound no measured estimator approaches.* |
-| **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× and costs 2 accuracy points at 32768, having cost none at 16384. |
-| **Not supported** | *Accuracy and speed both improve with length.* They did through 16384. At 32768 speed improves and accuracy at 0.9 does not, so the convergence claim holds for four bands, not five. |
+| **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× against 0.75's 1.321×, for an accuracy difference of one example in 50 that the CI cannot separate from zero. At that margin 0.75 is the defensible pick, not because 0.9 is worse but because nothing here shows it is not. |
+| **Not supported** | *Accuracy and speed both improve with length, across the whole grid.* Both moved together over 2048–16384. From 16384 accuracy is at ceiling, so 32768 cannot test the claim either way. |
 
 **The reconciliation identity, corrected the same day, closes at 32768 to
 +0.0% / +0.0% / +0.1% / +0.3%** across the four arms — against +1.7% to +9.5%
 all-positive under the old `n * step` form. That is the `(n − 1)` fix
 confirmed by a measurement independent of the intercept check that found it.
+
+### THE STUDY'S CONCLUSION
+
+Everything above resolves into one sentence, and both halves are load-bearing:
+
+> **Block-sparse attention with oracle-derived masks achieves up to 1.32×
+> end-to-end at no accuracy cost at 32K context, and computing the oracle
+> costs roughly 35× the latency it saves.**
+
+The second clause is not a caveat on the first. It is the finding. A measured
+advantage purchased with a mask nobody can afford to compute is not an
+advantage any deployed system has.
+
+**The break-even bar this sets.** To make the operating point profitable, a
+deployable importance estimator would have to produce a good-enough ranking
+for **under ~3% of the scoring pass's cost** (1/35), while preserving enough
+of the oracle's ordering to keep accuracy at ceiling. This study measures
+neither half of that: no cheap estimator was implemented, and none is
+evaluated. `score_source` on every row is `dense_softmax_fp32` precisely so
+that the day a cheap estimator exists it enters as a new value rather than a
+silent change of meaning.
+
+**The ratio's own trend is the discouraging part.** 249× → 49× → 36× → 35× at
+4096 / 8192 / 16384 / 32768. It improved fivefold from 4096 to 8192 and 4%
+since 16384. Longer context does not rescue it: scoring and the saving grow
+at similar rates, so the ratio flattens near 35 rather than heading toward 1.
+The gap is structural, not a small-scale artifact.
+
+**Why this is the useful form of the result.** The literature's kernel
+numbers (1.24× at 90% sparsity here, Stage 2) and this study's end-to-end
+numbers differ by regime, and that gap is what the study set out to measure.
+The measurement now has both ends: **a kernel speedup of 1.24×, an
+oracle-masked end-to-end speedup of up to 1.32× at 32K, and an estimator cost
+of 35× the saving standing between that and any deployment.** Reporting the
+first without the third is the error this study exists to document.
 
 #### What the study's central finding becomes
 
