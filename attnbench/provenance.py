@@ -27,6 +27,8 @@ def _sh(cmd: list[str]) -> Optional[str]:
         return None
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if out.returncode != 0:
+            return None
         return out.stdout.strip() or None
     except Exception:
         return None

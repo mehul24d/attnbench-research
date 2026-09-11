@@ -76,12 +76,17 @@ class BlockSparseAttention(AttentionBackend):
         import block_sparse_attn  # noqa: F401
 
     def forward(self, q, k, v, cfg: AttnConfig, mask: BlockSparseMask = None):
-        from block_sparse_attn import block_sparse_attn_func
-
         if cfg.mask != "block_sparse":
             raise UnsupportedConfig(f"block_sparse: mask kind {cfg.mask} not wired")
         if mask is None:
             raise UnsupportedConfig("block_sparse: requires a BlockSparseMask")
+        if mask.seq_len != cfg.seq_len or mask.block_size != cfg.block_size:
+            raise UnsupportedConfig(
+                f"mask is ({mask.seq_len}, block {mask.block_size}) but cfg "
+                f"is ({cfg.seq_len}, block {cfg.block_size}) -- a mismatch "
+                f"would measure a different sparsity pattern")
+
+        from block_sparse_attn import block_sparse_attn_func
 
         k_, v_ = _expand_kv(k, v, cfg)   # kernel wants n_heads_k == n_heads_q here
 
@@ -106,6 +111,8 @@ class BlockSparseAttention(AttentionBackend):
                 is_causal=mask.causal,
                 exact_streaming=False,
             )
+        except torch.cuda.OutOfMemoryError:
+            raise
         except RuntimeError as e:
             raise UnsupportedConfig(f"block_sparse: {e}") from e
 

@@ -184,7 +184,7 @@ def correct(pareto: pd.DataFrame, phases: pd.DataFrame,
             sp = None if pd.isna(r.sparsity) else float(r.sparsity)
             n_own = float(n_generated[(r.backend, task, band, sp)])
             penalty = model.decode_penalty(band, sp)
-            dec_corr = float(r.latency_ms) - n_own * penalty
+            dec_corr = float(r.latency_ms) - (n_own - 1) * penalty
             norm = model.normalized_total(band, sp, n_common)
             out.append(CorrectedPoint(
                 task=task, context_length=band, epsilon=float(eps),

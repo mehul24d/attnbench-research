@@ -63,6 +63,8 @@ class XFormersAttention(AttentionBackend):
         attn_bias = xops.LowerTriangularMask() if cfg.mask == "causal" else None
         try:
             out = xops.memory_efficient_attention(q_, k_, v_, attn_bias=attn_bias)
+        except torch.cuda.OutOfMemoryError:
+            raise
         except (RuntimeError, ValueError) as e:
             raise UnsupportedConfig(f"xformers: {e}") from e
         return out.transpose(1, 2)

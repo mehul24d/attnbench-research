@@ -64,5 +64,7 @@ class SageAttention(AttentionBackend):
         try:
             return sageattn(q, k_, v_, tensor_layout="HND",
                              is_causal=(cfg.mask == "causal"))
+        except torch.cuda.OutOfMemoryError:
+            raise
         except RuntimeError as e:
             raise UnsupportedConfig(f"sage: {e}") from e

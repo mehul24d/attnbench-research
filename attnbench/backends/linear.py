@@ -179,6 +179,8 @@ class GatedLinearAttention(AttentionBackend):
 
         try:
             out, _ = chunk_gla(q_, k_, v_, g_, initial_state=None, output_final_state=False)
+        except torch.cuda.OutOfMemoryError:
+            raise
         except RuntimeError as e:
             raise UnsupportedConfig(f"gla: {e}") from e
         return out.transpose(1, 2)   # back to (B, H, S, D)
@@ -212,6 +214,8 @@ class GatedLinearAttention(AttentionBackend):
         try:
             _, final_state = chunk_gla(q_, k_, v_, g_, initial_state=None,
                                         output_final_state=True)
+        except torch.cuda.OutOfMemoryError:
+            raise
         except RuntimeError as e:
             raise UnsupportedConfig(f"gla: {e}") from e
         return KVCacheState(backend=self.name, payload=final_state)
@@ -228,6 +232,8 @@ class GatedLinearAttention(AttentionBackend):
         try:
             _, final_state = chunk_gla(q_, k_, v_, g_, initial_state=None,
                                         output_final_state=True)
+        except torch.cuda.OutOfMemoryError:
+            raise
         except RuntimeError as e:
             raise UnsupportedConfig(f"gla: {e}") from e
         return KVCacheState(backend=self.name, payload=final_state)
@@ -248,6 +254,8 @@ class GatedLinearAttention(AttentionBackend):
             out, new_state = fused_recurrent_gla(
                 q_, k_, v_, gk=g_, initial_state=state.payload, output_final_state=True
             )
+        except torch.cuda.OutOfMemoryError:
+            raise
         except RuntimeError as e:
             raise UnsupportedConfig(f"gla: {e}") from e
         return out.transpose(1, 2), KVCacheState(backend=self.name, payload=new_state)

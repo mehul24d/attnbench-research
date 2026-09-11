@@ -256,6 +256,20 @@ def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
         return CorrectnessResult(backend.name, cfg.key(), False, "exact",
                                  detail=f"{type(e).__name__}: {e}"[:300])
 
+    if got.shape != expected.shape:
+        return CorrectnessResult(
+            backend.name, cfg.key(), False, "exact",
+            detail=f"backend returned shape {tuple(got.shape)}, expected "
+                   f"{tuple(expected.shape)}")
+    if not torch.isfinite(got).all():
+        return CorrectnessResult(
+            backend.name, cfg.key(), False, "exact",
+            detail="backend returned non-finite output")
+    if not torch.isfinite(expected).all():
+        return CorrectnessResult(
+            backend.name, cfg.key(), False, "exact",
+            detail="reference returned non-finite output")
+
     got = got.double()
     abs_err = (got - expected).abs()
 
@@ -477,7 +491,7 @@ def device_memory_bytes(device: str = "cuda") -> int:
     """Total memory of the device a check would run on."""
     if not device.startswith("cuda") or not torch.cuda.is_available():
         return FALLBACK_DEVICE_BYTES
-    return int(torch.cuda.get_device_properties(0).total_memory)
+    return int(torch.cuda.get_device_properties(device).total_memory)
 
 
 def exact_oracle_budget_bytes(device: str = "cuda") -> int:
@@ -744,6 +758,12 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
     except Exception as e:
         return fail(f"{type(e).__name__}: {e}")
 
+    if got.shape != q.shape:
+        return fail(f"backend returned shape {tuple(got.shape)}, expected "
+                    f"{tuple(q.shape)}")
+    if not torch.isfinite(got).all():
+        return fail("backend returned non-finite output")
+
     errors: dict[str, float] = {}
     skipped: dict[str, str] = {}
     for ref in usable:
@@ -794,6 +814,12 @@ def check_cross_backend(backend: AttentionBackend, cfg: AttnConfig,
             if device.startswith("cuda"):
                 torch.cuda.empty_cache()
             continue
+
+        if other.shape != got.shape:
+            return fail(f"reference {ref.name} returned shape "
+                        f"{tuple(other.shape)}, expected {tuple(got.shape)}")
+        if not torch.isfinite(other).all():
+            return fail(f"reference {ref.name} returned non-finite output")
 
         try:
             errors[ref.name] = _max_abs_diff(got, other)

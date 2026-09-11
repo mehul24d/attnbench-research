@@ -9,6 +9,7 @@ the sparse and linear backends will fit without redesign.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import replace
 
@@ -252,6 +253,8 @@ class SDPABackend(AttentionBackend):
                     is_causal=(cfg.mask == "causal"),
                     enable_gqa=enable_gqa,
                 )
+        except torch.cuda.OutOfMemoryError:
+            raise
         except RuntimeError as e:
             # SDPA raises when the requested backend rejects the shape. That is
             # an unsupported config, not a crash.
@@ -469,11 +472,9 @@ class FlexAttentionBackend(AttentionBackend):
         It inflated `peak_memory_mb` too, since the builder materialises a
         dense Q_LEN x KV_LEN bool before reducing it to the block grid.
 
-        Keyed on `cfg.key()`, which hashes every config field, and the mask is
-        derived deterministically from cfg by `masks.mask_for` -- so one key
-        cannot correspond to two different masks. `forward` additionally
-        validates the supplied mask's geometry against cfg before this is
-        reached, which would catch it if that ever stopped being true.
+        Keyed on the config and the active mask contents. The config alone is
+        insufficient for importance-derived masks, because examples can have
+        different active blocks at one config.
         """
         from torch.nn.attention.flex_attention import create_block_mask
 
@@ -481,7 +482,16 @@ class FlexAttentionBackend(AttentionBackend):
         # BlockMask is far smaller than a dense (S, S) bool, but it still holds
         # device tensors, and "small leak across 504 configs" is the same bug
         # with a longer fuse.
-        ck = (cfg.key(), str(device))
+        if mask is None:
+            mask_key = None
+        else:
+            active = getattr(mask, "active", None)
+            if isinstance(active, torch.Tensor):
+                payload = active.detach().to("cpu").contiguous().numpy().tobytes()
+                mask_key = hashlib.sha1(payload).hexdigest()
+            else:
+                mask_key = id(mask)
+        ck = (cfg.key(), str(device), mask_key)
         if self.__dict__.get("_bm_key") == ck:
             return self.__dict__["_bm_value"]
 

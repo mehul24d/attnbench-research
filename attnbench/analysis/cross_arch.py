@@ -43,6 +43,7 @@ host.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
@@ -360,15 +361,25 @@ def speedup_within_host(df: pd.DataFrame, *, baseline_backend: str,
             # per-cell gap, unlike a whole machine missing the baseline.
             continue
         baseline_latency = float(base_rows[latency_column].iloc[0])
+        if not math.isfinite(baseline_latency) or baseline_latency <= 0:
+            raise CrossArchError(
+                f"baseline latency for host={host!r}, config={config_key!r} "
+                f"must be finite and positive, got {baseline_latency!r}")
         gpu_name = str(cell["gpu_name"].iloc[0])
         base_locked = _locked(base_rows.iloc[0])
         for _, row in cell.iterrows():
             if row["backend"] == baseline_backend:
                 continue
+            latency = float(row[latency_column])
+            if not math.isfinite(latency) or latency <= 0:
+                raise CrossArchError(
+                    f"latency for host={host!r}, backend={row['backend']!r}, "
+                    f"config={config_key!r} must be finite and positive, "
+                    f"got {latency!r}")
             results.append(Speedup(
                 host=str(host), gpu_name=gpu_name, backend=str(row["backend"]),
                 config_key=str(config_key),
-                latency_ms=float(row[latency_column]),
+                latency_ms=latency,
                 baseline_latency_ms=baseline_latency,
                 clocks_locked=_both_locked(base_locked, _locked(row))))
     return results
