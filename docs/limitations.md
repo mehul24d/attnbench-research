@@ -1016,3 +1016,32 @@ every row of every `reconciliation.parquet` carries `bias_detected`,
 `bias_mean_residual_ms` and `bias_direction`. It was a printed line until
 2026-09-12, which is how a 24-of-24 same-sign result survived unexamined for
 a day in 2026-09-07 — see silent_failure_patterns #27.
+
+## Known debt: the analysis provenance stamp is written and never read
+
+**Recorded 2026-09-12. Small, unbuilt, and the fifteenth variation on one
+theme.**
+
+Every derived artifact now carries `analysis_tool`, `analysis_git_commit`,
+`analysis_git_dirty`, `analysis_host` and `analysis_timestamp` — fourteen
+files across Stages 4, 5, 6, 7 and `cross_arch`, all currently clean at a
+single commit. **Nothing consults any of it.**
+
+That is the 2026-09-04 situation exactly (silent_failure_patterns #10): a
+stamp that was recorded correctly, on every row, and read by no gate. The
+measurement stamp has `provenance.stamp_integrity_problems`, ten tests, and a
+caller in `sweep.py`. The analysis stamp has none of that, and
+`provenance.stamp_analysis` has no test of its own.
+
+**The specific consumer that is missing:** a check that refuses to join two
+analysis outputs whose `analysis_git_commit` differs, and refuses any row
+with `analysis_git_dirty=True`, mirroring what
+`cross_arch.load_segments` already does for measurement stamps against
+`git_commit`. Stage 7 reads Stage 6's parquet; Stage 6 reads Stage 5's;
+nothing establishes that those were produced by one checkout. On 2026-09-12
+the four `reconciliation.parquet` files were stamped `analysis_git_dirty=True`
+for several hours — accurately, from a repair run on an uncommitted tree —
+and were only noticed because they were read by hand.
+
+Not built because it is one more loop on a study whose remaining work is
+writing, not measuring. Recorded so it is known debt rather than a surprise.

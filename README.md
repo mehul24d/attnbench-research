@@ -45,10 +45,12 @@ artefact.
    kernel; Stage 3 uses real importance-derived ones. Every row records which.
 3. **The estimator's cost, which published speedups exclude.** Priced here as
    a first-class result rather than a limitation.
-4. **One card vs two architectures.** Every ratio is remeasured against a
+4. **Accuracy and latency measured apart vs at matched accuracy.** A speedup
+   at an operating point that loses accuracy is not a speedup — and on two of
+   three tasks the honest comparison turns out to be unreachable at any
+   affordable sample size, which is a finding in its own right.
+5. **One card vs two architectures.** Every ratio is remeasured against a
    baseline on the same machine; nothing is carried across hosts.
-5. **Accuracy and latency measured apart vs at matched accuracy.** A speedup
-   at an operating point that loses accuracy is not a speedup.
 
 ## Scope and cost, stated up front
 
@@ -116,7 +118,7 @@ Then, on any CUDA GPU:
 .venv/bin/python scripts/run_probe.py --out results/probe   # Stages 0 and 1
 ```
 
-## The three documents that matter
+## The documents that matter
 
 - **[`docs/claims.md`](docs/claims.md)** — the ledger every write-up is
   drafted from. One row per claim, pairing the sentence the data supports
@@ -125,6 +127,9 @@ Then, on any CUDA GPU:
 - **[`docs/limitations.md`](docs/limitations.md)** — what the measurements
   cannot answer, including two questions that are permanently out of reach on
   this hardware and the variance calculation proving it.
+- **[`docs/writeup_input.md`](docs/writeup_input.md)** — what was measured,
+  on what, and what each number licenses, organised by the five gaps. Drafted
+  from `claims.md` with every claim's boundary attached.
 - **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
   32 confirmed incidents, each one a plausible number produced by machinery
   that looked like it was working. No crash, no failed test. Several changed
