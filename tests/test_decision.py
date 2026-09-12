@@ -85,3 +85,81 @@ def test_tree_fidelity_is_measured_against_the_map_not_held_out_data():
     assert fid.n_cells == 6
     assert fid.faithful and fid.mismatches == 0
     assert "task_idx" in fid.rules
+
+
+# --------------------------------------------------------------------------
+# The resolution floor
+#
+# The map is the study's headline artifact and was the one place with no
+# resolution floor, while cross_arch has had `ratio_resolution` since Stage 2
+# and the canary has CANARY_MIN_LATENCY_MS. Five cells at 4096 recommended
+# block_sparse on advantages of 0.18-0.38 % -- decided entirely by which of
+# three Stage 5 sessions supplied the phases, whose own spread at that band is
+# 0.57 %. See SPEEDUP_RESOLUTION_BANDS for the derivation.
+# --------------------------------------------------------------------------
+
+from attnbench.analysis.decision import (                      # noqa: E402
+    SPEEDUP_RESOLUTION_BANDS, speedup_resolution)
+
+
+def test_the_floor_is_wider_at_longer_context_and_never_narrower_when_unknown():
+    assert speedup_resolution(2048) == speedup_resolution(4096) == 0.006
+    assert speedup_resolution(8192) == 0.017
+    # 16384 and 32768 were measured in ONE session each, so their spread is
+    # unknown; they inherit the widest measured band, never the nearest.
+    assert speedup_resolution(16384) == speedup_resolution(32768) == 0.017
+    # An unknown length buys no precision.
+    assert speedup_resolution(None) == max(r for _, r in SPEEDUP_RESOLUTION_BANDS)
+
+
+def test_a_sub_resolution_sparse_advantage_is_a_tie_and_goes_to_dense():
+    """0.3 % ahead at 4096, against a 0.6 % floor. The pre-registered rule
+    already says ties go to dense; this only gives "tie" a measured width."""
+    r = recommend(_cell("vt", 4096, 1.0, [(0.75, 1000.0, 2.0)], 1003.0),
+                  oracle_sensitive_tasks=frozenset())
+    assert r.is_dense
+    assert r.tie_broken_to_dense
+    assert not r.dense_choice_resolvable
+    assert "resolution floor" in r.detail
+
+
+def test_an_advantage_above_the_floor_is_kept():
+    """5 % ahead at 8192, against a 1.7 % floor."""
+    r = recommend(_cell("niah_single", 8192, 1.0, [(0.9, 1000.0, 1.0)], 1050.0),
+                  oracle_sensitive_tasks=frozenset())
+    assert not r.is_dense and r.sparsity == 0.9
+    assert not r.tie_broken_to_dense
+    assert r.resolvable and r.dense_choice_resolvable
+
+
+def test_the_floor_is_applied_at_the_cells_own_band_not_a_global_one():
+    """The same 1 % advantage resolves at 4096 and does not at 8192. A single
+    global threshold would get one of these two wrong."""
+    near = recommend(_cell("vt", 4096, 1.0, [(0.75, 1000.0, 2.0)], 1010.0),
+                     oracle_sensitive_tasks=frozenset())
+    far = recommend(_cell("vt", 8192, 1.0, [(0.75, 1000.0, 2.0)], 1010.0),
+                    oracle_sensitive_tasks=frozenset())
+    assert not near.is_dense and not near.tie_broken_to_dense
+    assert far.is_dense and far.tie_broken_to_dense
+
+
+def test_which_sparsity_can_be_undecided_while_sparse_versus_dense_is_not():
+    """vt/8192/eps=5 in the real map: 0.9 beats 0.75 by 1.07 % (inside the
+    floor) while beating dense by 3.28 % (outside it). Reporting one flag
+    would have to lie about one of the two questions."""
+    r = recommend(_cell("vt", 8192, 5.0,
+                        [(0.9, 1000.0, 5.5), (0.75, 1011.0, 6.0)], 1033.0),
+                  oracle_sensitive_tasks=frozenset())
+    assert not r.is_dense and r.sparsity == 0.9
+    assert not r.resolvable                 # which sparsity: undecided
+    assert r.dense_choice_resolvable        # sparse vs dense: decided
+    assert "UNRESOLVABLE" in r.detail
+
+
+def test_an_uncontested_dense_cell_is_resolved_not_merely_unopposed():
+    """niah_multikey has no accuracy-matched sparse point at all. That is
+    dense winning uncontested, which must not be reported as a close call."""
+    r = recommend(_cell("niah_multikey", 8192, 1.0, [], 1896.0),
+                  oracle_sensitive_tasks=frozenset())
+    assert r.is_dense and r.resolvable and r.dense_choice_resolvable
+    assert r.separation is None

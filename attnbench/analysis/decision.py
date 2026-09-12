@@ -48,6 +48,63 @@ import pandas as pd
 from .pareto import ParetoResult
 
 
+# How precisely a normalized speedup can be compared, by context length.
+#
+# Measured from this study's own data, the same way `cross_arch`'s
+# RATIO_RESOLUTION_BANDS were, and for the same reason: an unfloored map
+# reports a 1.002x recommendation with the same face as a 1.32x one.
+#
+# Stage 5 measured prefill and decode_step for every (band, sparsity) in three
+# independent rented sessions -- results/stage5/, stage5_flashdecode/ and
+# stage5_ols/. Rebuilding the map's own ranking quantity
+# (`normalized_total(dense) / normalized_total(sparse)`) from each session in
+# turn gives three values for one cell. Their spread is how much of a
+# difference the instrument cannot resolve:
+#
+#     band     sparsities   sessions   max spread across sessions
+#     2048     0.5/0.75/0.9     3            0.20 %
+#     4096     0.5/0.75/0.9     3            0.57 %
+#     8192     0.5/0.75/0.9     3            1.65 %
+#     16384    0.5/0.75/0.9     1            -- not measured twice --
+#     32768    0.5/0.75/0.9     1            -- not measured twice --
+#
+# The spread grows with band, which is expected: prefill grows, and the
+# between-session drift in the dense prefill alone is 9 ms at 4096
+# (283.76 -> 288.10 -> 292.75) against a within-session sd of 1.2-2.4 ms.
+#
+# Collapsed to two bands, deliberately coarser than the table. Nine points do
+# not support a per-band curve, and the point of a floor is to be defensible
+# rather than tight. Each band takes the WORST spread observed in it, rounded
+# up.
+#
+# 16384 and 32768 were each measured in exactly one session, so their spread
+# is unknown, and they inherit the widest MEASURED value rather than the
+# nearest one. That is a lower bound on their true uncertainty, not an
+# estimate of it -- recorded in docs/limitations.md rather than hidden here.
+# It does not endanger the headline: 1.321x at 32768 is 32 % above 1.0
+# against a 1.7 % floor.
+SPEEDUP_RESOLUTION_BANDS: tuple[tuple[float, float], ...] = (
+    (4096.0, 0.006),        # context_length <= 4096
+    (float("inf"), 0.017),
+)
+
+
+def speedup_resolution(context_length: Optional[int]) -> float:
+    """Smallest speedup difference distinguishable from session-to-session
+    variation at this context length.
+
+    `None` returns the WIDEST band. An unknown length must not buy a claim
+    more precision than a measured one -- the same rule as
+    `cross_arch.ratio_resolution`.
+    """
+    if context_length is None:
+        return max(r for _, r in SPEEDUP_RESOLUTION_BANDS)
+    for upper, resolution in SPEEDUP_RESOLUTION_BANDS:
+        if context_length <= upper:
+            return resolution
+    return SPEEDUP_RESOLUTION_BANDS[-1][1]
+
+
 @dataclass(frozen=True)
 class Recommendation:
     """What to use at one (task, context_length, epsilon) cell."""
@@ -63,6 +120,27 @@ class Recommendation:
     oracle_sensitive: bool
     directional: bool
     n_candidates: int
+
+    # How far the recommendation is from being a coin flip. See
+    # SPEEDUP_RESOLUTION_BANDS.
+    resolution: float = 0.0
+
+    # SIGNED, and `None` when the chosen point is the only one on the
+    # frontier. Negative means the next-best point was nominally faster and
+    # was passed over because the gap was inside the floor -- which is what a
+    # tie-break to dense looks like from here, and is worth seeing rather
+    # than hiding behind an absolute value.
+    separation: Optional[float] = None
+
+    # Two different questions. A cell can fail one and pass the other: where
+    # a sparse point sits at identical latency to dense it is dominated off
+    # the frontier, so "which point is fastest" is answered (dense, it cannot
+    # be worse on either axis) while "is dense faster" is not answered at all.
+    resolvable: bool = True                 # is THIS recommendation decided
+    dense_choice_resolvable: bool = True    # is "sparse or dense" decided
+
+    tie_broken_to_dense: bool = False       # sub-resolution advantage discarded
+
     detail: str = ""
 
     def to_dict(self) -> dict:
@@ -84,16 +162,61 @@ def recommend(result: ParetoResult, *, oracle_sensitive_tasks: frozenset[str],
             f"has no dense reference point, so no recommendation can be made: "
             f"there is nothing to say whether taking a sparse point is worth "
             f"it. Pass dense_backend to compute_pareto_frontiers.")
-    dense_latency = dense[0].latency_ms
+    dense_point = dense[0]
+    dense_latency = dense_point.latency_ms
 
     # Sort so that ties resolve to dense: False < True, so `not is_dense_reference`
     # puts the baseline first at equal latency.
-    best = min(result.frontier,
-               key=lambda p: (p.latency_ms, not p.is_dense_reference))
+    ranked = sorted(result.frontier,
+                    key=lambda p: (p.latency_ms, not p.is_dense_reference))
+    best = ranked[0]
+
+    # The tie rule, applied with a MEASURED tie tolerance instead of exact
+    # equality. "Ties go to the dense baseline" was pre-registered above; a
+    # difference smaller than the instrument can resolve IS a tie, and
+    # treating it as a win is the whole failure this floor exists to stop.
+    # Nothing new is decided here -- the existing rule is applied correctly
+    # now that "equal" has a measured width.
+    resolution = speedup_resolution(result.context_length)
+    tie_broken = False
+    if not best.is_dense_reference:
+        advantage = dense_latency / best.latency_ms - 1.0
+        if advantage < resolution:
+            best = dense_point
+            tie_broken = True
+
+    others = [p for p in ranked if p is not best]
+    separation = (others[0].latency_ms / best.latency_ms - 1.0) if others else None
+
+    sparse_pts_all = [p for p in result.all_points if not p.is_dense_reference]
+    if sparse_pts_all:
+        fastest_sparse = min(sparse_pts_all, key=lambda p: p.latency_ms)
+        dense_choice_resolvable = (
+            abs(dense_latency / fastest_sparse.latency_ms - 1.0) >= resolution)
+    else:
+        # No accuracy-matched sparse point exists at all. Dense is the only
+        # candidate, so the choice is not close -- it is uncontested.
+        dense_choice_resolvable = True
+
+    resolvable = separation is None or separation >= resolution
 
     notes = []
-    sparse_pts = [p for p in result.all_points if not p.is_dense_reference]
-    if sparse_pts and all(p.dominated_by_dense for p in sparse_pts):
+    if tie_broken:
+        notes.append(
+            f"the fastest non-dominated point was sparse but only "
+            f"{advantage:.2%} ahead of dense, inside the {resolution:.1%} "
+            f"resolution floor for this band -- a tie by measurement, and "
+            f"the pre-registered tie rule gives it to dense")
+    if not resolvable:
+        notes.append(
+            f"UNRESOLVABLE: the next-best point is {separation:.2%} away, "
+            f"inside the {resolution:.1%} floor. Which point is fastest here "
+            f"is decided by which Stage 5 session's phases are used, not by "
+            f"the arms")
+    if not dense_choice_resolvable:
+        notes.append("sparse-versus-dense is itself undecided at this cell")
+
+    if sparse_pts_all and all(p.dominated_by_dense for p in sparse_pts_all):
         notes.append("every accuracy-matched sparse point is dominated by "
                      "dense on both axes")
     oracle = (not best.is_dense_reference) and result.task in oracle_sensitive_tasks
@@ -109,6 +232,9 @@ def recommend(result: ParetoResult, *, oracle_sensitive_tasks: frozenset[str],
         speedup_vs_dense=dense_latency / best.latency_ms,
         is_dense=best.is_dense_reference, oracle_sensitive=oracle,
         directional=best.directional, n_candidates=len(result.all_points),
+        resolution=resolution, separation=separation, resolvable=resolvable,
+        dense_choice_resolvable=dense_choice_resolvable,
+        tie_broken_to_dense=tie_broken,
         detail="; ".join(notes))
 
 

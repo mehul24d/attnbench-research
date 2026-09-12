@@ -90,16 +90,48 @@ def main():
 
     print(f"oracle-sensitive tasks: {sorted(oracle_tasks) or 'none'}")
     print(f"\n=== DECISION MAP ({len(recs)} cells) ===")
-    tab["choice"] = tab.apply(
-        lambda r: r.backend if pd.isna(r.sparsity) else f"{r.backend}@{r.sparsity:g}",
-        axis=1)
+    # An unresolvable cell must not render with the same face as a decided
+    # one -- a "?" suffix, so the map cannot be read as 27 decisions when it
+    # holds fewer. See decision.SPEEDUP_RESOLUTION_BANDS.
+    # Marked on EITHER flag. They answer different questions and a cell can
+    # fail one and pass the other: at niah_single/4096 the sparse point sits
+    # at identical latency and is dominated off the frontier, so "which point
+    # is fastest" is answered (dense, it cannot be worse) while "is dense
+    # faster" is not. A reader wants to know about both.
+    def _choice(r):
+        c = r.backend if pd.isna(r.sparsity) else f"{r.backend}@{r.sparsity:g}"
+        return c if (r.resolvable and r.dense_choice_resolvable) else c + " ?"
+    tab["choice"] = tab.apply(_choice, axis=1)
     for eps in epsilons:
         e = tab[tab.epsilon == eps]
         print(f"\nepsilon = {eps:g}")
         print(e.pivot_table(index="task", columns="context_length",
                             values="choice", aggfunc="first").to_string())
 
+    unres = tab[~(tab.resolvable & tab.dense_choice_resolvable)]
+    print(f"\n  ? = the next-best point is inside this band's resolution "
+          f"floor; which point is fastest there is decided by which Stage 5 "
+          f"session supplied the phases, not by the arms.")
+
     print(f"\ndense recommended in {int(tab.is_dense.sum())} / {len(tab)} cells")
+    fully = int((tab.resolvable & tab.dense_choice_resolvable).sum())
+    print(f"RESOLVED by the measurement: {fully} / {len(tab)} cells")
+    print(f"  of the {len(tab) - fully} that are not, "
+          f"{int((~tab.dense_choice_resolvable).sum())} cannot say whether "
+          f"sparse or dense is faster")
+    if len(unres):
+        print(f"\n=== UNRESOLVABLE ({len(unres)}) ===")
+        u = unres.copy()
+        u["sep_%"] = (u.separation * 100).round(2)
+        u["floor_%"] = (u.resolution * 100).round(1)
+        print(u[["task", "context_length", "epsilon", "choice", "sep_%",
+                 "floor_%", "dense_choice_resolvable"]].to_string(index=False))
+    tied = tab[tab.tie_broken_to_dense]
+    if len(tied):
+        print(f"\n{len(tied)} cell(s) had a sparse point ahead of dense by "
+              f"less than the floor; the pre-registered tie rule gave them to "
+              f"dense:")
+        print(tied[["task", "context_length", "epsilon"]].to_string(index=False))
     ors = tab[tab.oracle_sensitive]
     print(f"oracle-sensitive recommendations: {len(ors)} / {len(tab)}")
     if len(ors):
