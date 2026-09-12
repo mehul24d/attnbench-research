@@ -45,6 +45,49 @@ bash scripts/gcp_cleanup_check.sh           # expect "Clean"
 gcloud compute machine-images list          # v2 must be READY
 ```
 
+### Checking GPU quota: use the Cloud Quotas API, not `regions describe`
+
+**`gcloud compute regions describe` does not list newer GPU families at all.**
+Not as zero -- the metric is absent from the response. On 2026-09-12,
+`asia-southeast1` had an approved `PREEMPTIBLE_NVIDIA_H100_GPUS = 1` and:
+
+```bash
+gcloud compute regions describe asia-southeast1 \
+  --flatten="quotas[]" --format="value(quotas.metric,quotas.limit)" | grep -i h100
+#   (no output)
+```
+
+An empty result there reads exactly like "no quota approved" and would have
+cancelled the session before it started. The metric list that response carries
+stops at A100/L4 -- it is the legacy quota surface and it does not grow.
+
+The current surface does have it:
+
+```bash
+gcloud alpha quotas info list --service=compute.googleapis.com \
+  --project="$PROJECT" | grep -i h100
+#   compute.googleapis.com/preemptible_nvidia_h100_gpus
+#   PREEMPTIBLE-NVIDIA-H100-GPUS-per-project-region  -> asia-southeast1: 1
+```
+
+This is the same shape as instance #5 in `silent_failure_patterns.md`, in the
+other direction: there, empty stdout was read as failure; here, an absent
+metric reads as an absent grant. **Both come from inferring a fact from the
+absence of a field rather than from a source that would have carried it.**
+
+### Availability: check the zone list, do not assume one zone
+
+`a3-highgpu-1g` + `nvidia-h100-80gb` exist in **`asia-southeast1-b` and
+`-c`**, not in `-a`. Enumerate rather than assume, because the launcher's
+zone-retry is only worth anything when there is a second zone to retry into:
+
+```bash
+for z in asia-southeast1-a asia-southeast1-b asia-southeast1-c; do
+  echo "$z: $(gcloud compute accelerator-types list --filter="zone:$z AND name~h100" \
+        --format='value(name)' | tr '\n' ' ')"
+done
+```
+
 **The suite includes a static call-site check** (`tests/test_script_call_sites.py`)
 that verifies every `scripts/*.py` call into `attnbench` matches the current
 signature. This is not optional politeness -- scripts are never imported by

@@ -1045,3 +1045,32 @@ and were only noticed because they were read by hand.
 
 Not built because it is one more loop on a study whose remaining work is
 writing, not measuring. Recorded so it is known debt rather than a surprise.
+
+## FlashAttention-3 is deliberately excluded, not unavailable
+
+**Decided 2026-09-12, before the H100 session was booked.**
+
+A reader will notice that the study benchmarks FA2 and not FA3 on Hopper, and
+the reason is a scope judgement rather than a capability gap. It is recorded
+here so the absence is not read as an oversight.
+
+**FA3 is sm90-only.** It has no sm_80 or sm_89 path, so it cannot appear in
+the cross-architecture comparison — which is the entire purpose of measuring
+a second and third architecture. Adding it would give a faster dense baseline
+on one card and a backend that exists nowhere else in the grid, extending the
+study's cross-architecture claim by **zero cells**.
+
+**And it is not merely a build.** No FA3 backend exists in this repository:
+the registry holds `block_sparse`, `fa2`, `flex`, `gla`, `naive`, `sage`,
+`sdpa` and `xformers`. Adding FA3 means a new `AttentionBackend` subclass, a
+`Capability` declaring `min_compute_capability=9.0`, Stage 0 capability rows,
+Stage 1 correctness gating against the float64 reference, and its own entry in
+the exclusion rules — plus a separate compile session from flash-attn's
+`hopper` branch, which the v5 image does not contain.
+
+**What this means for the claims.** No sentence in `claims.md` is about FA3,
+and none should be. In particular, *"FA2 is the fastest dense attention
+implementation on H100"* is **not supported** by this study and is not
+claimed: FA3 exists, is designed for exactly that hardware, and was not
+measured. The supported form is the one already in the ledger — backend A
+against backend B on identical inputs, among the backends actually run.
