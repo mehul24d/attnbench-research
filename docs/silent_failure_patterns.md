@@ -1494,7 +1494,180 @@ design was not merely noisier — it could not have found this.**
 ### Impact
 
 The decode *slope* is unaffected: it is the marginal cost and was estimated
-correctly. What moves is every implied total and the analytical
-`normalized_ms`. Recomputed, block-sparse operating points dominated by
-dense go from 12/31 to **10/31**. Measured end-to-end speedups are untouched
-— those are wall-clock, not identity.
+correctly. What moves is every implied total, and with it the reconciliation
+residuals — which is where the off-by-one actually bit: the 24-of-24
+same-sign residuals in `results/stage5/reconciliation.parquet` were the
+off-by-one and nothing else. Repaired under `(n − 1)` on 2026-09-12 they
+become **10+/14−, p=0.54, mean +6.5 ms**, down from 24+/0−, p=1.2e-7, mean
++50.3 ms. Measured end-to-end speedups are untouched — those are wall-clock,
+not identity.
+
+**A correction to this section, which is instance #28's shape.** It read:
+"Recomputed, block-sparse operating points dominated by dense go from 12/31
+to **10/31**." That attribution is wrong. Holding the phases file fixed and
+changing only the identity moves *nothing*: 12/31 under both `n` and `(n−1)`
+on `results/stage5/phases.parquet`, 10/31 under both on
+`results/stage5_ols/phases.parquet`. The off-by-one shifts every arm's
+normalized total by the same one decode step, so it cancels in a comparison
+between arms. The 12→10 swing was entirely the *phases file*, which changed
+in the same regeneration — a second uncontrolled variable moving alongside
+the one under test, and the impact credited to the wrong one.
+
+
+## 28. A guard whose grouping makes the checked property constant
+
+**Found 2026-09-12, four days after the guard was written — by me, in my own
+code, while auditing someone else's review for exactly this shape.**
+
+`analysis/decode_backend_guard.assert_uniform` exists to make one failure
+impossible: pooling latency across rows that decoded through different
+kernels (#24). It groups by `OPERATING_POINT_KEYS = ("backend", "task",
+"_band", "sparsity")` and raises if a group's `decode_backend` values
+disagree.
+
+`decode_backend` is a **function of** `backend`. Grouping by `backend` makes
+`decode_backend` constant within every group by construction. The guard could
+only ever detect era mixing *within one arm* — rows measured before and after
+the 2026-09-08 `DENSE_DECODE_BACKEND` change pooled together — and was
+structurally incapable of firing on the cross-*arm* case, which is the
+confound it was written for and the one the study's central correction is
+about.
+
+It reported **zero offending cells** on `results/stage3_s1b/accuracy.parquet`
+— sparse arms `sdpa_math`, dense arm `sdpa_flash`, six comparison cells — and
+passed. Both call sites (`run_pareto.py`, `run_decode_confound.py`) called it
+before averaging and were satisfied.
+
+### Why it is not the same as #25
+
+#25 is a guard verified with a fixture the guard never read: the test was
+wrong, the guard was fine. Here the *test* was fine — it constructed a mixed
+cell and watched the guard raise — and the guard was fine for what the test
+constructed. The gap is between what the guard checks and what the failure
+is, and no test of the guard in isolation can show it, because the test
+author picks the frame and will pick one shaped like the check.
+
+### The detection method, which is the transferable part
+
+For any guard, ask: **is the property being checked constant within the
+grouping?** If the grouped-by key determines the checked value, the check
+cannot fail, and the correct number of offending cells is zero for every
+input. It is not a weak guard; it is not a guard.
+
+Cheap mechanical version: run the guard on the real data it was written for.
+Not a fixture — the actual banked set whose confound motivated it. If it
+passes, either the confound is gone or the guard cannot see it, and those two
+have to be told apart before the green is worth anything.
+
+### The fix
+
+`assert_comparable` / `cross_arm_cells` group by `COMPARISON_KEYS = ("task",
+"_band")` — one *comparison*, every arm whose latency is divided by another's
+— which deliberately excludes both `backend` and `sparsity`. It raises on
+`stage3_s1b` (6 cells) and passes on the three post-correction sets. A test
+asserts that `assert_uniform` stays blind to the same frame, so nobody reads
+a green one as covering the other.
+
+---
+
+## 29. A correction whose input is not tied to the era of what it corrects
+
+**Found 2026-09-12. This is the one that changed a published number.**
+
+`decode_corrected_ms` removes the decode-kernel penalty from a measured
+end-to-end total. The penalty comes from a Stage 5 `phases.parquet` passed in
+by the caller. Nothing tied that file's decode era to the era of the rows.
+
+`results/stage6/decode_corrected.parquet` was built from
+`results/stage5_ols/phases.parquet` — measured after `DENSE_DECODE_BACKEND`
+became `sdpa_flash`, so *both* its arms already decode through the same
+kernel and the largest penalty it can supply is **0.747 ms/token** — and
+applied to `results/stage3_s1b/` rows whose real penalty is **8–22
+ms/token**. The column subtracted 0.3–0.7 ms where it should have subtracted
+100–700 ms. It was a no-op wearing the name of a correction, and the confound
+it names survived it completely.
+
+### Why it produced a plausible number
+
+Every guard passed. The arithmetic was right, the identity was right after
+`7c1fcca`, the row count was right, and `measured_ms` travelled beside it as
+designed. A near-zero correction on an already-plausible latency is
+indistinguishable from a correctly-applied small correction. The only way to
+see it is to ask what the penalty *should* be and compare — which nothing did,
+because the penalty was not written down anywhere.
+
+### What it cost
+
+`normalized_ms` was built from the same mispaired file, so:
+
+- dominated-normalized **10/31**, where the era-matched phases give **12/31**
+  (`claims.md` said 12 the whole time; the file disagreed with the ledger and
+  nothing compared them)
+- best normalized speedup **1.069×** vs **1.059×**
+- the Stage 7 decision map: **five of 27 cells** recommended `block_sparse`
+  where the era-matched run recommends dense; dense 16/27 → **21/27**
+
+### And the five cells were never resolvable anyway
+
+All five sit at band 4096, and all five turn on sparsity's prefill saving at
+4096, measured three times in three sessions:
+
+| session | 4096, sparsity 0.75 |
+|---|---|
+| `stage5` | **0.00 ms** |
+| `stage5_flashdecode` | +1.17 ms |
+| `stage5_ols` | +2.82 ms |
+
+against a within-session sd of 1.2–2.4 ms and a between-session drift in the
+dense prefill itself of 9 ms (283.76 → 292.75). The recommendation at 4096 is
+determined by which session's phases you feed it. `cross_arch` has had a
+`resolution` / `resolvable` concept since Stage 2 for exactly this; the
+decision map has none, and reports a 1.002× recommendation with the same face
+as a 1.32× one.
+
+### The fix
+
+`decode_confound.correct` now requires `arms_share_decode_backend` from the
+caller — obtained from `decode_backend_guard.cross_arm_cells` on the rows, not
+assumed — and refuses **both** mismatched pairings: a confounded set demands a
+penalty above `SAME_KERNEL_PENALTY_MS`, a matched set demands one below it.
+`decode_penalty_ms` is now a column, so the size of what was removed is in the
+data. The correction can, at last, detect its own error.
+
+### The transferable rule
+
+**A derived quantity whose input can come from more than one measurement
+session must check that the input matches what it is being applied to.** The
+general form of "two sources of truth": not two copies of a rule, but two
+populations either of which will satisfy a function's type signature while
+only one answers its question.
+
+---
+
+## 30. Fourteen unstamped files, and the rule that already covered them
+
+`README.md` line 89: *"No result row is written without a provenance stamp."*
+On 2026-09-12, every derived artifact in the project had none — Stages 4, 5
+(reconciliation), 6, 7 and all five `cross_arch` outputs, fourteen files.
+
+They were not wrong. They were **unverifiable**, which is the whole reason
+the rule exists: the 2026-09-04 case (#10) is a set that carried a stamp that
+provably could not be right and cleared a check nobody read, and an absent
+stamp is the same position with less to read.
+
+The reason it happened is worth more than the count: the rule was enforced in
+`sweep.py` and `run_phase_timing.py`, the two harnesses that *measure*. Every
+script written afterwards that only *reduces* already-measured rows skipped
+it, because a measurement stamp — `gpu_name`, `clocks_locked`,
+`sm_clock_mhz` — is obviously wrong for a laptop doing a groupby, and the
+absence of a right-shaped alternative read as "the rule does not apply here."
+
+`provenance.stamp_analysis` is that alternative: `analysis_tool`,
+`analysis_git_commit`, `analysis_git_dirty`, `analysis_host`,
+`analysis_timestamp`. Prefixed so it cannot collide with, or overwrite, the
+measured columns the source rows carry — and so a reader can never mistake
+the machine that reduced the rows for the machine that measured them.
+
+**The rule to take:** when a discipline is skipped everywhere in a whole
+class of code, the usual cause is not laziness. It is that the discipline
+only had one implementation and it was the wrong shape for that class.

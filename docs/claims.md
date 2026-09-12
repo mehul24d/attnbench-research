@@ -199,9 +199,15 @@ on the phase that dominates the bill at batch 1.
 
 | band | dense decode (`sdpa_flash`) | sparse decode (`sdpa_math`) | penalty | share of the sparse arm's total |
 |---|---|---|---|---|
-| 2048 | 34.80 ms/token | 42.90–42.95 | **+23.3%** | 18.2% |
-| 4096 | 34.60 ms/token | 42.04–42.57 | **+21.5%** | 15.5% |
-| 8192 | 34.16 ms/token | 54.94–55.92 | **+60.8 to +63.7%** | **29.2%** |
+| 2048 | 34.80 ms/token | 42.90–43.16 | **+23.3 to +24.0%** | 17.4% |
+| 4096 | 34.60 ms/token | 42.04–42.57 | **+21.5 to +23.0%** | 14.9% |
+| 8192 | 34.16 ms/token | 54.94–55.92 | **+60.8 to +63.7%** | **28.8%** |
+
+Recipe for the last column, stated because it moved: the largest value over
+that band's sparse operating points of `(n_own − 1) × penalty / measured_ms`.
+It read `18.2 / 15.5 / 29.2` until 2026-09-12, computed with `n ×` rather
+than `(n − 1) ×`. Recomputed from `results/stage5/phases.parquet` and
+`results/stage6/decode_corrected.parquet`.
 
 **Confound 2 — unequal generation length, which was already in the measured
 result.** On `vt` the arms do not generate the same number of tokens: dense
@@ -210,9 +216,11 @@ comparable. An arm that stops earlier finishes sooner for reasons that have
 nothing to do with attention speed. `niah_single` is clean — every arm
 generates exactly 14.0.
 
-Correcting **only** the decode kernel gives 0/31 dominated and a best speedup
-of 1.28×. **Both of those are artifacts of confound 2** and neither is
-reported. The unconfounded quantity holds both arms to the same decode kernel
+Correcting **only** the decode kernel gives 6/31 dominated and a best speedup
+of 1.26×. **Both of those are artifacts of confound 2** and neither is
+reported. (They read 0/31 and 1.28× until 2026-09-12; recomputed under the
+`(n − 1)` identity from era-matched phases. The point is unchanged and the
+direction is the same — correcting one confound alone overstates.) The unconfounded quantity holds both arms to the same decode kernel
 *and* the same generation length.
 
 #### DERIVED, NOT MEASURED
@@ -226,11 +234,23 @@ carries `measured_ms` beside `decode_corrected_ms` and `normalized_ms` on
 every row, so a corrected number cannot travel without what it was corrected
 from.
 
+**Read `normalized_ms`, not `decode_corrected_ms`.** The middle column
+corrects the decode kernel and leaves the generation-length confound in, so
+it is inflated on `vt` — it is an intermediate, kept only so the two
+corrections can be seen apart. It is also only meaningful when the phases it
+was built from are from the same decode era as the rows: fed post-2026-09-08
+phases, where both arms already decode through `sdpa_flash`, the penalty is
+0.29–0.75 ms/token instead of 8–22 and the column becomes a no-op wearing the
+name of a correction. That is what the file contained from 2026-09-08 to
+2026-09-12. `decode_confound.correct` now refuses that pairing outright and
+`decode_penalty_ms` is on every row, so the size of what was removed is
+visible without recomputing it.
+
 #### What survives the correction, and what does not
 
 | claim | status |
 |---|---|
-| *The best end-to-end speedup at any accuracy-matched point is ≤1.06×* | **SURVIVES.** Measured best 1.057×; normalized best **1.057×**. |
+| *The best end-to-end speedup at any accuracy-matched point is ≤1.06×* | **SURVIVES.** Measured best 1.057× (`vt`/4096/0.5); normalized best **1.059×** (`niah_single`/8192/0.9). The normalized figure read 1.057× until 2026-09-12, when it was recomputed under the `(n − 1)` identity from era-matched phases; ≤1.06× is unaffected. |
 | *…and that point is `vt`, 0.5 sparsity, 4096* | **DOES NOT SURVIVE.** Normalized, the best point is **`niah_single`, 0.9 sparsity, 8192**. The number is unchanged and the operating point behind it is different. |
 | *16 of 31 matched sparse points are dominated by dense* | **DOES NOT SURVIVE.** Normalized: **12 of 31**. |
 | *All 15 `niah_single` points are dominated* | **DOES NOT SURVIVE.** Normalized: **9 of 15**. The six that leave are all at 8192. |
@@ -243,10 +263,17 @@ sparsity's prefill saving only becomes visible at the longest band measured:
 
 | task | band | sparsity | measured | normalized | dense (normalized) |
 |---|---|---|---|---|---|
-| niah_single | 8192 | 0.50 | 1415.1 | 1155.0 | 1173.1 |
-| niah_single | 8192 | 0.75 | 1360.8 | 1130.3 | 1173.1 |
-| niah_single | 8192 | 0.90 | 1342.6 | 1109.6 | 1173.1 |
-| vt | 8192 | 0.90 | 2155.7 | 1955.4 | 2020.3 |
+| niah_single | 8192 | 0.50 | 1415.1 | 1120.8 | 1138.4 |
+| niah_single | 8192 | 0.75 | 1360.8 | 1096.1 | 1138.4 |
+| niah_single | 8192 | 0.90 | 1342.6 | 1075.5 | 1138.4 |
+| vt | 8192 | 0.90 | 2155.7 | 1921.3 | 1984.2 |
+
+*The `normalized` and `dense` columns above were `1155.0 / 1130.3 / 1109.6`
+and `1173.1 / 2020.3` until 2026-09-12. Those were computed with
+`prefill + n × decode_step`; the identity is `(n − 1)`, because the prefill
+forward emits the first token's logits. The dominance verdicts, the count of
+seven, and which points move are unchanged — the correction shifts every
+column by one decode step (~34 ms) in the same direction.*
 
 **Three points enter it** — `vt`, 2048, 0.5 sparsity, at all three epsilons.
 They were on the frontier only because that arm generated 27.8 tokens against
@@ -255,8 +282,8 @@ is a correction nobody checked.
 
 | | |
 |---|---|
-| **Supported** | *Under a matched decode kernel and matched generation length, **12 of 31** accuracy-matched sparse operating points remain dominated by dense, and the best speedup is **1.057×**, at `niah_single`/8192/0.9. Sparsity's end-to-end benefit is real, small, and confined to the longest band measured.* |
-| **Not supported** | *Block-sparse beats dense once you correct for the decode kernel.* Correcting only that gives 1.28×, which is confound 2 talking. |
+| **Supported** | *Under a matched decode kernel and matched generation length, **12 of 31** accuracy-matched sparse operating points remain dominated by dense, and the best speedup is **1.059×**, at `niah_single`/8192/0.9. Sparsity's end-to-end benefit is real, small, and confined to the longest band measured.* |
+| **Not supported** | *Block-sparse beats dense once you correct for the decode kernel.* Correcting only that gives 1.26×, which is confound 2 talking. |
 | **Not supported** | *The measured Stage 6 numbers are wrong.* They are correct measurements of a system in which one arm decodes through a slower kernel. That is a real property of this harness, and the qualifier is the regime, not an error bar. |
 
 `grid_configs.py` names confound 1 in its own docstring — *"a row labelled

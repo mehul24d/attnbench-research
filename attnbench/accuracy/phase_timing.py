@@ -198,7 +198,8 @@ class Reconciliation:
         mark = "CLOSES" if self.closes else "DOES NOT CLOSE"
         sp = "dense" if self.sparsity is None else f"{self.sparsity:g}"
         return (f"{self.context_length:>6}  {self.backend:<13} {sp:>5}  "
-                f"prefill {self.prefill_ms:8.1f} + {self.n_generated:5.1f} x "
+                f"prefill {self.prefill_ms:8.1f} + "
+                f"({self.n_generated:5.1f}-1) x "
                 f"decode {self.decode_step_ms:6.2f} = {self.implied_total_ms:8.1f}"
                 f"  vs observed {self.observed_total_ms:8.1f}"
                 f"  ({self.residual_frac:+6.1%})  {mark}")
