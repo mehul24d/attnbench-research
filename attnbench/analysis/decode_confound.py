@@ -41,7 +41,7 @@ attention faster":
 
 THIS IS DERIVED, NOT MEASURED
 -----------------------------
-`normalized` is a model: `prefill(band, sparsity) + n * decode_dense(band)`,
+`normalized` is a model: `prefill(band, sparsity) + (n-1) * decode_dense(band)`,
 built from Stage 5's phase measurements. Those were taken on random token ids
 at exactly the band length, not on the RULER prompts (which range 4000-8196
 inside the 8192 band), with n=10 reps rather than Stage 3's n=900. It
@@ -56,6 +56,24 @@ from dataclasses import asdict, dataclass
 from typing import Optional
 
 import pandas as pd
+
+
+class PhaseEraMismatch(ValueError):
+    """The phases feeding the penalty are from a different decode era than
+    the rows being corrected."""
+
+
+# The measured separation between the two decode eras, from the banked
+# Stage 5 phases (block_sparse decode_step minus dense decode_step):
+#
+#   sdpa_math era  (results/stage5/)            +8.1 .. +21.8 ms/token
+#   sdpa_flash era (results/stage5_ols/,
+#                   _flashdecode/, _32768/)     +0.29 .. +0.75 ms/token
+#
+# Anything under this is same-kernel jitter, not a kernel difference. The
+# two populations are more than an order of magnitude apart, so the exact
+# cut is not load-bearing -- what matters is that the check exists.
+SAME_KERNEL_PENALTY_MS = 2.0
 
 
 @dataclass(frozen=True)
@@ -132,6 +150,7 @@ class CorrectedPoint:
 
     n_generated_own: float          # what this arm actually generated
     n_generated_common: float       # the dense arm's, used for normalization
+    decode_penalty_ms: float        # per token, what the correction removed
 
     measured_ms: float
     decode_corrected_ms: float
@@ -155,16 +174,73 @@ def _dominates(a_lat: float, a_margin: float,
     return at_least_as_good and strictly_better
 
 
+def _assert_phase_era_matches(model: PhaseModel, pareto: pd.DataFrame,
+                              arms_share_decode_backend: bool) -> None:
+    penalties = {}
+    for r in pareto.itertuples():
+        if r.is_dense_reference:
+            continue
+        sp = None if pd.isna(r.sparsity) else float(r.sparsity)
+        band = int(r.context_length)
+        if (band, sp) in model.decode_step_ms:
+            penalties[(band, sp)] = model.decode_penalty(band, sp)
+    if not penalties:
+        return
+    worst = max(abs(v) for v in penalties.values())
+    looks_matched = worst < SAME_KERNEL_PENALTY_MS
+
+    if looks_matched and not arms_share_decode_backend:
+        raise PhaseEraMismatch(
+            f"the rows being corrected decoded through different kernels per "
+            f"arm, but the largest decode penalty these phases can supply is "
+            f"{worst:.3f} ms/token (< {SAME_KERNEL_PENALTY_MS} ms). These "
+            f"phases were measured after DENSE_DECODE_BACKEND changed to "
+            f"sdpa_flash, so both their arms already decode through the same "
+            f"kernel and they cannot price a confound the rows still carry. "
+            f"`decode_corrected_ms` would be a no-op wearing the name of a "
+            f"correction. Use phases from the same era as the rows "
+            f"(results/stage5/ for sdpa_math-era rows).")
+    if not looks_matched and arms_share_decode_backend:
+        raise PhaseEraMismatch(
+            f"the rows being corrected all decoded through one kernel, so "
+            f"there is no decode-kernel penalty to remove -- but these "
+            f"phases carry one of {worst:.3f} ms/token. They are from the "
+            f"sdpa_math era and the rows are not. Subtracting this would "
+            f"invent a correction for a confound that is not in the data.")
+
+
 def correct(pareto: pd.DataFrame, phases: pd.DataFrame,
-            n_generated: dict, dense_backend: str = "sdpa_flash"
-            ) -> list[CorrectedPoint]:
+            n_generated: dict, dense_backend: str = "sdpa_flash", *,
+            arms_share_decode_backend: bool) -> list[CorrectedPoint]:
     """Recompute every Stage 6 point under a matched decode kernel and a
     matched generation length.
 
     `n_generated` maps (backend, task, band, sparsity) -> mean tokens
     generated, from the same Stage 3 rows Stage 6's latency came from.
+
+    `arms_share_decode_backend` says whether the Stage 3 rows behind
+    `pareto` were themselves confounded -- get it from
+    `decode_backend_guard.cross_arm_cells` on those rows, never by assuming.
+    It is required rather than defaulted because the whole failure below is
+    a caller who did not think about it.
+
+    Why this argument exists
+    ------------------------
+    `decode_corrected_ms` subtracts a penalty measured by `phases`. Nothing
+    tied the era of `phases` to the era of the rows, and the two banked sets
+    are three days and one `DENSE_DECODE_BACKEND` change apart. Feeding
+    `results/stage5_ols/phases.parquet` (both arms already on `sdpa_flash`)
+    to the `results/stage3_s1b/` rows (sparse arm on `sdpa_math`) gives a
+    penalty of 0.29-0.75 ms instead of 8-22 ms: the column is then a no-op
+    that *looks* like a correction, and the confound it names survives it
+    untouched. That is what `results/stage6/decode_corrected.parquet` was
+    from 2026-09-08 until this check.
+
+    So the correction now checks itself, in both directions: a confounded
+    set demands a real penalty, and a matched set demands a near-zero one.
     """
     model = phase_model_from(phases, dense_backend)
+    _assert_phase_era_matches(model, pareto, arms_share_decode_backend)
     out: list[CorrectedPoint] = []
 
     for (task, band, eps), cell in pareto.groupby(
@@ -191,6 +267,7 @@ def correct(pareto: pd.DataFrame, phases: pd.DataFrame,
                 backend=r.backend, sparsity=sp, margin=float(r.margin),
                 is_dense_reference=bool(r.is_dense_reference),
                 n_generated_own=n_own, n_generated_common=n_common,
+                decode_penalty_ms=penalty,
                 measured_ms=float(r.latency_ms),
                 decode_corrected_ms=dec_corr, normalized_ms=norm,
                 dominated_measured=bool(r.dominated_by_dense),

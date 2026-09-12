@@ -302,6 +302,45 @@ def stamp_onto(df, stamp: dict) -> None:
               "than letting the stamp's default overwrite it.")
 
 
+ANALYSIS_STAMP_COLUMNS = ("analysis_tool", "analysis_git_commit",
+                          "analysis_git_dirty", "analysis_host",
+                          "analysis_timestamp")
+
+
+def stamp_analysis(df, tool: str) -> None:
+    """Stamp a DERIVED frame with what produced it, in place.
+
+    Separate from `stamp_onto`, and deliberately under `analysis_`-prefixed
+    names, because the two describe different machines. A `phases.parquet`
+    stamp says which GPU, driver and clock state produced a *measurement*.
+    An `pareto.parquet` stamp says which checkout of which script reduced
+    already-measured rows -- run on a laptop, hours or days later, at a
+    different commit. Writing the second under the first's column names
+    would put a laptop's `gpu_name` beside a measurement it never touched,
+    which is `clocks_locked=False` over a locked run wearing a new hat
+    (see `stamp_onto`).
+
+    Prefixed names also cannot collide with the measurement columns the
+    source rows already carry, so this can never overwrite a measured field.
+
+    Why it exists at all: README line 89 says "No result row is written
+    without a provenance stamp", and on 2026-09-12 fourteen files across
+    Stages 4, 5, 6, 7 and cross_arch had none -- every derived artifact in
+    the project. They were not wrong, they were unverifiable, which is the
+    whole reason the rule is there.
+    """
+    commit, dirty = _git_state()
+    stamp = {
+        "analysis_tool": tool,
+        "analysis_git_commit": commit,
+        "analysis_git_dirty": dirty,
+        "analysis_host": platform.node(),
+        "analysis_timestamp": time.time(),
+    }
+    for k, v in stamp.items():
+        df[k] = v
+
+
 def stamp_integrity_problems(stamp) -> list[str]:
     """Reasons the provenance on a row cannot be trusted to describe the code.
 

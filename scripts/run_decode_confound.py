@@ -23,6 +23,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from attnbench.accuracy.config import load_grid                # noqa: E402
+from attnbench import provenance                                # noqa: E402
 from attnbench.analysis import decode_backend_guard            # noqa: E402
 from attnbench.analysis import decode_confound                 # noqa: E402
 from attnbench.analysis.matched import band_for                # noqa: E402
@@ -46,6 +47,14 @@ def main():
     df["_band"] = [band_for(int(c), grid.seq_lens) for c in df.context_length]
 
     decode_backend_guard.assert_uniform(df)
+    # NOT assert_comparable: this script exists to price a cross-arm decode
+    # difference, so it must be able to read confounded rows. What it may
+    # not do is guess whether they are confounded -- `correct` is told, and
+    # refuses if the phases it was given cannot price what it is told.
+    cross_arm = decode_backend_guard.cross_arm_cells(df)
+    for k, by_arm in cross_arm:
+        print(f"cross-arm decode difference at {k}: {by_arm}")
+    print(f"arms share a decode kernel: {not cross_arm}")
     n_gen = {}
     for (b, t, band, sp), rows in df.groupby(
             ["backend", "task", "_band", "sparsity"], dropna=False):
@@ -55,8 +64,13 @@ def main():
     pareto = pd.read_parquet(args.pareto)
     phases = pd.read_parquet(args.phases)
 
-    pts = decode_confound.correct(pareto, phases, n_gen, grid.dense_backend)
+    pts = decode_confound.correct(
+        pareto, phases, n_gen, grid.dense_backend,
+        arms_share_decode_backend=not cross_arm)
     out = decode_confound.to_dataframe(pts)
+    out["arms_share_decode_backend"] = not cross_arm
+    out["phases_source"] = args.phases
+    provenance.stamp_analysis(out, "scripts/run_decode_confound.py")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(args.out, index=False)
 

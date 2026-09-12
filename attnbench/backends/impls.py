@@ -482,6 +482,7 @@ class FlexAttentionBackend(AttentionBackend):
         # BlockMask is far smaller than a dense (S, S) bool, but it still holds
         # device tensors, and "small leak across 504 configs" is the same bug
         # with a longer fuse.
+        cacheable = True
         if mask is None:
             mask_key = None
         else:
@@ -490,9 +491,20 @@ class FlexAttentionBackend(AttentionBackend):
                 payload = active.detach().to("cpu").contiguous().numpy().tobytes()
                 mask_key = hashlib.sha1(payload).hexdigest()
             else:
-                mask_key = id(mask)
+                # No `active` tensor to hash. `id(mask)` was here and is
+                # wrong twice over: CPython reuses an address after the
+                # object at it is collected, so a later mask can inherit an
+                # earlier one's key and be served the earlier one's
+                # BlockMask; and a mask rebuilt from the same inputs gets a
+                # new address, so the key is not a function of the content
+                # it claims to identify. A cache whose key is not derived
+                # from the value is the F7 bug in miniature. Refuse to cache
+                # instead -- a miss costs a rebuild, a collision costs a
+                # wrong measurement.
+                mask_key = None
+                cacheable = False
         ck = (cfg.key(), str(device), mask_key)
-        if self.__dict__.get("_bm_key") == ck:
+        if cacheable and self.__dict__.get("_bm_key") == ck:
             return self.__dict__["_bm_value"]
 
         if cfg.mask == "block_sparse":
@@ -514,8 +526,9 @@ class FlexAttentionBackend(AttentionBackend):
         else:
             built = None
 
-        self.__dict__["_bm_key"] = ck
-        self.__dict__["_bm_value"] = built
+        if cacheable:
+            self.__dict__["_bm_key"] = ck
+            self.__dict__["_bm_value"] = built
         return built
 
     def forward(self, q, k, v, cfg, mask=None):

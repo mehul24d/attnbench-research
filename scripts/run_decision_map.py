@@ -25,7 +25,9 @@ from attnbench.analysis.matched import (                               # noqa: E
 from attnbench.analysis.pareto import compute_pareto_frontiers          # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_pareto import EXCLUDE_BACKENDS, latency_table                  # noqa: E402
+from attnbench import provenance                                       # noqa: E402
+from run_pareto import (EXCLUDE_BACKENDS, cross_arm_cells,              # noqa: E402
+                        latency_table)
 
 
 def main():
@@ -33,6 +35,10 @@ def main():
     ap.add_argument("results", nargs="+")
     ap.add_argument("--grid", default="configs/accuracy/stage3_grid.yaml")
     ap.add_argument("--out", default="results/stage7")
+    ap.add_argument(
+        "--allow-cross-arm-decode", action="store_true",
+        help="With --corrected absent, permit a map built from arms that "
+             "decoded through different kernels. Stamped onto the output.")
     ap.add_argument("--epsilons", default="1,2,5")
     ap.add_argument("--max-depth", type=int, default=3)
     ap.add_argument("--corrected", default=None,
@@ -66,7 +72,9 @@ def main():
                float(r.normalized_ms) for r in c.itertuples()}
         latency_source = f"normalized (DERIVED) from {args.corrected}"
     else:
-        lat = latency_table(df, grid.seq_lens)
+        lat = latency_table(
+            df, grid.seq_lens,
+            allow_cross_arm_decode=args.allow_cross_arm_decode)
         latency_source = "measured latency_ms as banked"
     print(f"latency source: {latency_source}")
     pareto = compute_pareto_frontiers(matched, lat, dense_backend=grid.dense_backend)
@@ -74,6 +82,10 @@ def main():
 
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     tab = to_dataframe(recs)
+    tab["latency_source"] = latency_source
+    tab["cross_arm_decode_confound"] = bool(
+        cross_arm_cells(df, grid.seq_lens)) and not args.corrected
+    provenance.stamp_analysis(tab, "scripts/run_decision_map.py")
     tab.to_parquet(out / "decision_map.parquet", index=False)
 
     print(f"oracle-sensitive tasks: {sorted(oracle_tasks) or 'none'}")

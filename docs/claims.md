@@ -217,7 +217,7 @@ reported. The unconfounded quantity holds both arms to the same decode kernel
 
 #### DERIVED, NOT MEASURED
 
-`normalized` is a model — `prefill(band, sparsity) + n × decode_dense(band)` —
+`normalized` is a model — `prefill(band, sparsity) + (n−1) × decode_dense(band)` —
 built from Stage 5 phases taken on **random token ids at exactly the band
 length**, n=10 reps, not on the RULER prompts (4000–8196 tokens inside the
 8192 band) and not at n=900. It reconstructs what the arms *would* have cost

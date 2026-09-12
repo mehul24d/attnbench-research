@@ -48,6 +48,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from attnbench.accuracy.config import load_grid                       # noqa: E402
+from attnbench import provenance                                # noqa: E402
 from attnbench.analysis import decode_backend_guard            # noqa: E402
 from attnbench.analysis.matched import (                              # noqa: E402
     band_for, best_matched_sparsity_budget, run_matched_analysis)
@@ -58,7 +59,8 @@ from attnbench.accuracy.grid_configs import (                          # noqa: E
     ACCURACY_EXCLUDED_BACKENDS as EXCLUDE_BACKENDS)
 
 
-def latency_table(df: pd.DataFrame, seq_lens) -> dict:
+def latency_table(df: pd.DataFrame, seq_lens, *,
+                  allow_cross_arm_decode: bool = False) -> dict:
     """Mean latency per (backend, task, band, sparsity) -- the key an
     operating point has, so Stage 4 rows and these join identically."""
     d = df.copy()
@@ -67,6 +69,11 @@ def latency_table(df: pd.DataFrame, seq_lens) -> dict:
     # sdpa_math -> sdpa_flash on 2026-09-08 and the gap is 23-64% per decode
     # token, so a cell pooling both eras describes neither.
     decode_backend_guard.assert_uniform(d)
+    # And before any *ratio* between arms. assert_uniform cannot see this:
+    # it groups by `backend`, and `decode_backend` is a function of
+    # `backend`, so its groups are uniform whatever the arms did.
+    if not allow_cross_arm_decode:
+        decode_backend_guard.assert_comparable(d)
     out = {}
     g = d.groupby(["backend", "task", "_band", "sparsity"], dropna=False)
     for (backend, task, band, sparsity), rows in g:
@@ -76,12 +83,27 @@ def latency_table(df: pd.DataFrame, seq_lens) -> dict:
     return out
 
 
+def cross_arm_cells(df: pd.DataFrame, seq_lens) -> list[tuple]:
+    """The comparison cells whose arms disagree on decode kernel, for
+    reporting and for stamping onto a deliberately-confounded output."""
+    d = df.copy()
+    d["_band"] = [band_for(int(c), seq_lens) for c in d["context_length"]]
+    return decode_backend_guard.cross_arm_cells(d)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results", nargs="+")
     ap.add_argument("--grid", default="configs/accuracy/stage3_grid.yaml")
     ap.add_argument("--out", default="results/stage6")
     ap.add_argument("--epsilons", default="1,2,5")
+    ap.add_argument(
+        "--allow-cross-arm-decode", action="store_true",
+        help="Emit a frontier whose arms decoded through different kernels. "
+             "The ratios are then part kernel difference and not separable "
+             "from the end-to-end number; the output is stamped "
+             "cross_arm_decode_confound=True so it cannot be quoted as a "
+             "clean speedup by someone who was not here.")
     args = ap.parse_args()
 
     grid = load_grid(args.grid)
@@ -92,12 +114,22 @@ def main():
     matched = run_matched_analysis(
         df, grid, dense_backend=grid.dense_backend,
         sparse_backends=("block_sparse",), epsilons=epsilons)
-    lat = latency_table(df, grid.seq_lens)
+    lat = latency_table(df, grid.seq_lens,
+                        allow_cross_arm_decode=args.allow_cross_arm_decode)
+    confounded = cross_arm_cells(df, grid.seq_lens)
 
     results = compute_pareto_frontiers(matched, lat, dense_backend=grid.dense_backend)
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     tab = to_dataframe(results)
+    tab["cross_arm_decode_confound"] = bool(confounded)
+    provenance.stamp_analysis(tab, "scripts/run_pareto.py")
     tab.to_parquet(out / "pareto.parquet", index=False)
+    if confounded:
+        print(f"!! {len(confounded)} comparison cell(s) compare arms that "
+              f"decoded through different kernels; every ratio below is part "
+              f"kernel difference. Stamped cross_arm_decode_confound=True.")
+        for k, by_arm in confounded:
+            print(f"   {k}: {by_arm}")
 
     print("=== end-to-end latency by arm (Stage 3 generate(), n=900/arm) ===")
     lt = pd.DataFrame(

@@ -37,6 +37,16 @@ from attnbench.accuracy.phase_timing import (                          # noqa: E
 from attnbench.config import AttnConfig                                # noqa: E402
 
 
+def _write_reconciliation(recs, out) -> None:
+    """`stamp_analysis`, not `stamp_onto`: reconciliation rows are DERIVED
+    from the phase measurements beside them, so a measurement-shaped stamp
+    would claim they were measured. The phases they came from carry the real
+    one."""
+    frame = pd.DataFrame([r.to_dict() for r in recs])
+    provenance.stamp_analysis(frame, "scripts/run_phase_timing.py")
+    frame.to_parquet(out / "reconciliation.parquet", index=False)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--grid", default="configs/accuracy/stage3_grid.yaml")
@@ -160,8 +170,7 @@ def main():
         pd.DataFrame([r.to_dict() for r in rows]).to_parquet(
             out / "phases.parquet", index=False)
         if recs:
-            pd.DataFrame([r.to_dict() for r in recs]).to_parquet(
-                out / "reconciliation.parquet", index=False)
+            _write_reconciliation(recs, out)
 
     # The measured value goes INTO the stamp, so the stamp and the rows agree
     # and `stamp_onto` has nothing to object to. Calling capture() bare here
@@ -171,8 +180,7 @@ def main():
     provenance.stamp_onto(df, prov)
     df.to_parquet(out / "phases.parquet", index=False)
     if recs:
-        pd.DataFrame([r.to_dict() for r in recs]).to_parquet(
-            out / "reconciliation.parquet", index=False)
+        _write_reconciliation(recs, out)
         bad = [r for r in recs if not r.closes]
         print(f"\n=== RECONCILIATION: {len(recs) - len(bad)}/{len(recs)} close "
               f"within {int(100 * 0.10)}% ===")

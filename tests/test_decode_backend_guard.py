@@ -15,7 +15,8 @@ import pytest
 from attnbench.accuracy.grid_configs import (
     DENSE_DECODE_BACKEND, DENSE_DECODE_BACKEND_HISTORY)
 from attnbench.analysis.decode_backend_guard import (
-    MixedDecodeBackend, assert_uniform, era_of, offending_cells)
+    MixedDecodeBackend, assert_comparable, assert_uniform, cross_arm_cells,
+    era_of, offending_cells)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -126,3 +127,70 @@ def test_banked_stage3_rows_are_stamped_with_the_pre_change_fallback(path):
     assert sorted(dense.decode_backend.unique()) == ["sdpa_flash"], (
         "the dense arm decoded through itself in both eras, which is why "
         "only the sparse arms move")
+
+
+# --------------------------------------------------------------------------
+# The cross-arm check
+#
+# `assert_uniform` groups by `OPERATING_POINT_KEYS`, which includes
+# `backend`. `decode_backend` is a function of `backend`, so every one of its
+# groups is uniform whatever the arms did -- it can only see era mixing
+# *within* one arm, and is structurally incapable of firing on the confound
+# this module was written for. It reported zero offending cells on
+# `results/stage3_s1b/` (sparse arms `sdpa_math`, dense arm `sdpa_flash`) for
+# four days. These pin both halves of that.
+# --------------------------------------------------------------------------
+
+def _two_arms(sparse_decode, dense_decode, band=8192):
+    return pd.DataFrame([
+        dict(backend="block_sparse", task="niah_single", _band=band,
+             sparsity=0.75, latency_ms=1400.0, decode_backend=sparse_decode),
+        dict(backend="sdpa_flash", task="niah_single", _band=band,
+             sparsity=None, latency_ms=1200.0, decode_backend=dense_decode),
+    ])
+
+
+def test_matched_arms_pass_both_checks():
+    df = _two_arms("sdpa_flash", "sdpa_flash")
+    assert_uniform(df)
+    assert_comparable(df)
+
+
+def test_cross_arm_mismatch_is_invisible_to_assert_uniform():
+    """Not a wish -- a fact about the grouping, asserted so that nobody
+    reads a green `assert_uniform` as covering this."""
+    df = _two_arms("sdpa_math", "sdpa_flash")
+    assert offending_cells(df) == []
+    assert_uniform(df)
+
+
+def test_cross_arm_mismatch_is_caught_by_assert_comparable():
+    df = _two_arms("sdpa_math", "sdpa_flash")
+    bad = cross_arm_cells(df)
+    assert len(bad) == 1
+    key, by_arm = bad[0]
+    assert by_arm == {"block_sparse": ["sdpa_math"], "sdpa_flash": ["sdpa_flash"]}
+    with pytest.raises(MixedDecodeBackend, match="different kernels"):
+        assert_comparable(df)
+
+
+def test_the_banked_pre_correction_rows_are_refused():
+    """The real thing, not a fixture. `results/stage3_s1b/accuracy.parquet`
+    is the set the confound was found in; it must not pass silently."""
+    path = REPO / "results" / "stage3_s1b" / "accuracy.parquet"
+    if not path.exists():                       # pragma: no cover
+        pytest.skip("banked Stage 3 rows not present")
+    df = pd.read_parquet(path)
+    df["_band"] = [4096 if c < 6144 else 8192 for c in df.context_length]
+    assert_uniform(df)                           # passes -- that is the gap
+    with pytest.raises(MixedDecodeBackend):
+        assert_comparable(df)
+
+
+def test_the_post_correction_rows_are_accepted():
+    path = REPO / "results" / "stage3_flashdecode" / "accuracy.parquet"
+    if not path.exists():                       # pragma: no cover
+        pytest.skip("banked Stage 3 rows not present")
+    df = pd.read_parquet(path)
+    df["_band"] = [4096 if c < 6144 else 8192 for c in df.context_length]
+    assert_comparable(df)

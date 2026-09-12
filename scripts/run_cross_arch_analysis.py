@@ -43,6 +43,7 @@ import pandas as pd
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from attnbench import provenance                                # noqa: E402
 from attnbench.analysis import composition, cross_arch  # noqa: E402
 from attnbench.analysis.code_identity import (  # noqa: E402
     backends_with_drift, restrict_to_reference_code)
@@ -275,7 +276,7 @@ def main() -> int:
         return 0
 
     args.out.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{
+    comparison_frame = pd.DataFrame([{
         "backend": c.backend, "config_key": c.config_key,
         "seq_len": int(meta.loc[c.config_key].seq_len),
         "batch": int(meta.loc[c.config_key].batch),
@@ -287,17 +288,25 @@ def main() -> int:
         "min_latency_ms": c.min_latency_ms,
         "caveat": c.caveat(),
         "resolution_caveat": c.resolution_caveat(),
-    } for c in comparisons]).to_parquet(args.out / "comparisons.parquet")
-    cross.to_parquet(args.out / "crossover.parquet")
-    matched.to_parquet(args.out / "crossover_matched.parquet")
-    if len(arches) == 2:
-        shifted.to_parquet(args.out / "advantage_shift.parquet")
-    pd.DataFrame([{
+    } for c in comparisons])
+    speedup_frame = pd.DataFrame([{
         "host": s.host, "gpu_name": s.gpu_name, "backend": s.backend,
         "config_key": s.config_key, "latency_ms": s.latency_ms,
         "baseline_latency_ms": s.baseline_latency_ms, "speedup": s.speedup,
         "clocks_locked": s.clocks_locked,
-    } for s in speedups]).to_parquet(args.out / "speedups.parquet")
+    } for s in speedups])
+    written = [(comparison_frame, "comparisons"), (cross, "crossover"),
+               (matched, "crossover_matched"), (speedup_frame, "speedups")]
+    if len(arches) == 2:
+        written.append((shifted, "advantage_shift"))
+    for frame, name in written:
+        # `stamp_analysis`, not `stamp_onto`: these rows already carry the
+        # measuring hosts' facts (`host`, `gpu_name`, `clocks_locked` come
+        # from the measurements themselves, and there is more than one host
+        # in the frame by construction). A measurement-shaped stamp here
+        # would name whichever laptop ran the join.
+        provenance.stamp_analysis(frame, "scripts/run_cross_arch_analysis.py")
+        frame.to_parquet(args.out / f"{name}.parquet")
     print(f"\nWrote comparisons/crossover/speedups to {args.out}")
     return 0
 

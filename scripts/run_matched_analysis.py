@@ -26,6 +26,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from attnbench import provenance                                       # noqa: E402
 from attnbench.accuracy.config import load_grid                # noqa: E402
 from attnbench.analysis.matched import (                       # noqa: E402
     best_matched_sparsity_budget, run_matched_analysis, to_dataframe)
@@ -84,8 +85,10 @@ def main():
     budgets = best_matched_sparsity_budget(results)
 
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
-    to_dataframe(results).to_parquet(out / "matched_comparisons.parquet", index=False)
-    to_dataframe(budgets).to_parquet(out / "matched_budgets.parquet", index=False)
+    for frame, name in ((to_dataframe(results), "matched_comparisons"),
+                        (to_dataframe(budgets), "matched_budgets")):
+        provenance.stamp_analysis(frame, "scripts/run_matched_analysis.py")
+        frame.to_parquet(out / f"{name}.parquet", index=False)
 
     b = to_dataframe(budgets)
     print(f"\n=== matched sparsity budget (max level non-inferior to dense) ===")

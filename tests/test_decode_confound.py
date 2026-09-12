@@ -122,7 +122,8 @@ def _pareto_frame(band=8192):
 def test_a_point_can_leave_the_dominated_set_under_the_correction():
     n = {("sdpa_flash", "t", 8192, None): 14.0,
          ("block_sparse", "t", 8192, 0.75): 14.0}
-    pts = correct(_pareto_frame(), _phases(), n)
+    pts = correct(_pareto_frame(), _phases(), n,
+                  arms_share_decode_backend=False)
     sparse = [p for p in pts if not p.is_dense_reference][0]
     assert sparse.dominated_measured is True
     assert sparse.dominated_normalized is False
@@ -134,7 +135,8 @@ def test_the_measured_value_is_carried_beside_the_corrected_ones():
     a number someone will quote as a measurement."""
     n = {("sdpa_flash", "t", 8192, None): 14.0,
          ("block_sparse", "t", 8192, 0.75): 14.0}
-    df = dc.to_dataframe(correct(_pareto_frame(), _phases(), n))
+    df = dc.to_dataframe(correct(_pareto_frame(), _phases(), n,
+                            arms_share_decode_backend=False))
     for col in ("measured_ms", "decode_corrected_ms", "normalized_ms",
                 "n_generated_own", "n_generated_common"):
         assert col in df.columns
@@ -153,7 +155,7 @@ def test_unequal_generation_length_can_move_a_point_the_OTHER_way():
     frame.loc[1, "dominated_by_dense"] = False
     n = {("sdpa_flash", "t", 2048, None): 38.8,   # ...but only because it
          ("block_sparse", "t", 2048, 0.75): 20.0}  # generated half as many
-    pts = correct(frame, _phases(), n)
+    pts = correct(frame, _phases(), n, arms_share_decode_backend=False)
     sparse = [p for p in pts if not p.is_dense_reference][0]
     assert sparse.dominated_measured is False
     assert sparse.dominated_normalized is True
@@ -163,7 +165,8 @@ def test_unequal_generation_length_can_move_a_point_the_OTHER_way():
 def test_normalization_uses_the_dense_arms_length_for_both():
     n = {("sdpa_flash", "t", 8192, None): 38.8,
          ("block_sparse", "t", 8192, 0.75): 20.0}
-    pts = correct(_pareto_frame(), _phases(), n)
+    pts = correct(_pareto_frame(), _phases(), n,
+                  arms_share_decode_backend=False)
     assert {p.n_generated_common for p in pts} == {38.8}
     assert {p.n_generated_own for p in pts} == {38.8, 20.0}
 
@@ -173,4 +176,4 @@ def test_correct_refuses_a_cell_with_no_dense_reference():
     frame = frame[~frame.is_dense_reference]
     n = {("block_sparse", "t", 8192, 0.75): 14.0}
     with pytest.raises(ValueError, match="no dense reference"):
-        correct(frame, _phases(), n)
+        correct(frame, _phases(), n, arms_share_decode_backend=False)

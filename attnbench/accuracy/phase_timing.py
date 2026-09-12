@@ -41,11 +41,21 @@ FOUR PHASES, AND WHY MASK BUILD IS ONE OF THEM
 
 The composition a reader wants is then explicit rather than assumed:
 
-    end_to_end ~= prefill + n_generated * decode_step        (+ mask_build,
+    end_to_end ~= prefill + (n_generated - 1) * decode_step  (+ mask_build,
                   once per config, not per call)             (+ scoring, if
                                                               you are honest
                                                               about the
                                                               estimator)
+
+`(n - 1)`, not `n`: the prefill forward emits the first token's logits, so
+generating n tokens costs one prefill plus n-1 decode steps. This line read
+`n_generated *` until 2026-09-12, three days after `reconcile` below and
+`analysis.decode_confound` were both corrected to `(n - 1)`, and it was the
+most authoritative-looking of the four places the identity is written down.
+The 24-of-24 same-sign residuals it produced fit inside a 10% tolerance and
+every cell reported CLOSES -- see silent_failure_patterns #27, and the
+standing rule that a tolerance bounds noise and says nothing about bias that
+fits inside it.
 """
 
 from __future__ import annotations
