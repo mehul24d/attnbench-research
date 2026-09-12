@@ -8,7 +8,7 @@ Nobody is going to tamper with these results. The entire realistic threat
 model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
-It stood at seventeen when that sentence was written. It stands at **thirty**.
+It stood at seventeen when that sentence was written. It stands at **thirty-two**.
 The original sentence is kept rather than updated because the rate is the
 point: the count went on growing under a discipline built specifically to
 stop it growing.
@@ -1685,3 +1685,167 @@ the machine that reduced the rows for the machine that measured them.
 **The rule to take:** when a discipline is skipped everywhere in a whole
 class of code, the usual cause is not laziness. It is that the discipline
 only had one implementation and it was the wrong shape for that class.
+
+---
+
+## 31. A recomputation is only a check if its inputs were checked
+
+**Found 2026-09-12, in my own audit of someone else's review, one step after
+the audit had reported the opposite.**
+
+The review of 2026-09-10 flagged an off-by-one in `decode_corrected_ms`. My
+Step-5 audit of that finding regenerated the affected artifact, diffed it
+against the shipped one, and reported:
+
+> `dominated_normalized`: 0 rows differ (10/31 → 10/31). Decision map: 0/27
+> cells change. **STILL TRUSTWORTHY — regenerated, unchanged.**
+
+Every one of those numbers was correct. The conclusion was wrong.
+
+The regeneration re-ran the producer against **the same
+`results/stage5_ols/phases.parquet` the shipped file had been built from** —
+and that file was the defect. It is from the wrong decode era: both its arms
+already decode through `sdpa_flash`, so the largest penalty it can supply is
+0.747 ms/token against a real 8–22 ms/token. Re-running a correct producer on
+a defective input reproduces the defective output exactly, and the diff is
+clean because both sides inherit the same fault.
+
+**A recomputation that agrees is evidence of determinism. It is evidence of
+correctness only if the inputs were established independently.**
+
+### The signal that was already there and was not consulted
+
+`docs/claims.md` had said **12 of 31** the whole time. The parquet said 10.
+The ledger and the artifact had disagreed for four days, across a published
+document and a shipped file, and nothing compared them — including the audit
+whose entire job was to decide which numbers were trustworthy.
+
+That is the tell, and it is cheap: **two independent statements of one
+quantity that disagree.** Not a subtle one. A grep would have found it.
+
+### Why "regenerate and diff" feels like verification
+
+It has every surface property of a check. It runs real code, produces real
+output, and the comparison is exact rather than eyeballed. What it does not
+do is vary anything the answer depends on. The producer was the only thing
+under test, and the producer was not the problem.
+
+Compare the two mechanisms that *did* work:
+
+- The **phases-era pairing check** asks whether the input matches what it is
+  applied to (#29).
+- The **decision map's resolution floor** asks how much the answer moves when
+  a different session's inputs are used (#28's sibling; see
+  `decision.SPEEDUP_RESOLUTION_BANDS`).
+
+Both vary the input. The regeneration held it fixed.
+
+### The convergence, which is the reason to trust the fix
+
+Those two mechanisms have nothing in common. One is a provenance check on
+decode era; the other is a variance measurement across three rented
+sessions, derived without reference to the pairing bug or even to its
+existence. They identify **the same five cells at 4096**.
+
+That matters beyond this incident. The worry about the pairing fix was that
+it had substituted one arbitrary answer for another — the era-matched phases
+are not obviously more correct than the OLS ones for `normalized_ms`, since
+prefill is era-independent. The resolution floor answers it from a different
+direction: those five cells were never resolvable by *any* choice of input,
+because the spread across sessions exceeds the effect. The fix did not pick
+a better arbitrary answer; it stopped reporting an answer that was not there.
+Independent methods landing on the same cells is hard to manufacture.
+
+### The detection method
+
+For any "I regenerated it and nothing changed":
+
+1. **Name the inputs.** Which files did the producer read?
+2. **Ask what would have to be true of each** for the output to be right.
+3. **Check that separately**, by something that is not the producer.
+4. **Find the second statement of the same quantity** — a claims row, a
+   docstring, a printed line in a run log — and diff it against the artifact.
+   The cost is a grep and it catches the case where both computations share
+   an upstream fault.
+
+A regeneration that varies nothing tests the code path. It says nothing at
+all about the data.
+
+---
+
+## 32. A test's coverage is bounded by its fixture, not by its name
+
+**Two instances in three days, the second found while writing up the first.**
+
+The mechanism is one sentence: **an end-to-end test whose fixture happens to
+satisfy one branch's precondition exercises that branch and claims to test
+the function.**
+
+### Instance A — `test_cross_backend_rejects_non_finite_outputs` (2026-09-11)
+
+`check_cross_backend` has two non-finite guards: one on the backend's output,
+one on each reference's. The test constructed a `_NonFiniteBackend` under
+test and **two `_NonFiniteBackend` references**. Deleting the backend-side
+guard — the one the test is named for — left it green, because the
+reference-side guard failed the result for a different reason. The named
+guard was never reached.
+
+Removing it in reality let a NaN-emitting backend through as
+`passed=True, max_abs_err=0.0, "agrees with 2 independent implementations"`.
+
+### Instance B — the reconciliation repair test (2026-09-12)
+
+`repair_reconciliation_identity.py` has two write paths: **annotate** (the
+arithmetic is already right, the file only gains columns) and **rewrite**
+(the retired `n × decode_step` identity, so everything derived is
+recomputed). The new test ran the CLI end to end on a copy of the real
+banked file — which was *already on the corrected identity*, so it went down
+annotate every time. Deleting `add_bias_columns` from the rewrite branch left
+it green.
+
+A companion test asserted the schema by looking for the string
+`"add_bias_columns"` in each script's source. That also stayed green: the
+call was still present in the *other* branch.
+
+### Why the two are the same failure
+
+In both cases the fixture was chosen to be *realistic*, and realistic meant
+"satisfies the common precondition". A NaN backend naturally suggested NaN
+references; a repair test naturally used the real file, which is repaired.
+The fixture's plausibility is what made it narrow.
+
+Neither is fixed by "parametrise over branches" as a slogan. The fix is to
+notice that the branch condition is **a property of the fixture**, and to
+build a fixture that fails it:
+
+- healthy references, so the backend-side guard is the only thing that can
+  fire;
+- a stale-identity frame, so the rewrite path is the only one that can run.
+
+### The detection method
+
+For any test that exercises a function with more than one path:
+
+1. **List the branch conditions** in the function under test.
+2. **Evaluate each against the fixture.** Any condition the fixture always
+   satisfies or always fails marks a path the test never reaches.
+3. **Delete the code in the unreached path** and re-run. Green means the test
+   covers a subset of what its name claims.
+
+Step 3 is the only one that is not opinion.
+
+### And this is the argument for the break-it check being mandatory
+
+Instance B was written **while documenting instance A**, by someone who had
+spent the previous day auditing a third party's review for exactly this
+shape, and who wrote the sentence "a guard that cannot fail, in the test
+layer" about it. Knowing the pattern did not prevent reproducing it a day
+later on a different surface.
+
+That is not a remark about carelessness. It is the case for the break-it
+check being a step that is always run rather than a habit that is relied on:
+the knowledge does not transfer to the moment, and the mechanical check does
+not need it to.
+
+Both tests now go red on deletion — instance A verified 2026-09-11, instance
+B parametrised over both branches and verified on each, 2026-09-12.

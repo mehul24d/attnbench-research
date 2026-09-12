@@ -951,3 +951,68 @@ domination result stand regardless of how the total divides internally.
 "decode is Y% of the bill". Stage 5's instrumented timing, with the phases
 measured separately rather than inferred by subtraction, is what settles it.
 Until then no phase split should be quoted from this data.
+
+### Update 2026-09-12: Stage 5 settled it for the dense arm and reopened it for the sparse one
+
+Stage 5 measured the phases separately, so the split above is no longer
+inferred by subtraction. Three of the four banked reconciliation sets close
+without systematic bias under the corrected `(n − 1)` identity:
+
+| set | signs | sign-test p | mean residual | closes |
+|---|---|---|---|---|
+| `results/stage5/` | 10+/14− | 0.541 | +6.5 ms | 24/24 |
+| `results/stage5_ols/` | 15+/13− | 0.851 | −105.3 ms | 19/28 |
+| `results/stage5_32768/` | 4+/0− | 0.125 | +5.1 ms | 4/4 |
+| **`results/stage5_flashdecode/`** | **3+/21−** | **0.00028** | **−143.7 ms** | **15/24** |
+
+**`results/stage5_flashdecode/` carries a systematic bias and it is not
+diagnosed.** The sign test is decisive — 21 of 24 residuals share a sign at
+p = 0.00028 — and the identity **understates** the observed total. Nine of
+its 24 cells fall outside the 10% tolerance.
+
+The structure is worth recording precisely, because it is a fact about the
+data rather than a hypothesis about the cause:
+
+- **Every non-closing cell is `block_sparse`.** All eight dense
+  (`sdpa_flash`) cells close, at both generation lengths.
+- **Every non-closing cell is at the long generation length** (n = 28.7–33.6).
+  All twelve cells at n = 8 close, including every `block_sparse` one, whose
+  residuals there run −3.3 to +0.9 ms.
+- **The residual is a near-constant fraction of the observed total within a
+  band**: −0.16 at 2048 (all three sparsities), −0.14 at 4096, −0.29 at 8192.
+  In absolute terms 205–701 ms.
+
+So the phase model reconstructs `block_sparse` to within a few ms for eight
+generated tokens and misses by a fixed proportion for thirty, at every band
+and every sparsity.
+
+**No cause is offered, and that is deliberate.** This project has made the
+regime-vs-unit error four times, and each time an arithmetic fix that made
+the sum close was wrong because a quantity was being read in the wrong
+regime. A near-constant fractional residual has several plausible
+explanations — per-call overhead that scales with generation, a decode step
+measured under different cache occupancy than generation produces, a mask or
+cache cost paid per call rather than per config — and this data cannot
+choose between them. Naming one would produce a decomposition that agrees
+with itself and with nothing else.
+
+**What this does NOT touch, stated plainly because the number is quotable:**
+no published speedup. The headline figures — 1.321× at 32768, 1.186× at
+16384, the five-band trend, the oracle ratios — are **wall-clock end-to-end
+measurements**, dense and sparse timed the same way on the same rows. They
+are not derived from this identity and do not depend on it closing. The
+`normalized_ms` column *is* identity-derived, but it is built from
+`results/stage5/` (10+/14−, p = 0.54, unbiased), not from this set.
+
+**What it does touch:** any per-phase attribution drawn from
+`stage5_flashdecode` specifically, and confidence in the phase model's
+transferability across generation lengths generally. The model was validated
+at the lengths Stage 5 measured; this says it should not be extrapolated to
+a generation length it was not checked at without re-checking.
+
+The finding is now readable from the parquet rather than from a terminal:
+every row of every `reconciliation.parquet` carries `bias_detected`,
+`bias_sign_test_p`, `bias_n_positive`, `bias_n_negative`,
+`bias_mean_residual_ms` and `bias_direction`. It was a printed line until
+2026-09-12, which is how a 24-of-24 same-sign result survived unexamined for
+a day in 2026-09-07 — see silent_failure_patterns #27.

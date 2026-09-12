@@ -3,7 +3,7 @@
 ## Why this plan is shaped the way it is
 
 This isn't a generic "look for bugs" checklist. `docs/silent_failure_patterns.md`
-records 30 confirmed incidents, and every one shares the same shape: **no
+records 32 confirmed incidents, and every one shares the same shape: **no
 crash, no failed test, no error - a plausible number, produced by machinery
 that looked like it was working.** Nothing in this project's history was
 caught by review-as-reading; everything was caught by someone distrusting a

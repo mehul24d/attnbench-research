@@ -126,7 +126,7 @@ Then, on any CUDA GPU:
   cannot answer, including two questions that are permanently out of reach on
   this hardware and the variance calculation proving it.
 - **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
-  30 confirmed incidents, each one a plausible number produced by machinery
+  32 confirmed incidents, each one a plausible number produced by machinery
   that looked like it was working. No crash, no failed test. Several changed
   a published figure. Each entry records the detection method, which is the
   transferable part.
