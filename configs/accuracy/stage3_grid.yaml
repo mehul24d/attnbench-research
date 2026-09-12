@@ -1,5 +1,5 @@
 # Stage 3 (accuracy track) grid, pinned as data rather than inferred from
-# unrelated code -- see CLAUDE.md's hardware ceiling and the "corrected grid"
+# unrelated code -- see docs/hardware_constraints.md's hardware ceiling and the "corrected grid"
 # note in the Stage 3 planning doc. Both models fit 24GB VRAM with headroom
 # at the longest seq_len below; layer/KV-head counts were verified against
 # each model's actual Hugging Face config.json, not assumed from name/size.

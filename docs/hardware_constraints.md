@@ -1,8 +1,10 @@
-# attnbench — project notes for Claude
+# Hardware constraints
 
 See `README.md` for the stage table and measurement-discipline rules. This
-file holds constraints that live in conversation/decisions rather than in the
-code, so they don't get silently re-inferred wrong.
+file holds the constraints that live in decisions rather than in the code, so
+they don't get silently re-inferred wrong. Both entries below exist because
+an otherwise-sound inference from the surrounding code produced the wrong
+answer at least once.
 
 ## Hardware ceiling
 

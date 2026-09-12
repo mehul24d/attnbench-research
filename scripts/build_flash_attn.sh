@@ -66,7 +66,7 @@ assert is_ninja_available(), "torch cannot see ninja despite it being on PATH"' 
 # 3. Architecture scoping. PERMANENT -- every rebuild should inherit this.
 # ---------------------------------------------------------------------------
 # setup.py's default is "80;90;100;120". sm_100/sm_120 are Blackwell, which
-# CLAUDE.md's hardware ceiling (24GB L4/4090, or 80GB H100 if the pending
+# docs/hardware_constraints.md's hardware ceiling (24GB L4/4090, or 80GB H100 if the pending
 # quota lands) never reaches -- they were half the compile work and none of
 # the value.
 #

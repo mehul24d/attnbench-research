@@ -3,7 +3,7 @@
 The model axis in particular must never be re-derived from Stage 2's
 AttnConfig/SweepGrid head geometry -- that inference produced a model that
 was ~20x too large for this study's hardware ceiling during planning (see
-CLAUDE.md). `stage3_grid.yaml` is the single source of truth for which
+docs/hardware_constraints.md). `stage3_grid.yaml` is the single source of truth for which
 models, context lengths, and block sizes this study actually runs.
 """
 
@@ -66,7 +66,7 @@ def load_grid(path: str | Path) -> AccuracyGrid:
 
     Raises on missing required keys rather than defaulting them silently --
     a grid with an unintended model or an unintended seq_len cap is exactly
-    the class of error CLAUDE.md's hardware-ceiling note exists to prevent,
+    the class of error docs/hardware_constraints.md's hardware-ceiling note exists to prevent,
     and a silent default could reintroduce it.
     """
     p = Path(path)

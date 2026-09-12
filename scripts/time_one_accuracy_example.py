@@ -22,7 +22,7 @@ timing every phase, and reports:
      assumption -- alongside the original 15-TFLOPS-assumed number, so the
      two can be compared directly
   3. peak memory at this length, as a sanity check against the 24GB/80GB
-     hardware ceiling in CLAUDE.md, before the full grid is committed
+     hardware ceiling in docs/hardware_constraints.md, before the full grid is committed
 
 Only the longest configured length is probed (the worst case for both
 memory and the causal-quadratic scoring pass) -- if that fits and the
@@ -107,7 +107,7 @@ def main():
     args = ap.parse_args()
 
     if not torch.cuda.is_available():
-        raise SystemExit("this probe needs a GPU -- see CLAUDE.md's hardware "
+        raise SystemExit("this probe needs a GPU -- see docs/hardware_constraints.md's hardware "
                           "ceiling for what this study targets")
 
     grid = load_grid(args.grid)

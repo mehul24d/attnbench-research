@@ -960,6 +960,9 @@ The session wrapper ran the Stage 1 gate as:
 python3 -u scripts/check_stage1_against_diagnostic.py --correctness ... | tail -20
 ```
 
+(That script was removed once Stage 2's segments were all measured. The line
+above is the transcript of what was run, not a command to run now.)
+
 `--correctness` is a *positional* argument. argparse exited **2**. `tail`
 exited 0, so the pipeline exited 0, the chain continued, and the next line
 printed `PHASE 2 DONE rc=$?` — where `$?` was also `tail`'s. **The Stage 1
@@ -1080,13 +1083,19 @@ would time a disk read and report ~0 ms), and the shapes are asserted both
 ways round.
 
 **Remaining exposure, audited not assumed.** Of the repo's scripts, the ones
-holding GPU-path logic no test reaches are `time_one_accuracy_example.py`
+holding GPU-path logic no test reaches were `time_one_accuracy_example.py`
 (398 lines — and it *did* fail on hardware this session with `KeyError:
 'decode'`), `decide_gla_arm.py`, `flex_session_recheck.py`,
 `probe_batch_scaling.py` and `flex_kernel_options_probe.py`. The pattern to
 apply to each is the same: move the body into a module and drive it from a
-toy-model test. Not done yet; recorded so it is a known debt rather than a
-surprise.
+toy-model test.
+
+**Updated 2026-09-12.** Two of those five — `flex_session_recheck.py` and
+`flex_kernel_options_probe.py` — were removed with the 2026-09-04 flex
+diagnostic they existed for, so the exposure is now three scripts, not five.
+Deleting a script is a legitimate way to close this debt and a slightly
+dishonest one to count: nothing was made testable, the untestable thing
+stopped existing. The remaining three are still debt.
 
 ## 22. A regression test and a coverage test are different properties
 

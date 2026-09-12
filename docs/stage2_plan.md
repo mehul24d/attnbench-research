@@ -157,11 +157,10 @@ Then, **on the instance, before any sweep cell runs**:
 3. **GPU exclusivity** (`provenance.assert_exclusive`) — existing gate.
 4. **Stage 1 must reproduce the 2026-09-04 flex diagnostic**, after the probe
    and **before the sweep**:
-   ```bash
-   python3 scripts/check_stage1_against_diagnostic.py \
-       results/stage2/<segment>/probe/correctness.parquet
-   ```
-   Non-zero exit means stop. The diagnostic path (a script calling
+   This ran as `scripts/check_stage1_against_diagnostic.py` against each
+   segment's `probe/correctness.parquet`, non-zero exit meaning stop. The
+   script was removed after the last segment; the comparison it made is in
+   `tests/test_diagnostic_agreement.py`, which runs in the ordinary suite. The diagnostic path (a script calling
    `check_for_family` directly) and the pipeline path (`run_probe.py` over the
    full grid) must agree, or something differs between them and it is worth
    knowing at the cost of one comparison rather than 504 cells.

@@ -2,10 +2,18 @@
 
 **Budget: 3 hours. One g2-standard-8 + L4, on-demand, asia-south1.**
 
-Supersedes `compile_session_runbook.md` for execution order. That document
-keeps the standing rules (agreement is not verification; save the serial log;
-re-verify ruled-out causes; kill and start are separate invocations) — read
-them once, then work from this file.
+Supersedes the earlier compile-session runbook, which was removed once this
+one replaced it. Its four standing rules are carried here rather than left in
+a document nobody reads twice:
+
+1. **Agreement is not verification.** Two implementations producing the same
+   number can both be wrong in the same way.
+2. **Save the serial console log to a file.** Reading it through a transient
+   `grep` or `tail` loses it, and the evidence is gone when it is needed.
+3. **Re-verify ruled-out causes.** A cause eliminated under one configuration
+   is not eliminated under the next.
+4. **Kill and start are separate invocations.** Combining them means a failed
+   kill silently becomes a start against a live instance.
 
 This session is **execution, not improvisation**. Every command below is
 written out. If something is not in this document, it is not in scope; add it

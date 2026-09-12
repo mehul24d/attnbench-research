@@ -30,7 +30,7 @@ def test_pinned_grid_loads_exact_values():
 def test_seq_lens_capped_at_32k():
     grid = load_grid(GRID_PATH)
     assert max(grid.seq_lens) == 32768, (
-        "hardware ceiling (CLAUDE.md) caps this study at 32K -- a grid "
+        "hardware ceiling (docs/hardware_constraints.md) caps this study at 32K -- a grid "
         "edit that raises this must fail a test, not surface mid-run"
     )
 

@@ -3,6 +3,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ipynb_checkpoints/
+.DS_Store
+
+# Local editor / agent tooling config, not project content.
+.claude/
 
 # Measurement outputs are data, not source. They carry their own provenance
 # (host, gpu_name, git_commit, segment_digest) and are joined by

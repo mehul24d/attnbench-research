@@ -61,7 +61,7 @@ class ModelArchitecture:
     seq_len are what distinguish cells, not head count) -- those
     placeholders were never meant to carry real FLOPs weight, and using
     them for that is exactly the kind of silent, plausible-but-wrong
-    inference CLAUDE.md's hardware-ceiling note already exists to prevent
+    inference docs/hardware_constraints.md's hardware-ceiling note already exists to prevent
     for model size; this is the same mistake, one level down.
     """
 
