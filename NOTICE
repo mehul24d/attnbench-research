@@ -1,0 +1,95 @@
+attnbench
+Copyright 2026 Mehul Dahiya
+
+This product includes software developed by third parties, listed below.
+Each entry says what was taken, from which commit, and — where the code was
+not copied verbatim — what was changed and why.
+
+================================================================================
+1. NVIDIA/RULER — VENDORED SOURCE
+================================================================================
+
+Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+Licensed under the Apache License, Version 2.0.
+
+    Source:  https://github.com/NVIDIA/RULER
+    Commit:  c3f5e3b4f87f97e048793bb510a3a6b19a46bf3a
+    Fetched: 2026-09-02
+    Located at: attnbench/_vendor/ruler/
+
+The original Apache 2.0 headers are preserved in each vendored file, and each
+file carries a comment naming its upstream path and commit.
+
+    attnbench/_vendor/ruler/scoring.py
+        From scripts/eval/synthetic/constants.py. VERBATIM — no modification.
+
+    attnbench/_vendor/ruler/niah.py
+        From scripts/data/synthetic/niah.py. MODIFIED. The needle/haystack
+        algorithm is unchanged. Restructured from a CLI script — which calls
+        argparse.parse_args() at *import* time and reads its configuration
+        from a module-level `args` Namespace and global RNG state — into
+        plain functions taking explicit parameters and a local
+        random.Random(seed). Two upstream options raise NotImplementedError
+        rather than silently substituting: haystack_mode="essay" (needs NLTK
+        and a separately downloaded essay corpus) and type_needle="words"
+        (needs the `wonderwords` package).
+
+    attnbench/_vendor/ruler/variable_tracking.py
+        From scripts/data/synthetic/variable_tracking.py. MODIFIED, for the
+        same import-time reasons. The few-shot/in-context-example machinery
+        (`add_fewshot`) is dropped as an orthogonal CLI convenience.
+
+    Not implemented from upstream: common_words_extraction (needs
+    `wonderwords`) and qa (needs a separately downloaded QA dataset).
+
+    Consequence for comparability, stated because it is a methodological
+    difference and not a footnote: this harness uses RULER's task-construction
+    algorithm with a dependency-free filler-text haystack in place of real
+    prose, and numeric/UUID needles rather than word needles. Filler text is
+    a measurably easier haystack to search, so absolute accuracy numbers from
+    this repository are NOT comparable to published RULER results. Every
+    result row records this in its `haystack_mode` column.
+
+    Full detail: attnbench/_vendor/ruler/VENDORED.md
+
+================================================================================
+2. PiotrNawrot/sparse-frontier — APPROACH ADOPTED, NO CODE COPIED
+================================================================================
+
+Copyright (c) Piotr Nawrot and contributors.
+Licensed under the Apache License, Version 2.0.
+
+    Source: https://github.com/PiotrNawrot/sparse-frontier
+
+No source from this project is present in this repository. One approach was
+adopted independently and is credited at the point of use:
+
+    attnbench/accuracy/sizing.py
+        The prompt-sizing method — binary-search the amount of filler so the
+        *rendered* prompt (template, needles, question and all, not just the
+        haystack) lands at or just under the token budget — follows RULER's
+        own approach and sparse-frontier's `sparse_frontier/tasks/ruler/`.
+        Independently written; credited in the module docstring.
+
+    docs/limitations.md records where this study's scoring is more permissive
+    than sparse-frontier's, and states that numbers from the two are not
+    comparable.
+
+================================================================================
+3. mit-han-lab/Block-Sparse-Attention — OPTIONAL RUNTIME DEPENDENCY
+================================================================================
+
+    Source: https://github.com/mit-han-lab/Block-Sparse-Attention
+    Commit: 49d6c39e4dc0303442cda3bb758b3925d4399c49 (pinned in pyproject.toml)
+
+Installed from source as an optional dependency, not vendored. No source from
+this project is present in this repository, so its licence governs only what
+a user installs, not what this repository redistributes. See the upstream
+repository for its terms.
+
+================================================================================
+
+Other runtime dependencies (PyTorch, Hugging Face Transformers, pandas,
+pyarrow, Hydra, flash-attn, xformers, flash-linear-attention) are installed
+from their published distributions under their own licences and are not
+redistributed here. See pyproject.toml.

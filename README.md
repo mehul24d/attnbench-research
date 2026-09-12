@@ -1,96 +1,169 @@
 # attnbench
 
-Controlled cross-method benchmark of hardware-aware attention mechanisms.
+**Do sparse attention kernels' speedups survive to end-to-end latency at
+matched accuracy?** A measured answer, and the failure patterns found getting
+there.
 
-Measures accuracy and wall-clock cost for the same attention implementations on
-the same configurations, across hardware generations, and fits a decision map
-predicting which mechanism is Pareto-optimal under which conditions.
+Published sparse-attention speedups are kernel numbers. This study measures
+what happens to them when the kernel is put inside a real model, on real
+long-context tasks, at operating points that preserve accuracy — and prices
+the thing every such speedup leaves out.
 
-## Why the two tracks are separate
+## The result, and its ceiling
 
-Kernel microbenchmarks take synthetic tensors and no dataset. Accuracy runs take
-a real model and real long-context data with the attention implementation
-swapped underneath. These are never mixed, because published speedup figures
-that conflate them differ by close to an order of magnitude.
+> **Block-sparse attention with oracle-derived masks reaches 1.321×
+> end-to-end at 32K context at zero accuracy cost (100.0 vs 100.0), and
+> computing the oracle costs roughly 35× the latency it saves.**
 
-The same split governs sparse masks. Stage 2 uses **randomly generated** block
-masks to isolate a kernel's ability to convert sparsity into speed. Stage 3 uses
-**real importance-derived** masks, because accuracy under a random mask is
-meaningless. Every result row records which.
+The second clause is not a caveat on the first. **It is the finding.** A
+measured advantage bought with a mask nobody can afford to compute is not an
+advantage any deployed system has. To make the operating point profitable, a
+real importance estimator would have to produce a good-enough ranking for
+under ~3% of the scoring pass's cost. This study implements no such estimator
+and evaluates none.
+
+| context | best speedup at no accuracy cost | oracle cost ÷ saving |
+|---|---|---|
+| 2048 | 0.993× (sparsity loses) | undefined — nothing is faster |
+| 4096 | 0.997× | undefined |
+| 8192 | 1.044× | **49×** |
+| 16384 | 1.186× | **36×** |
+| 32768 | **1.321×** | **35×** |
+
+The speedup grows with context. So does the accuracy sparsity can tolerate.
+The oracle ratio flattens near 35 rather than heading toward 1 — scoring and
+the saving grow at similar rates, so the gap is structural, not a small-scale
+artefact.
+
+## The five gaps this targets
+
+1. **Kernel speedup vs end-to-end speedup.** 1.24× at 90% sparsity as a
+   kernel; ≤1.06× and usually <1.0× end-to-end at accuracy-matched points
+   below 8K. Both ends measured, on the same hardware, in the same repo.
+2. **Random masks vs importance-derived masks.** Timing under a random mask
+   says nothing about accuracy. Stage 2 uses random masks to isolate the
+   kernel; Stage 3 uses real importance-derived ones. Every row records which.
+3. **The estimator's cost, which published speedups exclude.** Priced here as
+   a first-class result rather than a limitation.
+4. **One card vs two architectures.** Every ratio is remeasured against a
+   baseline on the same machine; nothing is carried across hosts.
+5. **Accuracy and latency measured apart vs at matched accuracy.** A speedup
+   at an operating point that loses accuracy is not a speedup.
+
+## Scope and cost, stated up front
+
+Measured on **rented NVIDIA L4 (24 GB) and A100-SXM4 (80 GB)** instances —
+two architectures, not a survey. **One model** (Qwen2.5-1.5B-Instruct), **one
+task family** (RULER-style NIAH and variable tracking), **batch 1**,
+**prefill-only sparsity**, **inference only**. Context tops out at **32768
+tokens**, which is a hardware ceiling, not a design choice.
+
+Total rented GPU time: **roughly ₹6,000 (~US$70)**, of which ₹2,413 is
+itemised per session in [`docs/spend_ledger.md`](docs/spend_ledger.md) — the
+ledger says which figures come from an instance's own boot clock and which
+are reconstructed from prose, and records ₹218 that a green test spent by
+creating real instances on every suite run.
+
+[`docs/limitations.md`](docs/limitations.md) is over 950 lines and is not
+decoration. Two of this study's questions are **permanently unanswerable on
+this hardware**, and it says which and why.
+
+---
 
 ## Stages
 
-| Stage | What it produces | Hardware needed |
+| Stage | What it produces | Hardware |
 |---|---|---|
 | 0 | Capability matrix: what each backend actually supports | any CUDA GPU |
-| 1 | Correctness gate vs float64 reference | any CUDA GPU |
+| 1 | Correctness gate vs a float64 reference | any CUDA GPU |
 | 2 | Kernel microbenchmarks (synthetic, random masks) | locked clocks, exclusive |
-| 3 | End-to-end accuracy on RULER / LongBench-v2 | 24 GB+ |
-| 4 | Matched-accuracy operating points | derived |
-| 5 | End-to-end model latency at those points | locked clocks, exclusive |
+| 3 | End-to-end accuracy on RULER-style tasks | 24 GB+ |
+| 4 | Matched-accuracy operating points (non-inferiority + bootstrap) | derived |
+| 5 | Phase decomposition: prefill, decode step, scoring | locked clocks, exclusive |
 | 6 | Pareto frontiers per grid cell | CPU only |
-| 7 | Decision tree, leave-one-architecture-out validated | CPU only |
+| 7 | Decision map | CPU only |
 
-Stages 0, 1, 3, 6 and 7 run on free-tier hardware. Only 2 and 5 need rented,
-clock-locked, exclusive GPUs.
-
-## Stage 3 uses RULER's task construction, not RULER's benchmark
-
-Stage 3 generates examples with RULER's own task-construction algorithms
-(needle-in-a-haystack, variable tracking) and scores them with RULER's own
-metric functions, vendored from the official repo -- see
-`attnbench/_vendor/ruler/VENDORED.md` for exactly what's verbatim versus
-adapted. But RULER's generator scripts aren't an importable library (they're
-argparse CLIs with module-level global state), and their most realistic
-haystack (real prose, via NLTK + a downloaded essay corpus) and word-based
-needles (via the `wonderwords` package) both pull in dependencies this
-project isn't adding. Stage 3 substitutes a dependency-free filler-text
-haystack and numeric/UUID needles instead.
-
-This means Stage 3's absolute accuracy numbers are **not comparable to
-published RULER results** -- filler text is measurably easier to search than
-real prose, so numbers here will likely read higher. They remain valid for
-this study's actual purpose: comparing attention backends against each other
-on identical inputs. Every row records this explicitly
-(`AccuracyResult.haystack_mode`), rather than leaving it as a caveat someone
-has to go find.
-
-That pattern generalises, and `docs/claims.md` is where it is written down:
-one row per claim, pairing the sentence this study's data supports with the
-near-paraphrase it must not become. **Any write-up drawn from these results
-should be drafted from that file.** Three columns exist so the qualifiers
-travel with the data rather than only in prose -- `haystack_mode`,
-`score_source`, and `gate_source` -- because a summary drops a caveat and a
-column does not.
+Only Stages 2 and 5 need rented, clock-locked, exclusive GPUs. Everything
+else runs on free-tier hardware or a laptop.
 
 ## Quick start
 
 ```bash
 uv venv && uv pip install -e .
-python scripts/run_probe.py --out results/probe
+python -m pytest tests/ -q            # 856 tests, no GPU required
+python scripts/run_probe.py --out results/probe   # Stages 0 and 1, any CUDA GPU
 ```
 
-Stages 0 and 1 run anywhere with a CUDA device and need no special permissions.
+The test suite runs on CPU and needs no GPU, no model download, and no
+credentials. Tests that read banked result files skip rather than fail when
+those files are absent, so a fresh clone is green.
+
+## The three documents that matter
+
+- **[`docs/claims.md`](docs/claims.md)** — the ledger every write-up is
+  drafted from. One row per claim, pairing the sentence the data supports
+  with the near-paraphrase it must not become. If a sentence is not in the
+  supported column, this study does not license it.
+- **[`docs/limitations.md`](docs/limitations.md)** — what the measurements
+  cannot answer, including two questions that are permanently out of reach on
+  this hardware and the variance calculation proving it.
+- **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
+  30 confirmed incidents, each one a plausible number produced by machinery
+  that looked like it was working. No crash, no failed test. Several changed
+  a published figure. Each entry records the detection method, which is the
+  transferable part.
+
+Also: [`docs/hardware_constraints.md`](docs/hardware_constraints.md),
+[`results/stage3_s1/INVALID_ROWS.md`](results/stage3_s1/INVALID_ROWS.md).
+
+## Measurement discipline
+
+- No result row is written without a provenance stamp. Measured rows carry
+  the GPU, driver, clock state and commit; derived rows carry `analysis_*`
+  fields naming the tool and checkout that produced them. The two are
+  deliberately not the same columns.
+- Clocks locked and GPU exclusivity verified before any Stage 2 or 5 run.
+- Speedups are recomputed against a baseline **remeasured on the same
+  machine**. Ratios are never carried across hosts.
+- Grid cells run in randomised order, so thermal drift cannot correlate with
+  backend identity.
+- Repeats live in separate sessions, not separate loops in one process.
+- A backend that cannot run a config raises `UnsupportedConfig`. Nothing
+  silently falls back to another implementation.
+- Qualifiers travel as columns, not prose: `haystack_mode`, `score_source`,
+  `gate_source`, `decode_backend`, `clocks_locked`. A summary drops a caveat;
+  a column does not.
+
+## Two things worth knowing before comparing these numbers to anything
+
+**Absolute accuracy here is not comparable to published RULER or Sparse
+Frontier numbers.** Stage 3 uses RULER's task-construction algorithm with a
+dependency-free filler-text haystack in place of real prose, and numeric/UUID
+needles rather than word needles; the scoring is also more permissive.
+Filler text is measurably easier to search, so these numbers read high. They
+remain valid for what the study does — comparing backends against each other
+on identical inputs. Every row records `haystack_mode` so the substitution
+travels with the data. See [`NOTICE`](NOTICE) and
+`attnbench/_vendor/ruler/VENDORED.md`.
+
+**The masks are an oracle.** Importance scores come from a full dense
+attention pass, so accuracy figures are an upper bound and the estimator's
+cost is excluded from every latency number — the same methodological move
+this study criticises elsewhere, made deliberately to isolate the kernel, and
+priced in the table above rather than left implicit. Every row records
+`score_source`.
 
 ## Adding a backend
 
 Subclass `AttentionBackend`, declare a `Capability`, implement `forward`, and
 decorate with `@register`. Inputs and outputs are always
 `(batch, n_heads, seq_len, head_dim)`. Any transposition or KV expansion the
-kernel needs happens inside `forward`, and its cost counts toward that backend,
-which is deliberate: a kernel with no native GQA path genuinely does cost more
-on a GQA workload.
+kernel needs happens inside `forward`, and its cost counts toward that
+backend — deliberate: a kernel with no native GQA path genuinely does cost
+more on a GQA workload.
 
-Raise `UnsupportedConfig` for configs the kernel cannot run. Never silently fall
-back to another implementation.
+## Licence
 
-## Measurement discipline
-
-- No result row is written without a provenance stamp (`versions.json`).
-- Clocks locked and exclusivity verified before any Stage 2 or 5 run.
-- Speedups recomputed against a PyTorch baseline **remeasured on the same
-  machine**. Ratios are never carried across hosts.
-- Grid cells executed in randomised order so thermal drift cannot correlate
-  with backend identity.
-- Three repeats per cell in separate sessions, not three loops in one process.
-- Medians with IQR, never means.
+Apache 2.0 — see [`LICENSE`](LICENSE). Third-party code and adopted
+approaches, with commits and modifications, are recorded in
+[`NOTICE`](NOTICE).

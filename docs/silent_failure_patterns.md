@@ -8,9 +8,14 @@ Nobody is going to tamper with these results. The entire realistic threat
 model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
+It stood at seventeen when that sentence was written. It stands at **thirty**.
+The original sentence is kept rather than updated because the rate is the
+point: the count went on growing under a discipline built specifically to
+stop it growing.
+
 ---
 
-## The seventeen
+## The instances
 
 ### 1. A correctness oracle computing a different function than the kernel
 
