@@ -320,23 +320,114 @@ def sign_test_p(residuals) -> float:
     return min(1.0, 2.0 * tail / (2 ** n))
 
 
-def bias_warning(residuals) -> Optional[str]:
-    """A line to print when the residual signs say the model is biased, or
-    None. Separate from the per-cell tolerance check on purpose: they answer
-    different questions and fail differently."""
+@dataclass(frozen=True)
+class BiasCheck:
+    """The sign test over a whole set of residuals, as data.
+
+    A property of the SET, not of one row, so it is written onto every row of
+    the file the way a provenance stamp is. That is deliberate: the check
+    lived only in `run_phase_timing`'s stdout until 2026-09-12, which means it
+    survived exactly as long as the terminal scrollback did. The 24-of-24
+    same-sign residuals that turned out to be an off-by-one
+    (silent_failure_patterns #27) were visible in a printed line and in no
+    column, and the parquet a later reader opened said `closes=True` on every
+    row with nothing to contradict it.
+
+    A signal that exists only in a log is a signal nobody will have when they
+    need it.
+    """
+
+    n: int                  # residuals considered (exact zeros dropped)
+    n_positive: int
+    n_negative: int
+    sign_test_p: float
+    mean_residual_ms: float
+    biased: bool            # p <= SIGN_BIAS_P
+    direction: str          # "over", "under", or "none"
+
+    def to_columns(self) -> dict:
+        return {
+            "bias_n": self.n,
+            "bias_n_positive": self.n_positive,
+            "bias_n_negative": self.n_negative,
+            "bias_sign_test_p": self.sign_test_p,
+            "bias_mean_residual_ms": self.mean_residual_ms,
+            "bias_detected": self.biased,
+            "bias_direction": self.direction,
+        }
+
+
+# The schema both writers must produce. Asserted by a test, because the
+# failure this guards is one filename carrying two schemas depending on
+# whether it was produced or repaired.
+BIAS_COLUMNS: tuple[str, ...] = (
+    "bias_n", "bias_n_positive", "bias_n_negative", "bias_sign_test_p",
+    "bias_mean_residual_ms", "bias_detected", "bias_direction",
+)
+
+
+def bias_check(residuals) -> BiasCheck:
+    """Whether the residual signs say the model is biased.
+
+    Separate from the per-cell tolerance check on purpose: they answer
+    different questions and fail differently. Every cell can sit inside
+    tolerance and the identity still be systematically wrong -- a tolerance
+    bounds noise, not bias that fits inside it.
+    """
     p = sign_test_p(residuals)
-    if p >= SIGN_BIAS_P:
-        return None
     nz = [r for r in residuals if r != 0]
     pos = sum(1 for r in nz if r > 0)
-    direction = "OVER" if pos > len(nz) / 2 else "UNDER"
-    mean = sum(nz) / len(nz)
-    return (f"!! SIGN BIAS: {max(pos, len(nz) - pos)}/{len(nz)} residuals have "
-            f"the same sign (p={p:.2g}), mean {mean:+.1f} ms. The identity "
-            f"{direction}STATES systematically. Every cell can sit inside "
-            f"tolerance and the model still be wrong -- a tolerance bounds "
-            f"noise, not bias that fits inside it. See "
+    neg = len(nz) - pos
+    mean = sum(nz) / len(nz) if nz else 0.0
+    biased = p <= SIGN_BIAS_P
+    if not biased or not nz:
+        direction = "none"
+    else:
+        direction = "over" if pos > neg else "under"
+    return BiasCheck(n=len(nz), n_positive=pos, n_negative=neg,
+                     sign_test_p=p, mean_residual_ms=mean,
+                     biased=biased, direction=direction)
+
+
+def bias_warning(residuals) -> Optional[str]:
+    """The printable form of `bias_check`, or None when unbiased.
+
+    Derived from `bias_check` rather than recomputing the test, so the line
+    printed and the column written can never disagree about whether a set is
+    biased.
+    """
+    c = bias_check(residuals)
+    if not c.biased:
+        return None
+    return (f"!! SIGN BIAS: {max(c.n_positive, c.n_negative)}/{c.n} residuals "
+            f"have the same sign (p={c.sign_test_p:.2g}), mean "
+            f"{c.mean_residual_ms:+.1f} ms. The identity "
+            f"{c.direction.upper()}STATES systematically. Every cell can sit "
+            f"inside tolerance and the model still be wrong -- a tolerance "
+            f"bounds noise, not bias that fits inside it. See "
             f"docs/silent_failure_patterns.md #27.")
+
+
+def add_bias_columns(df) -> BiasCheck:
+    """Write the set-level sign test onto every row of `df`, in place.
+
+    THE ONLY WRITER. `run_phase_timing.py` produces these files and
+    `scripts/repair_reconciliation_identity.py` rewrites them; if each
+    computed the columns itself, one filename would carry two schemas
+    depending on which touched it last, and the difference would be invisible
+    until something joined them. Both call this.
+
+    Returns the check so a caller can print it without recomputing.
+    """
+    if "residual_ms" not in df.columns:
+        raise KeyError(
+            "no residual_ms column: the sign test has nothing to run on, and "
+            "writing bias_detected=False here would assert something no "
+            "measurement supports")
+    c = bias_check([float(r) for r in df["residual_ms"]])
+    for k, v in c.to_columns().items():
+        df[k] = v
+    return c
 
 
 def reconcile(*, prefill_ms: float, decode_step_ms: float, n_generated: float,

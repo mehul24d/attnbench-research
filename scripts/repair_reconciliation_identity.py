@@ -45,11 +45,20 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from attnbench import provenance                                # noqa: E402
-from attnbench.accuracy.phase_timing import reconcile           # noqa: E402
+from attnbench.accuracy.phase_timing import (                   # noqa: E402
+    BIAS_COLUMNS, add_bias_columns, reconcile)
 
 INPUTS = ["context_length", "backend", "sparsity", "prefill_ms",
           "decode_step_ms", "n_generated", "observed_total_ms"]
 TOL = 1e-9
+
+
+def _report_bias(c) -> None:
+    verdict = "SIGN BIAS" if c.biased else "no sign bias"
+    print(f"  sign test: {c.n_positive}+/{c.n_negative}- "
+          f"p={c.sign_test_p:.5f} mean {c.mean_residual_ms:+.2f} ms "
+          f"-> {verdict}"
+          + (f" ({c.direction}states)" if c.biased else ""))
 
 
 def repair(path: Path, *, apply: bool) -> bool:
@@ -60,17 +69,26 @@ def repair(path: Path, *, apply: bool) -> bool:
     old_implied = df.prefill_ms + df.n_generated * df.decode_step_ms
     new_implied = df.prefill_ms + (df.n_generated - 1) * df.decode_step_ms
     if (df.implied_total_ms - new_implied).abs().max() < TOL:
-        if "analysis_git_commit" in df.columns:
-            print(f"{path}: already on the (n-1) identity and stamped")
+        wants = []
+        if "analysis_git_commit" not in df.columns:
+            wants.append("the provenance stamp")
+        if any(c not in df.columns for c in BIAS_COLUMNS):
+            wants.append("the sign-test columns")
+        if not wants:
+            print(f"{path}: already on the (n-1) identity, stamped, "
+                  f"sign-tested")
             return False
-        # Correct arithmetic, no stamp. Nothing derived changes; the file
-        # gains only the record of what produced it.
-        print(f"{path}: already on the (n-1) identity, adding the stamp")
+        # The arithmetic is already right; nothing derived changes. The file
+        # gains only what a reader needs to check it.
+        print(f"{path}: already on the (n-1) identity, adding "
+              f"{' and '.join(wants)}")
         if apply:
+            c = add_bias_columns(df)
+            _report_bias(c)
             provenance.stamp_analysis(
                 df, "scripts/repair_reconciliation_identity.py")
             df.to_parquet(path, index=False)
-            print("  -> stamped")
+            print("  -> rewritten")
         return True
     assert (df.implied_total_ms - old_implied).abs().max() < TOL, (
         f"{path}: stored implied_total_ms matches NEITHER identity -- refusing "
@@ -103,6 +121,10 @@ def repair(path: Path, *, apply: bool) -> bool:
           f"closes {int(df.closes.sum())}/{len(df)})")
 
     if apply:
+        # Same function the producer calls, so a repaired file and a freshly
+        # measured one cannot carry different schemas under one name.
+        c = add_bias_columns(out)
+        _report_bias(c)
         provenance.stamp_analysis(out, "scripts/repair_reconciliation_identity.py")
         out.to_parquet(path, index=False)
         print(f"  -> rewritten")

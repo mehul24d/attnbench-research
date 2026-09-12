@@ -331,3 +331,147 @@ def test_bias_is_detectable_even_when_every_cell_is_inside_tolerance():
     small = [0.03] * 20                      # 3% each, tolerance is 10%
     assert all(abs(r) < RECONCILE_TOLERANCE for r in small)
     assert bias_warning(small) is not None
+
+
+# --------------------------------------------------------------------------
+# The sign test as a column, not a printed line
+#
+# `bias_warning` was stdout-only from 2026-09-07 to 2026-09-12, so it survived
+# exactly as long as the terminal scrollback did. The one time it mattered --
+# 24 of 24 same-sign residuals, an off-by-one in the identity, #27 -- the
+# parquet a later reader opened said `closes=True` on every row with nothing
+# in it to disagree.
+#
+# Two writers produce these files: `scripts/run_phase_timing.py` measures them
+# and `scripts/repair_reconciliation_identity.py` rewrites them. The failure
+# guarded here is one filename carrying two schemas depending on which touched
+# it last.
+# --------------------------------------------------------------------------
+
+import subprocess                                                # noqa: E402
+import sys                                                       # noqa: E402
+from pathlib import Path                                         # noqa: E402
+
+import pandas as pd                                              # noqa: E402
+
+from attnbench.accuracy.phase_timing import (                    # noqa: E402
+    BIAS_COLUMNS, add_bias_columns, bias_check, bias_warning)
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _frame(residuals):
+    return pd.DataFrame({
+        "context_length": [2048] * len(residuals),
+        "backend": ["sdpa_flash"] * len(residuals),
+        "sparsity": [None] * len(residuals),
+        "prefill_ms": [100.0] * len(residuals),
+        "decode_step_ms": [10.0] * len(residuals),
+        "n_generated": [14.0] * len(residuals),
+        "implied_total_ms": [230.0] * len(residuals),
+        "observed_total_ms": [230.0 - r for r in residuals],
+        "residual_ms": list(residuals),
+        "residual_frac": [r / 230.0 for r in residuals],
+        "closes": [True] * len(residuals),
+    })
+
+
+def test_the_printed_line_and_the_column_cannot_disagree():
+    """`bias_warning` is derived from `bias_check`, not a second computation
+    of the same test. Two implementations of one rule is how this project got
+    four copies of the generation identity."""
+    for residuals in ([1.0] * 24, [1.0, -1.0] * 12, [0.0] * 5, [1.0] * 3):
+        c = bias_check(residuals)
+        assert (bias_warning(residuals) is not None) == c.biased
+
+
+def test_a_biased_set_is_readable_from_the_parquet_alone():
+    df = _frame([1.0] * 24)
+    c = add_bias_columns(df)
+    assert c.biased and c.direction == "over"
+    assert set(BIAS_COLUMNS) <= set(df.columns)
+    assert df.bias_detected.all()
+    assert df.bias_n_positive.iloc[0] == 24 and df.bias_n_negative.iloc[0] == 0
+    assert df.bias_sign_test_p.iloc[0] < 1e-6
+    # Every row carries it: it is a property of the SET, stamped like
+    # provenance, so no row can be read in isolation and look clean.
+    assert df.bias_detected.nunique() == 1
+
+
+def test_an_unbiased_set_says_so_rather_than_saying_nothing():
+    df = _frame([1.0, -1.0] * 12)
+    c = add_bias_columns(df)
+    assert not c.biased and c.direction == "none"
+    assert not df.bias_detected.any()
+    assert set(BIAS_COLUMNS) <= set(df.columns)
+
+
+def test_exact_zeros_are_dropped_not_split():
+    """An exact zero is evidence for neither sign."""
+    c = bias_check([0.0, 0.0, 1.0, 1.0, 1.0])
+    assert c.n == 3 and c.n_positive == 3 and c.n_negative == 0
+
+
+def test_bias_columns_refuse_a_frame_with_no_residuals():
+    """Writing bias_detected=False onto a frame with nothing to test would
+    assert something no measurement supports."""
+    with pytest.raises(KeyError, match="residual_ms"):
+        add_bias_columns(pd.DataFrame({"a": [1]}))
+
+
+def test_neither_writer_recomputes_the_sign_test():
+    """A second definition of one rule is how this project got four copies of
+    the generation identity. Source-text only, and deliberately NOT used to
+    assert that either writer *does* write the columns -- a substring proves
+    the call is somewhere in the file, not that the write path reaches it.
+    That is checked end to end below, on both branches."""
+    for name in ("run_phase_timing.py", "repair_reconciliation_identity.py"):
+        src = (REPO / "scripts" / name).read_text()
+        assert "sign_test_p(" not in src, (
+            f"{name} recomputes the sign test instead of calling the shared "
+            f"writer")
+
+
+def _run_repair(path):
+    return subprocess.run(
+        [sys.executable, str(REPO / "scripts" /
+         "repair_reconciliation_identity.py"), str(path), "--apply"],
+        capture_output=True, text=True, cwd=REPO)
+
+
+@pytest.mark.parametrize("stale_identity", [False, True], ids=["annotate", "rewrite"])
+def test_the_repair_adds_the_columns_on_both_of_its_branches(tmp_path,
+                                                             stale_identity):
+    """The repair has two paths and each writes the file.
+
+    `annotate` -- arithmetic already correct, the file only gains columns.
+    `rewrite`  -- the old `n * decode_step` identity, so every derived value
+                  is recomputed.
+
+    Both must emit the bias columns. Parametrised because a first version of
+    this test exercised only the annotate branch: deleting `add_bias_columns`
+    from the rewrite branch left it green, which is the vacuity this file
+    exists to catch elsewhere.
+    """
+    df = _frame([1.0] * 12)
+    if stale_identity:
+        # Put the file back on the retired identity so the rewrite path runs.
+        df["implied_total_ms"] = df.prefill_ms + df.n_generated * df.decode_step_ms
+        df["residual_ms"] = df.implied_total_ms - df.observed_total_ms
+        df["residual_frac"] = df.residual_ms / df.observed_total_ms
+    dst = tmp_path / "reconciliation.parquet"
+    df.to_parquet(dst, index=False)
+
+    r1 = _run_repair(dst)
+    assert r1.returncode == 0, r1.stderr
+    assert ("rewritten" in r1.stdout)
+    after = pd.read_parquet(dst)
+    assert set(BIAS_COLUMNS) <= set(after.columns), (
+        f"the {'rewrite' if stale_identity else 'annotate'} branch wrote the "
+        f"file without the sign-test columns")
+    assert "sign test:" in r1.stdout
+
+    r2 = _run_repair(dst)
+    assert r2.returncode == 0
+    assert "stamped, sign-tested" in r2.stdout
+    assert pd.read_parquet(dst).equals(after)          # idempotent

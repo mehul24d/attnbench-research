@@ -33,7 +33,8 @@ from attnbench.accuracy.generation import ModelGeometry                # noqa: E
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
     ACCURACY_EXCLUDED_BACKENDS, backend_instance)
 from attnbench.accuracy.phase_timing import (                          # noqa: E402
-    arms_for, bias_warning, measure_band, scoring_overhead_ratio)
+    add_bias_columns, arms_for, bias_warning, measure_band,
+    scoring_overhead_ratio)
 from attnbench.config import AttnConfig                                # noqa: E402
 
 
@@ -43,6 +44,11 @@ def _write_reconciliation(recs, out) -> None:
     would claim they were measured. The phases they came from carry the real
     one."""
     frame = pd.DataFrame([r.to_dict() for r in recs])
+    # The set-level sign test, as columns. It was stdout-only until
+    # 2026-09-12, so it survived exactly as long as the scrollback did --
+    # and the one time it mattered (#27) the parquet said closes=True on
+    # every row with nothing to contradict it.
+    add_bias_columns(frame)
     provenance.stamp_analysis(frame, "scripts/run_phase_timing.py")
     frame.to_parquet(out / "reconciliation.parquet", index=False)
 
