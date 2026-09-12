@@ -89,14 +89,32 @@ else runs on free-tier hardware or a laptop.
 ## Quick start
 
 ```bash
-uv venv && uv pip install -e .
-python -m pytest tests/ -q            # 856 tests, no GPU required
-python scripts/run_probe.py --out results/probe   # Stages 0 and 1, any CUDA GPU
+python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
+.venv/bin/python -m pytest tests/ -q     # 847 passed, 11 skipped, ~1 min, no GPU
 ```
 
-The test suite runs on CPU and needs no GPU, no model download, and no
-credentials. Tests that read banked result files skip rather than fail when
-those files are absent, so a fresh clone is green.
+The `[dev,eval]` extras are required, not optional: four test modules import
+`transformers` at collection time, so a bare `pip install -e .` cannot even
+collect the suite. The `kernels` extra is deliberately separate — those
+compile from source and are architecture-gated, and the harness must import
+on a machine where a kernel is unavailable.
+
+The suite runs on CPU and needs no GPU, no model download, and no
+credentials. Verified from a clean clone into a fresh virtualenv on
+2026-09-12, resolving dependencies from scratch.
+
+The 11 skips are the honest part: 2 need CUDA, and 9 read banked result files
+that `results/` correctly keeps out of git. Those 9 validate real measured
+data — including the check that the cross-arm decode guard actually fires on
+the confounded Stage 3 rows — so a fresh clone is green **without** running
+them. Each skips with a message naming the file it wanted, rather than
+passing silently.
+
+Then, on any CUDA GPU:
+
+```bash
+.venv/bin/python scripts/run_probe.py --out results/probe   # Stages 0 and 1
+```
 
 ## The three documents that matter
 
