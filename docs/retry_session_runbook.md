@@ -551,3 +551,53 @@ session (12.117 vs 12.118 s).
 Stage 2 (`docs/stage2_plan.md`). Every input is in place: all seven backends
 available in v4, 32K dense baseline resolved so shortest-first is safe,
 segment workflow built and tested, provenance carrying real commits.
+
+## H100 quota is a single regional grant, and it is the PREEMPTIBLE quota
+
+On 2026-09-14 the H100 arm failed to launch in five zones across two regions.
+The first two failures (asia-southeast1-b/-c, earlier the same morning) were
+`ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS` -- genuine stockout. The next five
+(us-central1-a/-b/-c, europe-west4-b/-c) were a *different* error:
+
+    Quota 'GPUS_PER_GPU_FAMILY' exceeded.  Limit: 0.0 in region us-central1.
+
+Both render as "the create failed", and a retry loop treats them identically.
+They are not the same thing: a stockout clears on its own, a zero quota never
+does. The granted quota, read from `quotaPreferences`:
+
+    PREEMPTIBLE-NVIDIA-H100-GPUS-per-project-region  asia-southeast1   granted 1
+    PREEMPTIBLE-NVIDIA-H100-GPUS-per-project-region  asia-south1       granted 0  (denied)
+    GPUS-ALL-REGIONS-per-project                     (global)          granted 1
+
+Three things follow.
+
+1. **The H100 grant is region-scoped to asia-southeast1.** Every other region
+   is limit 0 by default. Moving region to chase capacity is not a free
+   substitution -- it needs a new quota request, and `asia-south1` shows those
+   get denied.
+2. **It is the PREEMPTIBLE quota, not the on-demand one.** DWS Flex Start
+   consumes preemptible GPU quota, so Flex Start is quota-valid in
+   asia-southeast1 -- which is exactly why Singapore failed on *capacity*
+   rather than quota. An on-demand (STANDARD) H100 launch would fail there
+   with limit 0, in the same region where Flex Start is permitted.
+3. **Check quota before walking a zone list, not by walking it.** The check
+   is free and instant:
+
+       GET https://cloudquotas.googleapis.com/v1/projects/PROJECT/locations/global/quotaPreferences
+
+   Five create attempts were spent establishing what one read would have
+   shown. They cost nothing in rupees and the whole point of the two-failure
+   rule is that they still cost something.
+
+### The sub-failure: an error grep that matched only one error format
+
+The zone walk suppressed each attempt's output to a log and reported failures
+via `grep -o 'code: [A-Z_]*'`. That pattern matches the structured stockout
+error. The quota error is a plain one-line message with no `code:` field, so
+the grep printed nothing and every zone reported an empty reason. Five zones
+were walked without the error being read once.
+
+A failure reporter that can only parse the failure you have already seen will
+report the failure you have not seen as silence. Print the error, then parse
+it -- never instead of printing it.
+
