@@ -601,3 +601,44 @@ A failure reporter that can only parse the failure you have already seen will
 report the failure you have not seen as silence. Print the error, then parse
 it -- never instead of printing it.
 
+
+## A write path has two permission layers and they fail identically
+
+After the 2026-09-15 session lost everything to a missing
+`--scopes=cloud-platform`, the launcher was fixed and a round-trip gate added.
+On the very next launch the gate failed again, on a different layer:
+
+    AccessDeniedException: 403 ...-compute@developer.gserviceaccount.com does
+    not have storage.objects.list access to the bucket
+
+Scopes were correct that time -- `instances describe` reported
+`https://www.googleapis.com/auth/cloud-platform`. What was missing was the IAM
+role on the bucket for the instance's service account.
+
+Both layers must hold, and **both return 403**:
+
+| layer | set by | visible in |
+|---|---|---|
+| OAuth scopes on the instance | `--scopes` at create time | `gcloud compute instances describe` |
+| IAM role for the service account | bucket or project IAM policy | `gcloud storage buckets get-iam-policy` |
+
+The trap is that fixing the layer that caused the last incident feels like
+fixing "the permission problem". It is not: the two are independent, and the
+error text is the same shape for both. No amount of inspecting the launch
+configuration distinguishes them -- an instance can show `cloud-platform`
+scopes and still be unable to write a single object.
+
+**The rule.** Never infer a write path from configuration. Do a round trip:
+write an object from the guest, read it back, compare, and list it
+independently from the client. `scripts/gcp_verify_gcs_writable.sh` does all
+four, and its non-zero exit means tear down, not "try again later in the run".
+
+**Grant needed once per project** (run off the clock, before any launch):
+
+    gcloud storage buckets add-iam-policy-binding gs://<bucket> \
+      --member=serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com \
+      --role=roles/storage.objectAdmin
+
+**What it cost to learn.** Rs 35 -- a 4m55s H100 session, placed in
+us-central1-b, gated, failed, torn down. The same defect cost Rs 2,029 the
+previous day because nothing gated it.

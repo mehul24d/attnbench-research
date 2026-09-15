@@ -9,6 +9,24 @@
 # exercised before the session depended on it, and the instance's self-delete
 # took the only copy. An assumed write path is not a write path.
 #
+# The gate found a SECOND, independent cause on 2026-09-16, on an instance
+# whose scopes were correct:
+#
+#   AccessDeniedException: 403 425125335855-compute@developer.gserviceaccount.com
+#   does not have storage.objects.list access to the bucket
+#
+# Writing to a bucket from a GCE instance needs BOTH layers, and they fail
+# identically with a 403:
+#   1. the instance's OAuth scope set must include write access
+#      (--scopes=cloud-platform), and
+#   2. the instance's SERVICE ACCOUNT must hold an IAM role on the bucket
+#      (roles/storage.objectAdmin).
+# Fixing (1) after the 2026-09-15 loss did not fix (2), and nothing in the
+# launch configuration reveals (2) -- `instances describe` happily shows
+# cloud-platform scopes on an instance that cannot write a single object.
+# Only an actual round trip distinguishes them, which is why this gate does a
+# round trip rather than an inspection.
+#
 # Exits non-zero on any failure. A non-zero exit here means TEAR DOWN -- do not
 # start a phase, do not "try it again later in the run".
 set -euo pipefail
