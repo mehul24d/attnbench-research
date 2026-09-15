@@ -1849,3 +1849,97 @@ not need it to.
 
 Both tests now go red on deletion — instance A verified 2026-09-11, instance
 B parametrised over both branches and verified on each, 2026-09-12.
+
+## 33. A retry loop that reports only the first refusal
+
+A request can be refused for more than one reason at once. The API answers
+with one of them, and which one it picks is not necessarily the one that
+matters.
+
+The H100 zone walk in `asia-southeast1` ran 71 create attempts across four
+bursts and two days. Every one returned `ZONE_RESOURCE_POOL_EXHAUSTED`, so
+the loop reported, correctly and repeatedly, that the zone had no capacity.
+The conclusion drawn from 71 consistent observations was "keep trying, this
+is transient."
+
+It probably was not transient. `a3-highgpu-1g` needs 26 vCPU, and the region's
+`PREEMPTIBLE_CPUS` grant was 12. A Flex Start instance is billed against the
+preemptible quota, so the request was very likely *also* unplaceable on quota
+-- permanently, at any hour, regardless of capacity. GCP evaluates
+availability before quota, so the transient refusal fired first and masked the
+permanent one on all 71 attempts. The loop was measuring the shorter of two
+walls and reporting it as the only wall.
+
+**The shape.** Every earlier entry in this document is a single check failing
+to detect something. This is one check *masking* another: the loop's evidence
+got stronger with each retry (71 consistent observations!) while its
+conclusion stayed wrong, because retrying only ever re-samples the refusal
+that fires first.
+
+**The tell.** A retry loop whose failure reason never varies is not confirming
+that reason. It is confirming the *ordering* of the checks upstream of it. If
+the reason is genuinely transient, a long enough walk should eventually
+produce a different message -- a success, or a second refusal. An unbroken run
+of one identical error is evidence of a deterministic gate, not a flaky one.
+
+**The rule.** Before concluding "no capacity" from any number of retries,
+establish independently that the request is legal at all: check the quota that
+actually governs it, from the quota API, not from the error text. The refusals
+cost Rs 0, which is exactly why they bought no information.
+
+**Sub-failure, same session.** The first version of this walk parsed the
+reason with `grep -o 'code: [A-Z_]*'`, which matches the structured stockout
+error and nothing else. The one-line quota error has no `code:` field, so a
+zone refused on quota printed an empty reason. A failure reporter that can
+only parse the failure you have already seen reports every new failure as
+silence. The walk in `scripts/` now exits non-zero on any error class it does
+not recognise, rather than continuing with an empty string.
+
+## 34. An anti-vacuity guard calibrated at the wrong granularity
+
+`tests/test_timed_region_setup.py` was written after FlexAttention's
+`create_block_mask` was found inside the timed region -- a 10x error in a
+reported number. The author knew the test could go vacuous (most backends
+need CUDA and are unrunnable on a laptop), and added
+`test_something_was_actually_exercised` specifically to stop a green suite
+from meaning nothing.
+
+The guard asserts that *some* backend was exercised. The property it protects
+is per-backend: *this* backend's setup is hoisted. On a CPU host, `sdpa` and
+`naive` run, the guard is satisfied, and `block_sparse` -- which rebuilds its
+block mask on every forward, inside the timed region, in the path of the
+headline 1.321x claim -- is quietly recorded as `not runnable here` and
+asserted about not at all.
+
+So the suite was green, the anti-vacuity guard was green, and the specific
+assertion that mattered had no subject.
+
+**Connect to #28.** The decode guard grouped by
+`("backend", "task", "_band", "sparsity")` when `decode_backend` is a function
+of `backend`, making the checked property constant within every group. Same
+shape: a guard whose granularity does not match the property it asserts. It
+has now happened twice, and the tell is identical both times --
+
+> ask what the guard iterates over, and what the assertion is about. If the
+> guard's unit is coarser than the assertion's unit, the guard can pass while
+> the assertion is empty.
+
+Set-level ("some backend ran") against a per-item property ("block_sparse
+ran") is the coarse case. Group-level against a within-group-constant property
+is the same error viewed from the other side.
+
+**What the git history says, and what it does not.** The test was added
+2026-09-04 in `6c46bc5`, and the `to_block_sparse_attn_mask` call it should
+have caught predates it (`eee2c6b`). Both were present in 14 of the 16 commits
+stamped into existing result sets, including the A100 session and every L4
+Stage 2/3/5 run from 2026-09-04 on. So the test shipped to hosts where
+`block_sparse` was runnable and the defect was live.
+
+Whether it ran there is **not recoverable**. No session recorded pytest
+output; the only stored per-session logs are boot serial consoles. The test's
+own docstring says the backends unrunnable locally "ARE exercised by the same
+test on the instance, where the suite is a per-session precondition" -- and
+that precondition was asserted in prose and never once written down as an
+artifact. A green suite nobody can produce evidence of is not a green suite.
+The remedy is cheap and is now in `run_phase.sh`: the suite's output is a
+phase artifact, synced to GCS like any result.
