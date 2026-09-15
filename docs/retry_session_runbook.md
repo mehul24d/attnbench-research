@@ -642,3 +642,64 @@ four, and its non-zero exit means tear down, not "try again later in the run".
 **What it cost to learn.** Rs 35 -- a 4m55s H100 session, placed in
 us-central1-b, gated, failed, torn down. The same defect cost Rs 2,029 the
 previous day because nothing gated it.
+
+## The 32768 fault was block_sparse's backward pass, and the error location named nothing
+
+Two Stage 0 attempts died identically: `torch.AcceleratorError: illegal memory
+access`, raised from `torch.cuda.empty_cache()` at `gates.py:104`, at the head
+of the 32768 band, before that band probed anything.
+
+The location is worthless. An illegal memory access from a kernel that does
+not raise at its launch site poisons the CUDA context, and the *next* CUDA
+call anywhere in the process raises instead -- which was a different backend,
+in a different band, one iteration later.
+
+**Isolation, not inference.** One backend per process, `CUDA_LAUNCH_BLOCKING=1`,
+cuDNN last:
+
+| backend | 32768 |
+|---|---|
+| **block_sparse** | **rc=1, process dies, 0 rows banked** |
+| fa2 flex gla naive sage sdpa_efficient sdpa_math sdpa_flash | rc=0 |
+| sdpa_cudnn | rc=0 -- `illegal_memory_access=84` RECORDED, clean exit |
+
+The cuDNN row is the one that matters. It faults on all 84 configs and the
+process still exits 0, because those faults are **synchronous**: they raise at
+the call, `probe()` catches them, and "this backend faults here" is written
+down as a legitimate capability result. block_sparse's fault is
+**asynchronous**: nothing raises, the context is already dead, and the run
+ends somewhere else entirely.
+
+    synchronous fault  -> a recorded result
+    asynchronous fault -> a dead process and a traceback that names a bystander
+
+**The config.** Replaying the probe path config-by-config:
+
+    FAULTING_CONFIG [68/84] mask=block_sparse pk=fwd_bwd b=16 hq=32 hkv=32
+                            blk=128 sp=0.5   (seq_len=32768)
+
+Three narrowing runs missed it before this one, each because the reproduction
+was cheaper than the real path:
+
+  - calling `forward()` directly over all 72 block_sparse configs: **no fault**.
+    `probe()` calls `run_once` -> `timed_call`, and `timed_call` runs
+    `out.sum().backward()` when `pass_kind == "fwd_bwd"`. Forward alone never
+    reaches the faulting kernel.
+  - `run_once` on the smallest config of each pass_kind: **no fault**. Those
+    are `b=1, hkv=8` (GQA). The fault needs `b=16` and `hkv=32` (MHA).
+
+So it is the **backward** kernel, at 32768, at batch 16, with 32 KV heads --
+not the forward, not GQA, not small batch. Forward at 32768 is fine, which is
+why the study's forward-only cells are unaffected.
+
+**What it is not.** Not a hardware limit on the largest band: with
+block_sparse excluded, the full 32768 band completed rc=0 across nine
+backends, cuDNN included and faulting loudly the whole way.
+
+**Two wrong diagnoses, both disproved by measurement.** cuDNN was blamed first
+because its 84 faults at 16384 fit the standing "cuDNN last" rule; a fix was
+committed to it and excluding it changed nothing. `sdpa_flash` was blamed
+second because it ran last before the crash -- which is precisely the
+inference an asynchronous fault invalidates, made immediately after being
+burned by that asynchrony. When the error location is untrustworthy, the only
+instrument is isolation.
