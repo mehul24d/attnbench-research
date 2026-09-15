@@ -140,6 +140,18 @@ def main():
     ap.add_argument("--no-resume", action="store_true",
                     help="re-probe rows already present in the checkpoint "
                          "instead of skipping them")
+    ap.add_argument("--exclude-backends", default="",
+                    help="comma-separated backend names to leave out of this "
+                         "run entirely. Exists because a backend that faults "
+                         "with an illegal memory access does not fail alone: "
+                         "it poisons the CUDA context, so the NEXT band dies "
+                         "in torch.cuda.empty_cache() before probing anything. "
+                         "On 2026-09-16 sdpa_cudnn logged "
+                         "illegal_memory_access on all 84 configs at "
+                         "seq_len=16384 and took the 32768 band down with it. "
+                         "Excluding it here and probing it last, in its own "
+                         "process, is the standing 'cuDNN last' rule made "
+                         "enforceable rather than remembered.")
     args = ap.parse_args()
 
     outdir = Path(args.out)
@@ -156,6 +168,19 @@ def main():
         return
 
     backends = instantiate()
+    excluded = {n.strip() for n in args.exclude_backends.split(",") if n.strip()}
+    if excluded:
+        known = {b.name for b in backends}
+        unknown = excluded - known
+        if unknown:
+            # A typo here silently probes the backend you meant to exclude,
+            # and the whole point of the flag is that that backend takes the
+            # run down with it. Fail loudly instead.
+            raise SystemExit(
+                f"--exclude-backends names unknown backend(s): "
+                f"{sorted(unknown)}. Available: {sorted(known)}")
+        backends = [b for b in backends if b.name not in excluded]
+        print(f"excluded : {', '.join(sorted(excluded))}")
     print(f"backends : {', '.join(b.name for b in backends)}")
 
     unavailable = [n for n, c in all_backends().items() if not c.is_available()]
