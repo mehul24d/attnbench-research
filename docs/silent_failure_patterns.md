@@ -137,6 +137,41 @@ and *executes* the loop against a fake home layout to confirm both halves.
 
 **Found by**: a number being impossible rather than merely surprising.
 
+#### Recurrence, 2026-09-16: the same image, a measurement output this time
+
+The H100 session found `results/probe/versions.json` on a fresh instance,
+before any phase had run, stamped:
+
+    gpu_name: NVIDIA L4
+
+Stage 0 resumes on `(backend, config_key)`. Run it on an H100 against that
+tree and every config the L4 already probed is **skipped**, and the H100's
+`probe.parquet` inherits L4 capability rows under an H100 provenance stamp.
+Whether an H100 supports a config is exactly what Stage 0 exists to establish,
+so the inherited answer is not merely stale, it is about a different machine.
+
+**Why the existing fix did not catch it.** The startup-script loop from the
+first occurrence is deliberately narrow: "it removes only recomputable
+intermediates, never measurement outputs." That narrowness is right -- a boot
+script that deletes results is a worse failure than the one it prevents -- and
+it is exactly why this got through. `probe.parquet` *is* a measurement output.
+The loop looked at it and correctly left it alone. The guard was calibrated to
+the substance of the first instance (a cache) rather than to its shape
+(anything on the image's disk that a resume key can match), so the second
+instance walked straight past it.
+
+There is no version of the clearing loop that fixes this without becoming
+dangerous. The remedy has to be at the other end: **refuse to start** when
+`results/` is non-empty before any phase has run, and make the operator look.
+`scripts/gcp_preflight_instance.sh` does that, and refuses on *any* image with
+the problem rather than purging this one, so the next image that ships state
+is caught by the same check rather than by the next incident.
+
+**Found by**: syncing per phase. The first sync listed the objects it had
+written back, and the listing contained `results/stage3_s1/`,
+`results/accuracy/score_cache/` and a `probe/` tree from a session that had
+not happened yet. A sync that reported only success would have shown nothing.
+
 ### 8. A gate that passed by running code the sweep never runs
 
 Stage 1 certified `flex` block-sparse **72/72**, with real numerical agreement
