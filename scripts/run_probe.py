@@ -152,6 +152,16 @@ def main():
                          "Excluding it here and probing it last, in its own "
                          "process, is the standing 'cuDNN last' rule made "
                          "enforceable rather than remembered.")
+    ap.add_argument("--only-backends", default="",
+                    help="comma-separated backend names to probe, to the "
+                         "exclusion of all others. The inverse of "
+                         "--exclude-backends, and the instrument for isolating "
+                         "an ASYNCHRONOUS fault: a kernel that faults without "
+                         "raising is reported at whatever CUDA call comes "
+                         "next, which may be a different backend in a "
+                         "different band. One backend per process, with "
+                         "CUDA_LAUNCH_BLOCKING=1, is the only configuration in "
+                         "which the error location names the cause.")
     args = ap.parse_args()
 
     outdir = Path(args.out)
@@ -168,6 +178,16 @@ def main():
         return
 
     backends = instantiate()
+    only = {n.strip() for n in args.only_backends.split(",") if n.strip()}
+    if only:
+        known = {b.name for b in backends}
+        unknown = only - known
+        if unknown:
+            raise SystemExit(
+                f"--only-backends names unknown backend(s): {sorted(unknown)}. "
+                f"Available: {sorted(known)}")
+        backends = [b for b in backends if b.name in only]
+        print(f"only     : {', '.join(sorted(only))}")
     excluded = {n.strip() for n in args.exclude_backends.split(",") if n.strip()}
     if excluded:
         known = {b.name for b in backends}
