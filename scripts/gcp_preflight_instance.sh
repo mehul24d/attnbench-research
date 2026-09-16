@@ -56,8 +56,23 @@ fi
 
 if [[ "$MODE" == "--quarantine" ]]; then
   STAMP="results_preexisting_$(date -u +%Y%m%dT%H%M%SZ)"
+  # `results/` is gitignored, but TWO FILES INSIDE IT ARE TRACKED
+  # (results/stage3_s1/INVALID_ROWS.md, results/stage3_s1b/README.md). Moving
+  # the directory aside therefore deletes tracked paths and leaves the tree
+  # dirty -- which makes provenance.capture() stamp git_dirty=True on every
+  # row the session goes on to write, and a dirty stamp disqualifies those
+  # rows from licensing anything downstream. That is exactly what happened to
+  # the 2026-09-16 Stage 1 run: 492 passes, numerically fine, rejected by
+  # load_stage1_pass_set because this quarantine had dirtied the tree behind
+  # them. `git checkout -- results` puts the tracked files back.
   gcloud compute ssh "$NAME" --zone="$ZONE" --command="
-    cd $REMOTE_DIR && mv results '$STAMP' && mkdir -p results && echo QUARANTINED_TO=$STAMP"
+    cd $REMOTE_DIR \
+      && mv results '$STAMP' \
+      && mkdir -p results \
+      && git checkout -- results 2>/dev/null || true
+    cd $REMOTE_DIR && DIRT=\\$(git status --porcelain) && if [ -n \"\\$DIRT\" ]; then
+      echo 'QUARANTINE LEFT THE TREE DIRTY:' >&2; echo \"\\$DIRT\" >&2; exit 1; fi
+    echo QUARANTINED_TO=$STAMP"
   echo "PREFLIGHT: pre-existing results/ quarantined as $STAMP. Safe to start."
   exit 0
 fi
