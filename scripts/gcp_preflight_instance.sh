@@ -50,12 +50,28 @@ done
 echo "$OUT"
 
 if grep -q PREFLIGHT_RESULTS_EMPTY <<<"$OUT"; then
-  echo "PREFLIGHT PASSED -- results/ is empty; nothing to inherit."
+  # An empty results/ is necessary and not sufficient. The property that
+  # actually matters downstream is that provenance.capture() will stamp
+  # git_dirty=False, so check that directly rather than a proxy for it.
+  TREE="$(gcloud compute ssh "$NAME" --zone="$ZONE" \
+            --command="cd $REMOTE_DIR && git status --porcelain" 2>/dev/null)"
+  if [[ -n "$TREE" ]]; then
+    echo "PREFLIGHT FAILED -- results/ is empty but the tree is dirty:" >&2
+    echo "$TREE" >&2
+    echo "Every row written here would be stamped git_dirty=True and would" >&2
+    echo "license nothing downstream." >&2
+    exit 1
+  fi
+  echo "PREFLIGHT PASSED -- results/ empty AND tree clean; git_dirty will be False."
   exit 0
 fi
 
 if [[ "$MODE" == "--quarantine" ]]; then
-  STAMP="results_preexisting_$(date -u +%Y%m%dT%H%M%SZ)"
+  # OUTSIDE the repo. A quarantine directory parked inside the working tree
+  # is itself untracked, so it dirties the tree just as surely as the files
+  # it was rescuing -- the postcondition check caught exactly that on its
+  # first live run. Nothing this guard creates may live in the repo.
+  STAMP="$HOME/attnbench_quarantine/results_$(date -u +%Y%m%dT%H%M%SZ)"
   # `results/` is gitignored, but TWO FILES INSIDE IT ARE TRACKED
   # (results/stage3_s1/INVALID_ROWS.md, results/stage3_s1b/README.md). Moving
   # the directory aside therefore deletes tracked paths and leaves the tree
@@ -65,14 +81,22 @@ if [[ "$MODE" == "--quarantine" ]]; then
   # the 2026-09-16 Stage 1 run: 492 passes, numerically fine, rejected by
   # load_stage1_pass_set because this quarantine had dirtied the tree behind
   # them. `git checkout -- results` puts the tracked files back.
-  gcloud compute ssh "$NAME" --zone="$ZONE" --command="
-    cd $REMOTE_DIR \
-      && mv results '$STAMP' \
-      && mkdir -p results \
-      && git checkout -- results 2>/dev/null || true
-    cd $REMOTE_DIR && DIRT=\\$(git status --porcelain) && if [ -n \"\\$DIRT\" ]; then
-      echo 'QUARANTINE LEFT THE TREE DIRTY:' >&2; echo \"\\$DIRT\" >&2; exit 1; fi
-    echo QUARANTINED_TO=$STAMP"
+  #
+  # Deliberately THREE separate ssh calls rather than one escaped heredoc: the
+  # first version of this postcondition check was written as nested quoting
+  # inside the move command, and the escaping did not survive, so it died with
+  # `DIRT: unbound variable` -- a guard whose own check was broken. Boring and
+  # readable beats clever and wrong.
+  gcloud compute ssh "$NAME" --zone="$ZONE" --command="mkdir -p \"$(dirname $STAMP)\" && cd $REMOTE_DIR && mv results '$STAMP' && mkdir -p results"
+  gcloud compute ssh "$NAME" --zone="$ZONE" --command="cd $REMOTE_DIR && git checkout -- results || true"
+  POST="$(gcloud compute ssh "$NAME" --zone="$ZONE" --command="cd $REMOTE_DIR && git status --porcelain" 2>/dev/null)"
+  if [[ -n "$POST" ]]; then
+    echo "QUARANTINE LEFT THE TREE DIRTY:" >&2
+    echo "$POST" >&2
+    echo "Every row written after this would be stamped git_dirty=True." >&2
+    exit 1
+  fi
+  echo "QUARANTINED_TO=$STAMP"
   echo "PREFLIGHT: pre-existing results/ quarantined as $STAMP. Safe to start."
   exit 0
 fi
