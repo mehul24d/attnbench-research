@@ -618,6 +618,46 @@ their sweep finds optimal. Accuracy at a given sparsity is therefore
 **conservative** relative to their optimum, which biases the matched budgets
 toward understating sparse attention rather than overstating it.
 
+**The cheap estimator is not a substitute for the oracle — measured, not
+argued.** The obvious rebuttal to "the oracle costs 35x the latency it saves"
+is "then use the cheap estimator a deployed system would use." That was run
+as its own arm on 2026-09-16: MInference's mean-pool estimator (arXiv:
+2407.02490, Algorithm 3) against the dense-softmax oracle, identical
+examples, one band (16384), n=100 per task, `git_dirty=False`, both arms on
+one host with clocks locked.
+
+| task | dense | oracle 0.50 / 0.75 / 0.90 | cheap 0.50 / 0.75 / 0.90 |
+|---|---|---|---|
+| `niah_multikey` | 66.0 | 66.0 / 59.0 / 20.0 | **34.0 / 19.0 / 1.0** |
+| `vt` | 78.8 | 88.2 / 91.6 / 90.8 | 85.0 / 86.2 / 82.2 |
+| `niah_single` | 100.0 | 100.0 / 100.0 / 100.0 | 100.0 / 100.0 / 100.0 |
+
+The dense reference is identical in both arms to the decimal (66.0 / 100.0 /
+78.8), which is the internal control that the two runs are comparable.
+
+| | |
+|---|---|
+| **Supported** | *At 16384 with 128-token blocks and a head-uniform budget, MInference's mean-pool estimator loses 32 to 40 accuracy points against a dense-softmax oracle on the one task in this set with headroom, and 3 to 9 points on `vt`, with the gap widening as sparsity rises.* |
+| **Not supported** | *Cheap importance estimation does not work.* One estimator, one band, one model, one block size — and that block size is the known confound below. |
+| **Not supported** | *This reproduces Sparse Frontier's Block-Sparse.* It does not: theirs is 16x16 with per-head selection and binary-search top-k. Three declared divergences below. |
+
+**The block-size divergence is a threat to exactly this experiment, and it
+cuts against the cheap arm.** Block-Sparse-Attention hardcodes 128; Sparse
+Frontier's ablation selects 16. Pooling dilution scales with block size — a
+block mean underranks a block whose mass sits in a few tokens, and a 128-token
+block has eight times as many tokens to dilute across as a 16-token one. The
+cheap estimator is therefore handicapped here **relative to the spec it was
+taken from**, and the gap above is an upper bound on the gap at their block
+size, not an estimate of it. This was identified as a threat before the arm
+was built, not after the result came in. Anyone citing the table must carry
+this sentence with it.
+
+**Three declared divergences from Sparse Frontier's Block-Sparse:** block
+granularity (128 here, 16x16 theirs — above); head uniformity (one shared
+budget here, per-head adaptive selection theirs); and sink preservation, which
+was a genuine defect here until 2026-09-16 and is now fixed to match their
+"always preserve the first key block and the diagonal."
+
 **One sparse family, not sparse attention.** Their finding is that
 Vertical-Slash is best for retrieval and block-sparse for high-dispersion
 tasks. This study implements only block-sparse, so every conclusion is about
