@@ -1978,3 +1978,88 @@ that precondition was asserted in prose and never once written down as an
 artifact. A green suite nobody can produce evidence of is not a green suite.
 The remedy is cheap and is now in `run_phase.sh`: the suite's output is a
 phase artifact, synced to GCS like any result.
+
+## 35. A cheaper reproduction narrows the search space past the bug
+
+The 32768 fault was reproduced four times. The first three did not fire, and
+each non-firing was read, briefly, as information about the bug. It was
+information about the reproduction.
+
+| attempt | what it ran | result |
+|---|---|---|
+| 1 | `forward()` over all 72 block_sparse configs | no fault |
+| 2 | `run_once` on the smallest config of each `pass_kind` | no fault |
+| 3 | same, at `b=1` | no fault |
+| 4 | `run_once` over all 84 configs, in probe order | **fault at [68/84]** |
+
+Attempt 1 missed it because `probe()` does not call `forward()`. It calls
+`run_once` -> `timed_call`, and `timed_call` runs `out.sum().backward()` when
+`pass_kind == "fwd_bwd"`. The faulting kernel is the **backward**; a
+forward-only repro cannot reach it at any config.
+
+Attempt 2 missed it because "smallest config" meant `b=1, hkv=8` -- GQA. The
+fault needs `b=16, hkv=32`, which is MHA. Every simplification that made the
+repro cheap also made it miss.
+
+**The general property.** A reproduction is a hypothesis about which
+dimensions are irrelevant. Running forward-only asserts the backward does not
+matter. Taking the smallest config asserts batch and head geometry do not
+matter. When the repro does not fire, exactly one of two things is true: there
+is no bug on that path, or one of those assertions is false -- and the second
+is far more likely, because the assertions were chosen for cheapness rather
+than for evidence.
+
+> When the error location is untrustworthy, a simplified repro that does not
+> fire is evidence about the simplification, not about the bug.
+
+**The inverse of #32.** There, a plausible fixture bounded a test's coverage
+below what its name claimed. Here, a plausible simplification bounded a
+*search* below where the bug lived. Same mechanism -- an unexamined narrowing
+presented as the full thing -- pointed at finding a defect rather than at
+catching one.
+
+**The rule.** Start from the real path and remove one dimension at a time,
+confirming the fault survives each removal. Four runs in the right order cost
+the same as four in the wrong order; only the last one has to be the real
+path, and it might as well be the first.
+
+### Knowing a pattern does not prevent committing it
+
+Both wrong diagnoses in this session were made *after* the relevant lesson was
+in hand.
+
+  - cuDNN was blamed because its 84 faults at 16384 fit the standing "cuDNN
+    last" rule. A fix was written, committed, and deployed before anything
+    tested whether cuDNN was the cause. Excluding it changed nothing.
+  - `sdpa_flash` was blamed next, on the reasoning that it ran last before the
+    crash -- the exact inference an asynchronous fault invalidates, made
+    minutes after an asynchronous fault had already invalidated it once.
+
+The second is the instructive one. The mechanism was understood, stated
+explicitly in the session, and applied anyway on the very next question. That
+is the argument for the break-it check being **mandatory rather than
+habitual**: a habit is what fails under the pull of a hypothesis that fits.
+The prior that fits the evidence too neatly is precisely the one worth
+attacking, and the only reliable attack is to run the experiment that would
+disconfirm it -- here, one 21-second isolation run that would have named
+block_sparse before a line of code was changed.
+
+### The corollary hazard: a fault class whose epistemic status depends on timing
+
+Same GPU fault, two outcomes, decided entirely by whether the error surfaces
+at its launch site:
+
+    synchronous  -> probe() catches it -> "illegal_memory_access" is RECORDED
+                    as a capability result, and the run continues
+    asynchronous -> nothing raises, the context is dead, and the NEXT CUDA
+                    call anywhere in the process dies instead
+
+`sdpa_cudnn` faults 84 times per band and exits 0. `block_sparse` faults once
+and takes the process, the band, and every unbanked row with it -- with a
+traceback naming `torch.cuda.empty_cache()` in a different band, for a
+different backend.
+
+For anyone probing kernels at scale this is a live hazard, because the loud
+failure is the harmless one. A backend that records 84 faults looks worse in
+the results table than a backend that silently poisons the context, and is
+strictly better behaved.
