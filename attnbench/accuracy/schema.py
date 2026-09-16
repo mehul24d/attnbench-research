@@ -13,7 +13,7 @@ from typing import Literal, Optional
 # compute_importance_scores docstring for why this must never be silently
 # assumed constant. `None` for dense (non-block-sparse) rows: no scoring
 # pass ran at all for those.
-ScoreSource = Literal["dense_softmax_fp32"]
+ScoreSource = Literal["dense_softmax_fp32", "minference_meanpool"]
 
 # Same reasoning as ScoreSource: a real, first-class field rather than a
 # docstring footnote. "noise"/"needle" mean the example used attnbench's

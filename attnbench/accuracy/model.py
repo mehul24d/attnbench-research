@@ -209,6 +209,76 @@ def _scoring_forward_chunked(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     return out, scores
 
 
+def minference_meanpool_scores(q: torch.Tensor, k: torch.Tensor, *,
+                                n_heads_kv: int, block_size: int) -> torch.Tensor:
+    """The CHEAP estimator: MInference's Block-Sparse index estimation.
+
+    Specified in MInference 1.0 (arXiv:2407.02490), Algorithm 3:
+
+        Q_hat <- MeanPooling(Q, block_size)
+        K_hat <- MeanPooling(K, block_size)
+        A_hat <- softmax(Q_hat K_hat^T / sqrt(d) + m_causal)
+        i_b   <- argtopk(A_hat, k_b)
+
+    and cited by Sparse Frontier (arXiv:2504.17768v2, Appendix A.1.1) as the
+    source of its "block-wise pooled token representations".
+
+    **How this differs from the oracle, exactly.** The dense scorer above
+    computes `mean_block(softmax(Q K^T))`. This computes
+    `softmax(mean_block(Q) mean_block(K)^T)`. Same quantity with the pooling
+    and the softmax commuted -- which is the approximation MInference
+    justifies by the commutativity of mean pooling and MatMul. The two arms
+    therefore differ ONLY in how blocks were ranked, which is what makes the
+    oracle-versus-estimator comparison interpretable.
+
+    **Why it is cheap.** The oracle materialises an S x S score matrix (and
+    is chunked precisely because it cannot be held whole). This never forms
+    one: it pools to S/block_size representatives first, so the matmul is
+    (S/b) x (S/b). At S=32768, b=128 that is 256 x 256 against 32768 x 32768
+    -- about 16000x fewer score entries. Its cost is not excluded from
+    latency numbers the way the oracle's is, because it is small enough to
+    pay.
+
+    **Head convention** follows the oracle and `masks.py`: scores are meaned
+    over the query heads within a KV group, giving one ranking per KV head
+    and none per query head. Note that the reference implementation is
+    per-head adaptive (uniform budget, independent selection); this study is
+    head-uniform, and that divergence is recorded in limitations.md.
+
+    Returns (n_heads_kv, n_blocks, n_blocks) on CPU, matching the oracle.
+    """
+    batch, n_heads_q, seq_len, head_dim = q.shape
+    if batch != 1:
+        raise ValueError(f"minference_meanpool_scores expects batch=1, got {batch}")
+    group_size = n_heads_q // n_heads_kv
+    n_blocks = (seq_len + block_size - 1) // block_size
+    pad = n_blocks * block_size - seq_len
+
+    q32 = q.float()
+    k32 = k.float()
+    if pad:
+        q32 = torch.nn.functional.pad(q32, (0, 0, 0, pad))
+        k32 = torch.nn.functional.pad(k32, (0, 0, 0, pad))
+
+    # MeanPooling(Q, block_size) and MeanPooling(K, block_size).
+    q_hat = q32.view(batch, n_heads_q, n_blocks, block_size, head_dim).mean(dim=3)
+    k_hat = k32.view(batch, n_heads_kv, n_blocks, block_size, head_dim).mean(dim=3)
+    k_hat = k_hat.repeat_interleave(group_size, dim=1)
+
+    scale = 1.0 / math.sqrt(head_dim)
+    logits = torch.matmul(q_hat, k_hat.transpose(-2, -1)) * scale
+
+    # Block-level causal mask: query block qb may not see key block kv > qb.
+    qb = torch.arange(n_blocks, device=q.device).unsqueeze(1)
+    kv = torch.arange(n_blocks, device=q.device).unsqueeze(0)
+    logits = logits.masked_fill(kv > qb, float("-inf"))
+
+    a_hat = torch.softmax(logits, dim=-1)
+    # Mean over the query heads within each KV group, as the oracle does.
+    a_hat = a_hat.view(batch, n_heads_kv, group_size, n_blocks, n_blocks).mean(dim=2)
+    return a_hat[0].cpu()
+
+
 def pool_scores_to_block_size(scores_finest: torch.Tensor, *,
                                finest_block_size: int,
                                target_block_size: int) -> torch.Tensor:

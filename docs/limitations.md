@@ -1380,6 +1380,29 @@ concentrated-mass block that is known in advance. Any *other* block whose mass
 is similarly concentrated is still underranked at 128 and there is no rule
 naming it.
 
+**Stated as a directional bias, because that is what it is.** At 128-token
+granularity this study's importance ranking systematically underweights any
+input whose important information is *concentrated* rather than *distributed*
+— and for retrieval tasks that is most inputs, since a needle occupies a few
+tokens inside one block. So accuracy under an importance mask here is
+**conservative** for concentrated-information inputs, by an amount that grows
+with block size and that no result in this study measures. It is not a
+uniform precision loss that averages out; it has a sign, and the sign is
+against sparse attention.
+
+That is also the argument that makes Sparse Frontier's 16x16 choice
+**principled rather than tuned**: finer blocks are not merely more accurate,
+they are less biased in this specific direction, which is why their ablation
+finds smaller consistently better rather than better-up-to-a-point.
+
+**The estimator this study adds inherits the same bias.** MInference's
+Block-Sparse estimation (arXiv:2407.02490, Algorithm 3) mean-pools Q and K
+before scoring, so it dilutes concentrated mass exactly as the oracle's
+block-mean does — see `minference_meanpool_scores`. Running both arms at 128
+therefore compares two rankings that share this bias, which is what makes the
+comparison between them clean and what makes neither of them an estimate of
+what a 16-granularity method would achieve.
+
 ### The fix, and what it costs
 
 **Fixed 2026-09-16.** `_candidate_rows` now excludes kv_block 0 from every

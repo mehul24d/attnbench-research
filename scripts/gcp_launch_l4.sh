@@ -30,8 +30,8 @@ ZONE="${GCP_ZONE:-us-central1-a}"
 MACHINE_TYPE="g2-standard-8"
 ACCELERATOR="type=nvidia-l4,count=1"
 IMAGE="${ATTNBENCH_IMAGE:-attnbench-env-v5-20260905}"   # the project env, not a stock ML image
-MAX_RUN="3h"
-HALT_MINUTES="90"   # DELETE is at 3h; the gap is the disk-recovery window.
+MAX_RUN="6h"
+HALT_MINUTES="240"   # 4h. DELETE is at 6h; the 2h gap is the disk-recovery window.
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
 INSTANCE_NAME="${1:-attnbench-l4-validation-$(date +%Y%m%d-%H%M)}"
@@ -62,7 +62,7 @@ echo "  image        : $IMAGE"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 echo "  provisioning : STANDARD (on-demand, not spot)"
 echo "  in-guest halt: +${HALT_MINUTES} min -- GPU billing stops, disk survives"
-echo "  hard cap     : --max-run-duration=$MAX_RUN action=DELETE (Rs 233 ceiling)"
+echo "  hard cap     : --max-run-duration=$MAX_RUN action=DELETE (Rs 468 ceiling)"
 echo "  rate         : Rs 78/h (g2-standard-8 + 1x L4, us-central1, pinned 2026-09-16)"
 echo
 read -r -p "Type 'launch' to proceed, anything else to abort: " CONFIRM

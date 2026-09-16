@@ -2105,3 +2105,22 @@ outside the guard.** The quarantine directory dirtying the tree by living
 inside the repo is the miniature of the whole problem: the mechanism placed
 its own working state in exactly the location whose cleanliness it was
 protecting.
+
+
+### Instance five of #34: the attention sink, tested in neither direction
+
+`masks.py` had a definite, load-bearing behaviour — the attention sink was an
+ordinary top-k candidate, retained for 65.0% of query blocks under the oracle
+and 7.5% under a random mask — and **no test named it in either direction**.
+Not one asserting the sink was forced, and not one asserting it was not. The
+suite was green across every session that published an accuracy number.
+
+The tell is the one now stated at #34: ask what property the code has, then
+ask which test would fail if that property flipped. Here the answer was none,
+in both directions, which is the signature of an untested behaviour rather
+than a tested-and-permitted one.
+
+The regression test written for it scores the sink **last** on purpose, so a
+pass proves the sink is granted *outside* the budget rather than merely
+winning a top-k it would usually win. A test that used realistic scores would
+have passed against the defective code too.
