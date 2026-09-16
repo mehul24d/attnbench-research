@@ -62,8 +62,11 @@ authority is the billing console.
 | 2026-09-16 | `attnbench-h100-…-0744` | **20** | **142** | audit log |
 | 2026-09-16 | `attnbench-h100-…-0822` — Stage 0/1/2 | **32** | **227** | audit log |
 | 2026-09-16 | `attnbench-l4-20260916-1319` — Stage 5 replication | **27** | **35** | audit log |
-| 2026-09-16 | `attnbench-l4-20260916-1501` — forced-sink + estimator | *in flight* | — | boot 09:32:25Z |
+| 2026-09-16 | `attnbench-l4-20260916-1501` — forced-sink + estimator arms | **246** | **320** | boot→delete |
+| 2026-09-16 | `attnbench-a100-20260916-1926` — Stage 5, 2nd architecture | **56** | **265** | boot→delete |
 
+A100 `a2-ultragpu-1g` DWS Flex Start ₹284/h all-in (asia-southeast1, verified
+2026-09-16: GPU $2.277654 + 12 × $0.023340 core + 170 × $0.003128 RAM).
 Rates: H100 `a3-highgpu-1g` DWS Flex Start ₹425/h (us-central1, pinned
 2026-09-16); L4 `g2-standard-8` ₹78/h. The 2026-09-07 row implies ~₹80/h for
 L4 in asia-south1, so the 2026-09-08 rows are within ±3% of that.
@@ -263,3 +266,31 @@ the watcher derives, and make it a file rather than a stream.** The phase now
 writes its exit status to `/tmp/<phase>.rc` on the instance directly. A file
 write cannot be buffered away, cannot match itself, and survives the ssh
 session that started it.
+
+
+### The 2026-09-16 A100 row — DWS was cheaper than Spot on a second accelerator
+
+₹265 for 56 minutes, of which the Stage 5 run itself was 16. Five bands, all
+`rc=0`, per-band sync, torn down 34 minutes before the in-guest halt.
+
+**DWS Flex Start was attempted first and succeeded**, which settled a question
+the quota API cannot answer: DWS draws on `PREEMPTIBLE_NVIDIA_A100_80GB_GPUS`
+(the project's only non-zero A100 quota, limit 1). So the Spot fallback never
+ran, and the session was **non-preemptible at ₹284/h instead of preemptible at
+₹321/h**.
+
+| accelerator | DWS | Spot | on-demand | DWS vs Spot |
+|---|---|---|---|---|
+| H100 80GB | $4.200761 | — | $9.80–12.74 | **41% cheaper** |
+| A100 80GB | $2.277654 | $2.648100 | $4.846072 | **14% cheaper** |
+| L4 | $0.560040 | — | $0.560040 | **identical** |
+
+Two accelerators where the bounded-window product is cheaper *and* stronger
+than the preemptible one, and one where it is neither. **The rule is "price the
+SKU per accelerator", not "DWS is always cheaper"** — the L4 row is what stops
+this from becoming a heuristic that quietly costs money.
+
+**Where the 56 minutes went:** 16 in Stage 5, and roughly 25 in boot, repo
+sync, the stale-`results/` quarantine and model load. On a 16-minute workload
+the fixed setup cost is larger than the measurement. For a session this short
+the lever is a warmer image, not a faster card.
