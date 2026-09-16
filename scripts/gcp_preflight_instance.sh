@@ -71,7 +71,13 @@ if [[ "$MODE" == "--quarantine" ]]; then
   # is itself untracked, so it dirties the tree just as surely as the files
   # it was rescuing -- the postcondition check caught exactly that on its
   # first live run. Nothing this guard creates may live in the repo.
-  STAMP="$HOME/attnbench_quarantine/results_$(date -u +%Y%m%dT%H%M%SZ)"
+  # NOTE: a RELATIVE path, deliberately. Writing "$HOME/..." here expands
+  # $HOME in the LOCAL shell before the string is ever sent over ssh, so the
+  # instance was told to mkdir the operator's laptop home directory and
+  # failed with `mkdir: cannot create directory '/Users': Permission denied`.
+  # Anything that must expand on the far side has to survive as text.
+  QDIR="attnbench_quarantine"
+  STAMP="$QDIR/results_$(date -u +%Y%m%dT%H%M%SZ)"
   # `results/` is gitignored, but TWO FILES INSIDE IT ARE TRACKED
   # (results/stage3_s1/INVALID_ROWS.md, results/stage3_s1b/README.md). Moving
   # the directory aside therefore deletes tracked paths and leaves the tree
@@ -87,7 +93,7 @@ if [[ "$MODE" == "--quarantine" ]]; then
   # inside the move command, and the escaping did not survive, so it died with
   # `DIRT: unbound variable` -- a guard whose own check was broken. Boring and
   # readable beats clever and wrong.
-  gcloud compute ssh "$NAME" --zone="$ZONE" --command="mkdir -p \"$(dirname $STAMP)\" && cd $REMOTE_DIR && mv results '$STAMP' && mkdir -p results"
+  gcloud compute ssh "$NAME" --zone="$ZONE" --command="mkdir -p \$HOME/$QDIR && cd $REMOTE_DIR && mv results \$HOME/$STAMP && mkdir -p results"
   gcloud compute ssh "$NAME" --zone="$ZONE" --command="cd $REMOTE_DIR && git checkout -- results || true"
   POST="$(gcloud compute ssh "$NAME" --zone="$ZONE" --command="cd $REMOTE_DIR && git status --porcelain" 2>/dev/null)"
   if [[ -n "$POST" ]]; then
