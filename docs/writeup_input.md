@@ -280,9 +280,48 @@ rather than by the arms. **Nine of them cannot say whether sparse or dense is
 faster.** Seventeen are resolved. The headline is unaffected: 1.321× is 32%
 above unity against a 1.7% floor.
 
-**Two bands have no replicate.** 16384 and 32768 were each measured in one
+**Two bands have no replicate.** ~~16384 and 32768 were each measured in one
 session, so their resolution floor is inherited from the widest measured band
-rather than estimated — a lower bound on their uncertainty, not an estimate.
+rather than estimated — a lower bound on their uncertainty, not an estimate.~~
+
+**Replicated 2026-09-16 on a second L4.** Both bands were re-measured from
+scratch on a different physical instance (`attnbench-l4-20260916-1319`,
+us-central1-a) at commit `4db8bbe`, clocks locked, `git_dirty=False`:
+
+| band | quantity | original | replicate | delta |
+|---|---|---|---|---|
+| 32768 | dense prefill | 4018.2 ms | 4023.3 ms | +0.13% |
+| 32768 | block_sparse @0.75 | 2927.0 ms | 2931.1 ms | +0.14% |
+| 32768 | scoring pass | 44652.0 ms | 44786.1 ms | +0.30% |
+| 32768 | **speedup @0.75** | **1.3728×** | **1.3726×** | **−0.01%** |
+| 16384 | dense prefill | 1643.5 ms | 1677.5 ms | +2.07% |
+| 16384 | block_sparse @0.75 | 1376.6 ms | 1407.7 ms | +2.26% |
+| 16384 | scoring pass | 11763.1 ms | 11777.1 ms | +0.12% |
+| 16384 | **speedup @0.75** | **1.1939×** | **1.1917×** | **−0.19%** |
+
+**Ratios reproduce about an order of magnitude better than absolutes.** At
+16384 every absolute prefill time is 1.0–2.3% higher in the replicate, and the
+speedup built from them moves −0.19%. That is the signature of a common-mode
+scale factor — a different physical card in a different thermal state — which
+cancels in a ratio and does not cancel in a latency. Every headline in this
+study is a ratio, which is the reason that matters.
+
+It also resolves a concern raised during the run: the card was observed
+executing at 1200 MHz against a 1740 MHz lock, and differential throttling
+between the dense and sparse arms would have biased the ratio. Both arms moved
+together on both bands, so whatever throttling occurs is common-mode.
+
+**What this does and does not establish.** The 1.7% inherited floor is
+confirmed as a safe upper bound for these bands — observed ratio deltas are
+0.01–0.19%. It is **not** replaced: two sessions give one difference, not a
+variance estimate, and n=2 cannot establish a floor. The inherited figure
+stays, now known to be conservative rather than unknown.
+
+**One cell is genuinely marginal and should not be quoted.** At 32768,
+sparsity 0.5 gives a 1.0049× speedup — block-sparse is indistinguishable from
+dense there, and its absolute time moved +1.08% between sessions against
++0.13% for the dense arm it is compared to. The sparsity-0.5 arm at 32768
+carries no signal at this precision.
 
 **Accuracy convergence is untestable past 16384.** Accuracy saturates at 100.0
 from 16384, so beyond that band the data cannot distinguish "accuracy would
