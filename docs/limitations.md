@@ -568,6 +568,48 @@ which an 80 GB card has and a 23 GB card does not. And `flex` lowers
 block-sparse at `block_size=128` on sm_80, restoring the second opinion that
 sm_89's shared-memory limit removed — see the flex-sparse section above.
 
+**Corrected 2026-09-16 after the H100 session: the ceiling is structural, and
+it stops moving here.** Reading the L4 -> A100 step as "hardware moved it" was
+right about that step and wrong as a trend. Hopper, with the same 80 GiB and a
+newer architecture, lands in exactly the same place:
+
+| | oracle (`masked_exact`) | peer (`cross_backend_pair`) | inferred only |
+|---|---|---|---|
+| **L4, sm_89, 23 GiB** | ≤ 4096 | — | > 4096 |
+| **A100, sm_80, 80 GiB** | ≤ 8192 | 16384 | > 16384 |
+| **H100, sm_90, 80 GiB** | ≤ **8192** | **16384** | > 16384 |
+
+Not one band further out. The H100 Stage 1 table makes the reason explicit:
+of its 55 rows that could not be verified at all, **54 are block-sparse-masked
+and only 36 are a memory limit.** The counts by reason:
+
+    54  fa2             declines this config: no block sparse
+    54  sage            declines this config: no block sparse
+    36  sdpa_efficient  declines this config: no block sparse
+    36  naive           OOM at this shape
+
+Only `naive`'s is a size problem. The dense backends' refusal is a
+**capability gap**: they do not implement block-sparse masks, so they are not
+references that a bigger card makes available — they are references that do
+not exist. Above 4096 with a block-sparse mask, `block_sparse` and `flex` are
+each other's only possible witnesses, and wherever one of them declines the
+config there is no witness at any VRAM.
+
+So the sparse arm's verification ceiling is **not hardware-limited any more**.
+Buying a larger card was the correct move once and will not work twice; what
+would move it is a third block-sparse implementation, which is the thing the
+"second sparse backend" paragraph below already argues is not worth a session
+— and that argument is now stronger, because the pair verdict it would produce
+is exactly the class of evidence this table already has at 16384.
+
+**A knock-on from the sm_90 backward fault.** `block_sparse` is absent from
+the H100 32768 band entirely, because its backward kernel faults there
+(`b=16, hkv=32, fwd_bwd` — see the runbook). That costs more than its own
+rows: `flex`'s 18 block-sparse configs at 32768 are all recorded unverifiable,
+because the one backend that could have been their peer was not in the band.
+A missing backend removes its own measurements and every verdict that depended
+on it as a witness.
+
 **16384 is a pair, not a panel, and the rows say so.** The
 `cross_backend_pair` verdicts at 16384 carry their own caveat text: *"agrees
 with 1 independent implementations (flex) within atol=0.04; NOT verified
