@@ -13,10 +13,32 @@ on an L4 but loses elsewhere" is a hypothesis with one data point.
 | | |
 |---|---|
 | machine type | `a2-ultragpu-1g` — 12 vCPU, 170 GB, 1× A100 **80 GB** |
-| zone | **`asia-southeast1-c` only** — the shape exists nowhere else in the region |
-| provisioning | **Spot only.** `NVIDIA_A100_80GB_GPUS` (on-demand) is 0; the approval is `PREEMPTIBLE_*` |
+| zone | **`asia-southeast1-c` only** — re-verified 2026-09-16: `-a` and `-b` do not offer the shape |
+| provisioning | **DWS Defined Duration first, Spot as fallback.** On-demand `NVIDIA_A100_80GB_GPUS` is 0 in every region; `PREEMPTIBLE_NVIDIA_A100_80GB_GPUS` is 1 in asia-southeast1 only |
+| rate (verified 2026-09-16) | DWS Defined Duration GPU **$2.277654/h**; Spot GPU **$2.648100/h**; on-demand $4.846072/h. All-in Spot = GPU + 12 × $0.023340 core + 170 × $0.003128 RAM = **$3.4599/h ≈ ₹321/h** |
 | quota | all gating metrics confirmed at 12/12/1 — see below |
 | image | `attnbench-l4-image-v4-20260903`, **global**, `storageLocations: ['asia']` |
+
+> **UNBLOCKED 2026-09-16 — read this before the BLOCKED note below.** The
+> blocker described next was cleared by the 2026-09-05 rebuild and this
+> document was never updated. `attnbench-env-v5-20260905` is a plain **disk**
+> image (`gcloud compute images list`, not `machine-images list`): 200 GB,
+> `storageLocations: ['asia']`, no `guestAccelerators` binding and no
+> `disks[0].interface` to override, because a disk image cannot carry either.
+> It is the image every L4 session since has booted from. No rebuild is
+> needed.
+>
+> **The BLOCKED note is kept rather than deleted, because the failure it
+> illustrates is not the image lock.** A document describing a *resolved*
+> constraint reads exactly like one describing a *live* constraint — same
+> confident tone, same specifics, same absence of any signal that the world
+> moved. Acting on this page as written would have sent a session into an
+> unnecessary image rebuild, at cost, to fix something already fixed. The
+> only defence is to re-verify a blocker against the live API before honouring
+> it, which is what happened here and is cheap: two read-only calls.
+>
+> Anything below this line dated 2026-09-05 or earlier is a claim about the
+> world on that date, not a claim about the world now.
 
 > **BLOCKED 2026-09-05.** The v4 machine image cannot boot an A2 at all: it
 > records `guestAccelerators: nvidia-l4` (replaceable, never clearable) and
