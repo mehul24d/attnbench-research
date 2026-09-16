@@ -14,6 +14,7 @@ of minutes into a real sweep.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import sys
 from pathlib import Path
 
@@ -64,6 +65,20 @@ def main():
                          "correctness pass and would be rejected; filtering "
                          "makes that intentional rather than 432 silent "
                          "rejections in the report.")
+    ap.add_argument("--seq-lens", default=None,
+                    help="comma-separated seq_lens to run, INSTEAD of the "
+                         "grid's full ladder. --min/--max-seq-len express a "
+                         "contiguous band, which is the right shape for "
+                         "splitting Stage 2 across sessions shortest-first. "
+                         "A representative SLICE is a different shape: three "
+                         "lengths spanning the range, not three adjacent "
+                         "ones. Filtering, never widening -- a value not in "
+                         "the grid is a caller error and raises, because "
+                         "silently measuring a length the grid does not "
+                         "contain would produce cells no Stage 1 pass covers.")
+    ap.add_argument("--batches", default=None,
+                    help="comma-separated batch sizes to run, INSTEAD of the "
+                         "grid's. Same filtering-only contract as --seq-lens.")
     ap.add_argument("--at-commit", default=None,
                     help="require Stage 1 passes recorded at this commit. "
                          "Pass 'auto' to use the current one.")
@@ -83,6 +98,27 @@ def main():
     print(f"backends : {', '.join(b.name for b in backends)}")
 
     grid = SweepGrid()
+
+    def _slice(spec, field, name):
+        """Narrow one grid axis. Refuses values the grid does not contain."""
+        if spec is None:
+            return getattr(grid, field)
+        want = tuple(int(x) for x in spec.split(",") if x.strip())
+        have = set(getattr(grid, field))
+        unknown = [w for w in want if w not in have]
+        if unknown:
+            raise SystemExit(
+                f"--{name} names {unknown}, which the grid does not contain "
+                f"({sorted(have)}). This filter narrows the grid; it cannot "
+                f"add to it. A cell outside the grid has no Stage 1 pass and "
+                f"would be rejected after it had already been measured.")
+        return want
+
+    grid = replace(grid,
+                   seq_lens=_slice(args.seq_lens, "seq_lens", "seq-lens"),
+                   batches=_slice(args.batches, "batches", "batches"))
+    if args.seq_lens or args.batches:
+        print(f"grid slice  : seq_lens={grid.seq_lens} batches={grid.batches}")
     cells = build_cells(grid, backends, mask_source=args.mask_source)
 
     # Length filtering happens BEFORE shuffling, not after: shuffled() exists
