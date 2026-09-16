@@ -11,7 +11,7 @@ the thing every such speedup leaves out.
 
 ## The result, and its ceiling
 
-> **Block-sparse attention with oracle-derived masks reaches 1.321×
+> **On an NVIDIA L4, block-sparse attention with oracle-derived masks reaches 1.321×
 > end-to-end at 32K context at zero accuracy cost (100.0 vs 100.0), and
 > computing the oracle costs roughly 35× the latency it saves.**
 

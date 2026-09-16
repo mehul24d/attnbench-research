@@ -469,7 +469,7 @@ saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
 
 | | |
 |---|---|
-| **Supported** | *Block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* |
+| **Supported** | *On an **NVIDIA L4 (sm_89)**, block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* **The card is not a detail of this sentence — see "The speedup does not survive a change of card" below. On an A100 the same configuration is 0.475×.** |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192. The speedup is an upper bound no measured estimator approaches.* |
 | **Not supported** | *Block-sparse attention delivers 1.321× at 32768.* Not as a system. It delivers that **given a mask nobody can afford to compute**, whose cost is 44.6 s per example against the 1286 ms saved — 35×, a ratio that has moved 4% since 16384. |
 | **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× against 0.75's 1.321×, for an accuracy difference of one example in 50 that the CI cannot separate from zero. At that margin 0.75 is the defensible pick, not because 0.9 is worse but because nothing here shows it is not. |
@@ -484,7 +484,7 @@ confirmed by a measurement independent of the intercept check that found it.
 
 Everything above resolves into one sentence, and both halves are load-bearing:
 
-> **Block-sparse attention with oracle-derived masks achieves up to 1.32×
+> **On an NVIDIA L4, block-sparse attention with oracle-derived masks achieves up to 1.32×
 > end-to-end at no accuracy cost at 32K context, and computing the oracle
 > costs roughly 35× the latency it saves.**
 
@@ -593,6 +593,67 @@ RULER's algorithm, not RULER's benchmark".
 
 ---
 
+## The speedup does not survive a change of card
+
+Measured 2026-09-16 on an A100-SXM4-80GB (sm_80) under DWS Flex Start, clocks
+locked, `git_dirty=False`, against the L4 (sm_89) numbers above. Both cards
+were pinned by the same policy to **85% of their maximum SM clock** (L4
+2040→1740 MHz, A100 1410→1200 MHz), so this is a like-for-like comparison at
+the same fraction of each card's ceiling.
+
+**Prefill speedup vs dense, on the same card (>1 means sparse wins):**
+
+| band | card | 0.50 | 0.75 | 0.90 |
+|---|---|---|---|---|
+| 16384 | L4 | 1.108 | 1.194 | 1.258 |
+| 16384 | **A100** | **0.394** | **0.615** | **0.951** |
+| 32768 | L4 | 1.014 | **1.373** | 1.475 |
+| 32768 | **A100** | **0.281** | **0.475** | **0.817** |
+
+**The mechanism is the dense baseline, not a broken sparse kernel.** How much
+each kernel gains from moving L4 → A100, at 32768:
+
+| dense flash | sparse 0.50 | sparse 0.75 | sparse 0.90 |
+|---|---|---|---|
+| **3.63×** | **1.01×** | 1.26× | 2.01× |
+
+Flash attention collects a 3.63× speedup from the better card. The
+block-sparse kernel collects 1.26× at 0.75 and **essentially nothing at 0.5**.
+Sparse attention wins on the L4 by beating a dense baseline that is weak
+there; on a card where dense attention is well optimised there is nothing left
+to take.
+
+**The obvious alternative explanation was checked and rejected.** "Sparse is
+slow on the new card" is exactly what a missing sm_80 kernel would look like.
+It is not that:
+
+- Stage 0 on A100 records `block_sparse` **supported** on 180 configs
+  (`claimed=True / actual=supported`). The `unsupported` rows are `mask kind
+  causal not wired`, which is expected — block-sparse does not serve plain
+  causal.
+- Stage 1 on A100 passes **90 of 90** block-sparse correctness cells against
+  the float64 reference.
+- The kernel responds to sparsity **more** steeply on A100 than on L4 — 65.7%
+  spread across 0.5→0.9 at 32768 against the L4's 31.2%. A fallback path would
+  not track sparsity at all, let alone better.
+
+So the kernel is present, correct, and doing real sparse work. It loses a race
+against a much better dense baseline.
+
+| | |
+|---|---|
+| **Supported** | *The end-to-end block-sparse prefill speedup is **hardware-conditional**. On an L4 it reaches 1.373× at 32768/0.75; on an A100 the same configuration is 0.475×, and sparse is slower than dense at every band and sparsity measured.* |
+| **Supported** | *The cause is the dense baseline. Flash attention gains 3.63× from L4→A100 while the block-sparse kernel gains 1.01–2.01×.* |
+| **Not supported** | *Block-sparse attention is useless on A100.* One kernel (`block_sparse_attn`, block size 128), prefill only, batch 1, one model. A better-optimised sparse kernel is not excluded by this. |
+| **Not supported** | *The A100 result invalidates the L4 result.* Both are correct measurements of their own hardware. What is invalid is any sentence that states either number without naming the card. |
+
+**No banked corroboration existed.** The A100 Stage 2 sweep contains **no
+`block_sparse` rows at all** (`mask: ['causal']` only), so this Stage 5 run is
+the first block-sparse measurement on A100 in the project. That is why the
+check above leans on Stage 0/1 rather than on kernel microbenchmarks.
+
+---
+
 ## Positioning against Sparse Frontier
 
 This study's contribution is defined relative to Sparse Frontier, and the
@@ -600,7 +661,7 @@ sentences differ sharply depending on which of their claims is being answered.
 
 | | |
 |---|---|
-| **Supported** | *Sparse Frontier establishes accuracy-vs-sparsity trade-offs without measuring realised wall-clock speedup on the hardware. This study measures the end-to-end speedup for block-sparse prefill and finds it is 1.321x at 32768 at 0.75 sparsity with no accuracy loss — and that the importance oracle producing that accuracy costs 35x the latency it saves.* |
+| **Supported** | *Sparse Frontier establishes accuracy-vs-sparsity trade-offs without measuring realised wall-clock speedup on the hardware. This study measures it, on two cards, and finds the answer is hardware-conditional: 1.321x at 32768 at 0.75 sparsity on an L4 with no accuracy loss, 0.475x on an A100 — and on the L4 the importance oracle producing that accuracy costs 35x the latency it saves.* |
 | **Not supported** | *This study contradicts Sparse Frontier.* It does not. It measures a quantity they scope out, on one sparse family (block-sparse), in one regime (prefill), on one model size (1.5B). Where the two overlap, they agree. |
 | **Not supported** | *Sparse attention does not pay off.* Prefill-only, block-sparse-only, oracle-masked, 1.5B. See the scope banner at the top of `limitations.md`. Their own positive results are strongest in regimes this study excludes by construction — decode sparsity, and large-batch serving, which per their Appendix B.3 is a decode phenomenon because weights load once per forward pass regardless of batch. |
 
