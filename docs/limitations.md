@@ -7,6 +7,37 @@
 > lines are compressed into a paragraph.
 
 
+---
+
+## SCOPE, before anything else: this study measures sparse PREFILL
+
+Every result in this study is about **prefill**. Decode runs dense in every
+arm, by construction (`GenerationResult.decode_backend` is `sdpa_math` for
+every `block_sparse` row). So:
+
+> **What is supported:** block-sparse *prefill* attention, at long context,
+> against dense prefill on the same hardware.
+>
+> **What is NOT supported:** any claim about sparse attention in general, or
+> about sparse *inference* as a system. "Sparse attention is dominated by
+> dense" is broader than this data, and is not a sentence this study may
+> write.
+
+Decode sparsity is a **different mechanism with different constraints**, not a
+config change: it selects pages or tokens against a KV cache rather than
+estimating block importance over a full prompt, and the published evidence is
+that it tolerates *higher* sparsity than prefill does. It is out of scope
+here, deliberately, and the boundary is the same one Sparse Frontier's own
+taxonomy draws between the two axes. A reader who wants the decode answer will
+not find it here, and should not read the prefill answer as standing in for
+it.
+
+The full reasoning is in **Sparsity is applied during prefill only** below;
+this banner exists because that section was previously 131 lines in and the
+scope it sets is the first thing a reader needs.
+
+---
+
 Things a reader of this study's numbers needs to know before comparing them
 to anything else. Each entry names what is affected and what is not.
 
@@ -233,6 +264,22 @@ weight-reuse argument behind batching does not apply.
 This means the batch=1 architectural limit in `compute_importance_scores`
 costs nothing in throughput -- a batch-aware rewrite would buy nothing. See
 `attnbench/accuracy/batch_scaling.py`.
+
+**The prefill result is batch-invariant by Sparse Frontier's own model, and
+this is the stronger argument.** The measurement above is empirical and
+L4-specific; their Appendix B.3 makes the general case. For *prefilling*, all
+cost components scale linearly with batch size, so the attention-to-total
+ratio stays constant and a prefill sparsity result does not depend on the
+batch it was measured at. Decoding is the exception, and the reason is
+specific: weights load once per forward pass regardless of batch, so the
+attention share grows with batch, which is why a large-batch regime can make
+sparse decode pay when sparse prefill would not.
+
+**Consequence for this study.** There is no batch hole in the prefill result.
+The large-batch regime in which sparse attention becomes favourable is a
+**decode** phenomenon, and decode is out of scope (see the scope banner at the
+top of this file). Those are one limitation, not two, and conflating them
+overstates the gap.
 
 **A warning about how nearly this was reported backwards.** The first version
 of this probe had no warmup pass, so each backend's first measured call also
