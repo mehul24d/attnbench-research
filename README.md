@@ -148,6 +148,15 @@ Also: [`docs/hardware_constraints.md`](docs/hardware_constraints.md),
 - Clocks locked and GPU exclusivity verified before any Stage 2 or 5 run.
 - Speedups are recomputed against a baseline **remeasured on the same
   machine**. Ratios are never carried across hosts.
+- **Replication on the same architecture confirms a measurement and says
+  nothing about its scope.** The 1.321× headline was replicated on a second L4
+  to within 0.19% — and that replication was *structurally incapable* of
+  detecting that the claim was L4-specific, which Stage 5 on an A100 later
+  showed it was (0.475× at the same configuration). Two measurements agreeing
+  is evidence about precision, not generality, and the tighter the agreement
+  the more confident the wrong conclusion looks. A result is scoped by the
+  axes it was **varied** across, never by the number of times it was repeated
+  along one.
 - Grid cells run in randomised order, so thermal drift cannot correlate with
   backend identity.
 - Repeats live in separate sessions, not separate loops in one process.

@@ -186,6 +186,24 @@ provenance stamps caught a fourth before it reached a result — 492 Stage 1
 passes carrying `git_dirty=True` because a guard's own quarantine directory had
 dirtied the tree.
 
+**The methodological point this study would offer a reader independent of its
+results.** Every headline here was replicated. The 1.321× figure was measured
+on one L4, then re-measured on a *second* L4 in a separate session, agreeing
+to **0.19%** — the kind of number that reads as a settled result. Stage 5 on an
+A100 then returned **0.475×** for the same configuration.
+
+Nothing was wrong with either L4 measurement. What was wrong was treating
+repetition as generalisation. **Replication along an axis you have already
+fixed confirms precision and establishes nothing about scope**, and the
+tighter the agreement the more authoritative the over-broad claim sounds. A
+result is scoped by the axes it was *varied* across, never by the number of
+times it was repeated along one — and a single-hardware study cannot see a
+hardware-conditional result no matter how many times it runs.
+
+The practical form of this: before quoting a number, ask which axes were held
+constant while it was being confirmed. Here that was the card, and the card
+turned out to carry the sign of the result.
+
 **The relevant claim is not that this study made no mistakes.** It is that the
 mistakes were found by mechanisms that run on every result, and the reader can
 check which mechanism covers which claim: provenance stamps on every row, a
