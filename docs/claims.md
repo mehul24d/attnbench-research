@@ -610,18 +610,39 @@ the same fraction of each card's ceiling.
 | 32768 | L4 | 1.014 | **1.373** | 1.475 |
 | 32768 | **A100** | **0.281** | **0.475** | **0.817** |
 
-**The mechanism is the dense baseline, not a broken sparse kernel.** How much
-each kernel gains from moving L4 → A100, at 32768:
+**CORRECTED 2026-09-16, same day, by a kernel-level sweep.** The first version
+of this section said "the block-sparse kernel does not exploit the A100" and
+attributed the reversal to the kernel. **That was an inference from end-to-end
+prefill timings presented as a mechanism, and it is wrong.** Stage 2 on A100,
+batch 1, matched geometry (32 q-heads / 8 kv / 128 dim), measures the kernel
+with the mask already built:
 
-| dense flash | sparse 0.50 | sparse 0.75 | sparse 0.90 |
-|---|---|---|---|
-| **3.63×** | **1.01×** | 1.26× | 2.01× |
+| seq | card | flash ms | bs 0.75 ms | flash ÷ bs |
+|---|---|---|---|---|
+| 4096 | L4 | 2.049 | 1.750 | 1.17× |
+| 4096 | **A100** | 0.841 | 1.175 | **0.72×** |
+| 8192 | L4 | 9.473 | 3.762 | 2.52× |
+| 8192 | **A100** | 2.960 | 1.969 | **1.50×** |
+| 16384 | **A100** | 11.363 | 5.386 | **2.11×** |
 
-Flash attention collects a 3.63× speedup from the better card. The
-block-sparse kernel collects 1.26× at 0.75 and **essentially nothing at 0.5**.
-Sparse attention wins on the L4 by beating a dense baseline that is weak
-there; on a card where dense attention is well optimised there is nothing left
-to take.
+**The block-sparse kernel BEATS flash attention on the A100** — by 1.50× at
+8192 and 2.11× at 16384. End-to-end at those same configurations it loses
+(0.735× and 0.615×). The penalty therefore lives **outside the attention
+kernel**, in per-call work the kernel never sees — mask conversion is the
+known candidate, already measured on L4 as a constant per-call tax.
+
+What survives from the original claim is narrower and still true: **flash
+gains more from the better card than block-sparse does** — 3.20× against
+1.91× at 8192, 2.44× against 1.49× at 4096. So the sparse kernel's *margin*
+shrinks on the A100 (2.52× → 1.50× at 8192). But a shrinking margin is not a
+lost race, and the race is lost somewhere else.
+
+**The magnitude of that overhead is NOT quantified here.** The obvious
+arithmetic — scale the per-call kernel saving by the model's 28 layers and
+compare to the end-to-end delta — is invalid, because the Stage 2 grid times
+32 query heads while Qwen2.5-1.5B has 12. The two datasets establish the
+*sign* and the *location* of the penalty, not its size. A matched-geometry
+run would be needed for that.
 
 **The obvious alternative explanation was checked and rejected.** "Sparse is
 slow on the new card" is exactly what a missing sm_80 kernel would look like.
@@ -643,14 +664,18 @@ against a much better dense baseline.
 | | |
 |---|---|
 | **Supported** | *The end-to-end block-sparse prefill speedup is **hardware-conditional**. On an L4 it reaches 1.373× at 32768/0.75; on an A100 the same configuration is 0.475×, and sparse is slower than dense at every band and sparsity measured.* |
-| **Supported** | *The cause is the dense baseline. Flash attention gains 3.63× from L4→A100 while the block-sparse kernel gains 1.01–2.01×.* |
+| **Supported** | *At the kernel level the block-sparse kernel is FASTER than flash on A100 (1.50× at 8192, 2.11× at 16384, matched geometry, batch 1). The end-to-end reversal is caused by per-call overhead outside the attention kernel, not by the kernel.* |
+| **Supported** | *Flash attention gains more from the better card than block-sparse does: 3.20× against 1.91× at 8192. The sparse kernel's margin shrinks on A100 but does not invert.* |
+| **Not supported** | *The overhead outside the kernel is N milliseconds.* Not computable from these two datasets: Stage 2 times 32 query heads, the model has 12, so per-layer scaling between them is invalid. Sign and location only. |
 | **Not supported** | *Block-sparse attention is useless on A100.* One kernel (`block_sparse_attn`, block size 128), prefill only, batch 1, one model. A better-optimised sparse kernel is not excluded by this. |
 | **Not supported** | *The A100 result invalidates the L4 result.* Both are correct measurements of their own hardware. What is invalid is any sentence that states either number without naming the card. |
 
-**No banked corroboration existed.** The A100 Stage 2 sweep contains **no
-`block_sparse` rows at all** (`mask: ['causal']` only), so this Stage 5 run is
-the first block-sparse measurement on A100 in the project. That is why the
-check above leans on Stage 0/1 rather than on kernel microbenchmarks.
+**No banked corroboration existed when the first version of this section was
+written.** The A100 Stage 2 sweep contained **no `block_sparse` rows at all**
+(`mask: ['causal']` only) — not a capability limit, but a flag: `run_sweep.py`
+builds sparse cells only when `--mask-source random` is passed, and that
+session never passed it. Writing a mechanism without it was the error; the
+107-cell sweep that corrected this took **two minutes** of GPU.
 
 ---
 
