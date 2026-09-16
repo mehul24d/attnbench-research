@@ -593,6 +593,49 @@ RULER's algorithm, not RULER's benchmark".
 
 ---
 
+## Positioning against Sparse Frontier
+
+This study's contribution is defined relative to Sparse Frontier, and the
+sentences differ sharply depending on which of their claims is being answered.
+
+| | |
+|---|---|
+| **Supported** | *Sparse Frontier establishes accuracy-vs-sparsity trade-offs without measuring realised wall-clock speedup on the hardware. This study measures the end-to-end speedup for block-sparse prefill and finds it is 1.321x at 32768 at 0.75 sparsity with no accuracy loss — and that the importance oracle producing that accuracy costs 35x the latency it saves.* |
+| **Not supported** | *This study contradicts Sparse Frontier.* It does not. It measures a quantity they scope out, on one sparse family (block-sparse), in one regime (prefill), on one model size (1.5B). Where the two overlap, they agree. |
+| **Not supported** | *Sparse attention does not pay off.* Prefill-only, block-sparse-only, oracle-masked, 1.5B. See the scope banner at the top of `limitations.md`. Their own positive results are strongest in regimes this study excludes by construction — decode sparsity, and large-batch serving, which per their Appendix B.3 is a decode phenomenon because weights load once per forward pass regardless of batch. |
+
+**The batch axis is not a gap.** Their Appendix B.3 states that for prefilling
+all cost components scale linearly with batch size, so the attention-to-total
+ratio stays constant. A prefill sparsity result is therefore batch-invariant
+**by their own model**, and this study's batch=1 measurements do not need a
+batch-size caveat. The large-batch regime where sparse attention pays is
+decode, which is out of scope. One limitation, not two.
+
+**Their block size is unreachable here, and the bias is in the safe
+direction.** Block-Sparse-Attention hardcodes 128 and flex's 64 is
+shared-memory-capped on sm_89, so this study cannot measure the block size
+their sweep finds optimal. Accuracy at a given sparsity is therefore
+**conservative** relative to their optimum, which biases the matched budgets
+toward understating sparse attention rather than overstating it.
+
+**One sparse family, not sparse attention.** Their finding is that
+Vertical-Slash is best for retrieval and block-sparse for high-dispersion
+tasks. This study implements only block-sparse, so every conclusion is about
+block-sparse and none generalises to sparse attention as a class.
+
+> **UNVERIFIED — DO NOT SHIP THIS ROW UNTIL FILLED.** The strongest available
+> positioning is a direct citation of Sparse Frontier **v2, Limitations #3**,
+> which is reported to concede the gap this study measures. The exact wording
+> is not in this repository and has not been read by the author of this
+> section, so it is deliberately left blank rather than paraphrased from
+> memory. Paste the sentence and the version/date of the arXiv revision it
+> comes from, then replace this block. A citation reconstructed from
+> recollection is precisely the kind of plausible-looking error this project
+> documents elsewhere, and it would be worse here than nowhere, because the
+> whole point of the citation is that *they* said it.
+
+---
+
 ## How to add to this file
 
 A row belongs here when the honest claim and the appealing claim differ by a
