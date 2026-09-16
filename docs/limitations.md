@@ -1074,3 +1074,88 @@ implementation on H100"* is **not supported** by this study and is not
 claimed: FA3 exists, is designed for exactly that hardware, and was not
 measured. The supported form is the one already in the ledger — backend A
 against backend B on identical inputs, among the backends actually run.
+
+## Stage 1 on sm90: `passed=False` means two different things
+
+The H100 Stage 1 table has 558 rows: 492 pass, 66 fail. Reading that as a 88%
+pass rate would be wrong, because the 66 are two unrelated things:
+
+| | count | what it means |
+|---|---|---|
+| **unverifiable** | 55 | no reference implementation could run the shape, so nothing was compared. `max_abs_err` is NaN. |
+| **numerical disagreement** | 11 | a real comparison ran and the error exceeded tolerance. |
+
+A row that was never checked and a row that was checked and disagreed both
+land in the table as `passed=False`. The distinction is recoverable -- an
+unverifiable row has `max_abs_err = NaN` and a `detail` naming every reference
+that declined -- but nothing in the schema states it, and a consumer grouping
+on `passed` will merge them.
+
+This is the mirror image of the `cross_arch` gap recorded elsewhere, where a
+backend missing from one architecture silently shrinks the join and an absence
+reads as **agreement**. Here an absence reads as **disagreement**. Both are the
+same underlying error: a missing measurement being typed as a verdict rather
+than as missing.
+
+On the other side the table is clean: **all 492 passes have a real measured
+error, none NaN.** A pass always means a comparison actually happened.
+
+### What the 55 unverifiable rows are, and why a bigger card cannot fix them
+
+54 of 55 are `block_sparse`-masked. The reasons the references declined:
+
+    54  fa2             declines this config: no block sparse
+    54  sage            declines this config: no block sparse
+    36  sdpa_efficient  declines this config: no block sparse
+    36  naive           OOM at this shape
+
+Only `naive` is a memory limit. The others are a **capability gap**: the dense
+backends do not implement block-sparse masks at all, so there is no reference
+to compare a block-sparse kernel against at any context length, on any card.
+The 80GB H100 restores the float64 oracle at some shapes where the 24GB L4
+lost it, but it cannot manufacture a second block-sparse implementation. Above
+4096 with a block-sparse mask, `block_sparse` and `flex` are each other's only
+possible witnesses, and where one of them declines the config there is no
+witness at all.
+
+### The 11 genuine disagreements are all `naive`, and that is expected
+
+All 11 are `naive` in bfloat16, `max_abs_err` 2.46e-02 to 3.17e-02, at
+seq_len 1024-4096. Every fused kernel passes the same configs at ~1.29e-02.
+
+`naive` accumulates the softmax and the value matmul in the input dtype;
+FlashAttention-family kernels accumulate in fp32 internally regardless of
+input dtype. So the "reference-shaped" implementation is the least accurate
+one in the table, by roughly 2.5x. This is a property of the implementation,
+not a defect found by the gate -- but it is worth stating plainly, because
+"naive" reads as "trustworthy baseline" and here it is the opposite.
+
+## The A100 and H100 correctness tables are 40+ commits apart
+
+Comparing them as an architecture difference is invalid without a commit
+check, and the first thing such a comparison shows is an artifact:
+
+    A100  d2d8ceb (2026-09-05)  543 rows, 30 of them check_kind="structural" (all gla)
+    H100  9c05dfd (2026-09-16)  558 rows, ZERO structural rows
+
+`gla` produces no correctness rows at all on H100 -- 504/504 `unsupported`.
+That is not sm90. It is `b12974b` (2026-09-07), "gla: the forget gate was
+random noise, and it made 900 rows meaningless", which made the backend
+decline rather than synthesise a forget gate with a ~1.24 token memory
+horizon. The A100 run predates it.
+
+So the 30 A100 structural rows are precisely the rows that commit exists to
+stop producing. A cross-architecture reader seeing "30 on A100, 0 on H100"
+would conclude sm90 lost a capability, when what actually happened is that the
+A100 table was measured before a correctness fix landed.
+
+`sage` is similarly absent on H100 (`cfg.quant_scheme must be set`) -- a
+configuration gap, not an architecture one.
+
+**The rule.** Any cross-architecture claim must first establish that the
+tables being compared were produced at the same commit, or enumerate what
+changed between them. Three backends are currently missing from the H100
+table for three unrelated non-hardware reasons: `xformers` (version pin
+`>=2.7.1,<=2.8.2` vs installed 2.8.3.post1), `gla` (deliberate decline),
+`sage` (unset config). None of the three is an sm90 finding, and all three
+would look like one.
