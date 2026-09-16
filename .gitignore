@@ -15,3 +15,12 @@ __pycache__/
 # field exists to make.
 results/
 *.parquet
+
+# Phase logs are measurement output too, and they are written INTO the repo
+# by scripts/run_phase.sh. Leaving them untracked made `git status` non-empty
+# on every rented instance, which made provenance.capture() stamp
+# git_dirty=True on every row of Stage 0 and Stage 1 -- and a dirty stamp
+# means the commit does not describe the code that ran, so those passes could
+# not license Stage 2. The sync wrapper added to prevent data loss was
+# invalidating the provenance of everything it wrapped.
+logs/

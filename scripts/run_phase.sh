@@ -29,6 +29,31 @@ PHASE="${1:?usage: run_phase.sh PHASE -- CMD...}"; shift
 [[ "${1:-}" == "--" ]] && shift
 [[ $# -gt 0 ]] || { echo "run_phase.sh: no command given" >&2; exit 2; }
 
+# Refuse to run a phase in a tree git calls dirty.
+#
+# provenance.capture() stamps git_dirty on every row a phase writes, and a
+# dirty stamp disqualifies those rows from licensing anything downstream --
+# load_stage1_pass_set rejects them outright. gcp_deploy_source.sh establishes
+# a clean tree at deploy; this asserts nothing has broken that invariant by
+# the time measurement starts, INCLUDING this script itself (its own `mkdir -p
+# logs` did exactly that until logs/ was gitignored).
+#
+# Checked before the phase, not after, because after is a wasted GPU hour.
+if command -v git >/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
+  DIRT="$(git status --porcelain)"
+  if [ -n "$DIRT" ]; then
+    echo "REFUSING TO RUN PHASE -- working tree is dirty:" >&2
+    echo "$DIRT" >&2
+    echo >&2
+    echo "Every row this phase writes would be stamped git_dirty=True, and a" >&2
+    echo "dirty stamp means the recorded commit does not describe the code" >&2
+    echo "that ran. Stage 2 rejects such passes outright, so the measurement" >&2
+    echo "would be paid for and then refused. Add the path to .gitignore if" >&2
+    echo "it is output, or commit it if it is source." >&2
+    exit 3
+  fi
+fi
+
 BUCKET="${ATTNBENCH_BUCKET:-gs://attnbench-results-research-507316}"
 SESSION="${ATTNBENCH_SESSION:-$(hostname)}"
 DEST="$BUCKET/$SESSION"
