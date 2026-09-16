@@ -37,6 +37,7 @@ from torch import nn
 from . import score_cache
 from .. import masks
 from ..backends.base import AttentionBackend
+from ..backends.impls import SDPABackend
 from ..config import AttnConfig
 
 # The decoder layer's unpacking of self_attn's return value changed between
@@ -130,6 +131,10 @@ class _ModeState:
     # scorers emit identically-shaped tensors for the same example and would
     # otherwise collide -- see score_cache.cache_key.
     score_source: str = "dense_softmax_fp32"
+    # Lazily built dense backend used ONLY to give the cheap scoring pass a
+    # faithful layer output. NOT charged to the estimator's cost -- see the
+    # minference_meanpool branch in SwappedAttention.forward.
+    score_output_backend: Optional[AttentionBackend] = None
     # Populated by the scoring pass, one entry per layer_idx, each
     # (n_heads_kv, n_blocks_finest, n_blocks_finest) fp32.
     scores: dict = field(default_factory=dict)
@@ -357,16 +362,41 @@ class SwappedAttention(nn.Module):
             state.decode_states[self.layer_idx] = new_state
         elif state.mode == "score":
             if state.score_source == "minference_meanpool":
-                # The cheap arm. No S x S matrix is ever formed, so there is
-                # nothing to chunk and no output to produce: this mode exists
-                # only to populate state.scores. The forward's real output is
-                # unused here exactly as it is in the dense branch below --
-                # but the dense branch has to compute it anyway, and this one
-                # does not, which is the whole point.
+                # The cheap arm. No S x S matrix is ever formed for the
+                # SCORES -- that is the point of the estimator, and the
+                # mean-pool below is the only thing charged to it.
                 layer_scores = minference_meanpool_scores(
                     q, k, n_heads_kv=cfg.n_heads_kv,
                     block_size=cfg.block_size or 64)
-                out = torch.zeros_like(q)
+                # But this layer must still emit a REAL attention output.
+                # An earlier version returned torch.zeros_like(q) on the
+                # theory that the scoring pass's output is unused. It is not:
+                # layer L's q and k come from the hidden states layers < L
+                # produced, so a zeroed output corrupts the activations every
+                # later layer is scored against. Measured on a 4-layer toy
+                # model, max|zeros - real| on the input hidden states was 0.0
+                # at layer 0 and 1.79 / 2.21 / 3.21 at layers 1 / 2 / 3 --
+                # and the resulting scores stayed finite, normalised and
+                # entirely plausible, so nothing downstream would have
+                # flagged them. The cheap arm would simply have looked worse
+                # than it is, which in THIS experiment reads as "the oracle
+                # matters": a false positive of exactly the shape
+                # score_cache.cache_key's collision would have produced in
+                # the other direction.
+                #
+                # Computed with flash SDPA, not the chunked dense-oracle
+                # path: O(seq_len) memory, and its cost is NOT charged to the
+                # estimator. That accounting is the honest one -- a real
+                # deployment gets this forward for free, since it is the
+                # attention the layer was going to compute anyway and only
+                # the block-ranking is extra work. The dense arm charges its
+                # equivalent output to the oracle because there the output
+                # and the scores are the same computation (see
+                # _scoring_forward_chunked).
+                if state.score_output_backend is None:
+                    state.score_output_backend = SDPABackend("flash")
+                out = state.score_output_backend.forward(
+                    q, k, v, replace(cfg, mask="causal"))
             else:
                 out, layer_scores = _scoring_forward_chunked(
                     q, k, v, block_size=cfg.block_size or 64,

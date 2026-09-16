@@ -364,3 +364,67 @@ def test_compute_importance_scores_rejects_batch_greater_than_one():
     with pytest.raises(ValueError, match="batch=1"):
         wrapped.compute_importance_scores(
             batched_input, task="niah_single", example_id="ex0", cache_dir="/tmp")
+
+
+def test_cheap_scoring_pass_propagates_faithful_hidden_states():
+    """The cheap (minference_meanpool) scoring branch must emit a REAL
+    attention output, not zeros.
+
+    It returned torch.zeros_like(q) on the theory that the scoring pass's
+    output is unused. It is not: layer L's q and k are computed from the
+    hidden states layers < L produced, so a zeroed output corrupts the
+    activations every later layer is scored against -- while leaving the
+    scores finite, normalised and entirely plausible. The cheap arm would
+    have looked worse than it is, which in the oracle-vs-cheap experiment
+    reads as "the oracle matters".
+
+    The property asserted is the one that actually matters: the hidden
+    states entering each layer during a CHEAP scoring pass must match those
+    entering it during a DENSE scoring pass, because neither pass's
+    attention output is supposed to differ. Against the zeros version this
+    fails at layer 1 by ~1.8 in max-abs, not by a tolerance-sized amount.
+    """
+    tmpl = AttnConfig(seq_len=64, batch=1, n_heads_q=4, n_heads_kv=2,
+                      head_dim=8, dtype="float32", mask="causal", block_size=8)
+    ids = torch.randint(0, 64, (1, 64),
+                        generator=torch.Generator().manual_seed(7))
+
+    def hidden_states_per_layer(score_source: str):
+        torch.manual_seed(0)
+        config = LlamaConfig(
+            vocab_size=64, hidden_size=32, intermediate_size=64,
+            num_hidden_layers=4, num_attention_heads=4,
+            num_key_value_heads=2, head_dim=8,
+            max_position_embeddings=128, attn_implementation="eager",
+        )
+        model = LlamaForCausalLM(config)
+        model.eval()
+        swapped = SwappableAttentionModel(
+            model, cfg_template=tmpl, model_id="toy",
+            score_source=score_source)
+        swapped._state.mode = "score"
+        swapped._state.scores = {}
+        seen = []
+        for idx, layer in enumerate(model.model.layers):
+            layer.self_attn.register_forward_pre_hook(
+                (lambda i: (lambda mod, args, kwargs: seen.append(
+                    (i, (args[0] if args else kwargs["hidden_states"]).detach().clone())
+                )))(idx),
+                with_kwargs=True,
+            )
+        with torch.no_grad():
+            model(ids)
+        return seen
+
+    cheap = hidden_states_per_layer("minference_meanpool")
+    dense = hidden_states_per_layer("dense_softmax_fp32")
+    assert [i for i, _ in cheap] == [0, 1, 2, 3]
+
+    for (i, a), (j, b) in zip(cheap, dense):
+        assert i == j
+        drift = (a - b).abs().max().item()
+        assert drift < 1e-4, (
+            f"layer {i} hidden states diverge by {drift:.3e} between the cheap "
+            f"and dense scoring passes -- the cheap branch is not emitting a "
+            f"real attention output"
+        )
