@@ -1285,3 +1285,81 @@ per-call time would need the check repeated rather than assumed.
 indistinguishable from dense — and its absolute moved +1.08% between sessions
 against the dense arm's +0.13%, eight times as much as the thing it is
 divided by. Do not quote that cell.
+
+## The attention sink is not forced, and it confounds the random-vs-importance comparison
+
+**Found 2026-09-16, before building the cheap-estimator arm, by reading
+`masks.py` and then measuring against 1,107 cached oracle score tensors.**
+
+Sparse Frontier's Block-Sparse (their Appendix A.1.1) **always preserves** two
+things outside the sparsity budget: the attention sink (the first key block)
+and the diagonal (local context). This study preserves only one of them.
+
+**The diagonal is preserved, in both arms.** `random_block_mask` and
+`importance_block_mask` both call `active.fill_diagonal_(True)`, and
+`_candidate_rows` excludes the diagonal from every candidate list, so it is
+granted free rather than spent from budget. The two arms are symmetric here
+and the random-vs-importance comparison is not distorted by local context.
+
+**The sink is not preserved, in either arm.** Key block 0 is an ordinary
+off-diagonal candidate. It survives only if it wins a top-k. Measured:
+
+| sparsity | query blocks keeping the sink, oracle | random |
+|---|---|---|
+| 0.50 | 84.8% | 49.1% |
+| 0.75 | 76.2% | 24.3% |
+| **0.90** | **65.0%** | **7.5%** |
+
+**It is a ranking outcome, not a budget artifact.** At 0.9 sparsity on a
+309-block example, 217 of 308 query blocks drop the sink, and **212 of those
+had a non-zero budget and ranked the sink out of it.** Only 5 were the
+structural budget<=0 rows (qb 1..5, which get the diagonal alone). So the
+oracle is actively scoring the sink below other blocks for roughly two-thirds
+of query rows at high sparsity.
+
+**The likely mechanism is pooling dilution.** The sink's attention mass is
+concentrated on token 0, and these scores are **block means** over 128 tokens,
+which spreads that mass across the block. The sink block's observed rank among
+a row's causal candidates is 3rd, 36th, 3rd, 26th and 66th at query blocks 10,
+40, 100, 200 and 300 — never reliably first, and worse as the candidate set
+grows. That is consistent with dilution, but it is **not directly measured**:
+the score cache stores already-pooled block scores, so the within-block
+concentration cannot be recovered from it. Stated as the probable cause, not a
+demonstrated one. It also explains why Sparse Frontier forces the sink rather
+than trusting a pooled score to find it — a forced sink is a correction for
+exactly this pooling artifact.
+
+### What this affects
+
+**1. Accuracy at high sparsity is depressed for a reason unrelated to the
+importance ranking.** Dropping the attention sink is independently known to be
+destructive. Any accuracy number at 0.9 sparsity — including the
+`niah_multikey` collapse — is a measurement of *this mask construction*, not
+of importance-guided sparsity as Sparse Frontier defines it.
+
+**2. The random-versus-importance comparison is confounded, and the direction
+is knowable.** Random retains the sink 7.5% of the time at 0.9 sparsity
+against the oracle's 65.0% — an 8.7x enrichment. So the oracle is partly
+winning that comparison by incidentally preserving sinks, not purely by
+ranking quality. **Any claim that the oracle beats random by margin M
+overstates the ranking's contribution by an unmeasured amount.**
+
+**3. It is a divergence from the method being compared against.** This study's
+block-sparse is not Sparse Frontier's block-sparse, and the gap is in the
+conservative direction for accuracy.
+
+### What it does not affect
+
+Every **timing** number. Masks of a given sparsity have the same block count
+whether the sink is forced or not, so kernel latency, the Stage 2 slice, the
+conversion tax and every speedup are untouched. This is an accuracy-side
+finding only.
+
+### The fix, and what it costs
+
+Forcing column 0 alongside the diagonal is a two-line change to both mask
+constructors. The cost is not the change, it is that **every accuracy number
+at every sparsity would need regenerating**, and the oracle-versus-random
+comparison would need re-running to separate ranking quality from sink
+preservation. Not done yet; recorded here so no number is read as though it
+had been.
