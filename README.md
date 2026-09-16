@@ -92,7 +92,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 847 passed, 11 skipped, ~1 min, no GPU
+.venv/bin/python -m pytest tests/ -q     # 900 passed, 2 skipped, ~50s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -131,7 +131,7 @@ Then, on any CUDA GPU:
   on what, and what each number licenses, organised by the five gaps. Drafted
   from `claims.md` with every claim's boundary attached.
 - **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
-  32 confirmed incidents, each one a plausible number produced by machinery
+  38 confirmed incidents, each one a plausible number produced by machinery
   that looked like it was working. No crash, no failed test. Several changed
   a published figure. Each entry records the detection method, which is the
   transferable part.

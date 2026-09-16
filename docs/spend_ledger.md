@@ -50,6 +50,31 @@ authority is the billing console.
 | 2026-09-06 | `attnbench-stage3-s1` — Stage 3 S1, band 2048 | **651** | **868** | instance boot clock |
 | 2026-09-07 | `attnbench-stage3-s1b` — bands 4096 + 8192 | **341** | **455** | boot→guestTerminate |
 | 2026-09-07 | `attnbench-recover-1628` — e2-medium data recovery | **~25** | **~5** | CPU-only, no GPU |
+| 2026-09-08 | `attnbench-decode-unconfound` — L4, asia-south1-c | **59** | **77** | audit log |
+| 2026-09-08 | `attnbench-band16384` — L4, asia-south1-c | **65** | **84** | audit log |
+| 2026-09-08 | `attnbench-band16384` — **idle, halt→delete** | **162** | **0** | audit log |
+| 2026-09-08 | `attnbench-band32768` — L4, asia-south1-b | **83** | **108** | audit log |
+| 2026-09-12 | `attnbench-h100-probe-115828` — capacity probe | **<1** | **~3** | audit log |
+| 2026-09-15 | `attnbench-h100-20260915-2142` — **total data loss** | **287** | **2,033** | audit log |
+| 2026-09-15 | `attnbench-h100-…-0302` — write gate refused (IAM) | **2** | **14** | audit log |
+| 2026-09-15 | `attnbench-h100-…-0310` | **21** | **149** | audit log |
+| 2026-09-15 | `attnbench-h100-…-0404` — kernel isolation | **25** | **177** | audit log |
+| 2026-09-16 | `attnbench-h100-…-0744` | **20** | **142** | audit log |
+| 2026-09-16 | `attnbench-h100-…-0822` — Stage 0/1/2 | **32** | **227** | audit log |
+| 2026-09-16 | `attnbench-l4-20260916-1319` — Stage 5 replication | **27** | **35** | audit log |
+| 2026-09-16 | `attnbench-l4-20260916-1501` — forced-sink + estimator | *in flight* | — | boot 09:32:25Z |
+
+Rates: H100 `a3-highgpu-1g` DWS Flex Start ₹425/h (us-central1, pinned
+2026-09-16); L4 `g2-standard-8` ₹78/h. The 2026-09-07 row implies ~₹80/h for
+L4 in asia-south1, so the 2026-09-08 rows are within ±3% of that.
+
+Every row from 2026-09-08 on is reconstructed from
+`gcloud logging read protoPayload.methodName=…instances.insert/delete/
+guestTerminate`, pairing the **successful** insert (a zone walk logs one
+insert per zone tried; only the placed one bills) with its terminating event.
+Independent confirmation that the method is sound: the 2026-09-15 row comes
+out at 287 min × ₹425/h = **₹2,033**, against ₹2,029 derived at the time from
+the instance boot clock — a 0.2% agreement between two unrelated sources.
 
 ### The 2026-09-05 row
 
@@ -163,3 +188,78 @@ you come back for it. The cheap fix is to sync results off at each band
 boundary to somewhere off-instance (GCS), not merely to a second file on the
 same disk — the band-boundary copies existed and were on the disk that could
 not boot.
+
+
+### The 2026-09-15 row — ₹2,033 for zero rows, and the three gates that followed
+
+The largest single loss in the project, and none of it was a compute failure.
+The instance ran 287 minutes, completed real work, and wrote **nothing**
+durable. Three causes compounded:
+
+1. **No OAuth scope for GCS.** The instance was created without
+   `--scopes=cloud-platform`, so every `gsutil cp` to the results bucket
+   returned 403. Nothing checked this before the long phase started.
+2. **Results synced at teardown, not per phase.** The single sync was
+   scheduled for the end, so the 403 surfaced once, after everything.
+3. **`--max-run-duration` with `action=DELETE`** took the disk with the
+   instance, so there was no post-hoc recovery of the kind that saved the
+   2026-09-07 session.
+
+A bound on spend is not a bound on loss. The ₹2,033 was capped exactly as
+designed; what was uncapped was the *work*, and that is the quantity that
+actually matters.
+
+**The three gates now standing, in order:**
+
+1. `scripts/gcp_verify_gcs_writable.sh` — writes a token from the guest,
+   reads it back, `cmp`s it, inspects the live scope list, and independently
+   `gcloud storage ls` from the client. Non-zero exit means tear down
+   immediately. It **earned its place on its first use**: the next instance
+   passed the scope check and still failed, because the two permission layers
+   are independent and the service account lacked
+   `roles/storage.objectAdmin`. Two systems, both returning 403, and only a
+   real round trip distinguishes them. That instance was destroyed after 2
+   minutes for ₹14 — the gate's entire cost, against ₹2,033 without it.
+2. `scripts/run_phase.sh` — syncs from an EXIT trap, so a phase that crashes
+   still ships what it produced. Demonstrated 2026-09-16: the cheap-estimator
+   arm died on a `NameError` thirty seconds in, and the trap still synced the
+   score cache.
+3. **A recovery window.** The in-guest halt is set well short of the
+   `max-run-duration` DELETE (210 min against 5 h on H100; 300 min against
+   7 h on L4), so there is an interval in which billing has stopped but the
+   disk still exists.
+
+### The 2026-09-08 idle row — 162 minutes between halt and delete
+
+`attnbench-band16384` self-halted at 08:58:45Z and was not deleted until
+11:40:51Z. **Billed ₹0** — a halted instance stops GPU billing, which is what
+the `; sudo shutdown -h +5` discipline from 2026-09-06 was for, and it worked.
+The row is in the table at zero cost because the gap is worth seeing: the
+mechanism that protects the bill leaves the *disk* in a state that depends on
+capacity existing when you return for it, which is exactly what stocked out
+on 2026-09-07.
+
+### Idle burn is still the dominant recurring waste
+
+Three instances of the same shape now:
+
+| date | idle | cause |
+|---|---|---|
+| 2026-09-06 | ~7 h of 11 | no self-teardown; nobody awake |
+| 2026-09-08 | 162 min | halted (₹0 billed), delete deferred |
+| 2026-09-16 | ~54 min (₹70) | **the completion watcher could not fire** |
+
+The 2026-09-16 instance is the one worth reading. The phase finished at
+11:32:35Z and synced correctly; it simply was not *noticed* until 12:26Z. The
+completion marker was an `echo "rc=$?"` whose output crossed an ssh pipe and a
+`grep` with no `--line-buffered`, and never arrived. A separate watcher on the
+process table could not help either — `pgrep -c -f <pattern>` run over ssh has
+a floor of **1**, because the probe's own command line contains the pattern,
+so its terminal condition was unreachable (see
+`silent_failure_patterns.md` #38).
+
+**The fix generalises: prefer a signal the watched thing emits over a signal
+the watcher derives, and make it a file rather than a stream.** The phase now
+writes its exit status to `/tmp/<phase>.rc` on the instance directly. A file
+write cannot be buffered away, cannot match itself, and survives the ssh
+session that started it.
