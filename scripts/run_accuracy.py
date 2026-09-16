@@ -102,7 +102,8 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
                    n_heads_kv=1, head_dim=128, mask="causal"),
         seq_len=max(grid.seq_lens))
     wrapped = SwappableAttentionModel(model, cfg_template, model_id=model_id,
-                                      finest_block_size=grid.finest_block_size)
+                                      finest_block_size=grid.finest_block_size,
+                                      score_source=args.score_source)
 
     stop_tokens = StopTokens.from_tokenizer(
         tokenizer, getattr(model, "generation_config", None))
@@ -155,6 +156,18 @@ def main():
                          "quota per the Stage 3 plan; needs a real "
                          "quant_scheme confirmed and a matching gates.TOL "
                          "entry before this produces trustworthy rows).")
+    ap.add_argument("--score-source", default="dense_softmax_fp32",
+                    choices=["dense_softmax_fp32", "minference_meanpool"],
+                    help="which importance scorer produces the ranking behind "
+                         "every block_sparse mask in this run. "
+                         "dense_softmax_fp32 is the oracle: a full dense "
+                         "softmax pass, an upper bound on achievable accuracy "
+                         "whose cost is excluded from every latency number. "
+                         "minference_meanpool is the deployable estimator "
+                         "(MInference 1.0, arXiv:2407.02490, Algorithm 3), "
+                         "which pools Q and K before scoring and never forms "
+                         "an S x S matrix. The value is stamped on every row "
+                         "and hashed into the score-cache key.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--dtype", default="bfloat16")
@@ -375,7 +388,8 @@ def main():
                               generate_fn=generate_fn, dry_run=args.dry_run,
                               provenance_fn=provenance_fn,
                               allow_mixed_commits=args.allow_mixed_commits,
-                              allow_dirty=args.allow_dirty)
+                              allow_dirty=args.allow_dirty,
+                              score_source=args.score_source)
     finally:
         if teardown is not None:
             teardown()

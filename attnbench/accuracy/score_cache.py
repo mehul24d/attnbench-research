@@ -19,7 +19,8 @@ from typing import Optional
 import torch
 
 
-def cache_key(model_id: str, task: str, example_id: str, seq_len: int) -> str:
+def cache_key(model_id: str, task: str, example_id: str, seq_len: int,
+               score_source: str = "dense_softmax_fp32") -> str:
     """Stable hash over all four fields (same style as AttnConfig.key() /
     masks._mask_identity_key: json.dumps, sha1, truncate).
 
@@ -34,10 +35,28 @@ def cache_key(model_id: str, task: str, example_id: str, seq_len: int) -> str:
     AccuracyGrid.finest_block_size), and a coarser block_size is served by
     pooling the cached finer tensor further at use time, never a separate
     cache entry.
+
+    `score_source` is hashed for the same reason `model_id` is, and the
+    failure it prevents is worse. Two scorers now emit (n_layers, n_heads_kv,
+    n_blocks, n_blocks) tensors of IDENTICAL shape from the same (model, task,
+    example, seq_len): the dense oracle and MInference's mean-pool estimator.
+    Without this field in the hash they collide, and the cheap arm would load
+    the oracle's scores, stamp itself as the cheap arm, and return a null
+    result in the exact experiment built to test whether the oracle matters.
+    The shape assertion in `load` cannot catch it -- the shapes match. Only
+    the key can.
+
+    It is hashed UNCONDITIONALLY rather than only when non-default. A key that
+    omits a field for backward compatibility is a key whose meaning depends on
+    which caller wrote it, and that is how the collision above happens in the
+    first place. The price is that entries cached before this field existed
+    are re-keyed and become misses -- about 1,073 tensors, all at 2048-8192
+    where the scoring pass is cheap, so roughly fifteen minutes of GPU time
+    rather than a reason to keep a carve-out.
     """
     blob = json.dumps(
         {"model_id": model_id, "task": task, "example_id": example_id,
-         "seq_len": seq_len},
+         "seq_len": seq_len, "score_source": score_source},
         sort_keys=True,
     ).encode()
     return hashlib.sha1(blob).hexdigest()[:16]

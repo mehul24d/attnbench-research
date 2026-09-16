@@ -124,6 +124,12 @@ class _ModeState:
     cfg_template: Optional[AttnConfig] = None
     chunk_blocks: int = 4
     finest_block_size: int = 64
+    # Which scorer runs in mode == "score". Defaulted to the dense oracle so
+    # every existing caller is unchanged; set to "minference_meanpool" for the
+    # cheap arm. It is ALSO hashed into the score-cache key, because the two
+    # scorers emit identically-shaped tensors for the same example and would
+    # otherwise collide -- see score_cache.cache_key.
+    score_source: str = "dense_softmax_fp32"
     # Populated by the scoring pass, one entry per layer_idx, each
     # (n_heads_kv, n_blocks_finest, n_blocks_finest) fp32.
     scores: dict = field(default_factory=dict)
@@ -350,9 +356,21 @@ class SwappedAttention(nn.Module):
                 q, k, v, prior, replace(cfg, mask="causal"))
             state.decode_states[self.layer_idx] = new_state
         elif state.mode == "score":
-            out, layer_scores = _scoring_forward_chunked(
-                q, k, v, block_size=cfg.block_size or 64,
-                chunk_blocks=state.chunk_blocks)
+            if state.score_source == "minference_meanpool":
+                # The cheap arm. No S x S matrix is ever formed, so there is
+                # nothing to chunk and no output to produce: this mode exists
+                # only to populate state.scores. The forward's real output is
+                # unused here exactly as it is in the dense branch below --
+                # but the dense branch has to compute it anyway, and this one
+                # does not, which is the whole point.
+                layer_scores = minference_meanpool_scores(
+                    q, k, n_heads_kv=cfg.n_heads_kv,
+                    block_size=cfg.block_size or 64)
+                out = torch.zeros_like(q)
+            else:
+                out, layer_scores = _scoring_forward_chunked(
+                    q, k, v, block_size=cfg.block_size or 64,
+                    chunk_blocks=state.chunk_blocks)
             state.scores[self.layer_idx] = layer_scores
         else:
             mask = None
@@ -418,12 +436,14 @@ class SwappableAttentionModel:
 
     def __init__(self, model: nn.Module, cfg_template: AttnConfig,
                  *, model_id: str, finest_block_size: int = 64,
-                 chunk_blocks: int = 4):
+                 chunk_blocks: int = 4,
+                 score_source: str = "dense_softmax_fp32"):
         self.model = model
         self.model_id = model_id
         self.finest_block_size = finest_block_size
         self._state = _ModeState(cfg_template=cfg_template, chunk_blocks=chunk_blocks,
-                                  finest_block_size=finest_block_size)
+                                  finest_block_size=finest_block_size,
+                                  score_source=score_source)
         self._layers = _require_llama_family(model)
         self._originals = [layer.self_attn for layer in self._layers]
         self.n_layers = len(self._layers)
@@ -457,7 +477,8 @@ class SwappableAttentionModel:
         entry); only runs the dense scoring pass on a miss.
         """
         seq_len = input_ids.shape[-1]
-        key = score_cache.cache_key(self.model_id, task, example_id, seq_len)
+        key = score_cache.cache_key(self.model_id, task, example_id, seq_len,
+                                     self._state.score_source)
         cached = score_cache.load(cache_dir, key, expected_n_layers=self.n_layers,
                                    expected_n_heads_kv=self.n_heads_kv)
         if cached is not None:

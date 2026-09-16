@@ -469,3 +469,29 @@ def test_the_dense_arm_is_answerable_from_the_parquet_alone(tmp_path):
     # The same reader, one column over: which gate produced the linear rows.
     assert set(df[df["backend"] == "gla"]["gate_source"]) == {"ungated"}
     assert df[df["backend"] != "gla"]["gate_source"].isna().all()
+
+
+def test_cache_key_separates_the_two_scorers():
+    """The oracle and the cheap estimator emit identically-shaped tensors for
+    the same (model, task, example, seq_len). If score_source is not in the
+    hash they collide silently, the cheap arm loads oracle scores, and the
+    experiment designed to measure whether the oracle matters returns a null
+    result for the one reason that cannot be detected downstream: the shape
+    assertion in `load` passes, because the shapes are identical.
+
+    This is the same test as the model_id one directly above, for the same
+    reason -- a field the function accepts but does not hash is not in the
+    key. That failure was introduced and caught here on 2026-09-16, with the
+    warning against it already written in the docstring.
+    """
+    from attnbench.accuracy import score_cache
+
+    common = ("Qwen/Qwen2.5-1.5B-Instruct", "vt", "ex1", 16384)
+    oracle = score_cache.cache_key(*common, "dense_softmax_fp32")
+    cheap = score_cache.cache_key(*common, "minference_meanpool")
+    assert oracle != cheap, (
+        "cache_key collides across score_source: the cheap-estimator arm "
+        "would load the oracle's scores"
+    )
+    # and the default must still be the oracle, so existing callers are stable
+    assert score_cache.cache_key(*common) == oracle

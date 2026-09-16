@@ -256,6 +256,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                   provenance_fn: Callable[[], "provenance.Provenance"] = provenance.capture,
                   dry_run: bool = False, checkpoint_every: int = 1,
                   allow_mixed_commits: bool = False, allow_dirty: bool = False,
+                  score_source: str = "dense_softmax_fp32",
                   ) -> AccuracyReport:
     """Stage 3 entry point.
 
@@ -334,7 +335,14 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             context_length=example.context_length,
             mask_source=cell.cfg.mask_source,
             sparsity=cell.cfg.sparsity,
-            score_source="dense_softmax_fp32" if cell.cfg.mask == "block_sparse" else None,
+            # The scorer that actually ran, NOT a literal. This was hardcoded
+            # to "dense_softmax_fp32" while only one scorer existed, which is
+            # harmless exactly until a second one exists -- at which point
+            # every cheap-estimator row would have stamped itself as the
+            # oracle, and the comparison between them would have compared a
+            # table against itself. The field exists to travel with the data;
+            # a constant does not travel, it just looks like it does.
+            score_source=(score_source if cell.cfg.mask == "block_sparse" else None),
             haystack_mode=ruler.haystack_mode_for(cell.task),
             predicted=gen.text,
             expected="; ".join(example.answer),
