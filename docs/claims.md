@@ -623,16 +623,23 @@ Vertical-Slash is best for retrieval and block-sparse for high-dispersion
 tasks. This study implements only block-sparse, so every conclusion is about
 block-sparse and none generalises to sparse attention as a class.
 
-> **UNVERIFIED — DO NOT SHIP THIS ROW UNTIL FILLED.** The strongest available
-> positioning is a direct citation of Sparse Frontier **v2, Limitations #3**,
-> which is reported to concede the gap this study measures. The exact wording
-> is not in this repository and has not been read by the author of this
-> section, so it is deliberately left blank rather than paraphrased from
-> memory. Paste the sentence and the version/date of the arXiv revision it
-> comes from, then replace this block. A citation reconstructed from
-> recollection is precisely the kind of plausible-looking error this project
-> documents elsewhere, and it would be worse here than nowhere, because the
-> whole point of the citation is that *they* said it.
+**They concede the gap explicitly, and this is the strongest positioning
+available.** Sparse Frontier's Limitations section (arXiv:2504.17768**v2**,
+27 Jan 2026, third paragraph) states:
+
+> we report hardware-agnostic computational costs (FLOPs and memory access)
+> rather than wall-clock timings
+
+The rest of that paragraph, paraphrased: they justify the choice on the
+grounds that wall-clock numbers are implementation- and hardware-specific,
+and that FLOPs and memory access are the portable quantity. That is a
+defensible methodological decision, not an oversight — which is exactly why
+this study is positioned as *measuring a quantity they scoped out*, never as
+correcting them. The supported row above stands on their own sentence.
+
+**Pin the revision.** v1 (April 2025) and v2 (January 2026) differ
+substantially; cite v2 or the quotation may not be there. Any claim in this
+file about what Sparse Frontier says refers to **v2** unless it names v1.
 
 ---
 

@@ -38,6 +38,14 @@ scope it sets is the first thing a reader needs.
 
 ---
 
+> **Sparse Frontier means v2 throughout this file.** Every reference below to
+> Sparse Frontier's text -- their Limitations, Appendix A.1.1 (Block-Sparse
+> estimator), Appendix B.3 (batch scaling), Appendix D.4 (model size) -- is to
+> **arXiv:2504.17768v2, 27 Jan 2026**. v1 (April 2025) and v2 differ
+> substantially, and an appendix letter from one revision does not reliably
+> name the same content in the other. Any claim here that is v1-specific says
+> so explicitly.
+
 Things a reader of this study's numbers needs to know before comparing them
 to anything else. Each entry names what is affected and what is not.
 
