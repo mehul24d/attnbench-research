@@ -71,7 +71,8 @@ def _dry_run_only(cfg, backend_name, example):
 
 def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
                       dtype: str, score_cache_dir: str, verbose: bool = True,
-                      gla_gate_source: str | None = None):
+                      gla_gate_source: str | None = None,
+                      score_source: str = "dense_softmax_fp32"):
     """The real execution path: load the model once, wrap it once, and
     return the per-cell closure `run_accuracy` calls.
 
@@ -103,7 +104,7 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
         seq_len=max(grid.seq_lens))
     wrapped = SwappableAttentionModel(model, cfg_template, model_id=model_id,
                                       finest_block_size=grid.finest_block_size,
-                                      score_source=args.score_source)
+                                      score_source=score_source)
 
     stop_tokens = StopTokens.from_tokenizer(
         tokenizer, getattr(model, "generation_config", None))
@@ -379,7 +380,8 @@ def main():
             grid, model_id=grid.model_primary, tokenizer=tokenizer,
             device=args.device, dtype=args.dtype,
             score_cache_dir=grid.score_cache_dir,
-            gla_gate_source=args.gla_gate_source)
+            gla_gate_source=args.gla_gate_source,
+            score_source=args.score_source)
         teardown = generate_fn.unwrap
 
     try:
