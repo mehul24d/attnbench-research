@@ -8,6 +8,12 @@
 #     so a forgotten instance self-terminates instead of billing indefinitely.
 #   - --maintenance-policy=TERMINATE (required for GPU instances anyway;
 #     stated explicitly so it can never silently drift to MIGRATE).
+#   - --scopes=cloud-platform. NOT OPTIONAL: default GCE scopes grant only
+#     devstorage.read_only, so every gsutil cp to the results bucket 403s.
+#     A 4h47m H100 session (Rs 2,029) was lost to its absence on 2026-09-15.
+#   - --max-run-duration with DELETE, so a forgotten session cannot bill past
+#     the ceiling; the in-guest halt is set WELL short of it (90 min vs 3h) so
+#     there is a window in which the disk still exists and can be recovered.
 #   - --provisioning-model is left at its default (STANDARD/on-demand) --
 #     deliberately NOT spot for this session: preemption mid-probe would
 #     waste more than spot pricing saves.
@@ -20,11 +26,12 @@
 set -euo pipefail
 
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-ZONE="${GCP_ZONE:-asia-south1-c}"
+ZONE="${GCP_ZONE:-us-central1-a}"
 MACHINE_TYPE="g2-standard-8"
 ACCELERATOR="type=nvidia-l4,count=1"
-IMAGE_FAMILY="pytorch-2-9-cu129-ubuntu-2204-nvidia-580"
-IMAGE_PROJECT="ml-images"
+IMAGE="${ATTNBENCH_IMAGE:-attnbench-env-v5-20260905}"   # the project env, not a stock ML image
+MAX_RUN="3h"
+HALT_MINUTES="90"   # DELETE is at 3h; the gap is the disk-recovery window.
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
 INSTANCE_NAME="${1:-attnbench-l4-validation-$(date +%Y%m%d-%H%M)}"
@@ -36,13 +43,13 @@ fi
 
 STARTUP_SCRIPT="$(mktemp)"
 trap 'rm -f "$STARTUP_SCRIPT"' EXIT
-cat > "$STARTUP_SCRIPT" <<'EOF'
+cat > "$STARTUP_SCRIPT" <<EOF
 #!/bin/bash
 # Hard 4-hour cap: this instance self-terminates even if every teardown
 # step in the session runbook is skipped or forgotten. Scheduled from
 # instance boot time, not from launch-script invocation time.
-logger "attnbench-l4: scheduling hard shutdown in 240 minutes"
-shutdown -h +240
+logger "attnbench-l4: scheduling in-guest halt in ${HALT_MINUTES} minutes"
+shutdown -h +${HALT_MINUTES}
 EOF
 
 echo "About to create a BILLABLE instance:"
@@ -51,10 +58,12 @@ echo "  name         : $INSTANCE_NAME"
 echo "  zone         : $ZONE"
 echo "  machine-type : $MACHINE_TYPE"
 echo "  accelerator  : $ACCELERATOR"
-echo "  image        : family=$IMAGE_FAMILY project=$IMAGE_PROJECT"
+echo "  image        : $IMAGE"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 echo "  provisioning : STANDARD (on-demand, not spot)"
-echo "  hard cap     : shutdown -h +240 (4 hours from boot)"
+echo "  in-guest halt: +${HALT_MINUTES} min -- GPU billing stops, disk survives"
+echo "  hard cap     : --max-run-duration=$MAX_RUN action=DELETE (Rs 233 ceiling)"
+echo "  rate         : Rs 78/h (g2-standard-8 + 1x L4, us-central1, pinned 2026-09-16)"
 echo
 read -r -p "Type 'launch' to proceed, anything else to abort: " CONFIRM
 if [[ "$CONFIRM" != "launch" ]]; then
@@ -67,12 +76,15 @@ gcloud compute instances create "$INSTANCE_NAME" \
   --zone="$ZONE" \
   --machine-type="$MACHINE_TYPE" \
   --accelerator="$ACCELERATOR" \
-  --image-family="$IMAGE_FAMILY" \
-  --image-project="$IMAGE_PROJECT" \
+  --image="$IMAGE" \
+  --image-project="$PROJECT" \
   --boot-disk-size="$BOOT_DISK_SIZE" \
   --boot-disk-type="$BOOT_DISK_TYPE" \
   --maintenance-policy=TERMINATE \
   --provisioning-model=STANDARD \
+  --max-run-duration="$MAX_RUN" \
+  --instance-termination-action=DELETE \
+  --scopes=https://www.googleapis.com/auth/cloud-platform \
   --metadata-from-file=startup-script="$STARTUP_SCRIPT"
 
 echo
