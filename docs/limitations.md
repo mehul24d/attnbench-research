@@ -38,6 +38,68 @@ scope it sets is the first thing a reader needs.
 
 ---
 
+## SCOPE, second: every speedup in this study names a card, or it is wrong
+
+Added 2026-09-16, after Stage 5 ran on a second architecture and the sign
+flipped.
+
+> **What is supported:** block-sparse prefill is faster than dense **on an
+> NVIDIA L4 (sm_89)**, up to 1.373× at 32768/0.75.
+>
+> **What is NOT supported:** that it is faster anywhere else. On an
+> A100-SXM4-80GB (sm_80) the same configuration is **0.475×** — sparse is
+> slower than dense at every band and every sparsity measured.
+
+The cause is the dense baseline. Moving L4 → A100 at 32768, flash attention
+gets **3.63×** faster while the block-sparse kernel gets **1.26×** at 0.75 and
+**1.01×** at 0.5. Block-sparse wins on the L4 by beating a dense baseline that
+is weak there; where dense attention is well optimised, there is nothing left
+to take. Full numbers and the not-a-missing-kernel check are in `claims.md`,
+"The speedup does not survive a change of card."
+
+**Why this was not visible earlier.** Stages 0, 1 and 2 span three
+architectures, and Stage 2's *kernel* microbenchmarks on A100 contain no
+block-sparse rows at all (`mask: ['causal']` only). Every end-to-end and
+phase-decomposition number in this study came from one card until this date.
+A hardware-conditional result is invisible to a single-hardware study, and it
+does not announce itself: the L4 numbers are correct, reproducible, and were
+replicated on a second L4 to within 0.19%. **Replication on the same
+architecture cannot detect a claim that is true of that architecture.**
+
+---
+
+## The decode-step decomposition is ill-conditioned at short context
+
+The Stage 5 decode step is an **OLS intercept** over `max_new_tokens ∈
+[1,2,4,8,16]`, not a direct measurement, and the fit's intercept disagrees
+with the separately measured prefill by an amount that shrinks with context:
+
+| band | L4 | A100 |
+|---|---|---|
+| 2048 | −27.7% | (flagged) |
+| 4096 | −13.0% | **−38.1%** |
+| 8192 | −5.7% | — |
+| 16384 | −2.8% | — |
+
+Total time is not linear in tokens generated at short context, so "the decode
+step" is not one number there. The effect is present on **both** cards, shrinks
+monotonically on both, and is larger on the faster one — consistent with fixed
+per-call overhead being a bigger fraction of a smaller total.
+
+**What it does not touch:** the scoring phase, which is measured directly
+rather than fitted, so the cross-architecture scoring ratios (2.52× at 2048
+rising to 4.45× at 32768) are unaffected. **What it does touch:** any
+cross-architecture *decode* comparison at 2048 or 4096, which should not be
+quoted to more precision than a ±30% intercept supports.
+
+This was nearly published as an A100-specific finding. The A100 run emitted the
+warnings and the L4 log showed none — but that log covered only 16384 and
+32768, the two bands where the effect is smallest on either card. The banked
+L4 parquet had the answer all along. A difference in *what happened to be
+logged*, read as a difference in *what the hardware did*.
+
+---
+
 > **Sparse Frontier means v2 throughout this file.** Every reference below to
 > Sparse Frontier's text -- their Limitations, Appendix A.1.1 (Block-Sparse
 > estimator), Appendix B.3 (batch scaling), Appendix D.4 (model size) -- is to
