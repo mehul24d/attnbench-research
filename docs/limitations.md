@@ -1201,3 +1201,40 @@ table for three unrelated non-hardware reasons: `xformers` (version pin
 `>=2.7.1,<=2.8.2` vs installed 2.8.3.post1), `gla` (deliberate decline),
 `sage` (unset config). None of the three is an sm90 finding, and all three
 would look like one.
+
+## Stage 5 absolute latencies do not transfer across sessions; speedups do
+
+The 2026-09-16 replicate measured both long bands from scratch on a second L4.
+The two sessions agree very differently depending on what is read out of them:
+
+| band | absolute prefill times | speedup built from them |
+|---|---|---|
+| 16384 | +1.03% to +2.26% | **−0.19%** |
+| 32768 | +0.13% to +1.08% | **−0.01%** |
+
+Every absolute moved in the same direction by a similar fraction, and the
+ratio did not move. That is a common-mode scale factor — a different physical
+card in a different thermal state — and a ratio divides it out while a latency
+carries it.
+
+**The practical rule.** Quote Stage 5 **speedups** across sessions. Do not
+quote Stage 5 **absolute milliseconds** across sessions without saying which
+session produced them, because a 2% session-to-session shift in the absolutes
+is normal and carries no information about the kernels. Every headline in this
+study is a ratio, so this costs nothing that is currently published — but the
+absolutes are in the parquet, they look quotable, and nothing in the file
+warns that they are session-scoped. This is that warning.
+
+**Scope of the thermal check.** During the replicate the card was observed
+executing at 1200 MHz against a 1740 MHz lock. The concern was differential
+throttling: the dense arm runs longer per call, soaks more thermal budget, and
+would bias the ratio it appears in. Both arms moved together on both bands, so
+for **these** measurements the throttling is common-mode and the ratios are
+safe. That is an empirical result about this pair of sessions, not a general
+guarantee about L4 thermal behaviour, and a future band with a much longer
+per-call time would need the check repeated rather than assumed.
+
+**One cell carries no signal.** At 32768, sparsity 0.5 measures 1.0049× —
+indistinguishable from dense — and its absolute moved +1.08% between sessions
+against the dense arm's +0.13%, eight times as much as the thing it is
+divided by. Do not quote that cell.

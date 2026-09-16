@@ -2063,3 +2063,45 @@ For anyone probing kernels at scale this is a live hazard, because the loud
 failure is the harmless one. A backend that records 84 faults looks worse in
 the results table than a backend that silently poisons the context, and is
 strictly better behaved.
+
+## 36. A guard is new code, and has the same defect rate as any other code
+
+Three guards were written on 2026-09-16 to stop three real failures. All three
+were themselves defective on first use, and every defect reproduced the class
+of failure the guard existed to prevent.
+
+| guard | written to prevent | its own defect |
+|---|---|---|
+| `run_phase.sh` per-phase sync | losing a session's results to a self-deleting instance | `mkdir -p logs` inside the repo left `logs/` untracked, so every row it wrote was stamped `git_dirty=True` |
+| `gcp_preflight_instance.sh` quarantine | inheriting an L4-stamped `results/` tree from the machine image | `mv results <stamp>` deleted two **tracked** files that live under the gitignored `results/`, dirtying the tree |
+| that quarantine's postcondition check | the defect immediately above | nested heredoc escaping did not survive; it died with `DIRT: unbound variable`, and once fixed immediately caught that the quarantine directory was itself untracked **inside the repo** |
+
+The through-line is not carelessness; each guard was correct about the hazard
+it named. It is that **a guard is ordinary code written at the moment of
+greatest time pressure** — usually mid-session, usually on a billing clock,
+usually right after an incident — and it inherits the defect rate of anything
+else written that way. A mechanism that exists to make a failure impossible is
+not thereby exempt from failing.
+
+**The specific hazard: a broken check reports success by not running.** The
+postcondition check that died on `DIRT: unbound variable` had been "in place"
+for two commits. It had never executed its comparison. A guard that crashes is
+visible; a guard whose *check* silently never evaluates is indistinguishable
+from a guard that passes — which is #25 (verifying a guard with a fixture the
+guard never read) arriving from a different direction.
+
+**What actually worked.** Not review — all three were read carefully when
+written. What caught them was **running them against the real thing and
+checking the property they were supposed to establish**, one layer out:
+
+  - `load_stage1_pass_set` rejected the dirty passes on a *dry run*, before a
+    single Stage 2 cell was measured.
+  - the fixed postcondition check caught the quarantine directory on its first
+    live invocation.
+
+Both are downstream consumers asserting the property, not the guard asserting
+itself. **Write the guard, then verify the thing the guard is for, from
+outside the guard.** The quarantine directory dirtying the tree by living
+inside the repo is the miniature of the whole problem: the mechanism placed
+its own working state in exactly the location whose cleanliness it was
+protecting.
