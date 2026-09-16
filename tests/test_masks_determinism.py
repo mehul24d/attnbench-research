@@ -139,3 +139,101 @@ def test_diagonal_block_is_still_active_after_triangularisation():
     dense = m.to_dense_bool(device="cpu")
     assert bool(dense.diagonal().all()), "every query must attend to itself"
     assert int(dense.sum(1).min()) >= 1
+
+
+# --------------------------------------------------------------------------
+# The attention sink is granted free, in every arm, at every sparsity.
+#
+# Until 2026-09-16 kv_block 0 was an ordinary candidate that had to win a
+# top-k. It usually did not: measured across 1,107 cached oracle score
+# tensors, at 0.9 sparsity the oracle kept it for 65.0% of query blocks and a
+# random mask for 7.5%. That is a known-destructive divergence from the
+# reference implementation, and it put an 8.7x confound inside the
+# random-versus-importance comparison, since the two arms dropped the sink at
+# very different rates.
+#
+# Nothing in this suite tested the sink either way, which is why the defect
+# survived every green run. These tests exist so it cannot come back silently.
+# --------------------------------------------------------------------------
+
+import pytest
+import torch
+
+from attnbench import masks as M
+
+
+_SPARSITIES = (0.5, 0.75, 0.9)
+
+
+def _scores(n: int) -> torch.Tensor:
+    """Scores that deliberately rank the sink LAST, so a passing test proves
+    the sink is granted outside the budget rather than merely winning it."""
+    g = torch.Generator().manual_seed(0)
+    s = torch.rand(n, n, generator=g) + 1.0
+    s[:, 0] = 0.0
+    return s
+
+
+@pytest.mark.parametrize("sparsity", _SPARSITIES)
+def test_importance_masks_keep_the_sink_even_when_it_scores_worst(sparsity):
+    n = 32
+    a = M.importance_block_mask(n * 128, 128, sparsity, _scores(n),
+                                causal=True, identity_seed="sink").active
+    assert bool(a[:, 0].all()), (
+        f"sink dropped at sparsity={sparsity} despite being granted free; "
+        f"kept for {100 * a[:, 0].float().mean():.1f}% of query blocks"
+    )
+
+
+@pytest.mark.parametrize("sparsity", _SPARSITIES)
+def test_random_masks_keep_the_sink(sparsity):
+    n = 32
+    a = M.random_block_mask(n * 128, 128, sparsity,
+                            causal=True, identity_seed="sink").active
+    assert bool(a[:, 0].all())
+
+
+@pytest.mark.parametrize("sparsity", _SPARSITIES)
+def test_both_arms_retain_the_sink_at_the_same_rate(sparsity):
+    """The confound this fix removes was a DIFFERENCE between the arms, so the
+    property to assert is equality, not merely that each is high."""
+    n = 32
+    imp = M.importance_block_mask(n * 128, 128, sparsity, _scores(n),
+                                  causal=True, identity_seed="s").active
+    rnd = M.random_block_mask(n * 128, 128, sparsity,
+                              causal=True, identity_seed="s").active
+    assert imp[:, 0].float().mean() == rnd[:, 0].float().mean() == 1.0
+
+
+def test_the_sink_is_not_spent_from_the_budget():
+    """Granting the sink free must ADD a block, not displace a scored pick.
+
+    If the sink were taken out of budget instead, density would be unchanged
+    and the highest-scoring real block would silently vanish.
+    """
+    n = 64
+    sp = 0.9
+    s = _scores(n)
+    a = M.importance_block_mask(n * 128, 128, sp, s, causal=True,
+                                identity_seed="b").active
+    # every query block keeps: diagonal + sink + its budgeted picks
+    for qb in range(2, n):
+        cand = [kv for kv in range(qb) if kv != 0]
+        budget = round((1.0 - sp) * len(cand))
+        expected = 1 + 1 + budget            # diagonal, sink, budget
+        assert int(a[qb].sum()) == expected, (
+            f"query block {qb}: got {int(a[qb].sum())} active, expected {expected}"
+        )
+
+
+@pytest.mark.parametrize("sparsity", _SPARSITIES)
+def test_forcing_the_sink_does_not_break_nesting(sparsity):
+    """Nesting is the property that makes Stage 4's sparsity bootstrap valid:
+    a larger budget must be a superset of a smaller one, never a resample."""
+    n = 32
+    s = _scores(n)
+    tight = M.importance_block_mask(n * 128, 128, 0.9, s, causal=True,
+                                    identity_seed="n").active
+    loose = M.importance_block_mask(n * 128, 128, sparsity, s, causal=True,
+                                    identity_seed="n").active
+    assert int((tight & ~loose).sum()) == 0

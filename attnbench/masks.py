@@ -197,17 +197,41 @@ def _mask_identity_key(cfg: AttnConfig) -> str:
 
 
 def _candidate_rows(n: int, causal: bool) -> list[list[int]]:
-    """Off-diagonal kv_block indices each q_block may legally attend to.
-    The diagonal block is always active and excluded from every row here --
-    it is granted for free, not spent from the sparsity budget. Under
-    causal block-sparsity, kv_block > q_block is structurally invalid (not
-    just low-priority) and is never a candidate: NaiveAttention's
+    """kv_block indices each q_block may legally SPEND BUDGET ON.
+
+    Two blocks are granted free and excluded from every row here, so neither
+    is spent from the sparsity budget:
+
+      - the **diagonal** block (local context), and
+      - **kv_block 0**, the attention sink.
+
+    The sink was previously an ordinary candidate, surviving only if it won a
+    top-k. Measured across 1,107 cached oracle score tensors it did not: at
+    0.9 sparsity the oracle kept it for 65.0% of query blocks and a random
+    mask for 7.5%, against the reference implementation's 100%. 212 of 217
+    drops on one example were genuine rank-outs with budget remaining, not
+    budget exhaustion.
+
+    The cause is pooling dilution. A sink's attention mass sits on token 0,
+    and these are block MEANS over `block_size` tokens, so a coarse block
+    spreads that mass and underranks the block holding it. Forcing the sink
+    is the standard correction (Sparse Frontier, Appendix A.1.1) and it is
+    what this study now does.
+
+    Note the consequence for realised sparsity: two blocks per row are now
+    free rather than one, so the achieved density is very slightly above the
+    nominal `1 - sparsity`. The reference implementation binary-searches k to
+    hit a target exactly; this study does not, and `BlockSparseMask` records
+    the realised density so the difference is visible rather than assumed.
+
+    Under causal block-sparsity, kv_block > q_block is structurally invalid
+    (not just low-priority) and is never a candidate: NaiveAttention's
     block_sparse branch applies no separate causal mask, so the generated
     pattern must already exclude it entirely.
     """
     if causal:
-        return [list(range(qb)) for qb in range(n)]
-    return [[kv for kv in range(n) if kv != qb] for qb in range(n)]
+        return [[kv for kv in range(qb) if kv != 0] for qb in range(n)]
+    return [[kv for kv in range(n) if kv != qb and kv != 0] for qb in range(n)]
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +250,7 @@ def random_block_mask(seq_len: int, block_size: int, sparsity: float,
     n = _n_blocks(seq_len, block_size)
     active = torch.zeros(n, n, dtype=torch.bool)
     active.fill_diagonal_(True)
+    active[:, 0] = True          # attention sink, granted free -- see _candidate_rows
 
     rows = _candidate_rows(n, causal)
     pool = [(qb, kv) for qb, kvs in enumerate(rows) for kv in kvs]
@@ -264,6 +289,7 @@ def importance_block_mask(seq_len: int, block_size: int, sparsity: float,
         )
     active = torch.zeros(n, n, dtype=torch.bool)
     active.fill_diagonal_(True)
+    active[:, 0] = True          # attention sink, granted free -- see _candidate_rows
 
     rows = _candidate_rows(n, causal)
     seed_int = _int_seed(identity_seed)

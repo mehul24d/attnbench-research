@@ -1355,11 +1355,52 @@ whether the sink is forced or not, so kernel latency, the Stage 2 slice, the
 conversion tax and every speedup are untouched. This is an accuracy-side
 finding only.
 
+### Why this makes the block-size limitation causal, not incidental
+
+Elsewhere this file records that block size 16 is unreachable here — the
+kernel hardcodes 128 and flex's 64 is shared-memory-capped — and treats that
+as a precision loss. The sink finding shows it is more specific than that.
+
+Sparse Frontier's ablation selects **16x16** blocks because smaller blocks
+consistently performed better. The mechanism above says why, in at least one
+concrete case: **a block mean underranks a block whose mass is concentrated in
+a few tokens, and the dilution scales with block size.** At 16 tokens the
+sink's mass is spread over 8x fewer positions than at 128, so a fine-grained
+estimator ranks the sink higher on its own and the forcing rule matters less.
+
+So coarse blocks do not merely lose resolution uniformly. They
+**systematically underrank concentrated-mass blocks**, and the attention sink
+is the canonical instance of exactly that. A study operating at 128 is
+therefore *more* dependent on hand-forced structural rules than one operating
+at 16, and its unforced results degrade in a specific, predictable direction
+rather than just noisily.
+
+This also bounds what forcing the sink buys: it repairs the one
+concentrated-mass block that is known in advance. Any *other* block whose mass
+is similarly concentrated is still underranked at 128 and there is no rule
+naming it.
+
 ### The fix, and what it costs
 
-Forcing column 0 alongside the diagonal is a two-line change to both mask
-constructors. The cost is not the change, it is that **every accuracy number
-at every sparsity would need regenerating**, and the oracle-versus-random
-comparison would need re-running to separate ranking quality from sink
-preservation. Not done yet; recorded here so no number is read as though it
-had been.
+**Fixed 2026-09-16.** `_candidate_rows` now excludes kv_block 0 from every
+candidate list and both constructors set `active[:, 0] = True`, so the sink is
+granted free exactly as the diagonal already was. Verified: sink retention is
+100% in both arms at every sparsity, nesting still holds, and the suite is
+green (870 passed). Five regression tests were added in
+`tests/test_masks_determinism.py`, including one that scores the sink **last**
+so a pass proves it is granted outside the budget rather than merely winning
+it — nothing in the suite had tested the sink either way, which is why the
+defect survived every previous green run.
+
+**Realised density is now slightly above nominal**, because two blocks per row
+are free instead of one: measured 0.506 / 0.260 / 0.111 against nominal
+0.50 / 0.25 / 0.10. The reference implementation binary-searches k to hit a
+target exactly; this study does not, and the gap is ~1% of density at the
+sparsest setting. It is in the conservative direction for speedup.
+
+**Every accuracy number predating this change is superseded, not deleted.**
+The unforced-sink rows are retained and marked, because the forced-versus-
+unforced comparison *is* the measurement of what the sink was worth — probably
+the cleanest demonstration this study contains of why a mask-construction
+detail that papers put in an appendix is load-bearing. Regeneration is
+pending.
