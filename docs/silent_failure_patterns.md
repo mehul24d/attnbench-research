@@ -2124,3 +2124,96 @@ The regression test written for it scores the sink **last** on purpose, so a
 pass proves the sink is granted *outside* the budget rather than merely
 winning a top-k it would usually win. A test that used realistic scores would
 have passed against the defective code too.
+
+
+## 37. The hazard was documented in the function the hazard was added to
+
+`score_cache.cache_key` hashes `(model_id, task, example_id, seq_len)`. Its
+docstring has carried, since the function was written, an explicit warning
+that `model_id` must actually appear in the hashed blob and not merely be a
+parameter the function accepts and forgets — and `tests/` has carried a test
+asserting exactly that.
+
+On 2026-09-16 a second scorer was added: MInference's mean-pool estimator,
+alongside the dense-softmax oracle. `score_source` was threaded through the
+model, the runner, the CLI and the schema — and added to `cache_key`'s
+signature **without being added to its hashed blob**. Both scorers produced
+key `ab224efd248582d5` for the same `(model, task, example, seq_len)`.
+
+The consequence is the worst available shape of failure for this project:
+
+  - the two scorers emit tensors of **identical shape**, so `load`'s
+    dimension assertion — the belt-and-suspenders written for precisely this
+    class of collision — cannot fire;
+  - the cheap arm would have loaded the **oracle's** scores, stamped itself
+    `minference_meanpool`, and reported no difference between the two;
+  - that null would have appeared in the experiment built specifically to
+    test whether the expensive oracle is necessary, where "no difference" is
+    a publishable result rather than an obvious bug.
+
+**A false null in a falsifiability experiment does not look like a failure.
+It looks like the answer.** Every other defect in this document announces
+itself as a wrong number, a crash, or a missing file. This one would have
+announced itself as a finding.
+
+**The part worth keeping is not the fix.** The fix is four words in a
+`json.dumps`. What is worth recording is that the author of the defect had
+written the warning against it, in that function, for the adjacent field, and
+had written the test that catches it for the adjacent field — and then
+instantiated it anyway, in the same function, roughly two hundred lines of
+diff later.
+
+So: **understanding a failure mode confers no protection against committing
+it.** The mechanisms in this document are not redundancy for cases where the
+hazard is unknown. #36 says a guard is ordinary code; this says the *author's
+own knowledge* is not a guard at all. The only thing that caught it was
+running the two scorers and comparing the keys — the break-it check, applied
+to the field that had just been added, from outside the function that owns it.
+
+**One decision generalises beyond this bug.** `score_source` is hashed
+**unconditionally**, not only when it differs from the default. A key that
+omits a field for backward compatibility is a key whose meaning depends on
+which caller wrote it, which is the mechanism of the collision above rather
+than an exception to it. The price was ~1,073 cached tensors re-keyed to
+misses, all at 2048–8192 where the scoring pass is cheap. Pay it. A cache key
+should name everything that determined the value.
+
+
+## 38. A liveness probe whose terminal state is unreachable
+
+A monitor was armed on the 16384 oracle phase with the termination condition
+`ALIVE=0`, where `ALIVE` came from `pgrep -c -f run_accuracy.py` run over ssh.
+It would never have fired. The probe's own `bash -c` command line contains the
+string being searched for, so **the count has a floor of 1**:
+
+    $ pgrep -c -f definitely_no_such_proc_xyz.py
+    1
+
+A monitor that cannot report the end of the thing it watches is silent when
+the phase finishes and silent when the phase is healthy. It would have run to
+its 60-minute timeout having reported progress lines and never the boundary —
+and "no completion event yet" is indistinguishable from "still running." This
+is the Monitor contract's own warning (*silence is not success*) arriving
+through the terminal state rather than the failure state: the coverage gap was
+not an unhandled crash signature, it was **the normal ending**.
+
+**The diagnosis was also wrong, and that is the second lesson.** The
+self-match mechanism above was inferred, the textbook fix applied
+(`pgrep -f "[r]un_accuracy.py"`), and the count did not change — 3 either way.
+The bracket form should have excluded the probe's own shell and did not, and
+the reason was never established. What established the defect was not
+reasoning about the mechanism but **measuring the floor directly**, against a
+process name guaranteed not to exist. Same shape as the cuDNN misdiagnosis
+earlier in this project: a plausible mechanism that fits the symptom is not
+thereby the mechanism, and the cheapest way to tell is usually an experiment
+rather than an argument.
+
+**The fix was to stop using a process count at all.** The phase writes its own
+completion marker (`########## ORACLE 16384 rc=$?`) to a log, which is
+unambiguous, carries the exit status, and cannot match itself. Coverage for
+the case where that marker never arrives is a separate condition on the ssh
+session's own liveness — so the two silences, *phase ended* and *transport
+died*, are distinguishable rather than both absent.
+
+**Prefer a signal the watched thing emits over a signal the watcher derives.**
+A derived signal has to model the thing; an emitted one only has to be read.
