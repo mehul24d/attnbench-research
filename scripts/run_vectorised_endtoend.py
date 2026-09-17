@@ -75,9 +75,8 @@ def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
     scores, and real attention scores have a different tie structure."""
     import torch
     from attnbench.accuracy.model import pool_scores_to_block_size
-    n_layers = scores.shape[0]
     checked = 0
-    for layer in range(n_layers):
+    for layer in sorted(scores):
         # The SAME reduction SwappedAttention.forward applies (model.py), via
         # the same function -- not a local re-derivation of it. If that path
         # changes, this check changes with it instead of silently comparing
@@ -162,8 +161,13 @@ def main():
             t0 = time.time()
             scores = wrapped.compute_importance_scores(
                 ids, task="s7_vec", example_id=f"b{band}", cache_dir=scratch)
-            print(f"  scoring pass {time.time()-t0:.1f}s, scores "
-                  f"{tuple(scores.shape)}", flush=True)
+            # dict[layer_idx -> (n_heads_kv, n_blocks, n_blocks)], which is
+            # what run_measured wants; only the equivalence check needs it
+            # indexed, and it indexes the dict directly rather than stacking
+            # into a tensor the model never sees.
+            n_layers = len(scores)
+            print(f"  scoring pass {time.time()-t0:.1f}s, {n_layers} layers, "
+                  f"per-layer {tuple(scores[0].shape)}", flush=True)
 
             seed = masks._mask_identity_key(
                 cfg_for(band, "block_sparse", sparsities[0]))
@@ -197,7 +201,7 @@ def main():
                         sparsity=sparsity, prefill_ms_mean=ms,
                         prefill_ms_min=min(pf), prefill_ms_max=max(pf),
                         n_reps=len(pf), n_warmup=args.warmup,
-                        n_layers=int(scores.shape[0]),
+                        n_layers=n_layers,
                         clocks_locked=clocks_locked))
                     print(f"  [{builder_name:<10}] {name:<13}"
                           f"{'dense' if sparsity is None else sparsity:>6}  "
