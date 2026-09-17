@@ -76,6 +76,10 @@ def main():
                          "the grid is a caller error and raises, because "
                          "silently measuring a length the grid does not "
                          "contain would produce cells no Stage 1 pass covers.")
+    ap.add_argument("--head-layouts", default=None,
+                    help="comma-separated hq:hkv layouts to run, e.g. '12:2'. "
+                         "Filters, never widens -- a layout not in the grid "
+                         "raises, for the same reason --seq-lens does.")
     ap.add_argument("--batches", default=None,
                     help="comma-separated batch sizes to run, INSTEAD of the "
                          "grid's. Same filtering-only contract as --seq-lens.")
@@ -99,6 +103,21 @@ def main():
 
     grid = SweepGrid()
 
+    def _slice_layouts(spec, grid):
+        """Narrow the head-layout axis. Same contract as _slice."""
+        if spec is None:
+            return grid.head_layouts
+        want = tuple(tuple(int(v) for v in x.split(":"))
+                     for x in spec.split(",") if x.strip())
+        have = set(grid.head_layouts)
+        unknown = [w for w in want if w not in have]
+        if unknown:
+            raise SystemExit(
+                f"--head-layouts names {unknown}, which the grid does not "
+                f"contain ({sorted(have)}). This filter narrows the grid; it "
+                f"cannot add to it.")
+        return want
+
     def _slice(spec, field, name):
         """Narrow one grid axis. Refuses values the grid does not contain."""
         if spec is None:
@@ -116,7 +135,8 @@ def main():
 
     grid = replace(grid,
                    seq_lens=_slice(args.seq_lens, "seq_lens", "seq-lens"),
-                   batches=_slice(args.batches, "batches", "batches"))
+                   batches=_slice(args.batches, "batches", "batches"),
+                   head_layouts=_slice_layouts(args.head_layouts, grid))
     if args.seq_lens or args.batches:
         print(f"grid slice  : seq_lens={grid.seq_lens} batches={grid.batches}")
     cells = build_cells(grid, backends, mask_source=args.mask_source)

@@ -32,7 +32,7 @@ from attnbench.backends.impls import SDPABackend      # noqa: E402
 from attnbench.gates import probe, check_for_family  # noqa: E402
 
 
-def probe_configs(max_seq: int, min_seq: int = 0):
+def probe_configs(max_seq: int, min_seq: int = 0, head_layouts=None):
     """EXACTLY the configs Stage 2 will run.
 
     This used to be a small independent grid (batch 2, 8 heads, seq_len
@@ -51,6 +51,15 @@ def probe_configs(max_seq: int, min_seq: int = 0):
     from attnbench.sweep import build_cells
 
     grid = SweepGrid()
+    if head_layouts:
+        from dataclasses import replace as _replace
+        have = set(grid.head_layouts)
+        unknown = [l for l in head_layouts if l not in have]
+        if unknown:
+            raise SystemExit(
+                f"--head-layouts names {unknown}, which the grid does not "
+                f"contain ({sorted(have)}). Narrows, never widens.")
+        grid = _replace(grid, head_layouts=tuple(head_layouts))
     seen = set()
     for cfg in list(grid.dense_configs()) + list(
             grid.sparse_configs(mask_source="random")):
@@ -140,6 +149,10 @@ def main():
     ap.add_argument("--no-resume", action="store_true",
                     help="re-probe rows already present in the checkpoint "
                          "instead of skipping them")
+    ap.add_argument("--head-layouts", default="",
+                    help="comma-separated hq:hkv layouts, e.g. '12:2'. "
+                         "Narrows the grid's head-layout axis; a layout not "
+                         "in the grid raises rather than being added.")
     ap.add_argument("--exclude-backends", default="",
                     help="comma-separated backend names to leave out of this "
                          "run entirely. Exists because a backend that faults "
@@ -207,7 +220,9 @@ def main():
     if unavailable:
         print(f"missing  : {', '.join(unavailable)}")
 
-    configs = list(probe_configs(args.max_seq, args.min_seq))
+    _hl = tuple(tuple(int(v) for v in x.split(":"))
+                for x in args.head_layouts.split(",") if x.strip()) or None
+    configs = list(probe_configs(args.max_seq, args.min_seq, head_layouts=_hl))
     bands = sorted({c.seq_len for c in configs})
     probe_path = outdir / "probe.parquet"
     corr_path = outdir / "correctness.parquet"

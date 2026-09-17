@@ -180,7 +180,16 @@ class SweepGrid:
 
     seq_lens: tuple = (1024, 2048, 4096, 8192, 16384, 32768)
     batches: tuple = (1, 4, 16)
-    head_layouts: tuple = ((32, 32), (32, 8))   # MHA, GQA
+    # (12, 2) added 2026-09-17: Qwen2.5-1.5B-Instruct's real geometry.
+    # Stage 2 timed 32-head attention while Stage 3/5 ran a 12-head
+    # model, so per-layer scaling between the two was invalid and a
+    # 459.6 ms overhead estimate had to be withdrawn. Measuring the
+    # kernel at the geometry the model actually uses closes that gap.
+    # Oracle cost at (12,2,128) is 0.094/0.375/1.5/6.0/24.0/96.0 GiB
+    # across the seq_len ladder -- nothing near the 8 GiB grading
+    # boundary, so test_the_boundary_is_not_close_to_any_real_config
+    # still holds (checked before adding).
+    head_layouts: tuple = ((32, 32), (32, 8), (12, 2))   # MHA, GQA, model-real
     passes: tuple = ("fwd", "fwd_bwd")
     masks: tuple = ("causal",)
     sparsities: tuple = (0.5, 0.75, 0.9)
