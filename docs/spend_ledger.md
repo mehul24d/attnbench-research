@@ -401,3 +401,33 @@ recorded because it is the same defect class the script was written to catch,
 appearing in the script itself.
 
 **Two-session total for 2026-09-17: ₹1,054.**
+
+---
+
+## Session 12 — 2026-09-17, A100 (`attnbench-a100-20260917-cheap7b`), DWS Flex Start, ₹284/h
+
+**₹249 for 53 minutes.** Boot 13:33:59Z, deleted 14:26:29Z. First session to
+boot the **v6** image, with `GCP_MAX_RUN=1h45m` / `GCP_HALT_MINUTES=75`.
+
+| step | at | outcome |
+|---|---|---|
+| write gate | 13:36:04Z | PASS |
+| deploy | 13:36:20Z | `0397c60`, clean tree |
+| 7B download | 13:36:38Z | rc=0 |
+| 7B cheap arm, 16384 | → 14:21:58Z | **rc=0**, 800 rows |
+| delete | 14:26:29Z | immediate |
+
+**v6 paid for itself on the first boot: 2 minutes 5 seconds from instance
+creation to write-gate-passed**, against the ~25 minutes a cold v5 setup cost.
+It was boot-tested on an `e2-medium` beforehand (~₹1) rather than trusted
+because `gcloud` called it READY.
+
+**The result inverted the hypothesis that motivated the session.** The cheap
+estimator's disadvantage against the oracle *widens* with scale on
+`niah_multikey` (+40 → +67 at 0.75, +19 → +76 at 0.9), so the oracle
+requirement is not a small-model artifact. That is the more consequential of
+the two possible outcomes and the less convenient one.
+
+**Day total: ₹1,303 across four sessions** (10 → 11 → 12 plus the ~₹1
+boot-test), against ₹1,005 for session 10 alone. The three sessions after the
+idle-burn correction cost ₹299 combined and produced three results.
