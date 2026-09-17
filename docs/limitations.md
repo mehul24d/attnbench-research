@@ -74,30 +74,48 @@ Measured 2026-09-17, mostly without a GPU. The Stage 5 finding that
 block-sparse prefill reverses on A100 has a located cause, and it is not the
 attention kernel.
 
-**Per-forward budget, sparsity 0.75, 28 layers:**
+**Per-forward budget, A100, sparsity 0.75, 28 layers — and why it does not
+work.** Both inputs have since been remeasured properly: the kernel column at
+the model's real `(12,2)` geometry, and the construction column on the
+instance's own CPU rather than a laptop.
 
-| seq | card | kernel saving ×28 | mask construct ×28 | net | Stage 5 observed |
-|---|---|---|---|---|---|
-| 4096 | L4 | +8.4 | 17.5 | −9.1 | +1.3 |
-| 4096 | A100 | −9.3 | 17.5 | −26.8 | −39.7 |
-| 8192 | L4 | **+159.9** | 52.9 | **+107.0** | **+52.1** |
-| 8192 | A100 | **+27.8** | 52.9 | **−25.2** | **−68.8** |
+| seq | kernel ×28 (12:2) | construct ×28 (laptop) | construct ×28 (instance) | net (laptop) | net (instance) | Stage 5 observed |
+|---|---|---|---|---|---|---|
+| 4096 | −12.9 | 17.6 | 68.5 | −30.5 | −81.4 | **−39.7** |
+| 8192 | +9.5 | 53.1 | 196.2 | −43.6 | −186.7 | **−68.8** |
+| 16384 | +60.7 | 175.8 | 628.3 | −115.1 | −567.6 | **−274.3** |
 
-Sign correct in all four cells. Magnitudes are not, because the kernel column
-is Stage 2's 32-head geometry against a 12-head model — see the geometry
-caveat below.
+**The sign is right in every cell and the magnitude is wrong in both
+directions.** With laptop construction timings the composition undershoots the
+observed gap; with the instance's own CPU — a strictly more accurate input,
+measured on the machine the numbers came from — it overshoots by 2.1–2.7×.
+Replacing one measured term with a better measured term made the prediction
+worse, which is the signature of an error in the model rather than in its
+terms.
+
+So this composition is **not evidence for the mechanism**, and it is kept here
+as a record of an approach that failed rather than as support. What the
+mechanism rests on instead is the located, directly measured facts below —
+that construction is CPU-bound, accelerator-invariant, non-parallelising and
+interpreter-dominated — plus an end-to-end run that changes the builder and
+nothing else.
 
 **The term that decides the sign does not scale with the accelerator.**
 `masks.py` builds masks on CPU by convention, once per layer per forward:
 
-| seq_len | blocks | ms/call | ×28 layers |
-|---|---|---|---|
-| 4096 | 32 | 0.625 | 17.5 |
-| 8192 | 64 | 1.890 | 52.9 |
-| 16384 | 128 | 6.418 | 179.7 |
-| 32768 | 256 | 23.092 | **646.6** |
+| seq_len | blocks | laptop ms/call | **instance ms/call** | laptop ×28 | **instance ×28** |
+|---|---|---|---|---|---|
+| 4096 | 32 | 0.625 | **2.447** | 17.5 | **68.5** |
+| 8192 | 64 | 1.890 | **7.008** | 52.9 | **196.2** |
+| 16384 | 128 | 6.418 | **22.440** | 179.7 | **628.3** |
+| 32768 | 256 | 23.092 | **80.539** | 646.6 | **2255.1** |
 
-O(seq_len²), and bit-identical on both cards. At 8192 the L4's kernel saves
+O(seq_len²), and bit-identical on both cards. **The instance CPU is uniformly
+~3.7× slower than the laptop** (a2-ultragpu-1g, 12 vCPU, 6 torch threads), so
+every construction figure published from laptop timings understates the cost
+on the hardware that actually ran the measurement by that factor. At 32768 the
+real per-forward construction cost is **2.26 seconds**, not the 0.65 s
+originally recorded. At 8192 the L4's kernel saves
 159.9 ms against a 52.9 ms construction cost and wins; the A100's kernel saves
 27.8 ms against **the same** 52.9 ms and loses. The GPU got ~3× faster and the
 tax did not move. **The net sign is set by how fast the GPU is relative to a
@@ -125,8 +143,23 @@ vectorisation of `importance_block_mask` — one masked `argsort`, one
 the per-query-block loop and its inner scalar-assignment loop — was written
 solely to answer "would the reversal survive?". It is **not a contribution and
 not proposed as a replacement**; the reference implementation's numbers stand
-exactly as measured. It produces **bit-identical `active` matrices** across 36
-configurations (4 seq_lens × 3 sparsities × 3 seeds, zero mismatches).
+exactly as measured. It produces **bit-identical `active` matrices** across 36 synthetic
+configurations (4 seq_lens × 3 sparsities × 3 seeds, zero mismatches) —
+**but not on real scores, and that check was misleading.** Against the model's
+own cached scores the two builders disagree on a small number of cells per
+layer. The cause is fp16 tie-breaking, not a ranking difference: `score_cache`
+stores fp16, ~3.0% of candidates at `block_size=128` share a value with
+another candidate, and where a tie group straddles the top-k boundary the
+reference (1e-9 jitter) and the vectorised builder (stable argsort) keep
+different, equal-scoring blocks. `torch.rand` produces essentially no ties, so
+the 36-config check exercised the one regime in which the two provably agree.
+See `docs/silent_failure_patterns.md` pattern 39.
+
+What holds on real scores, and is what the timing comparison actually
+requires, is that the two builders agree on the **per-row active count**
+(identical kernel work) and the **per-row kept-score multiset** (identical
+ranking). Both are asserted before any timing, and the assertion is checked
+against negative controls so the relaxation is not a deletion.
 
 | seq_len | reference | vectorised | speedup | ref ×28 | vec ×28 |
 |---|---|---|---|---|---|
@@ -155,14 +188,20 @@ baseline weak enough to beat, or a vectorised mask builder — and the reference
 implementation has neither.** That is a statement about the implementation
 landscape, not about sparse attention.
 
-**This is a budget calculation, not an end-to-end run.** The model has NOT
-been executed with the vectorised builder; these are kernel timings and
-construction timings composed arithmetically, carrying the same 32-head-versus
--12-head geometry caveat as the table above, and the construction figures come
-from a laptop CPU rather than either instance. The sign flips at 8192 and
-16384 are large relative to those uncertainties (+25.7 and +158.4 against
-construction costs of 2.1 and 8.9 ms); the 4096 result is not, and should be
-read as directional.
+**This is a budget calculation, not an end-to-end run, and the budget has
+since been shown not to work.** The flip table above composes kernel timings
+with construction timings arithmetically. That composition is wrong in both
+directions depending on which CPU supplies the construction term (see the
+first table in this section), so **the specific flip points it predicts
+carry no weight**. It is retained to show what was predicted, against which
+the end-to-end measurement can be read.
+
+The end-to-end run — same process, same model instance, same scores,
+interleaved arms, changing only which function `masks.mask_for` calls — is
+what settles this. Until its numbers are in, the honest statement is: the
+sign of the construction penalty is established and its location is
+established; the size of the effect on end-to-end latency, and therefore
+whether it flips the result at any band, is not.
 
 **What is NOT available as a saving:** reusing one mask across layers. Each
 layer builds from its own scores (`state.scores[self.layer_idx]`), so the 28
