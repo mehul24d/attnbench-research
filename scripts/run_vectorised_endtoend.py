@@ -70,12 +70,47 @@ def _vectorised_builder(seq_len, block_size, sparsity, importance_scores, *,
 
 def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
                        scores, seed):
-    """Fatal on any difference. Run on the REAL per-layer score tensors at the
-    REAL shapes, not a synthetic stand-in -- the laptop check used random
-    scores, and real attention scores have a different tie structure."""
+    """Assert the two builders are equivalent FOR THIS MEASUREMENT, and say
+    exactly what that means. Fatal otherwise.
+
+    The first version of this check demanded bitwise-identical masks and
+    fired immediately on real data: seq_len=8192, layer 3, sparsity 0.5, 2 of
+    4096 cells. The laptop check that preceded it passed on 36 synthetic
+    configs. The difference is not the shapes -- it is the dtype. Scores are
+    cached fp16 (score_cache.save), and fp16-rounded pooled softmax
+    probabilities are densely TIED: ~62% of cells round to exact zero, and
+    ~27% of a row's candidates share a value with another candidate. The
+    reference builder breaks those ties with 1e-9 jitter; the vectorised one
+    uses a stable argsort. On a tie group straddling the budget boundary they
+    pick different, equal-scoring blocks.
+
+    So the builder's own docstring was wrong where it said equivalence is
+    asserted "on non-tied scores, which is the case that occurs". Ties are
+    overwhelmingly the case that occurs. Bitwise equality was never the right
+    property to demand.
+
+    The property this measurement actually needs is that the two builders
+    give the kernel the same work and the same ranking:
+
+      1. identical ACTIVE COUNT PER ROW -- block-sparse cost depends on how
+         many blocks are active, not which, so this is what makes the two
+         timings comparable at all;
+      2. identical KEPT-SCORE MULTISET per row -- this is what makes the
+         disagreement provably tie-breaking rather than a ranking difference.
+         Two builders that keep the same sorted list of score VALUES differ
+         only in their choice among equals.
+
+    Both are checked here on every (layer, sparsity), and the residual
+    differing-cell count is returned so it lands in the parquet instead of
+    only in scrollback. What this check does NOT license is an accuracy
+    claim: interchangeable-by-score is not interchangeable-by-output, and
+    nothing here measures that.
+    """
     import torch
     from attnbench.accuracy.model import pool_scores_to_block_size
     checked = 0
+    differing_cells = 0
+    tied_rows = 0
     for layer in sorted(scores):
         # The SAME reduction SwappedAttention.forward applies (model.py), via
         # the same function -- not a local re-derivation of it. If that path
@@ -84,24 +119,48 @@ def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
         pooled = pool_scores_to_block_size(
             scores[layer], finest_block_size=finest_block_size,
             target_block_size=block_size)
-        s = pooled.mean(dim=0)
+        sc = pooled.mean(dim=0)
         for sp in sparsities:
-            a = _REFERENCE_BUILDER(seq_len, block_size, sp, s,
+            a = _REFERENCE_BUILDER(seq_len, block_size, sp, sc,
                                    causal=True, identity_seed=seed)
-            b = _vectorised_builder(seq_len, block_size, sp, s,
+            b = _vectorised_builder(seq_len, block_size, sp, sc,
                                     causal=True, identity_seed=seed)
-            if not torch.equal(a.active, b.active):
-                d = (a.active ^ b.active).sum().item()
-                raise SystemExit(
-                    f"EQUIVALENCE FAILED seq_len={seq_len} layer={layer} "
-                    f"sparsity={sp}: {d} of {a.active.numel()} cells differ. "
-                    f"Refusing to time a builder that computes something else.")
             if (a.seed, a.source, a.causal) != (b.seed, b.source, b.causal):
                 raise SystemExit(f"EQUIVALENCE FAILED on mask metadata at "
                                  f"seq_len={seq_len} layer={layer} sp={sp}")
+
+            ca, cb = a.active.sum(dim=1), b.active.sum(dim=1)
+            if not torch.equal(ca, cb):
+                bad = int((ca != cb).sum())
+                raise SystemExit(
+                    f"EQUIVALENCE FAILED seq_len={seq_len} layer={layer} "
+                    f"sparsity={sp}: active count differs on {bad} rows "
+                    f"(max |delta| {int((ca - cb).abs().max())}). The two "
+                    f"builders would give the kernel different amounts of "
+                    f"work, so their timings are not comparable.")
+
+            diff = a.active ^ b.active
+            if diff.any():
+                # Every disagreement must be a swap among EQUAL scores. Check
+                # the kept-score multiset per row, not the index set.
+                for qb in torch.nonzero(diff.any(dim=1)).flatten().tolist():
+                    va = torch.sort(sc[qb][a.active[qb]]).values
+                    vb = torch.sort(sc[qb][b.active[qb]]).values
+                    if not torch.equal(va, vb):
+                        raise SystemExit(
+                            f"EQUIVALENCE FAILED seq_len={seq_len} "
+                            f"layer={layer} sparsity={sp} row={qb}: kept-score "
+                            f"multisets differ, so this is a RANKING "
+                            f"disagreement, not tie-breaking. Refusing to time "
+                            f"a builder that computes something else.")
+                    tied_rows += 1
+                differing_cells += int(diff.sum())
             checked += 1
-    print(f"  equivalence OK: {checked} (layer x sparsity) masks identical "
-          f"at seq_len={seq_len}", flush=True)
+    print(f"  equivalence OK at seq_len={seq_len}: {checked} (layer x "
+          f"sparsity) masks agree on per-row active count and kept-score "
+          f"multiset; {differing_cells} cells differ by tie-break across "
+          f"{tied_rows} rows (fp16 score ties -- see docstring)", flush=True)
+    return differing_cells
 
 
 def main():
@@ -171,7 +230,8 @@ def main():
 
             seed = masks._mask_identity_key(
                 cfg_for(band, "block_sparse", sparsities[0]))
-            _assert_equivalent(seq_len=band, block_size=grid.finest_block_size,
+            tie_cells = _assert_equivalent(
+                               seq_len=band, block_size=grid.finest_block_size,
                                finest_block_size=grid.finest_block_size,
                                sparsities=sparsities, scores=scores, seed=seed)
 
@@ -202,6 +262,7 @@ def main():
                         prefill_ms_min=min(pf), prefill_ms_max=max(pf),
                         n_reps=len(pf), n_warmup=args.warmup,
                         n_layers=n_layers,
+                        tiebreak_cells_differing=tie_cells,
                         clocks_locked=clocks_locked))
                     print(f"  [{builder_name:<10}] {name:<13}"
                           f"{'dense' if sparsity is None else sparsity:>6}  "
