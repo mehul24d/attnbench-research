@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Item 4: does the A100 prefill reversal survive a vectorised mask builder?
+
+Measures ONE thing and composes nothing. The prior estimate multiplied a
+standalone mask-construction timing by 28 layers and added it to a kernel
+sweep cell; with laptop CPU numbers that composition undershot the observed
+end-to-end gap by ~2.5x, and with the instance's own (3.7x slower) CPU it
+OVERSHOT by 1.7-2.5x. Same arithmetic, better input, worse answer -- the
+error is in the model, not its terms. So this script does not build a budget.
+It runs the real `run_measured` prefill path twice, changing exactly one
+thing between the two runs: which function `masks.mask_for` calls to turn
+importance scores into a BlockSparseMask.
+
+Both builders run in the SAME process, same model instance, same scores,
+interleaved per arm, so host state, allocator warmth and clock drift hit
+both equally. The reference arm is re-measured here rather than read from
+an earlier parquet for the same reason.
+
+Equivalence is asserted on the real masks at the real shapes BEFORE any
+timing, and the assertion is fatal. A faster builder that produces a
+different mask is measuring a different experiment.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from attnbench import masks, provenance                                # noqa: E402
+from attnbench.accuracy.config import load_grid                        # noqa: E402
+from attnbench.accuracy.generation import ModelGeometry                # noqa: E402
+from attnbench.accuracy.grid_configs import backend_instance           # noqa: E402
+from attnbench.accuracy.phase_timing import time_repeated              # noqa: E402
+from attnbench.config import AttnConfig                                # noqa: E402
+from _vec_mask_for_measurement import importance_block_mask_vectorised # noqa: E402
+
+
+_REFERENCE_BUILDER = masks.importance_block_mask
+
+
+def _vectorised_builder(seq_len, block_size, sparsity, importance_scores, *,
+                        causal, identity_seed):
+    """Same signature as masks.importance_block_mask, same return type.
+
+    `identity_seed` is accepted and unused: it feeds only the 1e-9 tie-break
+    jitter, which cannot reorder a top-k over non-tied real scores. It is
+    still threaded into the returned mask's `seed` field so the two builders'
+    masks compare equal on every field, not just `active`.
+    """
+    n = masks._n_blocks(seq_len, block_size)
+    if tuple(importance_scores.shape) != (n, n):
+        raise ValueError(
+            f"importance_scores shape {tuple(importance_scores.shape)} != "
+            f"({n}, {n}) for seq_len={seq_len}, block_size={block_size}")
+    active = importance_block_mask_vectorised(
+        n, sparsity, importance_scores, causal=causal)
+    return masks.BlockSparseMask(
+        seq_len=seq_len, block_size=block_size, active=active,
+        seed=masks._int_seed(identity_seed), source="importance",
+        causal=causal)
+
+
+def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
+                       scores, seed):
+    """Fatal on any difference. Run on the REAL per-layer score tensors at the
+    REAL shapes, not a synthetic stand-in -- the laptop check used random
+    scores, and real attention scores have a different tie structure."""
+    import torch
+    from attnbench.accuracy.model import pool_scores_to_block_size
+    n_layers = scores.shape[0]
+    checked = 0
+    for layer in range(n_layers):
+        # The SAME reduction SwappedAttention.forward applies (model.py), via
+        # the same function -- not a local re-derivation of it. If that path
+        # changes, this check changes with it instead of silently comparing
+        # builders on a tensor the model never sees.
+        pooled = pool_scores_to_block_size(
+            scores[layer], finest_block_size=finest_block_size,
+            target_block_size=block_size)
+        s = pooled.mean(dim=0)
+        for sp in sparsities:
+            a = _REFERENCE_BUILDER(seq_len, block_size, sp, s,
+                                   causal=True, identity_seed=seed)
+            b = _vectorised_builder(seq_len, block_size, sp, s,
+                                    causal=True, identity_seed=seed)
+            if not torch.equal(a.active, b.active):
+                d = (a.active ^ b.active).sum().item()
+                raise SystemExit(
+                    f"EQUIVALENCE FAILED seq_len={seq_len} layer={layer} "
+                    f"sparsity={sp}: {d} of {a.active.numel()} cells differ. "
+                    f"Refusing to time a builder that computes something else.")
+            if (a.seed, a.source, a.causal) != (b.seed, b.source, b.causal):
+                raise SystemExit(f"EQUIVALENCE FAILED on mask metadata at "
+                                 f"seq_len={seq_len} layer={layer} sp={sp}")
+            checked += 1
+    print(f"  equivalence OK: {checked} (layer x sparsity) masks identical "
+          f"at seq_len={seq_len}", flush=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--grid", default="configs/accuracy/stage3_grid.yaml")
+    ap.add_argument("--out", default="results/s7_vec_endtoend")
+    ap.add_argument("--bands", default="8192,16384")
+    ap.add_argument("--sparsities", default="0.5,0.75,0.9")
+    ap.add_argument("--warmup", type=int, default=3)
+    ap.add_argument("--reps", type=int, default=10)
+    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--dtype", default="bfloat16")
+    ap.add_argument("--lock-clocks", action="store_true")
+    args = ap.parse_args()
+
+    import torch
+    from transformers import AutoModelForCausalLM
+    from attnbench.accuracy.model import SwappableAttentionModel
+
+    grid = load_grid(args.grid)
+    bands = [int(b) for b in args.bands.split(",")]
+    sparsities = [float(s) for s in args.sparsities.split(",")]
+
+    clocks_locked = False
+    if args.lock_clocks:
+        clocks_locked = provenance.lock_clocks()
+        print(f"clock lock: {clocks_locked}", flush=True)
+        if not clocks_locked:
+            print("!! CLOCK LOCK FAILED -- every row stamped "
+                  "clocks_locked=False", flush=True)
+
+    model = AutoModelForCausalLM.from_pretrained(
+        grid.model_primary, torch_dtype=getattr(torch, args.dtype))
+    model = model.to(args.device).eval()
+    geom = ModelGeometry.from_config(model.config, args.dtype)
+
+    def cfg_for(band, mask, sparsity):
+        base = AttnConfig(seq_len=band, batch=1, n_heads_q=1, n_heads_kv=1,
+                          head_dim=128, mask=mask, sparsity=sparsity,
+                          block_size=grid.finest_block_size,
+                          mask_source="importance" if mask == "block_sparse" else None)
+        return geom.onto(base, seq_len=band)
+
+    sync = torch.cuda.synchronize if args.device == "cuda" else (lambda: None)
+    out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
+    scratch = tempfile.mkdtemp(prefix="s7vec_scores_")
+
+    rows = []
+    for band in bands:
+        print(f"\n===== band {band} =====", flush=True)
+        ids = torch.randint(0, model.config.vocab_size, (1, band),
+                            device=args.device)
+        wrapped = SwappableAttentionModel(
+            model, cfg_for(band, "causal", None), model_id=grid.model_primary,
+            finest_block_size=grid.finest_block_size)
+        try:
+            t0 = time.time()
+            scores = wrapped.compute_importance_scores(
+                ids, task="s7_vec", example_id=f"b{band}", cache_dir=scratch)
+            print(f"  scoring pass {time.time()-t0:.1f}s, scores "
+                  f"{tuple(scores.shape)}", flush=True)
+
+            seed = masks._mask_identity_key(
+                cfg_for(band, "block_sparse", sparsities[0]))
+            _assert_equivalent(seq_len=band, block_size=grid.finest_block_size,
+                               finest_block_size=grid.finest_block_size,
+                               sparsities=sparsities, scores=scores, seed=seed)
+
+            # Dense control: no mask is built on this path, so the builder
+            # cannot touch it. Measured once, and its stability across the
+            # two builder settings is the sanity check that nothing else
+            # moved between them.
+            arms = [("sdpa_flash", None)] + [("block_sparse", s) for s in sparsities]
+
+            for builder_name, fn in (("reference", _REFERENCE_BUILDER),
+                                     ("vectorised", _vectorised_builder)):
+                masks.importance_block_mask = fn
+                for name, sparsity in arms:
+                    be = backend_instance(name)
+                    cfg = cfg_for(band,
+                                  "causal" if sparsity is None else "block_sparse",
+                                  sparsity)
+                    layer_scores = None if sparsity is None else scores
+                    pf = time_repeated(
+                        lambda: wrapped.run_measured(
+                            ids, be, cfg=cfg, layer_scores=layer_scores,
+                            logits_to_keep=1),
+                        warmup=args.warmup, reps=args.reps, synchronize=sync)
+                    ms = sum(pf) / len(pf)
+                    rows.append(dict(
+                        band=band, builder=builder_name, backend=name,
+                        sparsity=sparsity, prefill_ms_mean=ms,
+                        prefill_ms_min=min(pf), prefill_ms_max=max(pf),
+                        n_reps=len(pf), n_warmup=args.warmup,
+                        n_layers=int(scores.shape[0]),
+                        clocks_locked=clocks_locked))
+                    print(f"  [{builder_name:<10}] {name:<13}"
+                          f"{'dense' if sparsity is None else sparsity:>6}  "
+                          f"prefill {ms:9.2f} ms", flush=True)
+                masks.importance_block_mask = _REFERENCE_BUILDER
+        finally:
+            masks.importance_block_mask = _REFERENCE_BUILDER
+            wrapped.unwrap()
+
+    frame = pd.DataFrame(rows)
+    # The measured value goes INTO the stamp, per stamp_onto's docstring: a
+    # bare capture() defaults clocks_locked=False and would overwrite the
+    # measurement in a gated field.
+    provenance.stamp_onto(frame,
+                          provenance.capture(clocks_locked=clocks_locked).to_dict())
+    frame.to_parquet(out / "vec_endtoend.parquet", index=False)
+
+    # The comparison the session exists to make, printed at the terminal.
+    print("\n===== REVERSAL UNDER EACH BUILDER =====", flush=True)
+    print(f"{'band':>6} {'sparsity':>9} {'ref gap':>10} {'vec gap':>10} "
+          f"{'ref ratio':>10} {'vec ratio':>10}", flush=True)
+    for band in bands:
+        b = frame[frame.band == band]
+        dense = {bu: float(b[(b.builder == bu) & (b.backend == "sdpa_flash")]
+                           .prefill_ms_mean.iloc[0]) for bu in ("reference", "vectorised")}
+        for sp in sparsities:
+            g = {}
+            r = {}
+            for bu in ("reference", "vectorised"):
+                sel = b[(b.builder == bu) & (b.sparsity == sp)]
+                if sel.empty:
+                    continue
+                v = float(sel.prefill_ms_mean.iloc[0])
+                g[bu] = v - dense[bu]
+                r[bu] = dense[bu] / v
+            print(f"{band:>6} {sp:>9g} {g.get('reference', float('nan')):>+10.1f} "
+                  f"{g.get('vectorised', float('nan')):>+10.1f} "
+                  f"{r.get('reference', float('nan')):>10.3f} "
+                  f"{r.get('vectorised', float('nan')):>10.3f}", flush=True)
+        print(f"       dense control: ref {dense['reference']:.2f} ms  "
+              f"vec {dense['vectorised']:.2f} ms  "
+              f"(drift {100*(dense['vectorised']/dense['reference']-1):+.1f}%)",
+              flush=True)
+    print(f"\nwritten to {out / 'vec_endtoend.parquet'}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
