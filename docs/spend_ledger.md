@@ -370,3 +370,34 @@ three cards, so the matched-geometry cells inherit that caveat and are no
 tighter than the L4 numbers they are compared against.
 
 **The v6 image capture was planned for this session and not attempted.**
+
+---
+
+## Session 11 — 2026-09-17, A100 (`attnbench-a100-20260917-item4`), DWS Flex Start, ₹284/h
+
+**₹49 for 10 minutes.** Boot 12:16:18Z, deleted 12:26:44Z. Launched with
+`GCP_MAX_RUN=1h30m` / `GCP_HALT_MINUTES=55` rather than the 4h30m/3h30m
+defaults — the cap sized to the work, which is the correction session 10
+earned at ₹429.
+
+| step | at | outcome |
+|---|---|---|
+| write gate | 12:17:28Z | PASS, round trip verified both directions |
+| deploy | 12:17:52Z | `ae736b4`, clean tree |
+| item 4 (both bands) | 12:18:32 → 12:20:45Z | **rc=0** |
+| v6 capture | 12:26Z | `attnbench-env-v6-20260917`, READY |
+| delete | 12:26:44Z | immediate |
+
+**Item 4 took 2 minutes 13 seconds of GPU time**, and settled a question three
+prior sessions had approached by composition. Elapsed and spend were read from
+`scripts/gcp_session_elapsed.sh` throughout rather than recalled.
+
+**v6 boot-tested separately on an `e2-medium`**, CPU-only, ~₹1: boots, sshd at
+~40 s, repo at `ae736b4` with a clean tree, all 7 tracked files under
+`results/` present, torch 2.9.1+cu129 / transformers 4.46.0 / flash_attn
+2.8.3.post1 importable. The first boot-test script reported a pass on **empty
+output** and was fixed to refuse unless it counts at least 7 `CHECK` lines —
+recorded because it is the same defect class the script was written to catch,
+appearing in the script itself.
+
+**Two-session total for 2026-09-17: ₹1,054.**
