@@ -2365,3 +2365,41 @@ leaving the intended disk-recovery window, and every phase had already synced
 to GCS, so deletion cost nothing but time. The money was lost to a decision,
 not to a missing safeguard — which is the harder kind to add a guard for, and
 the reason it is written down here instead.
+
+---
+
+## 41. Composed estimates of measured quantities: reliable for sign, unreliable for size
+
+Four instances in this project, the last one measured end-to-end so the error
+could be quantified rather than suspected.
+
+| # | composition | direction | magnitude |
+|---|---|---|---|
+| kernel TFLOPS → whole-model | right | wrong (attention is a small share of model FLOPs) |
+| prefill throughput → decode | right | wrong (decode is memory-bound, prefill compute-bound) |
+| `28 × T` conversion tax added to Stage 2 cells | right | **double-counted** — `timing.measure()` takes the mask as a parameter, so the per-call conversion was already inside |
+| kernel saving + mask construction → end-to-end gap | right in all 6 cells | **wrong in both directions** |
+
+The last one is the clean experiment, because only one input changed. The same
+arithmetic, fed a strictly *better* measured term — mask construction timed on
+the instance's own CPU rather than a laptop's, 3.7× slower and therefore more
+accurate — moved from **undershooting** the observed gap by ~2.5× to
+**overshooting** it by 1.7–2.5×. Improving an input made the prediction worse.
+
+**That is the diagnostic.** When a better input degrades a composed estimate,
+the error is not in the terms; it is in the composition. Each term carries its
+own measurement error and its own scope conditions, the composition multiplies
+and adds them, and **nothing cross-checks the total** — there is no measured
+quantity for the sum to disagree with, which is exactly why the sum survives.
+
+**The rule.** Composed estimates of measured quantities are usable for
+**sign** and not for **size**. Use them to decide whether an effect exists and
+which way it points, to choose what to measure next, and to sanity-check a
+direct measurement's plausibility. Do not publish their magnitudes, and do not
+let a composed magnitude stand in for the measurement it is a proxy for.
+
+The end-to-end run that replaced the composition here took **2 minutes 13
+seconds** of GPU time. The composed budget it replaced had been revised across
+three sessions, produced one withdrawn figure (459.6 ms) and one withdrawn
+double-count, and was wrong by 2–3× in both directions at the end of it. **The
+direct measurement was always cheaper than the argument about it.**

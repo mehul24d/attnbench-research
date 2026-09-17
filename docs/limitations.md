@@ -188,20 +188,46 @@ baseline weak enough to beat, or a vectorised mask builder — and the reference
 implementation has neither.** That is a statement about the implementation
 landscape, not about sparse attention.
 
-**This is a budget calculation, not an end-to-end run, and the budget has
-since been shown not to work.** The flip table above composes kernel timings
-with construction timings arithmetically. That composition is wrong in both
-directions depending on which CPU supplies the construction term (see the
-first table in this section), so **the specific flip points it predicts
-carry no weight**. It is retained to show what was predicted, against which
-the end-to-end measurement can be read.
+**The end-to-end run, 2026-09-17.** Measured rather than composed: one
+process, one model instance, one score tensor, arms interleaved, changing only
+which function `masks.mask_for` calls. A100, clocks locked, `git_dirty=False`.
 
-The end-to-end run — same process, same model instance, same scores,
-interleaved arms, changing only which function `masks.mask_for` calls — is
-what settles this. Until its numbers are in, the honest statement is: the
-sign of the construction penalty is established and its location is
-established; the size of the effect on end-to-end latency, and therefore
-whether it flips the result at any band, is not.
+| band | sparsity | reference builder | **vectorised builder** |
+|---|---|---|---|
+| 8192 | 0.5 | 0.544× | **0.968×** |
+| 8192 | 0.75 | 0.750× | **1.023×** |
+| 8192 | 0.9 | 0.973× | **1.058×** |
+| 16384 | 0.5 | 0.405× | **1.090×** |
+| 16384 | 0.75 | 0.633× | **1.201×** |
+| 16384 | 0.9 | 0.956× | **1.282×** |
+
+**The A100 reversal is the mask builder, not the card.** With the reference
+implementation block-sparse loses at every cell measured; with a vectorised
+builder it wins at five of six, reaching **1.282× at 16384/0.9**. The dense
+control — which builds no mask, so the builder cannot touch it — moved −0.1%
+at 8192 and +0.0% at 16384 between the two settings, so nothing else changed.
+
+**The outputs are bitwise identical**, all 8 cells, both bands: `max|Δlogit| =
+0.0`, argmax token unchanged. The tie-break disagreement the guard reports (2
+cells in 1 row at 16384, max gap 5.239e-10, inside the reference's own 1e-9
+jitter) costs nothing observable. Same masks by every measure that matters,
+~30× cheaper construction, and the change in latency is attributable to the
+builder alone.
+
+**This retires the disjunctive form of the claim.** The earlier phrasing was
+"the end-to-end speedup requires either a dense baseline weak enough to beat,
+or a vectorised mask builder." The first disjunct is gone: against `sdpa_flash`
+on an A100 — the strongest dense baseline in this study, on the faster of the
+two cards — the vectorised builder wins outright. What remains is one
+condition, and it is an engineering gap rather than a hardware property.
+
+**A caveat on this run's inputs.** It scores seeded random token ids, so its
+score distribution shows 0.0% exact ties, against 3.0% measured on real RULER
+examples at `block_size=128`. For latency this is immaterial — block-sparse
+cost depends on mask *density*, which sparsity fixes, and the per-row active
+counts are asserted identical between builders. But the tie-rate figures from
+this run describe random input and must not be quoted interchangeably with the
+real-example figures elsewhere in this file.
 
 **What is NOT available as a saving:** reusing one mask across layers. Each
 layer builds from its own scores (`state.scores[self.layer_idx]`), so the 28
