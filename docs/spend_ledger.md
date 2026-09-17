@@ -294,3 +294,55 @@ this from becoming a heuristic that quietly costs money.
 sync, the stale-`results/` quarantine and model load. On a 16-minute workload
 the fixed setup cost is larger than the measurement. For a session this short
 the lever is a warmer image, not a faster card.
+
+---
+
+## Session 10 — 2026-09-17, A100 (`attnbench-a100-20260917-1248`), DWS Flex Start, ₹284/h
+
+Boot 07:19:45Z. In-guest halt 10:49Z, `max-run-duration` DELETE 11:49Z — the
+halt set well short of the DELETE deliberately, so a failure leaves a
+disk-recovery window rather than a deleted disk.
+
+Write gate PASSED at 07:20:19Z, 34 seconds after boot (sshd answered on the
+second probe, 20s in — the hardened wait is what turned a previous exit-255
+false verdict into a pass).
+
+**Six items planned, in running order:**
+
+| item | what | result |
+|---|---|---|
+| 2 | instance-CPU mask construction timing | rc=0, 07:21:13Z |
+| 1 | Stage 0/1 at the model's real `(12,2)` geometry | rc=0, 07:31:24Z, 149 rows |
+| 3 | matched-geometry kernel cells | rc=0, 07:32:24Z, 53 cells |
+| 4 | vectorised-builder end-to-end | 2 failures, both caught by guards |
+| 5 | Qwen2.5-7B-Instruct download | rc=0, 85s |
+| 6 | 7B oracle arm at 16384 | GLA guard refused; relaunched `--no-gla` |
+
+**₹111 of idle burn** between item 3 finishing at 07:32:24Z and item 4
+launching at 07:55:52Z — 23.5 minutes. Items 1–3 were chained into one
+script; item 4 was not yet written when they started. The chaining discipline
+was applied only to the phases that already existed, which is the failure
+mode the discipline exists to prevent. **The rule that comes out of it: the
+chain is written before the first phase launches, or the phases that exist
+are the phases that get chained.**
+
+**Two guards fired and both were load-bearing.**
+
+The GLA arm guard refused the 7B run in 2 seconds rather than raising on the
+first GLA cell after every dense and sparse row of the band had been paid
+for. The verdict it demanded (`results/stage3_s1b/gla_arm_verdict.json`,
+`drop`, pre-registered 2026-09-07) was already banked; the omission was mine.
+
+The equivalence guard in item 4 refused to time a builder that disagreed with
+the reference on 2 of 4096 cells at `seq_len=8192`. That disagreement turned
+out to be fp16 tie-breaking rather than a ranking difference — see pattern 39
+— but the guard could not know that, and the alternative to it firing was a
+latency counterfactual measured on a mask nobody had checked.
+
+**Clock lock succeeded on the A100 and is stamped `clocks_locked=True`** on
+the 7B accuracy rows and on item 4's path. This is the first accuracy band in
+the project measured with clocks pinned. Item 3's kernel cells are still
+`clocks_locked=False` with `sm_clock_mhz_at_capture=210` (idle), consistent
+with every Stage 2 row on all three cards — so the matched-geometry cells
+inherit the unlocked-clock caveat and are not tighter than the L4 numbers
+they are compared against.
