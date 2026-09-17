@@ -68,6 +68,73 @@ architecture cannot detect a claim that is true of that architecture.**
 
 ---
 
+## The A100 reversal is CPU mask construction, and it is an implementation cost
+
+Measured 2026-09-17, mostly without a GPU. The Stage 5 finding that
+block-sparse prefill reverses on A100 has a located cause, and it is not the
+attention kernel.
+
+**Per-forward budget, sparsity 0.75, 28 layers:**
+
+| seq | card | kernel saving ×28 | mask construct ×28 | net | Stage 5 observed |
+|---|---|---|---|---|---|
+| 4096 | L4 | +8.4 | 17.5 | −9.1 | +1.3 |
+| 4096 | A100 | −9.3 | 17.5 | −26.8 | −39.7 |
+| 8192 | L4 | **+159.9** | 52.9 | **+107.0** | **+52.1** |
+| 8192 | A100 | **+27.8** | 52.9 | **−25.2** | **−68.8** |
+
+Sign correct in all four cells. Magnitudes are not, because the kernel column
+is Stage 2's 32-head geometry against a 12-head model — see the geometry
+caveat below.
+
+**The term that decides the sign does not scale with the accelerator.**
+`masks.py` builds masks on CPU by convention, once per layer per forward:
+
+| seq_len | blocks | ms/call | ×28 layers |
+|---|---|---|---|
+| 4096 | 32 | 0.625 | 17.5 |
+| 8192 | 64 | 1.890 | 52.9 |
+| 16384 | 128 | 6.418 | 179.7 |
+| 32768 | 256 | 23.092 | **646.6** |
+
+O(seq_len²), and bit-identical on both cards. At 8192 the L4's kernel saves
+159.9 ms against a 52.9 ms construction cost and wins; the A100's kernel saves
+27.8 ms against **the same** 52.9 ms and loses. The GPU got ~3× faster and the
+tax did not move. **The net sign is set by how fast the GPU is relative to a
+fixed CPU term**, which predicts the reversal is *worse* on H100.
+
+**It does not parallelise.** 1→8 torch threads gives 1.01× / 0.97× / 1.05× at
+8192 / 16384 / 32768. So instance vCPU count does not confound the card
+comparison (g2-standard-8 has 8, a2-ultragpu-1g has 12); only single-core
+clock differs, a much smaller effect.
+
+**"As implemented" is load-bearing — this is an engineering cost, not a
+property of sparse attention.** Profiling `importance_block_mask` at 32768:
+the Python loop body is 0.212 s per 10 calls while every torch op inside it
+totals ~0.013 s. **~91% is interpreter overhead, not tensor work.** The
+structure is a per-query-block loop that fancy-indexes with a Python *list*,
+then writes results back through an inner `for j in top.tolist(): active[qb,
+kvs[j]] = True` — roughly 8,000 scalar tensor assignments per mask at 32768.
+Vectorising to a single batched top-k and one scatter would collapse it. A
+reader should take this as "the available implementation is CPU- and
+interpreter-bound", not "block-sparse attention is inherently CPU-bound".
+
+**What is NOT available as a saving:** reusing one mask across layers. Each
+layer builds from its own scores (`state.scores[self.layer_idx]`), so the 28
+masks genuinely differ and 27 of them are not redundant. The amortisation is
+inside a single construction, not across them.
+
+**Geometry caveat.** The kernel column comes from Stage 2, whose grid is
+`head_layouts = ((32,32),(32,8))` at head_dim 128, while Qwen2.5-1.5B is
+(12, 2). Per-layer scaling between the two is invalid, so the table above
+establishes the **sign and the location** of the penalty, not its size. An
+earlier estimate of 459.6 ms computed that way was withdrawn. A separate
+double-count was also withdrawn: `timing.measure()` takes the mask as a
+parameter, so Stage 2's numbers already contain the per-call *conversion*
+tax, and adding it again as an external term counted it twice.
+
+---
+
 ## The decode-step decomposition is ill-conditioned at short context
 
 The Stage 5 decode step is an **OLS intercept** over `max_new_tokens ∈
