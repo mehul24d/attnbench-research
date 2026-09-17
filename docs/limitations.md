@@ -1609,3 +1609,60 @@ unforced comparison *is* the measurement of what the sink was worth — probably
 the cleanest demonstration this study contains of why a mask-construction
 detail that papers put in an appendix is load-bearing. Regeneration is
 pending.
+
+---
+
+## The oracle ranks a signal fp16 cannot fully separate, and it gets worse at finer blocks
+
+Found 2026-09-17 while investigating why a vectorised mask builder disagreed
+with the reference on real data (`docs/silent_failure_patterns.md` pattern
+39). Measured directly on banked oracle score tensors — Qwen2.5-1.5B,
+`seq_len=16384`, all 28 layers, candidates only (strictly-lower triangle;
+the causally-masked region is zero by construction and is not a selection
+candidate).
+
+| `block_size` | n_blocks | exactly zero | **tied with another candidate** | worst layer |
+|---|---|---|---|---|
+| 64 | 256 | 0.0% | **17.1%** | 37.3% |
+| **128** (this study) | 128 | 0.0% | **3.0%** | 10.0% |
+| 256 | 64 | 0.0% | **0.4%** | 1.0% |
+| 512 | 32 | 0.0% | **0.1%** | 0.4% |
+
+**Nothing underflows.** The exact-zero rate is 0.0% at every block size. The
+mechanism is fp16 *mantissa* collisions, not underflow: `score_cache.save`
+stores fp16, and in a row of 256 candidates the pooled probabilities average
+~0.004, where adjacent distinct values land on the same fp16 representable
+number. Where the top-k boundary falls inside such a group, which member gets
+kept is decided by the tie-break, not by the score.
+
+**The direction is the opposite of what coarse-block dilution would predict.**
+Tie density falls roughly 6x per doubling of `block_size`. Coarser blocks pool
+more probability mass into each cell, pushing values up into a region where
+fp16 has resolution to spare; *finer* blocks spread the same mass thinner
+until neighbouring blocks become indistinguishable in storage. So this is not
+the sink-dilution mechanism recorded elsewhere in this file appearing in a new
+place — it runs the other way, and the two should not be folded together.
+
+**What it means for the block-size threat.** At the study's `block_size=128`
+the affected fraction is 3.0% of candidates (10.0% in the worst layer), which
+is small but not nothing. The interesting extrapolation is downward: a
+`block_size=16` arm — the configuration this document already flags as the
+sharpest threat to the headline result — would sit well above the 17.1%
+measured at 64. Any future fine-block arm should therefore **re-measure this
+before interpreting its accuracy**, because a meaningful share of its mask
+would be selected arbitrarily rather than by importance.
+
+**This is a storage decision, not a property of sparse attention.** Caching
+scores in fp32 costs 2x disk (the grid's largest entry goes from 64 MiB to
+128 MiB) and removes the effect entirely. Like the CPU mask-construction
+finding, the honest phrasing is *as implemented*: the oracle is degraded by a
+cache dtype chosen for space, not by anything intrinsic to importance-based
+block selection.
+
+**A claim made in conversation before this was measured was wrong**, and is
+recorded here rather than quietly dropped: the tie structure was first
+described as "~62% of pooled fp16 scores round to exact zero," which would
+have made this a signal-loss story about coarse pooling. That figure came
+from a synthetic softmax and counted the causally-masked upper triangle. The
+real rate is 0.0%, the real mechanism is mantissa collision, and the real
+block-size dependence points the other way.
