@@ -223,6 +223,41 @@ indistinguishable from deleting the check. And **the generator of the test
 data is part of the test**: where the real pipeline quantises, pools or
 saturates, the fixtures must too.
 
+**The reason to trust the final claim is its revision history, not its
+number.**
+
+The headline went through four forced revisions, each driven by adding a
+second point on an axis that had only one:
+
+| version | claim | what forced the next revision |
+|---|---|---|
+| 1 | block-sparse attention delivers **1.321×** at 32768 | a second card |
+| 2 | …**on an L4**; on an A100 it is 0.475× | a kernel sweep at the real geometry |
+| 3 | …and the A100 kernel is slower, which explains it | the kernel is **1.96× faster**; the cost is CPU-side |
+| 4 | …the penalty is CPU mask construction; the speedup needs **either** a weak dense baseline **or** a vectorised builder | an end-to-end run with the builder swapped |
+| **5** | **block-sparse prefill beats dense on an A100 at 8192+ — 1.282× at 16384/0.9 — but only with a vectorised mask builder, which the reference implementation lacks** | *not yet overturned* |
+
+Every version was measured correctly. Versions 1 and 2 were also *replicated*
+— 1.321× re-measured on a second L4, agreeing to 0.19%. Version 3 was a
+mechanism inferred from a correct measurement and refuted by a two-minute
+experiment. Version 4's disjunction dissolved the moment the disjunct was
+tested instead of reasoned about: against the strongest dense baseline in the
+study, on the faster card, the vectorised builder simply wins.
+
+**A reader should weight version 5 by the fact that four predecessors fell,
+and by what it would take to overturn it** — a second point on `block_size`,
+on model family, or on batch size, each of which currently has one. It is the
+first version whose central term was measured directly rather than composed,
+and the first whose scope conditions were each tested rather than assumed.
+That is a better reason to trust it than 1.282×.
+
+**It is also the version most useful to a practitioner**, which is worth
+separating from whether it is correct. The speedup is *available* on the
+hardware people have; the reference implementation forfeits it; and the fix is
+a batched top-k and a scatter in place of a per-query-block Python loop. That
+is an actionable finding in a way that "sparse attention is 1.321× on an L4"
+never was.
+
 **Three for three: every conclusion drawn from a single point on an axis was
 overturned by adding a second point on that axis.**
 
