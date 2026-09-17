@@ -593,6 +593,51 @@ RULER's algorithm, not RULER's benchmark".
 
 ---
 
+## The accuracy collapse at high sparsity does not survive a change of model scale
+
+Measured 2026-09-17. Oracle scoring on both sides (`score_source =
+dense_softmax_fp32`), `seq_len=16384`, n=100 per (task, cell), clocks locked
+on the 7B rows, `git_dirty=False` on both. Each model's sparse cells are
+re-based on **its own** dense control, so "the bigger model is better at the
+task" is separated from "sparsity costs less at scale".
+
+| task | sparsity | Qwen2.5-1.5B | Qwen2.5-7B |
+|---|---|---|---|
+| `niah_multikey` | dense | 66.0 | 96.0 |
+| | 0.50 | +0.0 | +0.0 |
+| | 0.75 | −7.0 | −2.0 |
+| | **0.90** | **−46.0** | **−5.0** |
+| `vt` | dense | 78.8 | 85.8 |
+| | 0.50 | +9.4 | +0.6 |
+| | 0.75 | +12.8 | +3.2 |
+| | 0.90 | +12.0 | +6.0 |
+
+**At 90% sparsity, multi-key retrieval costs 46 points at 1.5B and 5 points at
+7B.** The 7B model answers 91 of 96 correctly while attending to a tenth of
+its blocks. The collapse that looks like a property of block-sparse attention
+at 1.5B is substantially a property of the 1.5B model.
+
+This is the accuracy analogue of the card finding, and it carries the same
+caveat, for the same reason: **a result is scoped by the axes it was varied
+across.** One model at each of two scales is two points, not a scaling law,
+and the two models are the same family — Qwen2.5 — so architecture is held
+fixed along with everything else that travels with it. What can be said is
+that the 1.5B collapse is not reproduced at 7B, which is enough to stop the
+collapse being reported as a general property.
+
+**`vt` moves the other way and is worth stating separately.** Sparsity *helps*
+verbatim-retrieval at both scales — +12.0 at 1.5B and +6.0 at 7B at 0.9 — so
+the two tasks do not merely differ in magnitude, they differ in sign. A
+summary that averages across tasks would report a small net effect and hide
+both.
+
+**What this does not establish.** Nothing here measures 32768, where the
+1.5B's own headline speedup was largest, and nothing here re-measures the
+cheap estimator at 7B — at 1.5B the oracle beat the cheap arm by 32–40 points
+on `niah_multikey`, and whether that gap is also scale-dependent is untested.
+
+---
+
 ## The speedup does not survive a change of card
 
 Measured 2026-09-16 on an A100-SXM4-80GB (sm_80) under DWS Flex Start, clocks
