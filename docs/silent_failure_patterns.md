@@ -2231,17 +2231,31 @@ Nothing about the shapes was wrong. **The dtype was.** `score_cache.save`
 stores scores as fp16, and fp16-rounded pooled softmax probabilities are
 densely *tied*:
 
-| property of scores after fp16 (synthetic stand-in) | value |
-|---|---|
-| **candidate** cells rounding to exact zero | ~30% |
-| a row's candidates sharing a value with another candidate | ~34% |
+Measured on banked oracle tensors (Qwen2.5-1.5B, `seq_len=16384`, 28 layers,
+candidates only) — not on a synthetic stand-in, because the first two attempts
+to characterise this from a synthetic softmax were both wrong:
 
-A first pass at this table said ~62% zeros. That figure counted the whole
-matrix including the causally-masked upper triangle, which is zero by
-construction and not a candidate for selection — it measured the causal mask,
-not the quantisation. The real per-model figures are measured on the instance
-during the run and written to the parquet, rather than inferred from a
-synthetic softmax at all.
+| `block_size` | exactly zero | **tied with another candidate** |
+|---|---|---|
+| 64 | 0.0% | **17.1%** |
+| **128** (this study) | 0.0% | **3.0%** |
+| 256 | 0.0% | 0.4% |
+
+**Both of my synthetic estimates were wrong, in different ways.** The first
+said "~62% of cells round to exact zero" — it counted the causally-masked
+upper triangle, which is zero by construction and never a selection
+candidate, so it measured the causal mask. The second fixed that and said
+~30% zeros over candidates — still wrong, because a synthetic
+`softmax(randn*6)` has a far heavier tail than real pooled attention. The
+true zero rate is **0.0%**. Nothing underflows. The mechanism is fp16
+*mantissa collision*: in a row of 256 candidates the pooled probabilities
+average ~0.004, and distinct values land on the same representable fp16
+number.
+
+Two wrong synthetic estimates in a row, for a quantity that took one download
+and thirty seconds to measure against banked real data, is the pattern inside
+the pattern. See `docs/limitations.md` for the block-size dependence, which
+also runs opposite to the direction first proposed.
 
 `torch.rand` produces essentially no ties. So the synthetic check exercised
 the one regime in which the two builders provably agree, and said nothing
