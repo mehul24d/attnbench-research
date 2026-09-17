@@ -299,50 +299,74 @@ the lever is a warmer image, not a faster card.
 
 ## Session 10 — 2026-09-17, A100 (`attnbench-a100-20260917-1248`), DWS Flex Start, ₹284/h
 
-Boot 07:19:45Z. In-guest halt 10:49Z, `max-run-duration` DELETE 11:49Z — the
-halt set well short of the DELETE deliberately, so a failure leaves a
-disk-recovery window rather than a deleted disk.
+**₹1,005 for 3.54 h, of which roughly ₹540 — 54% — was an idle GPU.** That is
+the headline and it is a process failure, not a hardware one.
 
-Write gate PASSED at 07:20:19Z, 34 seconds after boot (sshd answered on the
-second probe, 20s in — the hardened wait is what turned a previous exit-255
-false verdict into a pass).
+Authoritative timeline from `gcloud compute operations list` (the instance's
+own record, not scrollback):
 
-**Six items planned, in running order:**
-
-| item | what | result |
+| event | UTC | source |
 |---|---|---|
-| 2 | instance-CPU mask construction timing | rc=0, 07:21:13Z |
-| 1 | Stage 0/1 at the model's real `(12,2)` geometry | rc=0, 07:31:24Z, 149 rows |
-| 3 | matched-geometry kernel cells | rc=0, 07:32:24Z, 53 cells |
-| 4 | vectorised-builder end-to-end | 2 failures, both caught by guards |
-| 5 | Qwen2.5-7B-Instruct download | rc=0, 85s |
-| 6 | 7B oracle arm at 16384 | GLA guard refused; relaunched `--no-gla` |
+| insert | 07:18:35 | `insert` |
+| write gate passed | 07:20:19 | log |
+| items 2, 1, 3 complete | 07:32:24 | log |
+| item 4 launched (first) | 07:55:52 | log |
+| 7B oracle 16384 complete, 800 rows | 08:59:22 | log |
+| item 4b guard refused | 09:20:15 | log |
+| **in-guest shutdown fired** | **10:50:51** | `guestTerminate` |
+| **max-run-duration DELETE** | **11:48:52** | `deferredDelete` |
 
-**₹111 of idle burn** between item 3 finishing at 07:32:24Z and item 4
-launching at 07:55:52Z — 23.5 minutes. Items 1–3 were chained into one
-script; item 4 was not yet written when they started. The chaining discipline
-was applied only to the phases that already existed, which is the failure
-mode the discipline exists to prevent. **The rule that comes out of it: the
-chain is written before the first phase launches, or the phases that exist
-are the phases that get chained.**
+**The teardown structure worked exactly as designed.** The in-guest halt fired
+58 minutes before the API-level DELETE, which is the disk-recovery window the
+rule exists to create. Nothing was lost: every phase had already synced to
+GCS, and the cleanup check afterwards shows zero instances, zero disks, zero
+snapshots.
 
-**Two guards fired and both were load-bearing.**
+**What failed was attention to the clock.** Two idle stretches:
 
-The GLA arm guard refused the 7B run in 2 seconds rather than raising on the
-first GLA cell after every dense and sparse row of the band had been paid
-for. The verdict it demanded (`results/stage3_s1b/gla_arm_verdict.json`,
-`drop`, pre-registered 2026-09-07) was already banked; the omission was mine.
+| stretch | duration | cost | cause |
+|---|---|---|---|
+| 07:32 → 07:56 | 23.5 min | ₹111 | items 1–3 were chained; item 4 had not been written yet |
+| **09:20 → 10:51** | **90.6 min** | **₹429** | item 4's guard refused, and the diagnosis was done locally while the GPU sat idle |
 
-The equivalence guard in item 4 refused to time a builder that disagreed with
-the reference on 2 of 4096 cells at `seq_len=8192`. That disagreement turned
-out to be fp16 tie-breaking rather than a ranking difference — see pattern 39
-— but the guard could not know that, and the alternative to it firing was a
-latency counterfactual measured on a mask nobody had checked.
+The second one is the expensive lesson. After the guard fired, the work that
+followed — reproducing the failure, measuring fp32 ulp against the jitter,
+writing two tests, running the suite three times — was all CPU-local and none
+of it needed the A100. **The instance should have been deleted the moment the
+guard refused, and re-created when there was something to run on it.** A
+diagnosis that runs on a laptop is not a reason to hold a ₹284/h accelerator.
+
+Compounding it: elapsed time was reported from arithmetic on remembered
+timestamps rather than read from the clock, so progress updates claimed
+"elapsed 2.0 h" while the true figure kept drifting further ahead. The
+instance's own operations log was the correct source and was not consulted
+until after deletion.
+
+**What the session actually produced** (all banked, all verified readable
+from GCS after deletion):
+
+| item | result |
+|---|---|
+| 1 — Stage 0/1 at `(12,2)` | 149 rows; `block_sparse` 27/27 incl. cross-backend at 8192 and 16384 |
+| 2 — instance-CPU construction | instance CPU uniformly ~3.7× slower than laptop |
+| 3 — matched-geometry kernel | 53 cells; corrected a published table |
+| 4 — vectorised end-to-end | **no data**; guard refused twice, both times correctly |
+| 5 — 7B download | rc=0, 85 s |
+| 6 — 7B oracle 16384 | 800 rows, `clocks_locked=True`, `git_dirty=False` |
+
+**Two guards fired and both were load-bearing.** The GLA arm gate refused the
+7B run in two seconds over an omitted flag whose verdict was already banked,
+where the alternative was raising after a full band had been paid for. The
+mask-equivalence guard refused to time a builder it could not prove
+equivalent — twice, for two different and both-real reasons (fp16 tie-breaking
+at 8192, then an fp32 near-tie at 16384 that is inside the reference's own
+jitter).
 
 **Clock lock succeeded on the A100 and is stamped `clocks_locked=True`** on
-the 7B accuracy rows and on item 4's path. This is the first accuracy band in
-the project measured with clocks pinned. Item 3's kernel cells are still
-`clocks_locked=False` with `sm_clock_mhz_at_capture=210` (idle), consistent
-with every Stage 2 row on all three cards — so the matched-geometry cells
-inherit the unlocked-clock caveat and are not tighter than the L4 numbers
-they are compared against.
+the 7B accuracy rows — the first accuracy band in the project measured with
+clocks pinned. Item 3's kernel cells remain `clocks_locked=False` with
+`sm_clock_mhz_at_capture=210` (idle), consistent with every Stage 2 row on all
+three cards, so the matched-geometry cells inherit that caveat and are no
+tighter than the L4 numbers they are compared against.
+
+**The v6 image capture was planned for this session and not attempted.**
