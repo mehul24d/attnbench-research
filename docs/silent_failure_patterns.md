@@ -2217,3 +2217,61 @@ died*, are distinguishable rather than both absent.
 
 **Prefer a signal the watched thing emits over a signal the watcher derives.**
 A derived signal has to model the thing; an emitted one only has to be read.
+
+---
+
+## 39. An equivalence proof validated on synthetic continuous data, applied to quantised real data
+
+**2026-09-17, A100 session 7, item 4.** A vectorised mask builder was checked
+against the reference on 36 synthetic configs and matched bit-for-bit. Against
+the real model it disagreed on the first band measured: `seq_len=8192`, layer
+3, sparsity 0.5, 2 of 4096 cells.
+
+Nothing about the shapes was wrong. **The dtype was.** `score_cache.save`
+stores scores as fp16, and fp16-rounded pooled softmax probabilities are
+densely *tied*:
+
+| property of real scores after fp16 | value |
+|---|---|
+| cells rounding to exact zero | ~62% |
+| a row's candidates sharing a value with another candidate | ~27% |
+| largest exact-tie group in one row (n=64) | 63 of 64 |
+
+`torch.rand` produces essentially no ties. So the synthetic check exercised
+the one regime in which the two builders provably agree, and said nothing
+about the regime that actually runs. The reference breaks ties with 1e-9
+jitter; the vectorised builder uses a stable argsort. Wherever a tie group
+straddles the per-row budget boundary they keep different, equal-scoring
+blocks.
+
+**The wrong claim was written down before it was measured.** The builder's
+docstring argued the jitter "cannot change a top-k on non-tied input.
+Equivalence is asserted below on non-tied scores, **which is the case that
+occurs**." The first clause is true and the last is false, and the argument
+reads as sound precisely because the true part carries the false part.
+
+**Bitwise equality was also the wrong property to demand.** The measurement
+needed the two builders to give the kernel the same work and the same
+ranking, which is:
+
+1. identical per-row **active count** — block-sparse cost depends on how many
+   blocks are active, not which;
+2. identical per-row **kept-score multiset** — which makes a disagreement
+   provably tie-breaking rather than a ranking difference.
+
+Both hold. So the builder is valid for the latency counterfactual it exists
+for, and is **not** a drop-in for accuracy: a different equal-scoring block is
+still a different block, and interchangeable-by-score is not
+interchangeable-by-output.
+
+**Two generalisations worth keeping.**
+
+A guard relaxed after it fires has to be shown to still bite. The relaxed
+check is run against a negative control — a builder that inverts the ranking —
+and rejects it. Without that, "relax the assertion until it passes" is
+indistinguishable from deleting it.
+
+And the generator of the test data is part of the test. A check whose inputs
+come from `torch.rand` has silently assumed continuity, distinctness and full
+precision. Where the real pipeline quantises, pools, or saturates, the test
+data must do the same, or the check is exercising a regime that never runs.
