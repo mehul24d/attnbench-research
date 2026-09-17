@@ -45,6 +45,11 @@ from _vec_mask_for_measurement import importance_block_mask_vectorised # noqa: E
 
 _REFERENCE_BUILDER = masks.importance_block_mask
 
+# masks.importance_block_mask adds `torch.rand(...) * 1e-9` to scores before
+# its top-k, so two kept-score multisets that differ by no more than this are
+# indistinguishable under the reference's own perturbation.
+JITTER_REACH = 1e-9
+
 
 def _vectorised_builder(seq_len, block_size, sparsity, importance_scores, *,
                         causal, identity_seed):
@@ -111,6 +116,8 @@ def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
     checked = 0
     differing_cells = 0
     tied_rows = 0
+    jitter_rows = 0
+    max_jitter_gap = 0.0
     # Quantisation structure of the scores the oracle actually ranks. Measured
     # here rather than quoted from a synthetic softmax: the zero-rate is a
     # property of THIS model at THIS block_size, and it is the reason the
@@ -164,12 +171,34 @@ def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
                     va = torch.sort(sc[qb][a.active[qb]]).values
                     vb = torch.sort(sc[qb][b.active[qb]]).values
                     if not torch.equal(va, vb):
-                        raise SystemExit(
-                            f"EQUIVALENCE FAILED seq_len={seq_len} "
-                            f"layer={layer} sparsity={sp} row={qb}: kept-score "
-                            f"multisets differ, so this is a RANKING "
-                            f"disagreement, not tie-breaking. Refusing to time "
-                            f"a builder that computes something else.")
+                        # Tolerance set by the REFERENCE's own jitter, not
+                        # chosen to make this pass. masks.importance_block_mask
+                        # adds rand()*1e-9 before its top-k and documents it as
+                        # breaking "exact score ties". On fp32 scores it does
+                        # more than that: near 1/128 the fp32 ulp is 9.3e-10,
+                        # BELOW the jitter's range, so two genuinely distinct
+                        # values one ulp apart that straddle the budget
+                        # boundary are reordered arbitrarily by the reference.
+                        # Measured: adjacent sub-1e-9 pairs are present in real
+                        # near-uniform attention rows and grow as the row
+                        # flattens. So a disagreement bounded by 1e-9 is inside
+                        # the reference's own arbitrariness and cannot be
+                        # attributed to the vectorised builder; a real ranking
+                        # error is orders of magnitude larger (inverting the
+                        # ranking moves values by ~1e-2, and the negative
+                        # control test asserts that still fires).
+                        gap = float((va - vb).abs().max()) if va.numel() == vb.numel() else float("inf")
+                        if not (gap <= JITTER_REACH):
+                            raise SystemExit(
+                                f"EQUIVALENCE FAILED seq_len={seq_len} "
+                                f"layer={layer} sparsity={sp} row={qb}: "
+                                f"kept-score multisets differ by {gap:.3e}, "
+                                f"beyond the reference's own {JITTER_REACH:.0e} "
+                                f"jitter reach. This is a RANKING disagreement, "
+                                f"not tie-breaking. Refusing to time a builder "
+                                f"that computes something else.")
+                        jitter_rows += 1
+                        max_jitter_gap = max(max_jitter_gap, gap)
                     tied_rows += 1
                 differing_cells += int(diff.sum())
             checked += 1
@@ -178,7 +207,9 @@ def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
     print(f"  equivalence OK at seq_len={seq_len}: {checked} (layer x "
           f"sparsity) masks agree on per-row active count and kept-score "
           f"multiset; {differing_cells} cells differ by tie-break across "
-          f"{tied_rows} rows", flush=True)
+          f"{tied_rows} rows, of which {jitter_rows} needed the "
+          f"{JITTER_REACH:.0e} jitter tolerance (max gap "
+          f"{max_jitter_gap:.3e})", flush=True)
     print(f"  score quantisation at seq_len={seq_len}: "
           f"{100*zero_frac:.1f}% of causal cells are EXACTLY zero in fp16, "
           f"{100*tie_frac:.1f}% of a row's candidates share a value with "
@@ -236,8 +267,13 @@ def main():
     out_rows = []
     for band in bands:
         print(f"\n===== band {band} =====", flush=True)
+        # Seeded per band: these ids ARE the input whose scores drive every
+        # mask below, and an unseeded draw makes the run unreproducible and
+        # any guard failure impossible to re-examine. Derived from the band so
+        # the two bands differ.
+        gen = torch.Generator(device="cpu").manual_seed(1234 + band)
         ids = torch.randint(0, model.config.vocab_size, (1, band),
-                            device=args.device)
+                            generator=gen).to(args.device)
         wrapped = SwappableAttentionModel(
             model, cfg_for(band, "causal", None), model_id=grid.model_primary,
             finest_block_size=grid.finest_block_size)

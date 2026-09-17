@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from attnbench import masks
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -120,3 +122,62 @@ def test_reference_builder_is_restored_after_a_rejection():
     finally:
         R._vectorised_builder = orig
     assert masks.importance_block_mask is before
+
+
+def test_jitter_tolerance_has_a_ceiling():
+    """The 1e-9 tolerance is bounded by the reference's own jitter, so a
+    disagreement larger than that must still be rejected. Without this,
+    "differs only by a tolerance" could grow to cover anything.
+
+    The perturbation swaps one genuinely-kept block for a genuinely-unkept
+    one of clearly different score, holding the per-row count fixed -- so
+    ONLY the multiset branch can catch it, which is the branch under test.
+    """
+    orig = R._vectorised_builder
+
+    def swapped(seq_len, block_size, sparsity, importance_scores, *,
+                causal, identity_seed):
+        m = orig(seq_len, block_size, sparsity, importance_scores,
+                 causal=causal, identity_seed=identity_seed)
+        act = m.active.clone()
+        n = act.shape[0]
+        for qb in range(n - 1, 1, -1):
+            cand = torch.zeros(n, dtype=torch.bool)
+            cand[1:qb] = True
+            kept = cand & act[qb]
+            unkept = cand & ~act[qb]
+            if not kept.any() or not unkept.any():
+                continue
+            ki = torch.nonzero(kept).flatten()
+            ui = torch.nonzero(unkept).flatten()
+            lo = ki[importance_scores[qb][ki].argmin()]
+            hi = ui[importance_scores[qb][ui].argmax()]
+            if importance_scores[qb, lo] == importance_scores[qb, hi]:
+                continue          # a tie swap is exactly what IS allowed
+            act[qb, lo] = False
+            act[qb, hi] = True
+            break
+        return masks.BlockSparseMask(
+            seq_len=seq_len, block_size=block_size, active=act, seed=m.seed,
+            source=m.source, causal=m.causal)
+
+    R._vectorised_builder = swapped
+    try:
+        with pytest.raises(SystemExit, match="RANKING"):
+            _call(_tie_dense_scores())
+    finally:
+        R._vectorised_builder = orig
+
+
+def test_jitter_reach_matches_the_reference_implementation():
+    """If masks.py ever changes its jitter magnitude, this tolerance is no
+    longer justified by anything and must be revisited rather than silently
+    becoming either too tight or too permissive."""
+    import inspect
+    from attnbench import masks
+    src = inspect.getsource(masks.importance_block_mask)
+    assert "1e-9" in src, (
+        "importance_block_mask no longer uses a 1e-9 jitter; "
+        "run_vectorised_endtoend.JITTER_REACH was derived from it and must "
+        "be re-derived.")
+    assert R.JITTER_REACH == 1e-9
