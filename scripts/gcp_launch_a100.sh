@@ -39,7 +39,11 @@ PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 ZONE="${GCP_ZONE:-asia-southeast1-c}"
 MACHINE_TYPE="a2-ultragpu-1g"
 ACCELERATOR="type=nvidia-a100-80gb,count=1"
-IMAGE="attnbench-env-v5-20260905"
+# Overridable so a freshly captured image can be put to work instead of
+# sitting in storage. v6 (2026-09-17) is boot-tested -- see
+# gcp_boot_test_image.sh -- and carries the repo at ae736b4 plus the built
+# flash-attn, which is the expensive part of a cold setup.
+IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
 # Overridable, and they SHOULD be overridden for short work. These defaults
