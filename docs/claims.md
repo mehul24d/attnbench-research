@@ -473,6 +473,8 @@ saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
 | **Supported** | *On an **NVIDIA L4 (sm_89)**, block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* **The card is not a detail of this sentence.** On an A100 the same configuration is 0.475× with the reference builder — and the cause is the builder, not the card. |
 | **Not supported** | *Block-sparse attention is slower than dense on an A100.* This was the published claim on 2026-09-16 and it is wrong as a statement about the method. It is true only of the reference mask builder, and it inverts when that builder is replaced — measured end-to-end, same process, same scores, only the builder changed, with bitwise-identical model outputs. |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192. The speedup is an upper bound no measured estimator approaches.* |
+| **Supported** | *The oracle requirement is **not** a small-model artifact. Against MInference's mean-pool estimator on `niah_multikey` at 16384, the oracle's advantage **widens** with scale — +32/+40/+19 points at 1.5B against **+39/+67/+76** at 7B — because better representations help the dense-softmax oracle far more than the estimator. At 0.9 sparsity the oracle retains 95% of dense at 7B while the estimator retains 16%.* |
+| **Not supported** | *Scale will close the oracle-versus-estimator gap.* The opposite, on the one axis point available, and on the harder of the two discriminating tasks. `vt`'s gap does close at 7B (+8.6 → −0.6), so the two tasks differ in sign and a task-averaged summary hides the one that matters. |
 | **Not supported** | *Block-sparse attention delivers 1.321× at 32768.* Not as a system. It delivers that **given a mask nobody can afford to compute**, whose cost is 44.6 s per example against the 1286 ms saved — 35×, a ratio that has moved 4% since 16384. |
 | **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× against 0.75's 1.321×, for an accuracy difference of one example in 50 that the CI cannot separate from zero. At that margin 0.75 is the defensible pick, not because 0.9 is worse but because nothing here shows it is not. |
 | **Not supported** | *Accuracy and speed both improve with length, across the whole grid.* Both moved together over 2048–16384. From 16384 accuracy is at ceiling, so 32768 cannot test the claim either way. |
@@ -592,6 +594,76 @@ haystack (`haystack_mode` on every row), not RULER's benchmark distribution.
 Between-backend comparisons on identical inputs are valid; comparison to
 published RULER numbers is not. See `limitations.md`, "Task construction is
 RULER's algorithm, not RULER's benchmark".
+
+---
+
+## The oracle requirement DOES survive a change of model scale — it gets worse
+
+Measured 2026-09-17, the companion to the section below and the opposite
+result. Same model (Qwen2.5-7B-Instruct), same band (16384), same tasks, n=100,
+`clocks_locked=True`, `git_dirty=False` on both sides; only the scorer differs
+(`dense_softmax_fp32` vs `minference_meanpool`, MInference 1.0 Algorithm 3).
+The dense arm builds no mask and consults no scores, so the two runs compute
+it identically — and did, to **0.0 points** on both tasks. Every gap below is
+therefore signal, not run-to-run noise.
+
+**Oracle minus cheap, `niah_multikey`:**
+
+| sparsity | 1.5B | **7B** |
+|---|---|---|
+| 0.50 | +32.0 | **+39.0** |
+| 0.75 | +40.0 | **+67.0** |
+| 0.90 | +19.0 *(cheap at floor, 1.0)* | **+76.0** |
+
+**The gap widens at every sparsity.** The 1.5B figure at 0.9 is
+floor-compressed — the cheap arm scored 1.0 and could not go lower — so the
+true 1.5B gap there is larger than +19.0 and the comparison at that row
+understates rather than overstates the widening.
+
+**This is not the cheap estimator failing to improve.** It improves
+substantially with scale in absolute terms: 34.0 → 57.0, 19.0 → 27.0, 1.0 →
+15.0. The oracle simply improves far more. As a share of each model's own
+dense score:
+
+| sparsity | 1.5B oracle | 1.5B cheap | 7B oracle | 7B cheap |
+|---|---|---|---|---|
+| 0.50 | 100% | 52% | 100% | 59% |
+| 0.75 | 89% | 29% | 98% | 28% |
+| 0.90 | 30% | 2% | **95%** | **16%** |
+
+At 0.9 the oracle goes from retaining 30% of dense to retaining **95%**, while
+the estimator goes from 2% to 16%. **Better representations are something the
+dense-softmax oracle can exploit and the mean-pool estimator largely cannot**,
+so scale widens the distance between what is achievable and what is
+affordable.
+
+**`vt` goes the other way, and the two tasks together are the mechanism.**
+
+| sparsity | 1.5B gap | 7B gap |
+|---|---|---|
+| 0.50 | +3.2 | +1.6 |
+| 0.75 | +5.4 | +0.4 |
+| 0.90 | +8.6 | **−0.6** |
+
+On `vt` the gap closes to nothing at 7B and inverts trivially at 0.9. So the
+estimator is adequate for an easy retrieval pattern and inadequate for a hard
+one, and scale sharpens that division rather than softening it — consistent
+with the capacity-versus-difficulty account in Sparse Frontier (arXiv:2504.17768v2)
+Appendix D.4. **A task-averaged summary would report the gap shrinking and
+hide the task where it nearly quadrupled.**
+
+**What this does to the study's deployability caveat: it makes it permanent
+rather than provisional.** The natural hope after the sparsity-collapse result
+— that the oracle requirement is a small-model artifact that scale would
+dissolve — is refuted on the one axis point available. The honest statement is
+that *the oracle requirement is not a small-model artifact, and on the
+evidence here it is worse at scale, on hard retrieval.*
+
+**Scope, in the same terms this document applies everywhere else.** Two model
+sizes, one family, one band, one estimator. The estimator is MInference's
+mean-pool, not every cheap estimator; a different one could behave differently,
+and this measures the class only through one member. What is established is
+that *this* gap does not close between 1.5B and 7B.
 
 ---
 

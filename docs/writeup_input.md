@@ -258,18 +258,21 @@ a batched top-k and a scatter in place of a per-query-block Python loop. That
 is an actionable finding in a way that "sparse attention is 1.321× on an L4"
 never was.
 
-**Three for three: every conclusion drawn from a single point on an axis was
+**Four for four: every conclusion drawn from a single point on an axis was
 overturned by adding a second point on that axis.**
 
 This is the study's most transferable result, and it is not a result about
 attention. It is stated here as a finding rather than a caveat because the
-pattern held on every axis tested, without exception:
+pattern held on every axis tested, without exception — **including the one
+where a second point was added specifically in the hope of confirming an
+existing conclusion, and refuted it instead.**
 
 | axis | single-point conclusion | second point | outcome |
 |---|---|---|---|
 | **hardware** | block-sparse prefill reaches **1.321×** end-to-end at 32768 | A100 instead of L4 | **0.475×** — the speedup inverts |
 | **model scale** | 90% sparsity costs **46 points** on `niah_multikey` at 16384 | Qwen2.5-7B instead of 1.5B | **5 points** — the collapse mostly disappears |
 | **mask construction** | the A100 kernel is slower, so the kernel explains the reversal | a 2-minute kernel sweep, then a 2-minute end-to-end run | the kernel is **faster** (1.96× at 16384); the cost is **CPU-side**, and swapping the builder turns 0.633× into **1.201×** |
+| **scorer × scale** | the oracle-versus-estimator gap is a 1.5B artifact that scale should dissolve | Qwen2.5-7B | **refuted** — the gap *widens*, +40 → **+67** at 0.75 and +19 → **+76** at 0.9 |
 
 Each original conclusion was measured correctly. Each was replicated — the
 1.321× figure was re-measured on a *second* L4 in a separate session and
