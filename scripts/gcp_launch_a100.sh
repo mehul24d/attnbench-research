@@ -42,8 +42,8 @@ ACCELERATOR="type=nvidia-a100-80gb,count=1"
 IMAGE="attnbench-env-v5-20260905"
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
-MAX_RUN="2h"
-HALT_MINUTES="90"    # DELETE is at 2h; the 30m gap is the recovery window.
+MAX_RUN="4h30m"
+HALT_MINUTES="210"   # 3h30m. DELETE at 4h30m; the 1h gap is the recovery window.
 INSTANCE_NAME="${1:-attnbench-a100-$(date +%Y%m%d-%H%M)}"
 
 if [[ -z "$PROJECT" ]]; then
@@ -69,8 +69,8 @@ echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 echo "  provisioning : FLEX_START attempted first, SPOT on refusal"
 echo "  rate         : Rs ~284/h on DWS, Rs 321/h on Spot (pinned 2026-09-16)"
 echo "  in-guest halt: +${HALT_MINUTES} min"
-echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 642 ceiling)"
-echo "  recovery win : ~30m between halt and DELETE"
+echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 1,278 ceiling)"
+echo "  recovery win : ~1h between halt and DELETE"
 echo
 
 create_with() {
