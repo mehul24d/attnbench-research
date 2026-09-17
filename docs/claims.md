@@ -637,6 +637,55 @@ gains more from the better card than block-sparse does** — 3.20× against
 shrinks on the A100 (2.52× → 1.50× at 8192). But a shrinking margin is not a
 lost race, and the race is lost somewhere else.
 
+### The same comparison at the model's real head geometry
+
+Measured 2026-09-17 on the same A100, Stage 0/1 re-run first so the cells are
+licensed (`block_sparse` passes 27/27 at `12:2`, including cross-backend
+checks at both 8192 and 16384 against an independent implementation).
+
+The table above is at `head_layouts` of `(32,32)` / `(32,8)`. **Qwen2.5-1.5B
+is `(12,2)`**, and that mismatch is what invalidated an earlier attempt to
+scale kernel cells by 28 layers. Re-measured at the model's own geometry,
+batch 1, block_size 128:
+
+| seq | sparsity | flash ms | bs ms | flash ÷ bs | per-call saving | × 28 layers |
+|---|---|---|---|---|---|---|
+| 4096 | 0.5 | 0.509 | 1.065 | **0.48×** | −0.556 | **−15.6 ms** |
+| 4096 | 0.75 | 0.509 | 0.971 | **0.52×** | −0.462 | −12.9 ms |
+| 4096 | 0.9 | 0.509 | 0.889 | **0.57×** | −0.380 | −10.6 ms |
+| 8192 | 0.5 | 1.570 | 1.544 | 1.02× | +0.026 | +0.7 ms |
+| 8192 | 0.75 | 1.570 | 1.230 | 1.28× | +0.340 | +9.5 ms |
+| 8192 | 0.9 | 1.570 | 1.133 | 1.39× | +0.437 | +12.2 ms |
+| 16384 | 0.5 | 4.434 | 3.373 | 1.31× | +1.061 | +29.7 ms |
+| 16384 | 0.75 | 4.434 | 2.266 | 1.96× | +2.168 | +60.7 ms |
+| 16384 | 0.9 | 4.434 | 1.795 | **2.47×** | +2.639 | +73.9 ms |
+
+**The direction of the kernel finding survives the geometry correction; the
+magnitude does not.** At matched sparsity 0.75 the ratio is lower at every
+band than the 32-head sweep reported — 0.52× vs 0.72× at 4096, 1.28× vs 1.50×
+at 8192, 1.96× vs 2.11× at 16384. The 32-head geometry **overstated** the
+kernel's advantage at the geometry that actually runs.
+
+That cuts against the explanation, not for it. The kernel's contribution to a
+forward at 16384/0.75 is +60.7 ms, not the +167.4 ms the 32-head cells
+implied — so whatever accounts for the end-to-end loss has to account for
+*more* of it, from a kernel that saves *less*.
+
+**A result that only appears at the real geometry:** at 4096 the block-sparse
+kernel is **slower than flash at every sparsity** (0.48–0.57×), a kernel-level
+loss with no mask-construction involved. At 12 query heads and 2 KV heads the
+4096 problem is too small to amortise the kernel's fixed work. The 32-head
+sweep showed 0.72× here, close enough to parity to read as noise; at the real
+geometry it is an unambiguous loss and it is the short-context boundary of the
+kernel's usefulness on this card.
+
+**The 28× multiplier in the last column is arithmetic, not a measurement.**
+It is printed because it makes the scale legible, and it must not be added to
+a separately measured mask-construction cost to predict an end-to-end gap:
+that composition has now been wrong in both directions (undershooting by
+~2.5× with laptop construction timings, overshooting by 1.7–2.5× with the
+instance's own). The end-to-end number is measured end-to-end.
+
 **The magnitude of that overhead is NOT quantified here.** The obvious
 arithmetic — scale the per-call kernel saving by the model's 28 layers and
 compare to the end-to-end delta — is invalid, because the Stage 2 grid times
