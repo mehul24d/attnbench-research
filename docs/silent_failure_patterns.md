@@ -2231,11 +2231,17 @@ Nothing about the shapes was wrong. **The dtype was.** `score_cache.save`
 stores scores as fp16, and fp16-rounded pooled softmax probabilities are
 densely *tied*:
 
-| property of real scores after fp16 | value |
+| property of scores after fp16 (synthetic stand-in) | value |
 |---|---|
-| cells rounding to exact zero | ~62% |
-| a row's candidates sharing a value with another candidate | ~27% |
-| largest exact-tie group in one row (n=64) | 63 of 64 |
+| **candidate** cells rounding to exact zero | ~30% |
+| a row's candidates sharing a value with another candidate | ~34% |
+
+A first pass at this table said ~62% zeros. That figure counted the whole
+matrix including the causally-masked upper triangle, which is zero by
+construction and not a candidate for selection — it measured the causal mask,
+not the quantisation. The real per-model figures are measured on the instance
+during the run and written to the parquet, rather than inferred from a
+synthetic softmax at all.
 
 `torch.rand` produces essentially no ties. So the synthetic check exercised
 the one regime in which the two builders provably agree, and said nothing

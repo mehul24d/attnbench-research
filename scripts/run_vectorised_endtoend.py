@@ -111,6 +111,13 @@ def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
     checked = 0
     differing_cells = 0
     tied_rows = 0
+    # Quantisation structure of the scores the oracle actually ranks. Measured
+    # here rather than quoted from a synthetic softmax: the zero-rate is a
+    # property of THIS model at THIS block_size, and it is the reason the
+    # tie-breaking matters at all. Recorded because it is also a finding about
+    # the oracle -- a top-k over a signal that is two-thirds exact zeros is
+    # frequently choosing arbitrarily rather than by score.
+    zero_cells = total_cells = tied_cand = total_cand = 0
     for layer in sorted(scores):
         # The SAME reduction SwappedAttention.forward applies (model.py), via
         # the same function -- not a local re-derivation of it. If that path
@@ -120,6 +127,16 @@ def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
             scores[layer], finest_block_size=finest_block_size,
             target_block_size=block_size)
         sc = pooled.mean(dim=0)
+
+        n = sc.shape[0]
+        causal_lower = torch.tril(torch.ones(n, n, dtype=torch.bool), -1)
+        vals = sc[causal_lower]
+        zero_cells += int((vals == 0).sum()); total_cells += int(vals.numel())
+        for qb in range(1, n):
+            v = sc[qb, :qb]
+            tied_cand += int(v.numel() - torch.unique(v).numel())
+            total_cand += int(v.numel())
+
         for sp in sparsities:
             a = _REFERENCE_BUILDER(seq_len, block_size, sp, sc,
                                    causal=True, identity_seed=seed)
@@ -156,11 +173,18 @@ def _assert_equivalent(*, seq_len, block_size, finest_block_size, sparsities,
                     tied_rows += 1
                 differing_cells += int(diff.sum())
             checked += 1
+    zero_frac = zero_cells / max(1, total_cells)
+    tie_frac = tied_cand / max(1, total_cand)
     print(f"  equivalence OK at seq_len={seq_len}: {checked} (layer x "
           f"sparsity) masks agree on per-row active count and kept-score "
           f"multiset; {differing_cells} cells differ by tie-break across "
-          f"{tied_rows} rows (fp16 score ties -- see docstring)", flush=True)
-    return differing_cells
+          f"{tied_rows} rows", flush=True)
+    print(f"  score quantisation at seq_len={seq_len}: "
+          f"{100*zero_frac:.1f}% of causal cells are EXACTLY zero in fp16, "
+          f"{100*tie_frac:.1f}% of a row's candidates share a value with "
+          f"another -- the oracle's top-k is choosing among ties this often",
+          flush=True)
+    return differing_cells, zero_frac, tie_frac
 
 
 def main():
@@ -209,6 +233,7 @@ def main():
     scratch = tempfile.mkdtemp(prefix="s7vec_scores_")
 
     rows = []
+    out_rows = []
     for band in bands:
         print(f"\n===== band {band} =====", flush=True)
         ids = torch.randint(0, model.config.vocab_size, (1, band),
@@ -230,7 +255,7 @@ def main():
 
             seed = masks._mask_identity_key(
                 cfg_for(band, "block_sparse", sparsities[0]))
-            tie_cells = _assert_equivalent(
+            tie_cells, zero_frac, tie_frac = _assert_equivalent(
                                seq_len=band, block_size=grid.finest_block_size,
                                finest_block_size=grid.finest_block_size,
                                sparsities=sparsities, scores=scores, seed=seed)
@@ -240,6 +265,54 @@ def main():
             # two builder settings is the sanity check that nothing else
             # moved between them.
             arms = [("sdpa_flash", None)] + [("block_sparse", s) for s in sparsities]
+
+            # Does the tie-break choice change the MODEL OUTPUT?
+            #
+            # Identical per-row active counts make the two builders'
+            # timings comparable; they do NOT make the outputs equal. A
+            # different equal-scoring block is still a different block, and
+            # the softmax renormalises over whatever was kept -- so a swap
+            # among zero-SCORED blocks can still move the logits, because a
+            # pooled score of zero in fp16 is not an attention weight of
+            # zero. Measured rather than argued, one forward per arm, before
+            # any timing (and outside it, so it costs the timed loop
+            # nothing).
+            logit_rows = []
+            for name, sparsity in ([("sdpa_flash", None)]
+                                   + [("block_sparse", sp) for sp in sparsities]):
+                be = backend_instance(name)
+                cfg = cfg_for(band,
+                              "causal" if sparsity is None else "block_sparse",
+                              sparsity)
+                ls = None if sparsity is None else scores
+                outs = {}
+                for bn, fn in (("reference", _REFERENCE_BUILDER),
+                               ("vectorised", _vectorised_builder)):
+                    masks.importance_block_mask = fn
+                    with torch.no_grad():
+                        o = wrapped.run_measured(ids, be, cfg=cfg,
+                                                 layer_scores=ls,
+                                                 logits_to_keep=1)
+                    outs[bn] = (o.logits if hasattr(o, "logits") else o
+                                ).detach().float().cpu()
+                masks.importance_block_mask = _REFERENCE_BUILDER
+                a_, b_ = outs["reference"], outs["vectorised"]
+                d = (a_ - b_).abs()
+                same_argmax = bool((a_.argmax(-1) == b_.argmax(-1)).all())
+                logit_rows.append(dict(
+                    band=band, backend=name, sparsity=sparsity,
+                    logits_max_abs_diff=float(d.max()),
+                    logits_mean_abs_diff=float(d.mean()),
+                    logits_bitwise_identical=bool(torch.equal(a_, b_)),
+                    argmax_token_identical=same_argmax,
+                    ref_logit_absmax=float(a_.abs().max())))
+                r = logit_rows[-1]
+                print(f"  output check {name:<13}"
+                      f"{'dense' if sparsity is None else sparsity:>6}: "
+                      f"max|d| {r['logits_max_abs_diff']:.3e}  "
+                      f"bitwise {r['logits_bitwise_identical']}  "
+                      f"argmax same {same_argmax}", flush=True)
+            out_rows.extend(logit_rows)
 
             for builder_name, fn in (("reference", _REFERENCE_BUILDER),
                                      ("vectorised", _vectorised_builder)):
@@ -263,6 +336,8 @@ def main():
                         n_reps=len(pf), n_warmup=args.warmup,
                         n_layers=n_layers,
                         tiebreak_cells_differing=tie_cells,
+                        score_zero_fraction=zero_frac,
+                        score_tied_fraction=tie_frac,
                         clocks_locked=clocks_locked))
                     print(f"  [{builder_name:<10}] {name:<13}"
                           f"{'dense' if sparsity is None else sparsity:>6}  "
@@ -279,6 +354,15 @@ def main():
     provenance.stamp_onto(frame,
                           provenance.capture(clocks_locked=clocks_locked).to_dict())
     frame.to_parquet(out / "vec_endtoend.parquet", index=False)
+
+    oframe = pd.DataFrame(out_rows)
+    provenance.stamp_onto(oframe,
+                          provenance.capture(clocks_locked=clocks_locked).to_dict())
+    oframe.to_parquet(out / "vec_output_equivalence.parquet", index=False)
+    print("\n===== OUTPUT UNDER EACH BUILDER =====", flush=True)
+    print(oframe[["band", "backend", "sparsity", "logits_max_abs_diff",
+                  "logits_bitwise_identical", "argmax_token_identical"]]
+          .to_string(index=False), flush=True)
 
     # The comparison the session exists to make, printed at the terminal.
     print("\n===== REVERSAL UNDER EACH BUILDER =====", flush=True)
