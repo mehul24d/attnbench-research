@@ -119,6 +119,51 @@ Vectorising to a single batched top-k and one scatter would collapse it. A
 reader should take this as "the available implementation is CPU- and
 interpreter-bound", not "block-sparse attention is inherently CPU-bound".
 
+**The counterfactual, measured rather than predicted.** A minimal
+vectorisation of `importance_block_mask` — one masked `argsort`, one
+`scatter_` to get ranks, one comparison against a per-row budget, replacing
+the per-query-block loop and its inner scalar-assignment loop — was written
+solely to answer "would the reversal survive?". It is **not a contribution and
+not proposed as a replacement**; the reference implementation's numbers stand
+exactly as measured. It produces **bit-identical `active` matrices** across 36
+configurations (4 seq_lens × 3 sparsities × 3 seeds, zero mismatches).
+
+| seq_len | reference | vectorised | speedup | ref ×28 | vec ×28 |
+|---|---|---|---|---|---|
+| 4096 | 0.630 ms | 0.047 ms | 13.5× | 17.6 | 1.3 |
+| 8192 | 1.896 ms | 0.075 ms | 25.3× | 53.1 | 2.1 |
+| 16384 | 6.279 ms | 0.319 ms | 19.7× | 175.8 | 8.9 |
+| 32768 | 21.962 ms | 1.325 ms | 16.6× | **614.9** | **37.1** |
+
+Per-forward budget at sparsity 0.75, reference versus vectorised:
+
+| seq | card | kernel ×28 | net (ref) | net (vec) | |
+|---|---|---|---|---|---|
+| 4096 | L4 | 8.4 | −9.3 | **+7.1** | flips |
+| 4096 | A100 | −9.3 | −27.0 | −10.7 | **stays lost** |
+| 8192 | L4 | 159.9 | +106.8 | +157.8 | — |
+| 8192 | A100 | 27.8 | **−25.3** | **+25.7** | **flips** |
+| 16384 | A100 | 167.4 | **−8.5** | **+158.4** | **flips** |
+
+**So the A100 reversal disappears at 8192 and 16384 under vectorised
+construction, and does not at 4096** — where the A100's sparse kernel is
+genuinely slower than flash (0.72× at the kernel level). That floor is a real
+kernel result and survives the correction.
+
+The claim this licenses: **the end-to-end speedup requires either a dense
+baseline weak enough to beat, or a vectorised mask builder — and the reference
+implementation has neither.** That is a statement about the implementation
+landscape, not about sparse attention.
+
+**This is a budget calculation, not an end-to-end run.** The model has NOT
+been executed with the vectorised builder; these are kernel timings and
+construction timings composed arithmetically, carrying the same 32-head-versus
+-12-head geometry caveat as the table above, and the construction figures come
+from a laptop CPU rather than either instance. The sign flips at 8192 and
+16384 are large relative to those uncertainties (+25.7 and +158.4 against
+construction costs of 2.1 and 8.9 ms); the 4096 result is not, and should be
+read as directional.
+
 **What is NOT available as a saving:** reusing one mask across layers. Each
 layer builds from its own scores (`state.scores[self.layer_idx]`), so the 28
 masks genuinely differ and 27 of them are not redundant. The amortisation is
