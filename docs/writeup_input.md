@@ -223,6 +223,53 @@ indistinguishable from deleting the check. And **the generator of the test
 data is part of the test**: where the real pipeline quantises, pools or
 saturates, the fixtures must too.
 
+**Three for three: every conclusion drawn from a single point on an axis was
+overturned by adding a second point on that axis.**
+
+This is the study's most transferable result, and it is not a result about
+attention. It is stated here as a finding rather than a caveat because the
+pattern held on every axis tested, without exception:
+
+| axis | single-point conclusion | second point | outcome |
+|---|---|---|---|
+| **hardware** | block-sparse prefill reaches **1.321×** end-to-end at 32768 | A100 instead of L4 | **0.475×** — the speedup inverts |
+| **model scale** | 90% sparsity costs **46 points** on `niah_multikey` at 16384 | Qwen2.5-7B instead of 1.5B | **5 points** — the collapse mostly disappears |
+| **mask construction** | the A100 kernel is slower, so the kernel explains the reversal | a 2-minute kernel sweep | the kernel is **faster** (1.96× at 16384); the cost is CPU-side, outside it |
+
+Each original conclusion was measured correctly. Each was replicated — the
+1.321× figure was re-measured on a *second* L4 in a separate session and
+agreed to **0.19%**. None of that replication helped, because in every case
+the repetition was along an axis already held fixed.
+
+**Replication along a fixed axis confirms precision and establishes nothing
+about scope**, and the tighter the agreement the more authoritative the
+over-broad claim sounds. 0.19% agreement across two L4s is exactly the number
+that makes "1.321× end-to-end speedup" read as settled, and it was 2.8× wrong
+about the A100.
+
+**The two failures are not independent, which is what makes this a
+methodology finding rather than three anecdotes.** The mechanism is the same
+each time: a benchmark fixes every axis but one, varies that one thoroughly,
+and reports the result in language scoped to the method rather than to the
+configuration. The sparsity axis here was swept at five context lengths, three
+sparsities and two block sizes — hundreds of cells — on one card, at one model
+scale, with one mask builder. Cell count is not scope. **A result is scoped by
+the axes it was varied across, never by the number of cells measured along the
+ones it was not.**
+
+**What this predicts, and how a reader could falsify it.** If the pattern is
+real, the untested axes should behave the same way: `block_size` (the study
+runs 64 and 128; a 16-block arm is predicted to differ, and now has a second
+reason to — see the fp16 tie density in `limitations.md`), model family (both
+models here are Qwen2.5), and batch size (everything is batch 1). A reader who
+adds a second point on any of those and finds the conclusion *stable* has
+falsified this claim, which is the point of stating it as a claim.
+
+**The honest form of the study's own headline**, given all of this, is not a
+speedup number. It is: *block-sparse attention's benefit is contingent on
+hardware, model scale and mask-construction implementation, and the size of
+that contingency is larger than the effect being reported.*
+
 **The methodological point this study would offer a reader independent of its
 results.** Every headline here was replicated. The 1.321× figure was measured
 on one L4, then re-measured on a *second* L4 in a separate session, agreeing
