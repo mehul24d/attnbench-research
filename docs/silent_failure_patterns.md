@@ -2295,3 +2295,48 @@ And the generator of the test data is part of the test. A check whose inputs
 come from `torch.rand` has silently assumed continuity, distinctness and full
 precision. Where the real pipeline quantises, pools, or saturates, the test
 data must do the same, or the check is exercising a regime that never runs.
+
+---
+
+## 40. Elapsed time reported from arithmetic on remembered timestamps
+
+**2026-09-17, A100 session 10. ₹429.** After a guard refused to run item 4 at
+09:20:15Z, the diagnosis that followed was entirely CPU-local: reproducing the
+failure on banked tensors, measuring fp32 ulp against the reference's jitter
+magnitude, writing two regression tests, running the suite three times. None
+of it touched the GPU. The instance was not deleted, and it idled for **90.6
+minutes** until its own in-guest shutdown fired at 10:50:51Z.
+
+Throughout, progress updates reported elapsed time computed from *remembered*
+timestamps — "boot was 07:19, a few things have happened, call it two hours" —
+rather than read from the clock. Each report was plausible and each was
+further behind the truth than the last. The final reported figure was 2.0 h
+against an actual 3.5 h.
+
+**The silence here is of a specific kind: a quantity that only ever moves in
+one direction and is never checked.** A wrong latency number gets contradicted
+by the next measurement. A wrong elapsed-time estimate is contradicted by
+nothing, because nothing else in the session reads it, and it drifts
+monotonically away from the truth for as long as the session lasts.
+
+**Two rules, both cheap.**
+
+**Read the clock, don't derive it.** `date -u` costs nothing and the
+instance's own `gcloud compute operations list` is authoritative for boot,
+guest-shutdown and delete — it is the record that survives the instance. It
+was not consulted here until after deletion, at which point it immediately
+gave the correct timeline.
+
+**A diagnosis that runs on a laptop is not a reason to hold an accelerator.**
+The instinct to keep the instance "in case the fix is quick" is what converts
+a ten-minute fix into a ninety-minute bill. Delete on the guard failure, and
+re-create when there is something to run. A boot costs ~₹100 and 25 minutes of
+setup; ninety idle minutes cost ₹429. The arithmetic is not close, and it was
+never done.
+
+**What did NOT fail, and is worth separating out.** The teardown structure
+held: the in-guest halt fired 58 minutes ahead of the API-level DELETE,
+leaving the intended disk-recovery window, and every phase had already synced
+to GCS, so deletion cost nothing but time. The money was lost to a decision,
+not to a missing safeguard — which is the harder kind to add a guard for, and
+the reason it is written down here instead.
