@@ -69,6 +69,42 @@ def _dry_run_only(cfg, backend_name, example):
         "stopped short-circuiting and the dry run is no longer free.")
 
 
+def _guard_model_fits(model_id: str, device: str) -> None:
+    """Refuse a --model that cannot fit, BEFORE the boot is spent on it.
+
+    The failure this prevents is not an OOM -- it is an OOM discovered after
+    the tokenizer has downloaded, the examples have been built and the clocks
+    have been locked, on a rented instance. Same shape as the Stage 1 gate and
+    the GCS write gate: check the precondition while failing is still free.
+
+    Weights only, bf16, from the HF config -- activations are not modelled,
+    which is why the headroom factor is deliberately generous.
+    """
+    import torch
+    if not device.startswith("cuda") or not torch.cuda.is_available():
+        return
+    from transformers import AutoConfig
+    cfg = AutoConfig.from_pretrained(model_id)
+    n = getattr(cfg, "num_parameters", None)
+    if n is None:
+        h = cfg.hidden_size
+        L = cfg.num_hidden_layers
+        v = cfg.vocab_size
+        inter = getattr(cfg, "intermediate_size", 4 * h)
+        n = L * (4 * h * h + 3 * h * inter) + 2 * v * h   # attn + mlp + embeds
+    weights_gb = n * 2 / 1e9                              # bf16
+    total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+    if weights_gb * 2.5 > total_gb:
+        raise SystemExit(
+            f"REFUSING --model {model_id}: ~{weights_gb:.1f} GB of bf16 weights "
+            f"needs >{weights_gb * 2.5:.1f} GB with activation headroom, but "
+            f"{torch.cuda.get_device_name()} has {total_gb:.1f} GB. "
+            f"Run it on a card that fits, or drop --model."
+        )
+    print(f"model guard   : {model_id} ~{weights_gb:.1f} GB weights on a "
+          f"{total_gb:.1f} GB device -- ok")
+
+
 def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
                       dtype: str, score_cache_dir: str, verbose: bool = True,
                       gla_gate_source: str | None = None,
@@ -190,6 +226,16 @@ def main():
                          "band to reconstruct -- so a segment is expressed "
                          "here rather than by editing the pinned grid, which "
                          "would change what every OTHER segment measured.")
+    ap.add_argument("--model", default=None,
+                    help="run against this model INSTEAD of the grid's "
+                         "model_primary. The grid pins two ~1.5B models "
+                         "because its header assumes a 24GB ceiling "
+                         "(docs/hardware_constraints.md); a larger model is a "
+                         "deliberate act on hardware that fits it, not a "
+                         "default. Guarded: the run refuses unless the "
+                         "device has room for the weights with headroom, "
+                         "because discovering an OOM after the tokenizer and "
+                         "the examples are built wastes the boot.")
     ap.add_argument("--tasks", default=None,
                     help="comma-separated subset of the pinned grid's tasks. "
                          "Like --seq-lens, a subset is expressed here rather "
@@ -320,8 +366,18 @@ def main():
     def provenance_fn():
         return provenance.capture(clocks_locked=clocks_locked)
 
+    # One name, resolved once. Every later use reads model_id, never
+    # grid.model_primary, so an override cannot apply to the tokenizer and
+    # miss the model (or the reverse) -- that split is how a run ends up
+    # tokenizing with one vocabulary and generating with another.
+    model_id = args.model or grid.model_primary
+    if args.model and not args.dry_run:
+        _guard_model_fits(model_id, args.device)
+
     print(f"grid          : {args.grid}")
-    print(f"model primary : {grid.model_primary}")
+    print(f"model primary : {model_id}"
+          + ("   [--model OVERRIDE; grid pins "
+             f"{grid.model_primary}]" if args.model else ""))
     print(f"model alt     : {grid.model_alternate}")
     print(f"tasks         : {', '.join(selected_tasks)}"
           + ("" if len(selected_tasks) == len(grid.tasks)
@@ -345,12 +401,12 @@ def main():
         count_tokens = approximate_token_count
     else:
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(grid.model_primary)
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
 
         def count_tokens(text: str) -> int:
             return len(tokenizer(text).input_ids)
 
-        print(f"sizing        : exact, via {grid.model_primary} tokenizer")
+        print(f"sizing        : exact, via {model_id} tokenizer")
 
     examples_by_task_length = build_examples_by_task_length(
         grid, seed=args.seed, count_tokens=count_tokens,
@@ -377,7 +433,7 @@ def main():
         teardown = None
     else:
         generate_fn = build_generate_fn(
-            grid, model_id=grid.model_primary, tokenizer=tokenizer,
+            grid, model_id=model_id, tokenizer=tokenizer,
             device=args.device, dtype=args.dtype,
             score_cache_dir=grid.score_cache_dir,
             gla_gate_source=args.gla_gate_source,
