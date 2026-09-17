@@ -2319,6 +2319,31 @@ by the next measurement. A wrong elapsed-time estimate is contradicted by
 nothing, because nothing else in the session reads it, and it drifts
 monotonically away from the truth for as long as the session lasts.
 
+**This is the third instance of one shape, and the fix has been the same
+every time.** A number maintained by restatement, authoritative-looking, with
+nothing that would notice it going wrong:
+
+| # | the number | how it drifted | the fix |
+|---|---|---|---|
+| **#3** | `provenance.git_commit` | recorded the literal string `"HEAD"`; a check compared `"HEAD"` against `"HEAD"`, agreed, and certified nothing | read it from `git rev-parse`, fail closed at the point of use |
+| — | the running spend total in `docs/spend_ledger.md` | restated by hand through ₹902 / 910 / 918 / 942, a ~4% spread by 2026-09-04 | assembled from `session_cost.txt`, written from the instance's own boot clock |
+| **#40** | elapsed time in progress reports | arithmetic on remembered timestamps, 2.0 h reported against 3.5 h actual | `scripts/gcp_session_elapsed.sh`, read from the GCE operations log |
+
+The spend case is the sharpest precedent, because **the fix was already
+applied to one half of the pair and not the other.** `session_cost.txt` has
+read the instance's own clock since 2026-09-04 — but only at teardown. The
+elapsed figure quoted mid-session had no source to read, so it was remembered
+while the cost figure was measured. **Two numbers describing the same
+interval, one read and one recalled, can disagree indefinitely and nothing
+notices** — there is no consistency check between them because they are never
+computed in the same place.
+
+`scripts/gcp_session_elapsed.sh` closes that: same derivation as
+`session_cost.txt`, available at any point rather than once. It reads boot
+from the GCE operations log rather than the guest, so it needs no SSH and
+still works when sshd is wedged — which is precisely when a session is most
+likely to be quietly burning.
+
 **Two rules, both cheap.**
 
 **Read the clock, don't derive it.** `date -u` costs nothing and the
