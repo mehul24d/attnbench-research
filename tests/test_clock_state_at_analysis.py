@@ -252,4 +252,5 @@ def test_the_raw_clock_readings_stay_decorative():
     """Deliberate, and worth pinning: nothing can act on 1710 vs 1695 MHz, so
     gating on the readings would be a check with no decision behind it."""
     from attnbench.provenance import RECORDED_FIELDS
-    assert {"sm_clock_mhz", "mem_clock_mhz", "persistence_mode"} <= RECORDED_FIELDS
+    assert {"sm_clock_mhz_at_capture", "mem_clock_mhz",
+            "persistence_mode"} <= RECORDED_FIELDS

@@ -145,7 +145,14 @@ Also: [`docs/hardware_constraints.md`](docs/hardware_constraints.md),
   the GPU, driver, clock state and commit; derived rows carry `analysis_*`
   fields naming the tool and checkout that produced them. The two are
   deliberately not the same columns.
-- Clocks locked and GPU exclusivity verified before any Stage 2 or 5 run.
+- **Clocks locked on every Stage 5 run; NOT on any Stage 2 run.** This line
+  previously claimed both, and the provenance column said otherwise on every
+  row: `clocks_locked` is `True` for all Stage 5 data (L4 1740 MHz, A100
+  1200 MHz — 85% of each card's maximum, by policy) and `False` for every
+  Stage 2 sweep ever run, on all three cards, because `run_sweep.py` has no
+  clock-lock flag. Stage 2 ratios are within-host and the canary bounds the
+  variance, so the data stands; the claim did not. GPU exclusivity is verified
+  for both.
 - Speedups are recomputed against a baseline **remeasured on the same
   machine**. Ratios are never carried across hosts.
 - **Replication on the same architecture confirms a measurement and says

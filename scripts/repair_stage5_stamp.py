@@ -99,7 +99,9 @@ def check(df: pd.DataFrame, log_text: str) -> list[dict]:
            persist == ["Enabled"], persist, ["Enabled"])
 
     requested = int(L4_MAX_SM_MHZ * 0.85)
-    clocks = sorted(int(c) for c in df.sm_clock_mhz.unique())
+    _col = ("sm_clock_mhz_at_capture"
+            if "sm_clock_mhz_at_capture" in df.columns else "sm_clock_mhz")
+    clocks = sorted(int(c) for c in df[_col].unique())
     within = (len(clocks) == 1
               and abs(clocks[0] - requested) <= CLOCK_QUANTUM_MHZ)
     record(f"sm_clock pinned within {CLOCK_QUANTUM_MHZ} MHz of the "

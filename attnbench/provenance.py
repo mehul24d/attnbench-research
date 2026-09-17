@@ -132,7 +132,22 @@ class Provenance:
     gpu_count: int
 
     clocks_locked: bool
-    sm_clock_mhz: Optional[int]
+    # RENAMED 2026-09-17 from `sm_clock_mhz`. The old name read as a property
+    # of the measurement; it is a single `nvidia-smi --query-gpu=clocks.sm`
+    # sample taken at capture() time, which is usually BEFORE or AFTER the
+    # timed region, on an otherwise idle GPU. Every L4 Stage 2 sweep stamped
+    # 210 MHz -- that card's idle clock, against the ~2040 MHz it runs a
+    # kernel at -- and an A100 sparse sweep on 2026-09-16 stamped 210 while
+    # its sdpa_flash rows matched a 1410 MHz-stamped run to within 2%.
+    #
+    # A field that looks like it characterises the run, and does not, is worse
+    # than no field: it invites exactly the inference it cannot support. One
+    # sample also cannot distinguish a locked clock from a clock that happened
+    # to sit at that value, so `clocks_locked` must never be derived from it.
+    #
+    # Readers should coalesce with the legacy `sm_clock_mhz` column when
+    # loading parquets written before this date.
+    sm_clock_mhz_at_capture: Optional[int]
     mem_clock_mhz: Optional[int]
     persistence_mode: Optional[str]
 
@@ -183,7 +198,7 @@ def capture(clocks_locked: bool = False) -> Provenance:
         gpu_memory_gb=mem,
         gpu_count=torch.cuda.device_count() if torch.cuda.is_available() else 0,
         clocks_locked=clocks_locked,
-        sm_clock_mhz=sm_clk,
+        sm_clock_mhz_at_capture=sm_clk,
         mem_clock_mhz=mem_clk,
         persistence_mode=persist,
         git_commit=commit,
@@ -243,7 +258,7 @@ RECORDED_FIELDS = frozenset({
     "torch", "torch_cuda", "cudnn", "triton",
     "flash_attn", "flashinfer", "xformers", "fla",
     "driver", "compute_capability", "gpu_memory_gb", "gpu_count",
-    "sm_clock_mhz", "mem_clock_mhz", "persistence_mode",
+    "sm_clock_mhz_at_capture", "mem_clock_mhz", "persistence_mode",
 })
 
 

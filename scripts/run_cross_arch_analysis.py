@@ -125,7 +125,17 @@ def clock_report(df: pd.DataFrame) -> str:
     `clocks_locked` from this column would manufacture confidence rather than
     measure it. Fixing that needs sampling during the run, on hardware.
     """
-    g = df.groupby(["gpu_name", "host"])[["sm_clock_mhz", "clocks_locked"]]
+    # Coalesce the 2026-09-17 rename with the legacy column, so a frame
+    # spanning the boundary still reports one clock column instead of two
+    # half-empty ones.
+    d = df.copy()
+    if "sm_clock_mhz_at_capture" not in d.columns:
+        d["sm_clock_mhz_at_capture"] = d.get("sm_clock_mhz")
+    elif "sm_clock_mhz" in d.columns:
+        d["sm_clock_mhz_at_capture"] = d["sm_clock_mhz_at_capture"].fillna(
+            d["sm_clock_mhz"])
+    g = d.groupby(["gpu_name", "host"])[["sm_clock_mhz_at_capture",
+                                          "clocks_locked"]]
     return g.agg(lambda s: sorted({str(v) for v in s})).to_string()
 
 
