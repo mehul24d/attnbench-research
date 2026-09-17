@@ -42,8 +42,14 @@ ACCELERATOR="type=nvidia-a100-80gb,count=1"
 IMAGE="attnbench-env-v5-20260905"
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
-MAX_RUN="4h30m"
-HALT_MINUTES="210"   # 3h30m. DELETE at 4h30m; the 1h gap is the recovery window.
+# Overridable, and they SHOULD be overridden for short work. These defaults
+# size a full multi-band session; a 35-minute job launched under them has a
+# 4h30m ceiling, and on 2026-09-17 a session that finished its useful work in
+# 98 minutes idled for another 90 (Rs 429) inside exactly that headroom
+# (docs/silent_failure_patterns.md #40). The cap is not a safety net if it is
+# set so far out that it never binds -- size it to the work.
+MAX_RUN="${GCP_MAX_RUN:-4h30m}"
+HALT_MINUTES="${GCP_HALT_MINUTES:-210}"   # DELETE at MAX_RUN; the gap is the recovery window.
 INSTANCE_NAME="${1:-attnbench-a100-$(date +%Y%m%d-%H%M)}"
 
 if [[ -z "$PROJECT" ]]; then
