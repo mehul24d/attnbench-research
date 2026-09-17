@@ -147,7 +147,7 @@ cost is excluded from every latency number — which is priced in §1 rather tha
 left implicit.
 
 **Why these numbers can be trusted: the infrastructure caught what review
-did not.** This project keeps a register of 38 confirmed incidents in
+did not.** This project keeps a register of 39 confirmed incidents in
 `docs/silent_failure_patterns.md`, each a plausible number produced by
 machinery that looked like it was working — no crash, no failed test. The
 register is not a confession; it is the evidence that the detection layer
@@ -185,6 +185,43 @@ not see because it substitutes a stub for that exact function), and the
 provenance stamps caught a fourth before it reached a result — 492 Stage 1
 passes carrying `git_dirty=True` because a guard's own quarantine directory had
 dirtied the tree.
+
+**A fifth and a sixth, of a different kind, on 2026-09-17.** Both were caught
+by guards rather than by tests, and one of them caught an *argument* rather
+than code.
+
+The first is ordinary and cheap: a pre-registered decision gate refused a 7B
+accuracy run in **two seconds** because the command omitted the flag
+recording an arm's already-banked verdict. Without it the run would have
+raised on its first cell of that arm — after every dense and sparse row of the
+band had been paid for. The saving is the whole band.
+
+The second is more interesting. A vectorised mask builder had been checked
+against the reference on 36 configurations and matched **bit-for-bit**, and a
+docstring argued why it must: the tie-break jitter is 1e-9 against real-valued
+scores, so it cannot reorder a top-k "on non-tied input, which is the case
+that occurs". The first clause is true. The last is false, and the argument
+reads as sound precisely because the true part carries the false part. Scores
+are cached fp16, and at `block_size=128` **3.0% of candidates share a value
+with another candidate** — so ties are the case that occurs, and the two
+builders keep different members of equal-scoring groups. The check that caught
+it did so on the first real band, because it ran against the model's own
+cached scores instead of `torch.rand`.
+
+The code was correct throughout; what was wrong was a claim about the data the
+code would see. **Tests written by the same person who holds the wrong belief
+inherit the belief** — the 36-config check was not weak, it was aimed at the
+regime the belief predicted. What broke the loop was a guard placed at the
+boundary where synthetic assumptions meet real inputs, and the discipline of
+making that guard fatal rather than advisory.
+
+Two secondary rules came out of it, both now enforced in the test suite. **A
+guard relaxed after it fires must be shown to still reject** — the relaxed
+version is driven against a builder that inverts the ranking and one that
+changes how many blocks it keeps, or "relax until it passes" is
+indistinguishable from deleting the check. And **the generator of the test
+data is part of the test**: where the real pipeline quantises, pools or
+saturates, the fixtures must too.
 
 **The methodological point this study would offer a reader independent of its
 results.** Every headline here was replicated. The 1.321× figure was measured
