@@ -1471,9 +1471,13 @@ unverifiable row has `max_abs_err = NaN` and a `detail` naming every reference
 that declined -- but nothing in the schema states it, and a consumer grouping
 on `passed` will merge them.
 
-This is the mirror image of the `cross_arch` gap recorded elsewhere, where a
-backend missing from one architecture silently shrinks the join and an absence
-reads as **agreement**. Here an absence reads as **disagreement**. Both are the
+This is the mirror image of a `cross_arch` gap, where a backend missing from
+one architecture silently shrank the join and an absence read as
+**agreement**. That one was fixed on 2026-09-19: `cross_arch.coverage_gaps`
+now names every excluded pair by backend and the analysis writes
+`coverage.parquet` — on the banked Stage 2 segments, 49 pairs across 7
+backends, none wholly absent from an architecture. (The sentence that used to
+stand here said the gap was "recorded elsewhere"; it was not, anywhere.) Here an absence reads as **disagreement**. Both are the
 same underlying error: a missing measurement being typed as a verdict rather
 than as missing.
 
