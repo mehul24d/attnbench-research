@@ -47,6 +47,8 @@ authority is the billing console.
 | 2026-09-03 | Stage 2 segment 1 | ~67 | ~90 | prose only |
 | 2026-09-04 | flex recheck diagnostic | **6** | **8** | `session_cost.txt` |
 | 2026-09-05 | `test-instance` ×4 — **test suite side effect** | **162** | **218** | audit log |
+| 2026-09-05 | `attnbench-a100-20260905-1014`, `-1038` — insert **refused** (NVMe disk interface unsupported on a2) | **0** | **0** | audit log |
+| 2026-09-05 | `attnbench-a100-20260905-1111` — Ampere confirmation, Stage 0/1 (543 rows @ `d2d8ceb`), **Spot** | **166** | **~888** | audit log; rate see note |
 | 2026-09-06 | `attnbench-stage3-s1` — Stage 3 S1, band 2048 | **651** | **868** | instance boot clock |
 | 2026-09-07 | `attnbench-stage3-s1b` — bands 4096 + 8192 | **341** | **455** | boot→guestTerminate |
 | 2026-09-07 | `attnbench-recover-1628` — e2-medium data recovery | **~25** | **~5** | CPU-only, no GPU |
@@ -64,6 +66,22 @@ authority is the billing console.
 | 2026-09-16 | `attnbench-l4-20260916-1319` — Stage 5 replication | **27** | **35** | audit log |
 | 2026-09-16 | `attnbench-l4-20260916-1501` — forced-sink + estimator arms | **246** | **320** | boot→delete |
 | 2026-09-16 | `attnbench-a100-20260916-1926` — Stage 5, 2nd architecture | **56** | **265** | boot→delete |
+| 2026-09-16 | `attnbench-a100-20260916-2307` — A100 block-sparse Stage 2 sweep (107 rows); v6 capture abandoned | **15** | **71** | audit log |
+| 2026-09-17 | `attnbench-a100-20260917-1248` — Stage 0/1 at (12,2), matched-geometry kernel, 7B oracle; **90.6 min idle** | **212** | **1,005** | operations log |
+| 2026-09-17 | `attnbench-a100-20260917-item4` — vectorised end-to-end; v6 captured | **10** | **49** | `gcp_session_elapsed.sh` |
+| 2026-09-17 | `boottest-attnbench-env-v6-20260917` ×2 — e2-medium, CPU-only | **~8** | **~1** | CPU-only, no GPU |
+| 2026-09-17 | `attnbench-a100-20260917-cheap7b` — 7B cheap arm | **53** | **249** | `gcp_session_elapsed.sh` |
+
+**Two sessions were missing from this table until 2026-09-19**, found by
+listing every `instances.insert` in the audit log rather than trusting the
+table to be complete: the 2026-09-05 A100 session (well documented as
+*science* in `limitations.md` and pattern notes, never ledgered as *spend*)
+and the 2026-09-16 `-2307` sweep. Together ~₹959. The 2026-09-05 row is priced
+at the Spot rate pinned on 2026-09-16 (₹321/h), applied retroactively because
+no rate was recorded that day — so it is an estimate to perhaps ±10%, and the
+billing console is the authority. **A ledger assembled from sessions someone
+remembered to write down is a ledger with the same failure as a total
+maintained by restating it**; the audit log is the source.
 
 A100 `a2-ultragpu-1g` DWS Flex Start ₹284/h all-in (asia-southeast1, verified
 2026-09-16: GPU $2.277654 + 12 × $0.023340 core + 170 × $0.003128 RAM).
