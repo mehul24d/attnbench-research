@@ -322,6 +322,57 @@ ANALYSIS_STAMP_COLUMNS = ("analysis_tool", "analysis_git_commit",
                           "analysis_timestamp")
 
 
+class UnverifiableDerivedInput(ValueError):
+    """A derived artifact whose analysis stamp is missing or disqualifying."""
+
+
+def load_derived(path, *, expect_tool: str | None = None,
+                 allow_dirty: bool = False, allow_mixed_commits: bool = False):
+    """Read a DERIVED parquet and refuse it unless its analysis stamp licenses it.
+
+    `stamp_analysis` has written `analysis_*` columns onto every derived
+    artifact since 2026-09-12, and until 2026-09-19 nothing read them: every
+    consumer used a bare `pd.read_parquet`, so a stamp saying "produced from a
+    dirty tree" or "two commits mixed in one file" was recorded faithfully and
+    never consulted. A stamp that nothing checks is documentation, not a guard.
+
+    Refuses when:
+      - the stamp is absent -- a derived file with no stamp is unverifiable,
+        which is the rule README states and the reason the stamp exists;
+      - any row was produced from a dirty tree (`analysis_git_dirty`);
+      - rows were produced at more than one `analysis_git_commit`, so the file
+        answers two questions and nothing downstream can separate them (the
+        derived-side mirror of `check_code_continuity`);
+      - `expect_tool` is given and the file came from a different tool --
+        e.g. a decision-map table passed where a Pareto table is expected,
+        which has the right shape and the wrong meaning.
+    """
+    import pandas as pd
+    df = pd.read_parquet(path)
+    need = ("analysis_tool", "analysis_git_commit", "analysis_git_dirty")
+    missing = [c for c in need if c not in df.columns]
+    if missing:
+        raise UnverifiableDerivedInput(
+            f"{path}: no analysis stamp ({', '.join(missing)} absent). A derived "
+            f"file without one cannot be traced to the code that produced it.")
+    if not allow_dirty and bool(df["analysis_git_dirty"].astype(bool).any()):
+        raise UnverifiableDerivedInput(
+            f"{path}: {int(df['analysis_git_dirty'].astype(bool).sum())} rows were "
+            f"derived from a dirty tree; the commit they name is not the code "
+            f"that ran.")
+    commits = sorted(set(df["analysis_git_commit"].dropna().astype(str)))
+    if len(commits) > 1 and not allow_mixed_commits:
+        raise UnverifiableDerivedInput(
+            f"{path}: derived at {len(commits)} commits "
+            f"({', '.join(c[:7] for c in commits)}); one file, two questions.")
+    if expect_tool is not None:
+        tools = sorted(set(df["analysis_tool"].dropna().astype(str)))
+        if tools != [expect_tool]:
+            raise UnverifiableDerivedInput(
+                f"{path}: produced by {tools}, expected [{expect_tool!r}].")
+    return df
+
+
 def stamp_analysis(df, tool: str) -> None:
     """Stamp a DERIVED frame with what produced it, in place.
 

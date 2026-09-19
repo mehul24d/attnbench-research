@@ -61,7 +61,8 @@ def main():
         n_gen[(b, t, int(band), None if pd.isna(sp) else float(sp))] = \
             float(rows.n_generated.mean())
 
-    pareto = pd.read_parquet(args.pareto)
+    pareto = provenance.load_derived(args.pareto,
+                                     expect_tool="scripts/run_pareto.py")
     phases = pd.read_parquet(args.phases)
 
     pts = decode_confound.correct(

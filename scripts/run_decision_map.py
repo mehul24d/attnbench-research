@@ -65,7 +65,10 @@ def main():
     oracle_tasks = frozenset(b.task for b in budgets if b.oracle_sensitive)
 
     if args.corrected:
-        c = pd.read_parquet(args.corrected)
+        # Derived input: refused unless its stamp is present, clean, single-
+        # commit and from the decode-confound tool (provenance.load_derived).
+        c = provenance.load_derived(
+            args.corrected, expect_tool="scripts/run_decode_confound.py")
         c = c.drop_duplicates(subset=["backend", "task", "context_length", "sparsity"])
         lat = {(r.backend, r.task, int(r.context_length),
                 None if pd.isna(r.sparsity) else float(r.sparsity)):
