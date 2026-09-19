@@ -1889,6 +1889,8 @@ layers, both the current forced-sink rule and the pre-fix rule the banked
 | 2048 | 9 | forced sink | 0.086% | 0.014% | 0 | **0 / 252** |
 | 4096 | 3 | pre-fix | 0.111% | 0.031% | 0 | **0 / 84** |
 | 4096 | 3 | forced sink | 0.097% | 0.040% | 0.044% | **0 / 84** |
+| 8192 | 3 | pre-fix | 0.175% | 0.122% | 0.045% | **0 / 84** |
+| 8192 | 3 | forced sink | 0.194% | 0.120% | 0.022% | **0 / 84** |
 
 "Nesting breaks as run" counts blocks in the fp16 0.75/0.9 mask absent from
 the fp32 0.5 mask; the same count within a single ranking is the control and
@@ -1903,9 +1905,14 @@ anything an n=100–300 accuracy cell resolves.
 
 **What it does not.** It is measured, not proved: a tie group straddling the
 0.5 and 0.75 boundaries at once in a short row could in principle break it.
-And **8192 and 16384 were not sampled**. Longer rows spread probability
-thinner, and fp16 tie density at 16384 is 3.0% of candidates (the table
-above), so the rate there is not established by this. The fix, if one is
+**8192 was added 2026-09-20** (3 examples, both rules): the fp32/fp16
+disagreement roughly doubles from 4096, to 0.18–0.19% of active blocks at
+0.5 and up to 55 of 84 layer-masks, and nesting still holds in all of them.
+So the disagreement grows with length, as the thinner probabilities predict,
+and still stays confined to the boundaries. **16384 was not sampled**; its
+fp16 tie density is 3.0% of candidates (the table above), and there the
+structural argument carries the claim, not a sample. All three bands S1a
+re-runs are now covered. The fix, if one is
 ever wanted, is to return the fp16 round-trip on a miss too, so every arm
 ranks from one tensor. It is **deliberately not made before audit item S1a**:
 S1a re-runs the pre-fix bands to isolate the sink, and must reproduce the
