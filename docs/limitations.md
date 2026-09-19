@@ -1862,3 +1862,51 @@ have made this a signal-loss story about coarse pooling. That figure came
 from a synthetic softmax and counted the causally-masked upper triangle. The
 real rate is 0.0%, the real mechanism is mantissa collision, and the real
 block-size dependence points the other way.
+
+### The sparsity arms rank from different precision within a run — measured, and it does not break nesting
+
+Found by the 2026-09-19 single-measurement audit (item S5); nothing had
+recorded it for accuracy. `generation.generate_one` fetches scores per
+(arm, example), and arms run dense → 0.5 → 0.75 → 0.9 (confirmed from row
+order in `stage3_s1b`, `accuracy_forced_sink` and the 7B run). On a cold
+cache the **0.5 arm ranks from the fp32 tensor** a miss returns, and **0.75
+and 0.9 rank from the fp16 copy** `score_cache.save` wrote. Every oracle and
+cheap accuracy run in this study has that structure. The timing side of the
+same asymmetry (±3 ms of mask construction) is recorded under the
+flashdecode diagnosis; this is the ranking side.
+
+The threat was nesting: the ladder is a ladder because the 0.75 mask is a
+subset of the 0.5 mask, built from one ranking. Two rankings do not
+guarantee it. Measured on CPU with the real model and the real mask path
+(`scripts/check_score_dtype_asymmetry.py`; output in
+`results/diagnostics/20260919_score_dtype/`), Qwen2.5-1.5B, block 128, 28
+layers, both the current forced-sink rule and the pre-fix rule the banked
+2048–8192 accuracy used:
+
+| band | examples | rule | fp32≠fp16 at 0.5 | at 0.75 | at 0.9 | **nesting breaks as run** |
+|---|---|---|---|---|---|---|
+| 2048 | 9 | pre-fix | 0.073% of active blocks | 0.017% | 0 | **0 / 252 layer-masks** |
+| 2048 | 9 | forced sink | 0.086% | 0.014% | 0 | **0 / 252** |
+| 4096 | 3 | pre-fix | 0.111% | 0.031% | 0 | **0 / 84** |
+| 4096 | 3 | forced sink | 0.097% | 0.040% | 0.044% | **0 / 84** |
+
+"Nesting breaks as run" counts blocks in the fp16 0.75/0.9 mask absent from
+the fp32 0.5 mask; the same count within a single ranking is the control and
+is 0 by construction (it was). The fp16 reorderings are confined to near-tie
+groups at a top-k boundary, and the 0.75 and 0.9 boundaries sit well inside
+the 0.5 set, so no reordering reached across.
+
+**What this licenses.** At 2048 and 4096 the accuracy-versus-sparsity curve is
+a ladder as run, and the 0.5 arm's mask differs from what a single fp16
+ranking would give by about one block in a thousand. That is far below
+anything an n=100–300 accuracy cell resolves.
+
+**What it does not.** It is measured, not proved: a tie group straddling the
+0.5 and 0.75 boundaries at once in a short row could in principle break it.
+And **8192 and 16384 were not sampled**. Longer rows spread probability
+thinner, and fp16 tie density at 16384 is 3.0% of candidates (the table
+above), so the rate there is not established by this. The fix, if one is
+ever wanted, is to return the fp16 round-trip on a miss too, so every arm
+ranks from one tensor. It is **deliberately not made before audit item S1a**:
+S1a re-runs the pre-fix bands to isolate the sink, and must reproduce the
+originals' per-arm precision (a cold cache) to do that.
