@@ -546,15 +546,17 @@ Stage 2 latency and bounded O(1) state stand.
 
 ## 5. What is open, and what should not be quoted
 
-**A systematic bias in one Stage 5 set, undiagnosed.**
-`results/stage5_flashdecode/reconciliation.parquet` fails the sign test at
-3+/21−, p = 0.00028, mean −143.7 ms, with 9 of 24 cells outside tolerance.
-Every non-closing cell is `block_sparse`, every one is at the long generation
-length, all twelve n=8 cells close within −3.3 to +0.9 ms, and the residual is
-a near-constant *fraction* within each band (−0.16 / −0.14 / −0.29). No cause
-is offered. **It touches no published number** — the headline speedups are
-wall-clock end-to-end measurements, not identity-derived, and `normalized_ms`
-is built from `results/stage5/`, which is unbiased at p = 0.54.
+**A systematic bias in one Stage 5 set — diagnosed 2026-09-19.**
+`results/stage5_flashdecode/reconciliation.parquet` failed the sign test at
+3+/21−, p = 0.00028, mean −143.7 ms. Cause: its long-generation observed
+totals came from the original Stage 3 bands, in which every `block_sparse`
+row decoded through `sdpa_math`, while the Stage 5 phases it was checked
+against had the sparse arms decoding through flash. The measured math-minus-
+flash decode-step gap accounts for 83–98% of the residual, and the same
+phases reconciled against flash-decode observed totals close in 12 of 12
+cells (p = 0.146). An earlier reading — that the phase model does not
+transfer across generation lengths — is withdrawn: generation length was
+perfectly confounded with decode kernel. **It touches no published number.**
 
 **Ten of 27 decision-map cells are unresolvable.** A resolution floor derived
 from across-session variance (0.6% at ≤4096, 1.7% above) marks the cells where

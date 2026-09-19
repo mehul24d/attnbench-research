@@ -2403,3 +2403,50 @@ seconds** of GPU time. The composed budget it replaced had been revised across
 three sessions, produced one withdrawn figure (459.6 ms) and one withdrawn
 double-count, and was wrong by 2–3× in both directions at the end of it. **The
 direct measurement was always cheaper than the argument about it.**
+
+---
+
+## 42. A reconciliation across two regimes, with the confound collinear with the variable blamed
+
+**Diagnosed 2026-09-19, a week after it was recorded.** `results/stage5_flashdecode/`
+failed its sign test at p = 0.00028: 21 of 24 residuals negative, mean
+−143.7 ms, every failing cell `block_sparse`, every one at the long generation
+length. The record said so precisely and offered no cause, and then drew one
+conclusion anyway: that the phase model should not be trusted to transfer
+across generation lengths.
+
+**That conclusion was false.** The failing set reconciled Stage 5 phases —
+sparse arms decoding through flash — against observed totals from the
+original Stage 3 bands, in which every `block_sparse` row decoded through
+`sdpa_math`. The residual was the decode-kernel gap: 83–98% of it per step,
+reproducing even its odd shape. Reconciled against flash-decode totals, the
+same phases close 12 of 12 at p = 0.146.
+
+And in that set, **generation length and decode kernel were perfectly
+collinear.** The short (n = 8) rows were Stage 5's own flash-decode runs; the
+long (n ≈ 30) rows were Stage 3's math-decode runs. So "fails at long
+generation" and "fails when the kernels differ" were the same observation,
+and the record reached for the variable it could see.
+
+**The mechanism of the silence.** Nothing in `run_phase_timing.py` compared
+the regime of its two inputs. The observed parquet *carried* a
+`decode_backend` column the whole time — the fact was recorded, and read by
+no gate, which is pattern #10 and the analysis-stamp debt again in a third
+form. A reconciliation across two regimes does not test a model; it measures
+the difference between the regimes and attributes it to whatever else varies.
+
+**Two things worth keeping.**
+
+*Refusing to name a cause was right, and naming a consequence was the same
+error in disguise.* The record declined to explain the bias and then used it
+to limit the model's validity — which is an explanation, just phrased as a
+caveat. "Undiagnosed" should bound what is claimed about the cause *and*
+about what the anomaly implies.
+
+*The structure that was recorded honestly is what solved it.* "Every failing
+cell is block_sparse, every one at long generation, n = 8 closes" was enough
+to eliminate two plausible mechanisms and point at the input provenance,
+entirely from banked data, at no GPU cost. The fix is
+`check_observed_decode_regime`, which refuses observed rows whose
+`decode_backend` differs from the kernel the phase model measures, and is
+tested against the real inputs that caused this.

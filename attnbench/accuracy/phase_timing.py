@@ -629,3 +629,43 @@ def measure_band(wrapped, input_ids, *, band: int, arms, cfg_for,
                                    backend=name, sparsity=sparsity))
 
     return rows, recs, scoring_ms, prefill_ms
+
+
+def check_observed_decode_regime(observed_df, expected_decode: dict) -> None:
+    """Refuse to reconcile phases against totals decoded through another kernel.
+
+    `expected_decode` maps each prefill backend name to the NAME of the
+    decode backend the phase model will measure for it (from
+    `grid_configs.decode_backend_for`). Every observed row must carry a
+    `decode_backend` equal to that.
+
+    Why: `results/stage5_flashdecode/` failed its sign test at p = 0.00028,
+    mean -143.7 ms, and sat undiagnosed for a week. Its phases had the sparse
+    arms decoding through flash; the observed totals it was checked against
+    came from Stage 3 bands where they decoded through sdpa_math. The phase
+    model was fine -- reconciled against flash-decode totals it closes 12 of
+    12 -- and the residual was the decode-kernel gap, 83-98% of it per step.
+    Worse, generation length was perfectly confounded with the kernel in that
+    set, so the undiagnosed bias was read as "the model does not transfer
+    across generation lengths", which was false. A reconciliation across two
+    regimes does not measure the model; it measures the difference between
+    the regimes and attributes it to whatever else happens to vary.
+    """
+    if "decode_backend" not in observed_df.columns:
+        raise SystemExit(
+            "--observed rows carry no decode_backend column, so the decode "
+            "regime they were measured in cannot be checked against the phase "
+            "model's. Refusing rather than reconciling blind -- see "
+            "limitations.md, the stage5_flashdecode diagnosis.")
+    bad = []
+    for (b, dec), n in observed_df.groupby(["backend", "decode_backend"]).size().items():
+        want = expected_decode.get(b)
+        if want is not None and dec != want:
+            bad.append(f"  {b}: observed decoded through {dec} ({n} rows), "
+                       f"phase model measures {want}")
+    if bad:
+        raise SystemExit(
+            "--observed totals were decoded through a different kernel than "
+            "the phase model measures, so the identity would compare two "
+            "regimes and report their difference as a residual:\n"
+            + "\n".join(bad))

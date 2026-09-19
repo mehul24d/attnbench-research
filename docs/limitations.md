@@ -1301,50 +1301,78 @@ without systematic bias under the corrected `(n − 1)` identity:
 | `results/stage5_32768/` | 4+/0− | 0.125 | +5.1 ms | 4/4 |
 | **`results/stage5_flashdecode/`** | **3+/21−** | **0.00028** | **−143.7 ms** | **15/24** |
 
-**`results/stage5_flashdecode/` carries a systematic bias and it is not
-diagnosed.** The sign test is decisive — 21 of 24 residuals share a sign at
-p = 0.00028 — and the identity **understates** the observed total. Nine of
-its 24 cells fall outside the 10% tolerance.
+**`results/stage5_flashdecode/` carried a systematic bias. Diagnosed
+2026-09-19, from banked data, at no GPU cost: it is the decode-kernel
+confound entering the reconciliation through its `--observed` input.**
 
-The structure is worth recording precisely, because it is a fact about the
-data rather than a hypothesis about the cause:
+The original record (below, unchanged in substance) described the structure
+and deliberately offered no cause. That restraint was right — two cheap
+explanations turned out false — and the structure it recorded is what made
+the diagnosis possible.
 
-- **Every non-closing cell is `block_sparse`.** All eight dense
-  (`sdpa_flash`) cells close, at both generation lengths.
-- **Every non-closing cell is at the long generation length** (n = 28.7–33.6).
-  All twelve cells at n = 8 close, including every `block_sparse` one, whose
-  residuals there run −3.3 to +0.9 ms.
-- **The residual is a near-constant fraction of the observed total within a
-  band**: −0.16 at 2048 (all three sparsities), −0.14 at 4096, −0.29 at 8192.
-  In absolute terms 205–701 ms.
+*What was recorded 2026-09-12:* 3+/21−, p = 0.00028, mean −143.7 ms, 9 of 24
+cells outside tolerance. Every non-closing cell `block_sparse`; every one at
+the long generation length (n ≈ 29–34); all twelve n = 8 cells closing within
+−3.3 to +0.9 ms.
 
-So the phase model reconstructs `block_sparse` to within a few ms for eight
-generated tokens and misses by a fixed proportion for thirty, at every band
-and every sparsity.
+**Diagnosis, in four links, each checked rather than inferred:**
 
-**No cause is offered, and that is deliberate.** This project has made the
-regime-vs-unit error four times, and each time an arithmetic fix that made
-the sum close was wrong because a quantity was being read in the wrong
-regime. A near-constant fractional residual has several plausible
-explanations — per-call overhead that scales with generation, a decode step
-measured under different cache occupancy than generation produces, a mask or
-cache cost paid per call rather than per config — and this data cannot
-choose between them. Naming one would produce a decomposition that agrees
-with itself and with nothing else.
+1. **The long-generation "observed" totals are not from the flashdecode run.**
+   `results/stage3_flashdecode/` holds only `niah_single` with `n_generated`
+   fixed at 14. The reconciliation's n ≈ 30 rows match the *original* Stage 3
+   bands (`stage3_s1`, `stage3_s1b`) to every printed decimal, in both
+   `n_generated` and `latency_ms`.
+2. **In those original bands every `block_sparse` row decoded through
+   `sdpa_math`; every dense row through `sdpa_flash`.** This is the decode
+   confound already documented in `claims.md` ("two confounds"). So a Stage 5
+   phase model measured with the sparse arms decoding through *flash* was
+   reconciled against totals in which they decoded through *math*.
+3. **The magnitude matches.** The measured math-minus-flash decode-step gap
+   (from `results/stage5/`, which timed the sparse decode the math way)
+   accounts for **83–98%** of the per-step residual in every cell — 8.3 vs
+   7.3 ms at 2048, 7.9 vs 7.4 at 4096, 24.5 vs 23.4 at 8192 — and reproduces
+   the residual's shape (flat from 2048 to 4096, ~3× at 8192), which neither
+   rejected hypothesis did.
+4. **A matched-regime reconciliation closes.** The same Stage 5 phases
+   reconciled against `stage3_flashdecode` — flash-decode on both sides,
+   n = 14 — close in **12 of 12** cells, residuals −38 to +2 ms (≤ 3.3%),
+   sign test **p = 0.146**.
 
-**What this does NOT touch, stated plainly because the number is quotable:**
-no published speedup. The headline figures — 1.321× at 32768, 1.186× at
-16384, the five-band trend, the oracle ratios — are **wall-clock end-to-end
-measurements**, dense and sparse timed the same way on the same rows. They
-are not derived from this identity and do not depend on it closing. The
-`normalized_ms` column *is* identity-derived, but it is built from
-`results/stage5/` (10+/14−, p = 0.54, unbiased), not from this set.
+**Two hypotheses tested and rejected on the way**, recorded because both are
+the natural first guess:
 
-**What it does touch:** any per-phase attribution drawn from
-`stage5_flashdecode` specifically, and confidence in the phase model's
-transferability across generation lengths generally. The model was validated
-at the lengths Stage 5 measured; this says it should not be extrapolated to
-a generation length it was not checked at without re-checking.
+- *The importance scoring pass inside the timer.* It is outside it
+  (`generation.generate_one` scores before `t0`), and its cost scales
+  288 / 929 / 3,258 ms against a residual that is flat from 2048 to 4096.
+- *fp16 scores from a cache hit making mask construction slower than Stage
+  5's fp32 cache misses.* A hit does return fp16 and a miss fp32 — a real
+  asymmetry — but the full 28-layer mask path differs by ±3 ms between the
+  two dtypes, against ~220 ms needed.
+
+**What remains unexplained:** 2–17% of the per-step residual, and a
+non-significant negative lean in the matched reconciliation (9 of 12 cells
+negative, mean −9.8 ms). The two decode steps in link 3 come from different
+sessions, and host-to-host variance of that size is documented elsewhere in
+this file, but it is not *shown* to be the cause here.
+
+**A conclusion drawn from the undiagnosed bias was wrong and is withdrawn.**
+The earlier text said the result reduced "confidence in the phase model's
+transferability across generation lengths generally." It does not.
+**Generation length was perfectly confounded with decode kernel** in the
+failing set — every long-generation `block_sparse` row decoded through
+`sdpa_math`, every short one through flash — so the variable the text blamed
+was standing in for the variable that mattered. In a matched regime the model
+transfers to n = 14 without bias.
+
+**What this does NOT touch, unchanged:** no published speedup. The headline
+figures are wall-clock end-to-end measurements, not identity-derived, and
+`normalized_ms` is built from `results/stage5/` (10+/14−, p = 0.54), which
+reconciles math-decode phases against math-decode totals — a matched regime,
+which is exactly why it was unbiased all along.
+
+**What stops it recurring:** `scripts/run_phase_timing.py` now refuses
+`--observed` rows whose `decode_backend` differs from the decode kernel the
+phase model measures for that arm.
 
 The finding is now readable from the parquet rather than from a terminal:
 every row of every `reconciliation.parquet` carries `bias_detected`,
@@ -1353,10 +1381,26 @@ every row of every `reconciliation.parquet` carries `bias_detected`,
 2026-09-12, which is how a 24-of-24 same-sign result survived unexamined for
 a day in 2026-09-07 — see silent_failure_patterns #27.
 
-## Known debt: the analysis provenance stamp is written and never read
+## Resolved 2026-09-19: the analysis provenance stamp is now read
 
-**Recorded 2026-09-12. Small, unbuilt, and the fifteenth variation on one
-theme.**
+**`provenance.load_derived` refuses a derived input whose stamp is absent,
+dirty, spans more than one commit, or names a different tool than the
+consumer expects.** It is wired into `run_decode_confound.py` and
+`run_decision_map.py --corrected`, the two scripts that consume derived
+files. Run over all 16 stamped parquets in `results/`, 15 passed and one
+did not: **`results/stage7/decision_map.parquet`, all 27 rows derived from
+a dirty tree at `67af7c4`** — the published decision map. Regenerated at a
+clean commit from the same inputs, its content was identical in every row
+and column, so the dirt was immaterial; that is now measured rather than
+inferred, and the banked file carries a clean stamp.
+
+**Not built, and stated so it is not mistaken for done:** refusing to
+*join* two derived inputs produced at different commits. No script
+currently joins two derived files, so there is nothing to guard yet; the
+first one that does should call `load_derived` on both and compare
+`analysis_git_commit`.
+
+*Original entry, 2026-09-12:*
 
 Every derived artifact now carries `analysis_tool`, `analysis_git_commit`,
 `analysis_git_dirty`, `analysis_host` and `analysis_timestamp` — fourteen

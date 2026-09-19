@@ -33,8 +33,8 @@ from attnbench.accuracy.generation import ModelGeometry                # noqa: E
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
     ACCURACY_EXCLUDED_BACKENDS, backend_instance)
 from attnbench.accuracy.phase_timing import (                          # noqa: E402
-    add_bias_columns, arms_for, bias_warning, measure_band,
-    scoring_overhead_ratio)
+    add_bias_columns, arms_for, bias_warning, check_observed_decode_regime,
+    measure_band, scoring_overhead_ratio)
 from attnbench.config import AttnConfig                                # noqa: E402
 
 
@@ -106,6 +106,12 @@ def main():
                         ignore_index=True)
         df = df[~df.backend.isin(ACCURACY_EXCLUDED_BACKENDS)]
         df["_band"] = [band_for(int(c), grid.seq_lens) for c in df.context_length]
+        # Same regime or no reconciliation: the decode kernel each arm's
+        # observed totals were generated with must be the one measured here.
+        from attnbench.accuracy.grid_configs import decode_backend_for
+        check_observed_decode_regime(df, {
+            b: decode_backend_for(backend_instance(b)).name
+            for b in df.backend.unique()})
         g = df.groupby(["backend", "sparsity", "_band"], dropna=False)
         for (b, sp, band), r in g:
             observed[(b, None if pd.isna(sp) else float(sp), int(band))] = (
