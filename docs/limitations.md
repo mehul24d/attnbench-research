@@ -1910,3 +1910,47 @@ ever wanted, is to return the fp16 round-trip on a miss too, so every arm
 ranks from one tensor. It is **deliberately not made before audit item S1a**:
 S1a re-runs the pre-fix bands to isolate the sink, and must reproduce the
 originals' per-arm precision (a cold cache) to do that.
+
+### Changing the sparse arms' decode kernel moves their text, not their scores
+
+Measured 2026-09-19 from banked data, while designing audit item S1a. The
+only pair of runs that differs in nothing but the sparse arms' decode kernel
+is `niah_single` at 2048/4096/8192, n=100, all pre-sink-fix: `stage3_s1`/`s1b`
+(sparse decode `sdpa_math`) against `stage3_flashdecode` (sparse decode
+`sdpa_flash`). The dense arm decodes through `sdpa_flash` in both.
+
+| | |
+|---|---|
+| dense predictions identical across the two runs | **300 / 300** |
+| sparse predictions whose text differs | **80 / 900** (3–14% per cell) |
+| — of which the answer span (text before the first period) differs | **5** |
+| — of which correctness changed | **1** (2048/0.9: 63 → 62) |
+| sparse-minus-dense delta identical | **8 of 9 cells**; 2048/0.9 moves −37 → −38 |
+
+**What this establishes.** On `niah_single` the published sparse-minus-dense
+deltas are decode-invariant to one example in 900. The text differences are
+almost all *after* the answer — the free continuation inside the 14-token cap,
+where a small logit difference early compounds over the remaining tokens.
+
+**What it does not establish.**
+
+- *That sparse arms are more sensitive to numerical path than dense ones.* It
+  is tempting, and it is not tested. The dense arm's kernel never changed
+  between these runs, so "dense did not move" is expected, not a comparison.
+  A dense-arm decode switch was never measured.
+- *Decode invariance on `niah_multikey` or `vt`.* No banked pair isolates the
+  decode kernel on either. Both have longer outputs and scores well below
+  ceiling, so there is more room for a kernel change to move correctness.
+  This is the untested third item. **It feeds no current claim**: rows 67 and
+  103 of `claims.md` came from `sdpa_math`-decoded runs and S1a replays that
+  regime, and every end-to-end row at 2048–8192 is `niah_single`. It would
+  matter the first time anyone quotes current-code (`sdpa_flash`-decoded)
+  accuracy for those two tasks at those bands.
+
+**Why S1a pins decode anyway.** The per-example comparison in S1a is exact,
+not statistical, and a text-level change from the kernel on 3–14% of
+examples would sit inside it. `--pin-fallback-decode-backend sdpa_math`
+replays the regime, only values in `DENSE_DECODE_BACKEND_HISTORY` are
+accepted, every row carries `decode_pinned=True`, and a pinned run refuses to
+resume into an unpinned output. S1a's rows are therefore **sink-corrected
+accuracy comparable to the banked numbers, not current-code accuracy**.

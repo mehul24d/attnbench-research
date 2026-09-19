@@ -292,3 +292,18 @@ def test_a_block_sparse_cell_does_score_and_passes_the_scores_through():
                      score_cache_dir=cache_dir, device="cpu")
     assert sentinel["called"] == 1
     assert seen["layer_scores"] is not None
+
+
+def test_a_pinned_fallback_decodes_through_it_and_the_row_says_pinned():
+    """Audit S1a: replaying the pre-2026-09-08 regime must actually decode
+    through the pinned kernel, and the row must say it was pinned -- it is
+    not current-code output. The unpinned row must say it was not."""
+    tokenizer = _FakeTokenizer()
+    wrapped, geometry = _wrapped()
+    kw = dict(cfg=_cell_cfg(), backend=NaiveAttention(), example=_example(),
+              geometry=geometry, stop_tokens=_stop_tokens(tokenizer),
+              score_cache_dir="unused", device="cpu")
+    pinned = generate_one(wrapped, tokenizer, pinned_fallback_decode="sdpa_math", **kw)
+    assert pinned.decode_backend == "sdpa_math" and pinned.decode_pinned is True
+    current = generate_one(wrapped, tokenizer, **kw)
+    assert current.decode_backend == DENSE_DECODE_BACKEND and current.decode_pinned is False

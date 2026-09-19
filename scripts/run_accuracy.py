@@ -53,10 +53,12 @@ from attnbench.accuracy.config import load_grid                        # noqa: E
 from attnbench.accuracy.generation import (                            # noqa: E402
     ModelGeometry, StopTokens, generate_one)
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
-    backend_instance, build_configs_by_backend, build_examples_by_task_length)
+    DENSE_DECODE_BACKEND_HISTORY, backend_instance, build_configs_by_backend,
+    build_examples_by_task_length)
 from attnbench.accuracy.schema import GATED_BACKENDS                   # noqa: E402
 from attnbench.accuracy.sizing import approximate_token_count  # noqa: E402
-from attnbench.accuracy.runner import build_cells, run_accuracy        # noqa: E402
+from attnbench.accuracy.runner import (build_cells, check_decode_pin_continuity,  # noqa: E402
+                                       run_accuracy)
 from attnbench.accuracy import stopping                                # noqa: E402
 from attnbench import provenance                                       # noqa: E402
 from attnbench.config import AttnConfig                                # noqa: E402
@@ -108,7 +110,8 @@ def _guard_model_fits(model_id: str, device: str) -> None:
 def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
                       dtype: str, score_cache_dir: str, verbose: bool = True,
                       gla_gate_source: str | None = None,
-                      score_source: str = "dense_softmax_fp32"):
+                      score_source: str = "dense_softmax_fp32",
+                      pinned_fallback_decode: str | None = None):
     """The real execution path: load the model once, wrap it once, and
     return the per-cell closure `run_accuracy` calls.
 
@@ -178,7 +181,8 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
         return generate_one(wrapped, tokenizer, cfg=cfg, backend=backend,
                             example=example, geometry=geometry,
                             stop_tokens=stop_tokens,
-                            score_cache_dir=score_cache_dir, device=device)
+                            score_cache_dir=score_cache_dir, device=device,
+                            pinned_fallback_decode=pinned_fallback_decode)
 
     generate_fn.unwrap = wrapped.unwrap
     return generate_fn
@@ -270,6 +274,13 @@ def main():
                          "verdict from docs/gla_arm_decision.md does; without "
                          "it the rule could reach a decision the pipeline had "
                          "no way to act on.")
+    ap.add_argument("--pin-fallback-decode-backend", default=None,
+                    choices=[v for v, _s, _u in DENSE_DECODE_BACKEND_HISTORY],
+                    help="decode sparse (no-decode-path) arms through this "
+                         "HISTORICAL fallback instead of the current "
+                         "DENSE_DECODE_BACKEND, to replay an era's regime "
+                         "(audit S1a: sdpa_math, as the pre-2026-09-08 bands "
+                         "ran). Every row is stamped decode_pinned=True.")
     ap.add_argument("--only-backends", default=None,
                     help="comma-separated subset of the grid's backends to run "
                          "(e.g. sdpa_flash). Narrows the grid, never adds to it. "
@@ -445,6 +456,15 @@ def main():
     cells = build_cells(configs_by_backend=configs_by_backend,
                         examples_by_task_length=examples_by_task_length)
 
+    # Before anything runs: the resume key has no decode field, so a pinned
+    # run resuming into an unpinned output (or the reverse) would skip rows
+    # measured under the other regime and report them as its own.
+    check_decode_pin_continuity(Path(args.out) / "accuracy.parquet",
+                                pinned=args.pin_fallback_decode_backend is not None)
+    if args.pin_fallback_decode_backend:
+        print(f"decode        : fallback PINNED to {args.pin_fallback_decode_backend} "
+              f"(replaying a past regime; rows stamped decode_pinned=True)")
+
     if args.dry_run:
         generate_fn = _dry_run_only
         teardown = None
@@ -454,7 +474,8 @@ def main():
             device=args.device, dtype=args.dtype,
             score_cache_dir=grid.score_cache_dir,
             gla_gate_source=args.gla_gate_source,
-            score_source=args.score_source)
+            score_source=args.score_source,
+            pinned_fallback_decode=args.pin_fallback_decode_backend)
         teardown = generate_fn.unwrap
 
     try:

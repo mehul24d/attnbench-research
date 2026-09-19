@@ -83,7 +83,8 @@ class ModelGeometry:
 def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBackend,
                  example, geometry: ModelGeometry, stop_tokens: StopTokens,
                  score_cache_dir: str, device: str = "cuda",
-                 synchronize=None) -> Generated:
+                 synchronize=None,
+                 pinned_fallback_decode: Optional[str] = None) -> Generated:
     """One Stage 3 row's text and the wall time it took.
 
     `synchronize` is called on both sides of the timer where the device is
@@ -109,7 +110,8 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
             input_ids, task=example.task, example_id=example.example_id,
             cache_dir=score_cache_dir)
 
-    decode_backend = decode_backend_for(backend)
+    decode_backend = (decode_backend_for(backend) if pinned_fallback_decode is None
+                      else decode_backend_for(backend, fallback=pinned_fallback_decode))
 
     synchronize()
     t0 = time.perf_counter()
@@ -127,4 +129,5 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
                      latency_ms=latency_ms, stop_reason=result.stop_reason,
                      n_generated=result.n_generated,
                      decode_backend=result.decode_backend,
+                     decode_pinned=pinned_fallback_decode is not None,
                      gate_source=gate_source_of(backend))

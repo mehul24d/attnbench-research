@@ -108,6 +108,35 @@ def build_cells(*, configs_by_backend: dict[str, list[AttnConfig]],
     return cells
 
 
+class DecodePinMismatch(RuntimeError):
+    """A run would resume into rows measured under the other decode regime."""
+
+
+def check_decode_pin_continuity(checkpoint_path: Path, *, pinned: bool) -> None:
+    """Refuse to append pinned-decode rows to an unpinned checkpoint, or the
+    reverse.
+
+    `load_done_keys` identifies a row by (config_key, backend, task,
+    example_id) -- no decode field -- so a resume across regimes would skip
+    every example the other regime already measured and the output would
+    silently mix two decode kernels under one set of cell names. Rows written
+    before `decode_pinned` existed are unpinned by definition.
+    """
+    if not Path(checkpoint_path).exists():
+        return
+    df = pd.read_parquet(checkpoint_path)
+    if df.empty:
+        return
+    have = (set(df["decode_pinned"].fillna(False).astype(bool))
+            if "decode_pinned" in df.columns else {False})
+    if have != {pinned}:
+        raise DecodePinMismatch(
+            f"{checkpoint_path} holds decode_pinned={sorted(have)} rows; this "
+            f"run is decode_pinned={pinned}. Resume keys carry no decode "
+            f"field, so mixing them would skip rows measured under the other "
+            f"regime. Use a separate --out.")
+
+
 def load_done_keys(checkpoint_path: Path) -> set[tuple[str, str, str, str]]:
     """(config_key, backend, task, example_id) quadruples already written.
 
@@ -351,6 +380,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             stop_reason=gen.stop_reason,
             n_generated=gen.n_generated,
             decode_backend=gen.decode_backend,
+            decode_pinned=gen.decode_pinned,
             # Carried, not re-derived. The runner holds a backend NAME; only
             # generate_fn held the instance, and the instance is the only
             # thing that knows which gate ran. AccuracyResult.__post_init__

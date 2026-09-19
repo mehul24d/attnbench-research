@@ -240,7 +240,8 @@ def gate_source_of(backend: AttentionBackend) -> str | None:
     return getattr(backend, "gate_source", None)
 
 
-def decode_backend_for(backend: AttentionBackend) -> AttentionBackend:
+def decode_backend_for(backend: AttentionBackend, *,
+                       fallback: str = DENSE_DECODE_BACKEND) -> AttentionBackend:
     """The backend that will generate this row's text.
 
     Itself where it has a decode path (`gla` keeps its own fixed-size
@@ -248,7 +249,19 @@ def decode_backend_for(backend: AttentionBackend) -> AttentionBackend:
     exists to make visible); the dense fallback otherwise. Never silent:
     `generate()` refuses to choose for a backend with no decode path, so
     this function is where the choice is made and it is recorded on the row.
+
+    `fallback` exists for one purpose: re-running an era's configuration.
+    Audit item S1a (2026-09-19) re-measures the pre-2026-09-08 accuracy bands
+    to isolate the attention-sink fix, and those bands decoded their sparse
+    arms through `sdpa_math`; letting the decode kernel change too would
+    change 3-14% of sparse prediction texts alongside the variable under
+    test. Only a value this module has actually used is accepted -- pinning
+    is replaying a recorded regime, not inventing one.
     """
+    allowed = {value for value, _since, _until in DENSE_DECODE_BACKEND_HISTORY}
+    if fallback not in allowed:
+        raise ValueError(f"fallback decode backend {fallback!r} was never "
+                         f"DENSE_DECODE_BACKEND (history: {sorted(allowed)})")
     if type(backend).supports_decode():
         return backend
-    return backend_instance(DENSE_DECODE_BACKEND)
+    return backend_instance(fallback)

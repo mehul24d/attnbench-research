@@ -99,6 +99,10 @@ class Generated:
     stop_reason: Optional[StopReason] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
+    # True when the caller pinned the dense-decode fallback to a historical
+    # value instead of the current DENSE_DECODE_BACKEND (audit S1a). Such a
+    # row replays an old regime and is NOT current-code output.
+    decode_pinned: bool = False
     # Read off the backend instance that actually ran, in generation.py --
     # never passed in alongside it. A gate named by a caller can disagree
     # with the gate the recurrence used, and the disagreement is invisible
@@ -153,6 +157,9 @@ class AccuracyResult:
     stop_reason: Optional[StopReason] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
+    # See Generated.decode_pinned. Carried so a replayed-regime row can never
+    # be read as current-code output.
+    decode_pinned: bool = False
     # None for every backend without a forget gate, and required for every
     # backend with one -- enforced below rather than trusted, because the
     # whole point of the column is that a linear row is uninterpretable
