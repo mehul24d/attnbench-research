@@ -264,7 +264,7 @@ second point on an axis that had only one:
 | 2 | …**on an L4**; on an A100 it is 0.475× | a kernel sweep at the real geometry |
 | 3 | …and the A100 kernel is slower, which explains it | the kernel is **1.96× faster**; the cost is CPU-side |
 | 4 | …the penalty is CPU mask construction; the speedup needs **either** a weak dense baseline **or** a vectorised builder | an end-to-end run with the builder swapped |
-| **5** | **block-sparse prefill beats dense on an A100 at 8192+ — 1.282× at 16384/0.9 — but only with a vectorised mask builder, which the reference implementation lacks** | *not yet overturned* |
+| **5** | **block-sparse prefill beats dense on an A100 at 16384 — 1.282× at 16384/0.9 — but only with a vectorised mask builder, which the reference implementation lacks** | *not overturned; narrowed 2026-09-19 — it said "8192+", but 8192 is parity inside the session spread and 32768 was never measured* |
 
 Every version was measured correctly. Versions 1 and 2 were also *replicated*
 — 1.321× re-measured on a second L4, agreeing to 0.19%. Version 3 was a

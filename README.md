@@ -12,9 +12,10 @@ the thing every such speedup leaves out.
 ## The result, and its ceiling
 
 > **On an NVIDIA A100, training-free block-sparse prefill beats `sdpa_flash`
-> at 8192 context and above — 1.201× at 16384/0.75 sparsity, 1.282× at
-> 16384/0.9 — but only with a vectorised mask builder, which the reference
-> implementation does not have.** With the reference builder the same
+> at 16384 context — 1.201× at 0.75 sparsity, 1.282× at 0.9 — but only with a
+> vectorised mask builder, which the reference implementation does not
+> have.** At 8192 the vectorised builder reaches parity; 32768 was not
+> measured with it. With the reference builder the same
 > configurations run at 0.633× and 0.956×. The model's outputs are bitwise
 > identical under both builders; the difference is one function, ~91% of whose
 > cost is Python interpreter overhead.

@@ -203,7 +203,13 @@ which function `masks.mask_for` calls. A100, clocks locked, `git_dirty=False`.
 
 **The A100 reversal is the mask builder, not the card.** With the reference
 implementation block-sparse loses at every cell measured; with a vectorised
-builder it wins at five of six, reaching **1.282× at 16384/0.9**. The dense
+builder it wins clearly at all three 16384 cells, reaching **1.282× at
+16384/0.9**. At 8192 it is parity, not a win: 0.5 is a loss (0.968×), and
+0.75's +2.3% sits inside the 1.8–5.8% session-to-session spread the reference
+arm shows at 8192 between the 2026-09-16 and 2026-09-17 hosts. *(This read
+"wins at five of six" until the 2026-09-19 audit; the sentence counted cells,
+not cells that clear the floor.)* 32768 was not measured with the vectorised
+builder. The dense
 control — which builds no mask, so the builder cannot touch it — moved −0.1%
 at 8192 and +0.0% at 16384 between the two settings, so nothing else changed.
 
@@ -1017,6 +1023,25 @@ which is at least the symmetric case: both halves of every cross-architecture
 ratio carry the same variance, so a reader discounts them uniformly instead of
 mistaking a difference in measurement quality for a difference in silicon.
 
+**CORRECTED 2026-09-19 — the paragraph above is out of date and no longer
+describes the data.** It was true when written (before 2026-09-06, when
+`lock_clocks` could not succeed and `capture()` was never passed the outcome;
+`silent_failure_patterns.md` #16). Since the 2026-09-06 fix, the flag is an
+observed outcome, and the banked data splits by **stage**, not by card:
+
+| `clocks_locked` | what |
+|---|---|
+| **True** | every Stage 3 accuracy/latency run from 2026-09-06 (L4) · every Stage 5 phase file, both L4 sessions and the A100 · the 7B oracle and cheap arms (A100) · the vectorised end-to-end (A100) |
+| **False** | every Stage 0/1 probe and correctness file, all cards · **every Stage 2 kernel sweep, all cards** — `run_sweep` has never attempted the lock (commit `a157f03` stopped it claiming otherwise) |
+
+So the "symmetric case" argument now holds only for Stage 2 — which is where
+it matters, because the cross-architecture ranking and the A100 kernel ratios
+at (12,2) are Stage 2 numbers, and both halves of those are unlocked. The
+end-to-end headlines are locked on both cards. The single-sample limitation
+of `sm_clock_mhz` (now `sm_clock_mhz_at_capture`) is unchanged: a locked row
+records that the lock call succeeded, not the clock during the timed region,
+and the 2026-09-16 L4 replicate observed 1200 MHz against a 1740 MHz lock.
+
 
 ## The cross-architecture claim rests on 11 cells, and one of them carries it
 
@@ -1643,12 +1668,57 @@ overstates the ranking's contribution by an unmeasured amount.**
 block-sparse is not Sparse Frontier's block-sparse, and the gap is in the
 conservative direction for accuracy.
 
-### What it does not affect
+### What it does not affect — CORRECTED 2026-09-19: it affects timing too
 
-Every **timing** number. Masks of a given sparsity have the same block count
-whether the sink is forced or not, so kernel latency, the Stage 2 slice, the
-conversion tax and every speedup are untouched. This is an accuracy-side
-finding only.
+*This subsection originally read: "Every **timing** number. Masks of a given
+sparsity have the same block count whether the sink is forced or not, so
+kernel latency, the Stage 2 slice, the conversion tax and every speedup are
+untouched. This is an accuracy-side finding only." **That is false**, and it
+was false when written: the fix changed the budget, not only the candidates.*
+
+The per-row budget is `round((1 - sparsity) * len(candidates))`. Removing
+kv_block 0 from the candidate list shrinks `len` by one, so the budget drops
+by about `1 - sparsity` blocks — and then the sink is added back free. The net
+is roughly `sparsity` extra blocks per row. Counted exactly (the count depends
+only on the rule, not on the scores; cross-checked against real 28-layer
+masks at 2048):
+
+| band | 0.50 | 0.75 | 0.90 |
+|---|---|---|---|
+| 2048 | +9.2% (0.559 → 0.610) | +23.9% (0.338 → 0.419) | **+53.8%** (0.191 → 0.294) |
+| 4096 | +5.4% | +14.7% | +35.0% (0.152 → 0.205) |
+| 8192 | +2.9% | +8.3% | +21.8% |
+| 16384 | +1.5% | +4.4% | +12.2% (0.113 → 0.127) |
+| 32768 | +0.8% | +2.3% | +6.6% |
+
+*(active blocks, forced-sink vs pre-fix; realised causal density in parentheses)*
+
+**What this does and does not invalidate.**
+
+- **No published number is wrong.** Every measurement was taken on the masks
+  of its own era, and every row pairs a timing with the accuracy of the same
+  masks. The L4 headline (1.321× at 32768/0.75, 100.0 vs 100.0) is a correct
+  measurement of the pre-fix configuration.
+- **The current code does not reproduce the L4 configuration.** Re-running
+  any pre-2026-09-16 cell today builds a denser mask — by 2.3% at the L4
+  headline cell, by 54% at 2048/0.9.
+- **Comparisons across the fix are not like-for-like, and the bias is one
+  direction.** Everything on the L4 before 2026-09-16 (Stage 2, Stage 3,
+  Stage 5 and its replicate) is pre-fix; everything on the A100 from
+  2026-09-16 on (Stage 5, the 2026-09-16 and 2026-09-17 kernel sweeps, the
+  vectorised end-to-end) is post-fix. So every L4-versus-A100 sparse number
+  compares a sparser L4 mask against a denser A100 one, and **understates the
+  A100's sparse arm**. The conclusions survive it: the kernel cross-card
+  ratios move by at most the block excess (bs gain 1.91× at 8192 could be at
+  most ~2.07×, still below flash's 3.20×), and the A100 reversal at 16384/0.75
+  (0.615×) is far outside a 4.4% block excess. The A100 kernel's "slower than
+  flash at every sparsity at 4096" was measured at realised densities of
+  0.559 / 0.339 / 0.205, not 0.5 / 0.25 / 0.1 — removing the whole 35% excess
+  at 0.9 would still leave it slower (0.889 ms → at best ~0.66 ms against
+  flash's 0.509).
+- **"Sparsity 0.9" names a nominal budget, not a density.** At short bands the
+  two are now far apart. Any sparsity axis plotted from post-fix data should
+  use the realised density `BlockSparseMask` records.
 
 ### Why this makes the block-size limitation causal, not incidental
 
@@ -1710,11 +1780,14 @@ so a pass proves it is granted outside the budget rather than merely winning
 it — nothing in the suite had tested the sink either way, which is why the
 defect survived every previous green run.
 
-**Realised density is now slightly above nominal**, because two blocks per row
-are free instead of one: measured 0.506 / 0.260 / 0.111 against nominal
-0.50 / 0.25 / 0.10. The reference implementation binary-searches k to hit a
-target exactly; this study does not, and the gap is ~1% of density at the
-sparsest setting. It is in the conservative direction for speedup.
+**Realised density is now above nominal**, because two blocks per row are free
+instead of one: measured 0.506 / 0.260 / 0.111 against nominal 0.50 / 0.25 /
+0.10. The reference implementation binary-searches k to hit a target exactly;
+this study does not. *(Added 2026-09-19: those three figures are the long-band
+case. The excess grows as context shrinks — 0.610 / 0.419 / 0.294 at 2048 —
+see the table under "What it does not affect" above, which is where the
+"~1%" this paragraph originally claimed turned out to be wrong.)* It is in the
+conservative direction for speedup.
 
 **Every accuracy number predating this change is superseded, not deleted.**
 The unforced-sink rows are retained and marked, because the forced-versus-
@@ -1722,6 +1795,16 @@ unforced comparison *is* the measurement of what the sink was worth — probably
 the cleanest demonstration this study contains of why a mask-construction
 detail that papers put in an appendix is load-bearing. Regeneration is
 pending.
+
+*Status 2026-09-19, from the single-measurement audit:* still pending, and the
+affected set is named. Regenerated post-fix: 16384 (1.5B oracle and cheap,
+7B oracle and cheap). **Not regenerated: every 1.5B accuracy number at 2048,
+4096 and 8192** — `stage3_s1`, `stage3_s1b`, `stage3_flashdecode` — and
+everything derived from them (Stage 4 matched budgets, Stage 6, the Stage 7
+decision map). There is direct evidence it moves: at 16384, post-fix,
+`niah_multikey` at 0.5 is +0.0 against dense, where pre-fix 8192 was −15.0.
+The re-run is approved as audit item S1a (n=100, same example ids, dense arm
+as a hard canary).
 
 ---
 

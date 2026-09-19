@@ -58,6 +58,18 @@ exists. Stage 3 ships with two backends, dense and block-sparse.
 
 ## Block-sparse accuracy
 
+> **Measured before the attention-sink fix (2026-09-16), not yet regenerated.**
+> Every accuracy number in this section, in the `vt` section below, and in the
+> `niah_single` accuracy columns of the end-to-end tables at 2048–8192 comes
+> from masks that did not force the sink (`limitations.md`, "The attention
+> sink is not forced"). They are correct measurements of that configuration,
+> and the current code does not build it. There is direct evidence they move:
+> post-fix, at 16384, `niah_multikey` at 0.5 is +0.0 against dense, where
+> pre-fix 8192 was −15.0. `vt` staying above dense *is* reproduced post-fix
+> (+9.4 / +12.8 / +12.0 at 16384), so that direction stands; its magnitudes
+> here do not yet. Re-run approved as audit item S1a; until it reports, quote
+> these with the era, or not at all.
+
 **Three bands measured (2048/4096/8192), n=300 per cell, standard errors
 0.0–2.1 points.** Report absolutes alongside deltas: the dense baseline is
 not flat across length, so a delta alone hides which side moved.
@@ -469,7 +481,8 @@ saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
 
 | | |
 |---|---|
-| **Supported** | *Block-sparse prefill attention is faster than dense on an **A100 at 8192 and above** — **1.201× at 16384/0.75, 1.282× at 16384/0.9** — **but only with a vectorised mask builder, which the reference implementation does not have.** With the reference builder the same configurations are 0.633× and 0.956×. The difference is one function: ~91% of the reference builder's cost is Python interpreter overhead in an unvectorised per-query-block loop.* See "The A100 reversal is CPU mask construction". |
+| **Supported** | *Block-sparse prefill attention is faster than dense on an **A100 at 16384** — **1.090× / 1.201× / 1.282× at 0.5 / 0.75 / 0.9** — **but only with a vectorised mask builder, which the reference implementation does not have.** With the reference builder the same configurations are 0.405× / 0.633× / 0.956×. At 8192 the vectorised builder reaches parity, not a win (0.968× / 1.023× / 1.058×). 32768 was not measured with it. The difference between builders is one function: ~91% of the reference builder's cost is Python interpreter overhead in an unvectorised per-query-block loop.* See "The A100 reversal is CPU mask construction". |
+| **Not supported** | *…at 8192 and above.* This row said so until 2026-09-19. At 8192 the 0.5 cell is a loss and 0.75's +2.3% is inside the 1.8–5.8% session-to-session spread measured on the reference arm at that band; 32768 has no vectorised measurement at all. Only 16384 clears the floor. |
 | **Supported** | *On an **NVIDIA L4 (sm_89)**, block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* **The card is not a detail of this sentence.** On an A100 the same configuration is 0.475× with the reference builder — and the cause is the builder, not the card. |
 | **Not supported** | *Block-sparse attention is slower than dense on an A100.* This was the published claim on 2026-09-16 and it is wrong as a statement about the method. It is true only of the reference mask builder, and it inverts when that builder is replaced — measured end-to-end, same process, same scores, only the builder changed, with bitwise-identical model outputs. |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192. The speedup is an upper bound no measured estimator approaches.* |
@@ -729,6 +742,15 @@ the same fraction of each card's ceiling.
 | 32768 | L4 | 1.014 | **1.373** | 1.475 |
 | 32768 | **A100** | **0.281** | **0.475** | **0.817** |
 
+**The two rows of each band were built with different mask rules** (added
+2026-09-19). The L4 rows predate the attention-sink fix and the A100 rows
+follow it, and the fix adds blocks: +1.5 / +4.4 / +12.2% at 16384 and
++0.8 / +2.3 / +6.6% at 32768 (`limitations.md`, sink section). So the A100's
+sparse arm is carrying a denser mask than the L4's. That biases against the
+A100 and cannot account for a 0.615× against 1.194×, but the table is not
+like-for-like at the block level, and the kernel cross-card ratios below
+inherit the same one-directional bias.
+
 **CORRECTED 2026-09-16, same day, by a kernel-level sweep.** The first version
 of this section said "the block-sparse kernel does not exploit the A100" and
 attributed the reversal to the kernel. **That was an inference from end-to-end
@@ -889,7 +911,8 @@ model's own head geometry it is 1.96× faster than flash at 16384/0.75. The
 loss is CPU-side mask construction, ~91% of which profiles as Python
 interpreter overhead in an unvectorised per-query-block loop. Replacing that
 one function, with the model's outputs bitwise unchanged, turns the same
-configurations into 1.090–1.282× wins.
+configurations into 1.090–1.282× wins at 16384. At 8192 it reaches parity
+(0.968–1.058×); 32768 was not measured with it.
 
 **That reframes the work from discovering a negative to explaining a known
 one**, which is both the more accurate description and the more defensible
