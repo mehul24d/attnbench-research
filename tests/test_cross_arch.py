@@ -500,3 +500,42 @@ def test_a_one_sided_comparison_has_no_flip_margin():
 
     assert ArchitectureComparison("fa2", "k", {"L4": 2.0}).flip_margin == 0.0
     assert not ArchitectureComparison("fa2", "k", {"L4": 2.0}).flips_materially()
+
+
+# --- coverage_gaps: the exclusion stays, the silence does not ---------------
+
+def _sp(backend, cfg, gpu, host="h"):
+    from attnbench.analysis.cross_arch import Speedup
+    return Speedup(host=f"{host}-{gpu}", gpu_name=gpu, backend=backend,
+                   config_key=cfg, latency_ms=10.0, baseline_latency_ms=10.0,
+                   clocks_locked=False)
+
+
+def test_coverage_gaps_names_what_the_comparison_drops():
+    from attnbench.analysis.cross_arch import coverage_gaps
+    sp = [_sp("fa2", "c1", "L4"), _sp("fa2", "c1", "A100"),   # compared
+          _sp("fa2", "c2", "L4"),                             # dropped
+          _sp("flex", "c1", "L4"), _sp("flex", "c1", "A100")] # fully covered
+    assert len(compare_across_architectures(sp)) == 2
+    gaps = coverage_gaps(sp)
+    assert [g.backend for g in gaps] == ["fa2"]
+    assert (gaps[0].pairs_total, gaps[0].pairs_compared, gaps[0].pairs_dropped) == (2, 1, 1)
+    assert not gaps[0].wholly_absent
+
+
+def test_a_backend_missing_from_one_architecture_is_named_not_vanished():
+    """The case the old code handled silently: every pair of a backend
+    dropped, and nothing in the output mentioned that backend at all."""
+    from attnbench.analysis.cross_arch import coverage_gaps
+    sp = [_sp("flex", "c1", "L4"), _sp("flex", "c1", "A100"),
+          _sp("sage", "c1", "L4"), _sp("sage", "c2", "L4")]
+    assert {c.backend for c in compare_across_architectures(sp)} == {"flex"}
+    (g,) = coverage_gaps(sp)
+    assert g.backend == "sage" and g.absent_from == ("A100",)
+    assert g.pairs_compared == 0 and "ALL 2 pairs dropped" in g.describe()
+
+
+def test_full_coverage_reports_no_gaps():
+    from attnbench.analysis.cross_arch import coverage_gaps
+    sp = [_sp("fa2", "c1", "L4"), _sp("fa2", "c1", "A100")]
+    assert coverage_gaps(sp) == []

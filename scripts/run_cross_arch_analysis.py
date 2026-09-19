@@ -184,11 +184,20 @@ def main() -> int:
 
     speedups = cross_arch.speedup_within_host(df, baseline_backend=args.baseline)
     comparisons = cross_arch.compare_across_architectures(speedups)
+    gaps = cross_arch.coverage_gaps(speedups)
     material = [c for c in comparisons if c.flips_materially()]
     nominal = [c for c in comparisons if c.flips() and not c.flips_materially()]
 
     print(f"\n## Cross-architecture comparisons (baseline {args.baseline})")
     print(f"  {len(speedups)} within-host ratios -> {len(comparisons)} comparisons")
+    # What the intersection left out, by name. The exclusion is correct; it
+    # used to be silent, so a backend missing from one card vanished from
+    # every table below without a line saying so.
+    print("\n## Coverage (pairs measured on only one architecture are excluded)")
+    if not gaps:
+        print("  none -- every measured backend/config reaches every architecture")
+    for g in gaps:
+        print(f"  {'!! ' if g.pairs_compared == 0 else ''}{g.describe()}")
     print(f"  {len(material) + len(nominal)} flip; {len(material)} clear the "
           f"resolution their own latencies support")
     if nominal:
@@ -305,8 +314,17 @@ def main() -> int:
         "baseline_latency_ms": s.baseline_latency_ms, "speedup": s.speedup,
         "clocks_locked": s.clocks_locked,
     } for s in speedups])
+    # Written even when empty: an empty coverage.parquet is the positive
+    # statement "nothing was excluded", which an absent file cannot make.
+    coverage_frame = pd.DataFrame([{
+        "backend": g.backend, "present_on": ", ".join(g.present_on),
+        "absent_from": ", ".join(g.absent_from), "pairs_total": g.pairs_total,
+        "pairs_compared": g.pairs_compared, "pairs_dropped": g.pairs_dropped,
+    } for g in gaps], columns=["backend", "present_on", "absent_from",
+                               "pairs_total", "pairs_compared", "pairs_dropped"])
     written = [(comparison_frame, "comparisons"), (cross, "crossover"),
-               (matched, "crossover_matched"), (speedup_frame, "speedups")]
+               (matched, "crossover_matched"), (speedup_frame, "speedups"),
+               (coverage_frame, "coverage")]
     if len(arches) == 2:
         written.append((shifted, "advantage_shift"))
     for frame, name in written:
@@ -317,7 +335,7 @@ def main() -> int:
         # would name whichever laptop ran the join.
         provenance.stamp_analysis(frame, "scripts/run_cross_arch_analysis.py")
         frame.to_parquet(args.out / f"{name}.parquet")
-    print(f"\nWrote comparisons/crossover/speedups to {args.out}")
+    print(f"\nWrote comparisons/crossover/speedups/coverage to {args.out}")
     return 0
 
 

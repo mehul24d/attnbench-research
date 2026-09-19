@@ -638,3 +638,62 @@ def compare_across_architectures(speedups: list[Speedup],
             min_latency_by_architecture={
                 gpu: min(vals) for gpu, vals in lats[(backend, config_key)].items()}))
     return out
+
+
+@dataclass(frozen=True)
+class CoverageGap:
+    """A backend whose (backend, config) pairs do not all reach every
+    architecture, so `compare_across_architectures` dropped some of them."""
+    backend: str
+    present_on: tuple[str, ...]       # architectures with >= 1 ratio
+    absent_from: tuple[str, ...]      # architectures with none at all
+    pairs_total: int
+    pairs_compared: int               # measured on >= 2 architectures
+
+    @property
+    def pairs_dropped(self) -> int:
+        return self.pairs_total - self.pairs_compared
+
+    @property
+    def wholly_absent(self) -> bool:
+        return bool(self.absent_from)
+
+    def describe(self) -> str:
+        if self.pairs_compared == 0:
+            return (f"{self.backend}: ALL {self.pairs_total} pairs dropped -- "
+                    f"measured only on {', '.join(self.present_on)}; "
+                    f"no cross-architecture statement exists for it")
+        where = (f"; absent entirely from {', '.join(self.absent_from)}"
+                 if self.absent_from else "")
+        return (f"{self.backend}: {self.pairs_dropped} of {self.pairs_total} "
+                f"pairs dropped (one architecture only){where}")
+
+
+def coverage_gaps(speedups: list[Speedup]) -> list[CoverageGap]:
+    """What `compare_across_architectures` silently leaves out, by backend.
+
+    Excluding one-sided pairs is correct and stays -- a pair measured on one
+    architecture has no cross-architecture claim to make. What was wrong was
+    that the exclusion was SILENT: the caller saw "N ratios -> M comparisons"
+    and nothing attributed the difference, so a backend missing from one card
+    shrank the intersection without a name attached, and a table over that
+    intersection read as covering every backend. This names them.
+
+    Returns only backends with at least one dropped pair; an empty list means
+    the comparison covers everything that was measured.
+    """
+    all_arches = sorted({s.gpu_name for s in speedups})
+    pairs: dict[str, dict[str, set]] = {}
+    for s in speedups:
+        pairs.setdefault(s.backend, {}).setdefault(s.config_key, set()).add(s.gpu_name)
+    out = []
+    for backend, by_cfg in sorted(pairs.items()):
+        present = sorted({g for gs in by_cfg.values() for g in gs})
+        compared = sum(1 for gs in by_cfg.values() if len(gs) >= 2)
+        if compared == len(by_cfg):
+            continue
+        out.append(CoverageGap(
+            backend=backend, present_on=tuple(present),
+            absent_from=tuple(a for a in all_arches if a not in present),
+            pairs_total=len(by_cfg), pairs_compared=compared))
+    return out
