@@ -50,6 +50,10 @@ def main():
     ap.add_argument("--stage1", default="results/probe/correctness.parquet")
     ap.add_argument("--mask-source", default=None, choices=[None, "random"])
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--lock-clocks", action="store_true",
+                    help="pin SM clocks before measuring, and stamp the "
+                         "OBSERVED outcome on every row (provenance.lock_clocks "
+                         "returns whether the lock actually happened)")
     ap.add_argument("--max-seq-len", type=int, default=None,
                     help="run only cells at or below this length. Stage 2 is "
                          "split across sessions shortest-first (see "
@@ -158,10 +162,17 @@ def main():
 
     lookup = {b.name: b for b in backends}
 
+    from attnbench.sweep import clock_locked_provenance_fn
+    clocks_locked, provenance_fn = clock_locked_provenance_fn(
+        lock_requested=args.lock_clocks, dry_run=args.dry_run)
+    if args.lock_clocks and not args.dry_run:
+        print(f"clocks   : lock {'SUCCEEDED' if clocks_locked else 'FAILED'} "
+              f"-- stamped on every row as clocks_locked={clocks_locked}")
+
     report = run_sweep(
         cells, out_dir=Path(args.out), stage1_path=Path(args.stage1),
         backend_lookup=lookup, measure_fn=measure, dry_run=args.dry_run,
-        stage1_at_commit=args.at_commit,
+        stage1_at_commit=args.at_commit, provenance_fn=provenance_fn,
     )
 
     print(f"\ntotal cells    : {report.total}")

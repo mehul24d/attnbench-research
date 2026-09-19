@@ -350,6 +350,25 @@ class SweepReport:
         return cls(total=len(decisions), **counts)
 
 
+def clock_locked_provenance_fn(*, lock_requested: bool, dry_run: bool,
+                               lock: Callable[[], bool] = provenance.lock_clocks,
+                               capture: Callable[..., "provenance.Provenance"] = provenance.capture,
+                               ) -> tuple[bool, Callable[[], "provenance.Provenance"]]:
+    """Attempt the clock lock if asked, and return the OBSERVED outcome with a
+    provenance function that stamps it.
+
+    Stage 2 never locked clocks (commit a157f03 stopped the README claiming it
+    did), so every sweep row ever written says `clocks_locked=False` -- true,
+    and the reason the A100 kernel ratios at (12,2) sit at the unlocked-clock
+    noise floor (audit item S4, 2026-09-19). `run_accuracy.py` already does
+    this in its own body; it is a function here so the stamp is what the lock
+    call returned, never what was requested, and a test can drive both
+    branches. A dry run attempts nothing and stamps False.
+    """
+    locked = bool(lock()) if (lock_requested and not dry_run) else False
+    return locked, (lambda: capture(clocks_locked=locked))
+
+
 def run_sweep(cells: list[SweepCell], *, out_dir: Path, stage1_path: Path,
               backend_lookup: dict[str, AttentionBackend],
               measure_fn: Callable,
