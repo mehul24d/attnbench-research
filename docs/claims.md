@@ -809,8 +809,10 @@ instance's own). The end-to-end number is measured end-to-end.
 arithmetic — scale the per-call kernel saving by the model's 28 layers and
 compare to the end-to-end delta — is invalid, because the Stage 2 grid times
 32 query heads while Qwen2.5-1.5B has 12. The two datasets establish the
-*sign* and the *location* of the penalty, not its size. A matched-geometry
-run would be needed for that.
+*sign* and the *location* of the penalty, not its size. The matched-geometry
+run has since been done — see "The same comparison at the model's real head
+geometry" below — and the size was then measured end-to-end rather than
+composed.
 
 **The obvious alternative explanation was checked and rejected.** "Sparse is
 slow on the new card" is exactly what a missing sm_80 kernel would look like.
@@ -826,8 +828,13 @@ It is not that:
   spread across 0.5→0.9 at 32768 against the L4's 31.2%. A fallback path would
   not track sparsity at all, let alone better.
 
-So the kernel is present, correct, and doing real sparse work. It loses a race
-against a much better dense baseline.
+So the kernel is present, correct, and doing real sparse work. **This
+paragraph originally concluded that it "loses a race against a much better
+dense baseline." That was wrong, and is kept here struck through in prose
+rather than deleted:** the kernel *wins* the race (1.96× at 16384/0.75 at the
+real geometry), and the end-to-end loss is CPU-side mask construction.
+Swapping the builder alone turns 0.633× into 1.201× — see "The A100 reversal
+is CPU mask construction" in `limitations.md`.
 
 | | |
 |---|---|
@@ -849,6 +856,76 @@ session never passed it. Writing a mechanism without it was the error; the
 
 ---
 
+## Where this study sits: between a known discrepancy and a known ceiling
+
+All four citations below were checked against arXiv on 2026-09-19 (title,
+first author, date), and the NSA figures against the paper's own Figure 1 and
+§ Efficiency Analysis, not a secondary source.
+
+**The discrepancy was established in 2022.** Dehghani et al., *The Efficiency
+Misnomer* (arXiv:2110.12894, ICLR 2022), showed that the common cost
+indicators — FLOPs, parameter count, throughput — can contradict one another,
+and that reporting only some of them produces partial conclusions about
+practical efficiency. That a sparse method's FLOP reduction need not become a
+wall-clock reduction is therefore **not this study's finding**; it is the
+premise it starts from.
+
+**The ceiling was established in 2025.** Yuan et al., *Native Sparse
+Attention* (NSA; arXiv:2502.11089), report **9.0× forward and 6.0× backward
+against FlashAttention-2 at 64k**, and 11.6× for decoding, measured on A100
+against a Triton FlashAttention-2 kernel so both sides share a backend. **Any
+sentence reading "sparse attention doesn't pay" is false, and NSA is why.**
+Two differences keep NSA a ceiling rather than a contradiction: it is
+*natively trainable* — the model learns under the sparsity pattern it will be
+served with — where every configuration here is training-free, applied to
+weights trained for dense attention; and its selection is part of a
+hardware-aligned kernel design rather than a mask handed to a generic
+block-sparse kernel.
+
+**This study measures the gap between the two, for training-free block-sparse
+prefill, and locates it.** On an A100 the reference block-sparse pipeline runs
+at 0.405–0.956× of `sdpa_flash`. The kernel itself is not the problem — at the
+model's own head geometry it is 1.96× faster than flash at 16384/0.75. The
+loss is CPU-side mask construction, ~91% of which profiles as Python
+interpreter overhead in an unvectorised per-query-block loop. Replacing that
+one function, with the model's outputs bitwise unchanged, turns the same
+configurations into 1.090–1.282× wins.
+
+**That reframes the work from discovering a negative to explaining a known
+one**, which is both the more accurate description and the more defensible
+one. A reader who already believes, from *The Efficiency Misnomer*, that
+theoretical and realised efficiency diverge, and from NSA that sparse attention
+can pay handsomely, should take from this study *where the divergence lives*
+for one widely available training-free family: mostly in an implementation
+detail, partly in the estimator, and not in the kernel.
+
+**The claim-mismatch framing has prior art, and the capability matrix cites
+it rather than implying novelty.** Zhang et al., *CAB: Comprehensive Attention
+Benchmarking on Long Sequence Modeling* (arXiv:2210.07661), observed that the
+standard benchmark for efficient attention (LRA) exercises only noncausal
+self-attention, and built a four-pattern taxonomy — noncausal self, causal
+self, noncausal cross, causal cross — because efficient-attention methods were
+being characterised on one slice of the space they claimed. Stage 0's
+`claimed` vs `actual` columns are a backend-level instance of the same idea:
+record what an implementation *says* it supports separately from what it
+*does*, rather than trusting the claim.
+
+**The same finding shape appears in vision.** Nauen et al., *Which Transformer
+to Favor* (arXiv:2308.09372), benchmarked more than 45 efficiency-oriented
+vision transformers under one set of conditions and found that, despite claims
+of greater efficiency, **plain ViT remains Pareto-optimal across multiple
+metrics**. A well-optimised dense baseline absorbing the advertised advantage
+of the alternatives is the pattern this study also finds on the A100 with the
+reference builder. Different domain, same shape — which is weak evidence that
+the shape is a property of how efficiency claims are produced rather than of
+any one modality.
+
+| | |
+|---|---|
+| **Supported** | *For training-free block-sparse prefill on an A100, the gap between the kernel's speedup and the end-to-end result is located in CPU-side mask construction, not in the attention kernel, and closing it with a vectorised builder turns 0.633× into 1.201× at 16384/0.75 with bitwise-identical outputs.* |
+| **Not supported** | *Sparse attention doesn't pay.* NSA reports 9.0× forward and 6.0× backward against FlashAttention-2 at 64k on the same card family. This study bounds one training-free family below that ceiling; it says nothing about natively trained sparsity. |
+| **Not supported** | *This study discovered that efficiency claims can fail to materialise.* That is *The Efficiency Misnomer* (2022), and in vision Nauen et al. (2023). What is new here is the location of the gap for one family, and its size. |
+
 ## Positioning against Sparse Frontier
 
 This study's contribution is defined relative to Sparse Frontier, and the
@@ -856,9 +933,9 @@ sentences differ sharply depending on which of their claims is being answered.
 
 | | |
 |---|---|
-| **Supported** | *Sparse Frontier establishes accuracy-vs-sparsity trade-offs without measuring realised wall-clock speedup on the hardware. This study measures it, on two cards, and finds the answer is hardware-conditional: 1.321x at 32768 at 0.75 sparsity on an L4 with no accuracy loss, 0.475x on an A100 — and on the L4 the importance oracle producing that accuracy costs 35x the latency it saves.* |
-| **Not supported** | *This study contradicts Sparse Frontier.* It does not. It measures a quantity they scope out, on one sparse family (block-sparse), in one regime (prefill), on one model size (1.5B). Where the two overlap, they agree. |
-| **Not supported** | *Sparse attention does not pay off.* Prefill-only, block-sparse-only, oracle-masked, 1.5B. See the scope banner at the top of `limitations.md`. Their own positive results are strongest in regimes this study excludes by construction — decode sparsity, and large-batch serving, which per their Appendix B.3 is a decode phenomenon because weights load once per forward pass regardless of batch. |
+| **Supported** | *Sparse Frontier establishes accuracy-vs-sparsity trade-offs without measuring realised wall-clock speedup on the hardware. This study measures it, on two cards: 1.321x at 32768 at 0.75 sparsity on an L4 with no accuracy loss; on an A100, 0.633x at 16384/0.75 with the reference mask builder and **1.201x** with a vectorised one — and the importance oracle producing that accuracy costs ~35x the latency it saves.* |
+| **Not supported** | *This study contradicts Sparse Frontier.* It does not. It measures a quantity they scope out, on one sparse family (block-sparse), in one regime (prefill), on one model family at two sizes (Qwen2.5 1.5B and 7B). Where the two overlap, they agree. |
+| **Not supported** | *Sparse attention does not pay off.* NSA (arXiv:2502.11089) reports 9.0× forward at 64k against FlashAttention-2, and this study's own vectorised-builder run wins on the A100. Beyond that: prefill-only, block-sparse-only, oracle-masked. See the scope banner at the top of `limitations.md`. Their own positive results are strongest in regimes this study excludes by construction — decode sparsity, and large-batch serving, which per their Appendix B.3 is a decode phenomenon because weights load once per forward pass regardless of batch. |
 
 **The batch axis is not a gap.** Their Appendix B.3 states that for prefilling
 all cost components scale linearly with batch size, so the attention-to-total

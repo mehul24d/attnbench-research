@@ -115,6 +115,35 @@ small-scale artifact.**
 
 ---
 
+### Where the finding sits
+
+Copied from `docs/claims.md` § "Where this study sits"; every citation there
+was checked against arXiv on 2026-09-19.
+
+*The Efficiency Misnomer* (Dehghani et al., arXiv:2110.12894, 2022)
+established that FLOPs, parameter count and throughput can contradict one
+another, so a sparse method's FLOP reduction need not become a wall-clock one.
+*Native Sparse Attention* (Yuan et al., arXiv:2502.11089, 2025) established
+the ceiling: **9.0× forward and 6.0× backward against FlashAttention-2 at
+64k**, on A100 — so **any sentence reading "sparse attention doesn't pay" is
+false.** NSA is natively trainable; everything here is training-free.
+
+This study measures the gap between those two for training-free block-sparse
+prefill, and locates it: not in the kernel (1.96× faster than flash at the
+model's geometry), but in CPU-side mask construction, ~91% of which is Python
+interpreter overhead. Replacing that one function turns 0.633× into 1.201× at
+16384/0.75 with bitwise-identical outputs. **The work explains a known negative
+rather than discovering one**, which is the more accurate framing and the more
+defensible.
+
+Prior art for the method: CAB (Zhang et al., arXiv:2210.07661) for recording
+what an implementation *claims* separately from what it *does*, which Stage 0's
+capability matrix instantiates at the backend level; and Nauen et al.
+(arXiv:2308.09372) for the same finding shape in vision, where plain ViT stayed
+Pareto-optimal against 45+ models claiming greater efficiency.
+
+---
+
 ## 2. What was measured, and on what
 
 | | |
@@ -296,12 +325,24 @@ the axes it was varied across, never by the number of cells measured along the
 ones it was not.**
 
 **What this predicts, and how a reader could falsify it.** If the pattern is
-real, the untested axes should behave the same way: `block_size` (the study
-runs 64 and 128; a 16-block arm is predicted to differ, and now has a second
-reason to — see the fp16 tie density in `limitations.md`), model family (both
-models here are Qwen2.5), and batch size (everything is batch 1). A reader who
-adds a second point on any of those and finds the conclusion *stable* has
-falsified this claim, which is the point of stating it as a claim.
+real, the axes held at one point should behave the same way:
+
+| axis | the one point sampled | why a second point is predicted to differ |
+|---|---|---|
+| `block_size` | 64 and 128 only | a 16-block arm has two independent reasons: pooling dilution, and fp16 tie density rising ~6× per halving (`limitations.md`) |
+| model family | Qwen2.5 only | both scales share an architecture and everything that travels with it |
+| batch size | batch 1 only | prefill cost is batch-linear by Sparse Frontier's own model, so this is the weakest prediction of the four |
+| **attention pattern** | **causal self-attention only** | CAB's taxonomy (arXiv:2210.07661) has four patterns — noncausal self, causal self, noncausal cross, causal cross — and this study has measured exactly one |
+
+The last row is stated as **an axis never sampled, not a limitation of the
+method.** Nothing in block-sparse attention is specific to causal self-
+attention; the study simply never ran the other three patterns. That is
+precisely the situation CAB was built to expose in the efficient-attention
+literature — methods characterised on one slice of a four-pattern space — and
+this study sits inside it rather than above it.
+
+A reader who adds a second point on any of these and finds the conclusion
+*stable* has falsified the claim, which is the point of stating it as one.
 
 **The honest form of the study's own headline**, given all of this, is not a
 speedup number. It is: *block-sparse attention's benefit is contingent on
