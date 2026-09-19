@@ -71,6 +71,7 @@ authority is the billing console.
 | 2026-09-17 | `attnbench-a100-20260917-item4` — vectorised end-to-end; v6 captured | **10** | **49** | `gcp_session_elapsed.sh` |
 | 2026-09-17 | `boottest-attnbench-env-v6-20260917` ×2 — e2-medium, CPU-only | **~8** | **~1** | CPU-only, no GPU |
 | 2026-09-17 | `attnbench-a100-20260917-cheap7b` — 7B cheap arm | **53** | **249** | `gcp_session_elapsed.sh` |
+| 2026-09-19 | `attnbench-l4-s1a-20260919-1939` — audit S1a, band 2048 (forced sink, decode pinned, canary 300/300) | **39** | **52** | `gcp_session_elapsed.sh` |
 
 **Two sessions were missing from this table until 2026-09-19**, found by
 listing every `instances.insert` in the audit log rather than trusting the
