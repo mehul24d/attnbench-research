@@ -38,9 +38,18 @@ if [[ "$STATUS" != "GONE" ]]; then
   BOOT=$(gcloud compute instances describe "$NAME" --project="$PROJECT" \
            --zone="$ZONE" --format='value(creationTimestamp)')
 else
-  BOOT=$(gcloud compute operations list --project="$PROJECT" \
+  # A name can be reused (gcp_boot_test_image.sh did, until 2026-09-19), and
+  # pairing the FIRST insert with the EARLIEST end then yields an interval
+  # belonging to no session at all. Take the most recent insert, say so when
+  # there was more than one, and below take the first end event AFTER it.
+  INSERTS=$(gcloud compute operations list --project="$PROJECT" \
            --filter="targetLink~${NAME}$ AND operationType=insert" \
-           --format='value(startTime)' 2>/dev/null | head -1)
+           --format='value(startTime)' 2>/dev/null | sort)
+  N_INS=$(printf '%s\n' "$INSERTS" | grep -c . || true)
+  BOOT=$(printf '%s\n' "$INSERTS" | tail -1)
+  if [[ "${N_INS:-0}" -gt 1 ]]; then
+    echo "WARNING: $N_INS instances have used the name $NAME; reporting the most recent." >&2
+  fi
 fi
 [[ -n "$BOOT" ]] || { echo "could not determine boot time for $NAME" >&2; exit 2; }
 
@@ -50,7 +59,8 @@ END=""
 if [[ "$STATUS" == "GONE" || "$STATUS" == "TERMINATED" ]]; then
   END=$(gcloud compute operations list --project="$PROJECT" \
           --filter="targetLink~${NAME}$ AND (operationType=compute.instances.guestTerminate OR operationType=compute.instances.deferredDelete OR operationType=delete)" \
-          --format='value(startTime)' 2>/dev/null | sort | head -1)
+          --format='value(startTime)' 2>/dev/null | sort \
+        | awk -v b="$BOOT" '$0 > b' | head -1)
 fi
 
 python3 - "$BOOT" "${END:-}" "$RATE" "$NAME" "$STATUS" <<'PY'

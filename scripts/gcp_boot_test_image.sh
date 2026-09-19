@@ -24,7 +24,9 @@ IMAGE="${1:?usage: gcp_boot_test_image.sh IMAGE [ZONE] [MACHINE_TYPE]}"
 ZONE="${2:-asia-southeast1-c}"
 MACHINE="${3:-e2-medium}"
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-NAME="boottest-${IMAGE}"
+# Unique per run: a reused name made gcp_session_elapsed.sh pair one run's
+# boot with another run's delete (found 2026-09-19 reconciling the ledger).
+NAME="bt-$(date -u +%m%d%H%M%S)-${IMAGE}"
 NAME="${NAME:0:62}"
 
 cleanup() {
