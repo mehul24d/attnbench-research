@@ -270,6 +270,13 @@ def main():
                          "verdict from docs/gla_arm_decision.md does; without "
                          "it the rule could reach a decision the pipeline had "
                          "no way to act on.")
+    ap.add_argument("--only-backends", default=None,
+                    help="comma-separated subset of the grid's backends to run "
+                         "(e.g. sdpa_flash). Narrows the grid, never adds to it. "
+                         "Exists so a dense canary can run and be checked "
+                         "BEFORE any sparse row is measured: run the dense arm "
+                         "alone, check it, then run again without this flag -- "
+                         "resume skips the dense rows already written.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -421,6 +428,16 @@ def main():
         grid, include_sage=args.include_sage,
         seq_lens=tuple(selected_seq_lens),
         include_gla=not args.no_gla)
+    if args.only_backends is not None:
+        want = [b.strip() for b in args.only_backends.split(",") if b.strip()]
+        unknown = [b for b in want if b not in configs_by_backend]
+        if not want or unknown:
+            raise SystemExit(
+                f"--only-backends names {unknown or '(nothing)'}; this run's "
+                f"backends are {list(configs_by_backend)}. The filter narrows "
+                f"the grid; it cannot add to it.")
+        configs_by_backend = {b: c for b, c in configs_by_backend.items()
+                              if b in want}
     print(f"backends      : {', '.join(configs_by_backend)}")
     print("caps (tokens) : " + ", ".join(
         f"{t}={stopping.token_cap(t)}" for t in selected_tasks))

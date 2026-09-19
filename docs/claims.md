@@ -735,12 +735,17 @@ the same fraction of each card's ceiling.
 
 **Prefill speedup vs dense, on the same card (>1 means sparse wins):**
 
-| band | card | 0.50 | 0.75 | 0.90 |
-|---|---|---|---|---|
-| 16384 | L4 | 1.108 | 1.194 | 1.258 |
-| 16384 | **A100** | **0.394** | **0.615** | **0.951** |
-| 32768 | L4 | 1.014 | **1.373** | 1.475 |
-| 32768 | **A100** | **0.281** | **0.475** | **0.817** |
+| band | card | mask rule | 0.50 | 0.75 | 0.90 |
+|---|---|---|---|---|---|
+| 16384 | L4 | pre-fix | 1.108 | 1.194 | 1.258 |
+| 16384 | **A100** | post-fix, **+1.5 / +4.4 / +12.2% blocks** | **0.394** | **0.615** | **0.951** |
+| 32768 | L4 | pre-fix | 1.014 | **1.373** | 1.475 |
+| 32768 | **A100** | post-fix, **+0.8 / +2.3 / +6.6% blocks** | **0.281** | **0.475** | **0.817** |
+
+*The two cards' rows are not like-for-like at the block level: every A100
+mask is denser than the L4 mask beside it, by the amount in the mask-rule
+column. The bias runs **against the A100's sparse arm** — read each A100
+cell as a slight understatement relative to the L4 one.*
 
 **The two rows of each band were built with different mask rules** (added
 2026-09-19). The L4 rows predate the attention-sink fix and the A100 rows
@@ -758,13 +763,18 @@ prefill timings presented as a mechanism, and it is wrong.** Stage 2 on A100,
 batch 1, matched geometry (32 q-heads / 8 kv / 128 dim), measures the kernel
 with the mask already built:
 
-| seq | card | flash ms | bs 0.75 ms | flash ÷ bs |
-|---|---|---|---|---|
-| 4096 | L4 | 2.049 | 1.750 | 1.17× |
-| 4096 | **A100** | 0.841 | 1.175 | **0.72×** |
-| 8192 | L4 | 9.473 | 3.762 | 2.52× |
-| 8192 | **A100** | 2.960 | 1.969 | **1.50×** |
-| 16384 | **A100** | 11.363 | 5.386 | **2.11×** |
+| seq | card | mask rule | flash ms | bs 0.75 ms | flash ÷ bs |
+|---|---|---|---|---|---|
+| 4096 | L4 | pre-fix | 2.049 | 1.750 | 1.17× |
+| 4096 | **A100** | post-fix, **+14.7% blocks** | 0.841 | 1.175 | **0.72×** |
+| 8192 | L4 | pre-fix | 9.473 | 3.762 | 2.52× |
+| 8192 | **A100** | post-fix, **+8.3% blocks** | 2.960 | 1.969 | **1.50×** |
+| 16384 | **A100** | post-fix, +4.4% blocks | 11.363 | 5.386 | **2.11×** |
+
+*Same caveat as the table above: the A100 `bs` column times a denser mask
+than the L4 one, so the cross-card comparison understates the A100's sparse
+kernel. The L4 rows are the 2026-09-04 sweep (before the fix); the A100 rows
+are 2026-09-16 (after it).*
 
 **The block-sparse kernel BEATS flash attention on the A100** — by 1.50× at
 8192 and 2.11× at 16384. End-to-end at those same configurations it loses

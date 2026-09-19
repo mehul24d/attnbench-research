@@ -2450,3 +2450,39 @@ entirely from banked data, at no GPU cost. The fix is
 `check_observed_decode_regime`, which refuses observed rows whose
 `decode_backend` differs from the kernel the phase model measures, and is
 tested against the real inputs that caused this.
+
+
+## 43. A timestamp that records when a file was copied, read as when it was computed
+
+Found 2026-09-19 by the single-measurement audit, item S6. The question: could
+the banked 1.5B cheap-estimator run have loaded score tensors written by code
+with the "cheap scorer returns zeros" bug (fixed in `562374a`)? The cache key
+carries no code version and the rows record no cache hits, so the obvious
+evidence was the objects' creation times in GCS against the run windows.
+
+Every one of the 1,706 score-cache objects is stamped 13:xx UTC. That
+includes tensors computed by the oracle run, which ended at 11:32. The times
+are when each object was last *synced*: `run_phase.sh` syncs the whole cache
+directory at every phase exit, and each sync rewrites the objects. So the
+field is uniform, looks like an answer, and carries no information about the
+question being asked.
+
+**Closed by the session log instead.** The only failed cheap attempt
+(12:31:14–12:31:37Z) raised its `NameError` in `build_generate_fn`, before the
+model was constructed, so it scored nothing. No cheap phase ran before the
+zeros fix landed at 12:29Z. Every cheap tensor the banked run used was
+therefore computed by that run.
+
+**Same family as `sm_clock_mhz_at_capture` (commit `a157f03`)** and the
+`git_commit="HEAD"` of #3: a field that names the property you want and
+records something adjacent to it. Here the adjacent thing is the transport
+event, not the computation. The detection is to ask what event writes the
+field, not what its name says, and to check whether values that should differ
+(two runs two hours apart) do.
+
+**Rule.** Object-store metadata describes the store's own operations. Evidence
+of *when content was produced* has to be written by the producer: a log line
+or a field inside the file. Nothing in the score cache has one yet. If the
+cache's provenance ever matters again, the fix is a small sidecar written at
+`score_cache.save` (commit and score_source), not a re-read of bucket
+metadata.
