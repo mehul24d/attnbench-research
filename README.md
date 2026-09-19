@@ -11,16 +11,41 @@ the thing every such speedup leaves out.
 
 ## The result, and its ceiling
 
-> **On an NVIDIA L4, block-sparse attention with oracle-derived masks reaches 1.321×
-> end-to-end at 32K context at zero accuracy cost (100.0 vs 100.0), and
-> computing the oracle costs roughly 35× the latency it saves.**
+> **On an NVIDIA A100, training-free block-sparse prefill beats `sdpa_flash`
+> at 8192 context and above — 1.201× at 16384/0.75 sparsity, 1.282× at
+> 16384/0.9 — but only with a vectorised mask builder, which the reference
+> implementation does not have.** With the reference builder the same
+> configurations run at 0.633× and 0.956×. The model's outputs are bitwise
+> identical under both builders; the difference is one function, ~91% of whose
+> cost is Python interpreter overhead.
 
-The second clause is not a caveat on the first. **It is the finding.** A
-measured advantage bought with a mask nobody can afford to compute is not an
-advantage any deployed system has. To make the operating point profitable, a
-real importance estimator would have to produce a good-enough ranking for
-under ~3% of the scoring pass's cost. This study implements no such estimator
-and evaluates none.
+That is the fifth version of this sentence. The first four each fell to a
+second point on an axis the previous version had sampled once — card, model
+scale, kernel mechanism, and a disjunctive "weak baseline or fast builder" —
+and [`docs/writeup_input.md`](docs/writeup_input.md) leads with that history
+because it is the reason to trust version five.
+
+**The ceiling is someone else's, and it is high.** Native Sparse Attention
+([arXiv:2502.11089](https://arxiv.org/abs/2502.11089)) reports 9.0× forward
+and 6.0× backward against FlashAttention-2 at 64k on A100. Any reading of this
+repo as "sparse attention doesn't pay" is wrong. NSA is natively trainable;
+everything here is training-free, applied to weights trained for dense
+attention. This study sits between *The Efficiency Misnomer*
+([arXiv:2110.12894](https://arxiv.org/abs/2110.12894)), which established that
+theoretical and realised efficiency diverge, and NSA's ceiling — and locates
+the divergence for one family: not in the kernel, but in mask construction.
+
+**The oracle is still the binding constraint.** Every accuracy number above
+uses a dense-softmax importance oracle that costs ~35× the latency it saves.
+The deployable alternative was measured — MInference's mean-pool estimator
+([arXiv:2407.02490](https://arxiv.org/abs/2407.02490), Algorithm 3) — and on
+multi-key retrieval at 16384 it trails the oracle by **+32 / +40 points** at
+0.5 / 0.75 sparsity on Qwen2.5-1.5B, and by **+39 / +67** on Qwen2.5-7B. The
+gap *widens* with scale. So the speedup is real, available with a small
+engineering fix, and bought with a mask nobody has yet shown how to afford.
+
+**On an L4 with the reference builder**, the same pipeline reaches **1.321×
+end-to-end at 32K context at zero accuracy cost** (100.0 vs 100.0):
 
 | context | best speedup at no accuracy cost | oracle cost ÷ saving |
 |---|---|---|
@@ -30,7 +55,6 @@ and evaluates none.
 | 16384 | 1.186× | **36×** |
 | 32768 | **1.321×** | **35×** |
 
-The speedup grows with context. So does the accuracy sparsity can tolerate.
 The oracle ratio flattens near 35 rather than heading toward 1 — scoring and
 the saving grow at similar rates, so the gap is structural, not a small-scale
 artefact.
@@ -55,16 +79,23 @@ artefact.
 ## Scope and cost, stated up front
 
 Measured on **rented NVIDIA L4 (24 GB) and A100-SXM4 (80 GB)** instances —
-two architectures, not a survey. **One model** (Qwen2.5-1.5B-Instruct), **one
+two architectures, not a survey. H100 sessions also appear in the spend
+ledger (kernel-level Stage 0–2, and one session lost entirely), but no row
+in `docs/claims.md` rests on them. **One model family at two sizes**
+(Qwen2.5-1.5B-Instruct throughout; 7B for the accuracy arms at 16384), **one
 task family** (RULER-style NIAH and variable tracking), **batch 1**,
 **prefill-only sparsity**, **inference only**. Context tops out at **32768
 tokens**, which is a hardware ceiling, not a design choice.
 
-Total rented GPU time: **roughly ₹6,000 (~US$70)**, of which ₹2,413 is
-itemised per session in [`docs/spend_ledger.md`](docs/spend_ledger.md) — the
-ledger says which figures come from an instance's own boot clock and which
-are reconstructed from prose, and records ₹218 that a green test spent by
-creating real instances on every suite run.
+Total rented GPU time: **₹7,879 itemised** (≈ US$85 at the rate implied by
+the ledger's own A100 pricing), across 30 priced sessions in
+[`docs/spend_ledger.md`](docs/spend_ledger.md), plus one early validation
+session recorded only in prose. The figure is summed from the ledger's table,
+not restated here — this line previously said "roughly ₹6,000, of which ₹2,413
+is itemised", and by 2026-09-19 the itemised part exceeded the total it was
+said to be part of. The ledger says which rows come from an instance's own
+boot clock or the audit log and which are reconstructed, and records ₹218 that
+a green test spent by creating real instances on every suite run.
 
 [`docs/limitations.md`](docs/limitations.md) is over 950 lines and is not
 decoration. Two of this study's questions are **permanently unanswerable on
@@ -76,7 +107,7 @@ this hardware**, and it says which and why.
 
 | Stage | What it produces | Hardware |
 |---|---|---|
-| 0 | Capability matrix: what each backend actually supports | any CUDA GPU |
+| 0 | Capability matrix: what each backend *claims* vs actually supports (the claimed/actual split follows CAB, [arXiv:2210.07661](https://arxiv.org/abs/2210.07661)) | any CUDA GPU |
 | 1 | Correctness gate vs a float64 reference | any CUDA GPU |
 | 2 | Kernel microbenchmarks (synthetic, random masks) | locked clocks, exclusive |
 | 3 | End-to-end accuracy on RULER-style tasks | 24 GB+ |
