@@ -37,6 +37,13 @@ def main() -> int:
     ap.add_argument("--seq-len", type=int, required=True)
     ap.add_argument("--n", type=int, required=True, help="examples per (task, arm)")
     ap.add_argument("--out", default=None, help="write the table as parquet")
+    ap.add_argument("--label", default=None,
+                    help="what this comparison is, for the printed header. "
+                         "The mechanics here -- same example ids, same decode "
+                         "kernel, dense arm identical, everything else a flip "
+                         "attributable to the one rule that changed -- are not "
+                         "specific to S1a, so the header says which item is "
+                         "using them rather than always claiming S1a.")
     a = ap.parse_args()
 
     new = pd.read_parquet(a.new)
@@ -78,7 +85,8 @@ def main() -> int:
                 text_changed=int((g.predicted_new != g.predicted_old).sum())))
     t = pd.DataFrame(rows)
     pd.set_option("display.width", 200)
-    print(f"S1a band {a.seq_len}: forced sink vs banked pre-fix, same {a.n} examples, "
+    label = a.label or f"S1a band {a.seq_len}: forced sink vs banked pre-fix"
+    print(f"{label}, same {a.n} examples, "
           f"sparse decode {sorted(kernels_new)} both sides; dense identical "
           f"{len(dn)}/{len(dn)}\n")
     print(t.to_string(index=False, float_format=lambda v: f"{v:.1f}"))

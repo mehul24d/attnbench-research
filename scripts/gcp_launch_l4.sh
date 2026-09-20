@@ -30,8 +30,16 @@ ZONE="${GCP_ZONE:-us-central1-a}"
 MACHINE_TYPE="g2-standard-8"
 ACCELERATOR="type=nvidia-l4,count=1"
 IMAGE="${ATTNBENCH_IMAGE:-attnbench-env-v5-20260905}"   # the project env, not a stock ML image
-MAX_RUN="7h"
-HALT_MINUTES="300"   # 5h. DELETE at 7h; the 2h gap is the disk-recovery window.
+# Overridable, like gcp_launch_a100.sh, because the defaults are sized for a
+# full Stage 3 band and a short session inherits a ceiling it cannot reach.
+# The 2026-09-08 ledger line -- 162 idle minutes at Rs 0 measured, on an
+# instance that had self-halted but was not deleted -- is the cheap version of
+# this; the expensive version is a session that hangs and bills to the cap.
+# Set both for a short run: GCP_HALT_MINUTES well under GCP_MAX_RUN, so the
+# GPU stops billing while the disk survives for recovery.
+MAX_RUN="${GCP_MAX_RUN:-7h}"
+HALT_MINUTES="${GCP_HALT_MINUTES:-300}"   # DELETE at MAX_RUN; the gap is the
+                                          # disk-recovery window.
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
 INSTANCE_NAME="${1:-attnbench-l4-validation-$(date +%Y%m%d-%H%M)}"
@@ -62,7 +70,7 @@ echo "  image        : $IMAGE"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 echo "  provisioning : STANDARD (on-demand, not spot)"
 echo "  in-guest halt: +${HALT_MINUTES} min -- GPU billing stops, disk survives"
-echo "  hard cap     : --max-run-duration=$MAX_RUN action=DELETE (Rs 546 ceiling)"
+echo "  hard cap     : --max-run-duration=$MAX_RUN action=DELETE (at Rs 78/h)"
 echo "  rate         : Rs 78/h (g2-standard-8 + 1x L4, us-central1, pinned 2026-09-16)"
 echo
 read -r -p "Type 'launch' to proceed, anything else to abort: " CONFIRM
