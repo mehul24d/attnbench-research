@@ -70,6 +70,21 @@ exists. Stage 3 ships with two backends, dense and block-sparse.
 > here do not yet. Re-run approved as audit item S1a; until it reports, quote
 > these with the era, or not at all.
 
+> **Forcing the sink is not a clean improvement, and that matters for what it
+> means.** Across all 2,700 re-measured sparse rows it flips **299 examples
+> wrong→right and 345 right→wrong**. Cells with a positive net still move in
+> both directions (4096/0.9 `niah_multikey`: 23 up, 20 down), and one cell is
+> net worse — **8192/0.9 `niah_multikey`, −10 points** (6 up, 16 down).
+>
+> If the sink were simply *the important block*, granting it should help
+> nearly monotonically. It does not. That is what would be expected from
+> granting an *extra* block whose contents are usually but not always the
+> right thing to attend to — and it is the same ambiguity the corrected
+> grid-artifact paragraph records: at these budgets, forcing the sink grants
+> the sink *and* one more block per row, and no arbitrary-block control was
+> run to separate them. The two-way flips are evidence that the mask is being
+> reshuffled, not merely repaired.
+
 > **S1a has now re-run band 2048** (2026-09-19, n=100, forced sink, decode
 > pinned to `sdpa_math` as the banked runs used, dense arm reproducing
 > 300/300). Sparse-minus-dense, same examples, 95% paired bootstrap:

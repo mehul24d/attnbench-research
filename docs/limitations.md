@@ -2018,3 +2018,36 @@ The other two on record are the oracle acting as a denoiser (`claims.md`) and
 block structure suiting multi-hop tracking (Sparse Frontier). Both are
 inferences from the outcome; this one predicted where the effect would be
 absent (7B) and was checked there.
+
+### Forcing the sink reshuffles masks; it does not only repair them
+
+From the S1a re-measurement (2026-09-20), across all 2,700 sparse rows at
+2048/4096/8192, same examples, sink forced as the only change:
+
+| | |
+|---|---|
+| examples flipped wrong → right | **299** |
+| examples flipped right → wrong | **345** |
+| cells with a net *negative* shift | 8192/0.9 `niah_multikey` (**−10**, 6 up / 16 down); 2048/0.75 `niah_single` (−1) |
+| cells with a positive net that still flip both ways | e.g. 4096/0.9 `niah_multikey`, 23 up / 20 down |
+
+(The raw flip counts are dominated by `vt`, where `correct` means a perfect
+5-of-5 recall and the forced-sink arms shifted to a longer output format —
+see the stopping section above. Mean scores there mostly rise while exact
+correctness falls.)
+
+**Why this is worth stating rather than smoothing over.** The natural reading
+of the sink fix is "the mask was missing the block that matters, and now it
+is not". A repair of that kind should help almost monotonically. What the
+data shows is a reshuffle with a favourable bias: most cells improve, some
+degrade, and examples move in both directions inside nearly every cell.
+
+That is what granting an **extra block per row** looks like — at these
+budgets the fix adds `sparsity` blocks per row (+53.8% of active blocks at
+2048/0.9), and an extra block displaces nothing but does change which
+evidence the model sees. It is also consistent with the sink being genuinely
+important *on average* and occasionally less useful than the block the old
+budget would otherwise have spent its last slot on. **The two hypotheses are
+not separated here**, and the non-monotonicity is the clearest sign that the
+simple one is insufficient. The control that would separate them is an arm
+granting one arbitrary extra block instead of block 0, which was not run.
