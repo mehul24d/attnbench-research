@@ -77,13 +77,13 @@ exists. Stage 3 ships with two backends, dense and block-sparse.
 > net worse — **8192/0.9 `niah_multikey`, −10 points** (6 up, 16 down).
 >
 > If the sink were simply *the important block*, granting it should help
-> nearly monotonically. It does not. That is what would be expected from
-> granting an *extra* block whose contents are usually but not always the
-> right thing to attend to — and it is the same ambiguity the corrected
-> grid-artifact paragraph records: at these budgets, forcing the sink grants
-> the sink *and* one more block per row, and no arbitrary-block control was
-> run to separate them. The two-way flips are evidence that the mask is being
-> reshuffled, not merely repaired.
+> nearly monotonically. It does not — so the mask is being reshuffled, not
+> only repaired. **What the reshuffle is not is a density effect**: the
+> arbitrary-free-block control (see the corrected grid-artifact paragraph
+> above) holds the block count identical and recovers only 6–13 of the
+> 34–45 points, leaving 28–35 to the sink's own identity. Both things are
+> true at once — the sink carries most of the gain, and granting it still
+> costs some examples their previous answer.
 
 > **S1a has now re-run band 2048** (2026-09-19, n=100, forced sink, decode
 > pinned to `sdpa_math` as the banked runs used, dense arm reproducing
@@ -136,15 +136,24 @@ same pinned decode kernel, dense arm reproducing 300/300:
 | `niah_multikey` | 0 | **44** |
 | `vt` | 25.8 | **70.4** |
 
-A 1.6-block budget is not what was wrong. **What the data cannot do is choose
-between two explanations, and both are real:** forcing the sink grants the
-*attention sink specifically*, and it also grants *one more block per row* —
-at this cell that is +53.8% active blocks (`limitations.md`, the sink
-section). A control that added one arbitrary block instead of the sink would
-separate them, and it was not run. So the honest statement is that the
-collapse was mask construction, not budget, and which part of the
-construction is unresolved. The old "2048@0.9 is below a floor" reading does
-not survive either way.
+A 1.6-block budget is not what was wrong. **The control that separates the
+two explanations has now been run** (2026-09-20, ₹33): an arm granting one
+*arbitrary* off-diagonal block per row instead of the sink, at the identical
+per-row block count, same examples, same pinned decode kernel, dense canary
+300/300. Per-layer active blocks are 40 in both arms against 26 pre-fix:
+
+| task | dense | no free block | **random** free block | **sink** free | sink − random [95% CI] |
+|---|---|---|---|---|---|
+| `niah_single` | 100.0 | 63.0 | 69.0 | 97.0 | **+28.0** [+19, +37] |
+| `niah_multikey` | 98.0 | 0.0 | 9.0 | 44.0 | **+35.0** [+25, +45] |
+| `vt` | 75.0 | 25.8 | 39.0 | 70.4 | **+31.4** [+24, +38] |
+
+**The sink is doing real work, and density is a minor part of it.** Of the
+34 / 44 / 44.6-point gain the fix produced at this cell, an arbitrary extra
+block accounts for 6 / 9 / 13.2 and the sink's identity for the remaining
+28 / 35 / 31.4. So the collapse was mask construction, and **specifically the
+missing attention sink**, not the budget and not merely the block count. The
+old "2048@0.9 is below a floor" reading does not survive.
 
 **The oracle qualifier is load-bearing, and stronger than a ceiling.** See
 the dedicated section below.

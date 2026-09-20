@@ -2042,12 +2042,33 @@ is not". A repair of that kind should help almost monotonically. What the
 data shows is a reshuffle with a favourable bias: most cells improve, some
 degrade, and examples move in both directions inside nearly every cell.
 
-That is what granting an **extra block per row** looks like — at these
-budgets the fix adds `sparsity` blocks per row (+53.8% of active blocks at
-2048/0.9), and an extra block displaces nothing but does change which
-evidence the model sees. It is also consistent with the sink being genuinely
-important *on average* and occasionally less useful than the block the old
-budget would otherwise have spent its last slot on. **The two hypotheses are
-not separated here**, and the non-monotonicity is the clearest sign that the
-simple one is insufficient. The control that would separate them is an arm
-granting one arbitrary extra block instead of block 0, which was not run.
+Two hypotheses fit that: the fix adds `sparsity` blocks per row (+53.8% of
+active blocks at 2048/0.9) and an extra block changes what the model sees, or
+the sink is genuinely important on average while occasionally displacing
+something better.
+
+**The control separating them was run on 2026-09-20** (`mask_source=
+"importance_randfree"`, `scripts/sink_control_run.sh`, 25 min, ₹33). It grants
+one *arbitrary* off-diagonal block per row instead of kv 0, with the budget
+computed over the same candidate count, so per-row block counts are identical
+— 40 per layer in both arms at 2048/0.9, against 26 pre-fix. Same examples,
+decode pinned to `sdpa_math`, dense canary 300/300.
+
+| task | dense | no free block | random free | sink free | **sink − random** [95% CI] |
+|---|---|---|---|---|---|
+| `niah_single` | 100.0 | 63.0 | 69.0 | 97.0 | **+28.0** [+19, +37] |
+| `niah_multikey` | 98.0 | 0.0 | 9.0 | 44.0 | **+35.0** [+25, +45] |
+| `vt` | 75.0 | 25.8 | 39.0 | 70.4 | **+31.4** [+24, +38] |
+
+**The sink is doing real work.** Density accounts for 6–13 points of the
+34–45-point gain; the sink's identity accounts for 28–35, with CIs far from
+zero on all three tasks. So the earlier reading — that the non-monotonicity
+pointed at "an extra block" rather than "the right block" — is **wrong as a
+summary**: it is the right block, and granting it still costs a minority of
+examples their previous answer. Both facts stand, and the reshuffle is the
+smaller of the two effects.
+
+This also makes the study's own sink-forcing rule an evidenced choice rather
+than an imported convention: Sparse Frontier's Appendix A.1.1 forces the sink,
+this study now has its own measurement of what that is worth, and the two
+agree.
