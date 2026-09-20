@@ -366,7 +366,7 @@ def test_compute_importance_scores_rejects_batch_greater_than_one():
             batched_input, task="niah_single", example_id="ex0", cache_dir="/tmp")
 
 
-def test_cheap_scoring_pass_propagates_faithful_hidden_states():
+def test_cheap_scoring_pass_propagates_faithful_hidden_states(tmp_path):
     """The cheap (minference_meanpool) scoring branch must emit a REAL
     attention output, not zeros.
 
@@ -390,6 +390,7 @@ def test_cheap_scoring_pass_propagates_faithful_hidden_states():
                         generator=torch.Generator().manual_seed(7))
 
     def hidden_states_per_layer(score_source: str):
+        cache_dir = tmp_path / score_source
         torch.manual_seed(0)
         config = LlamaConfig(
             vocab_size=64, hidden_size=32, intermediate_size=64,
@@ -402,8 +403,6 @@ def test_cheap_scoring_pass_propagates_faithful_hidden_states():
         swapped = SwappableAttentionModel(
             model, cfg_template=tmpl, model_id="toy",
             score_source=score_source)
-        swapped._state.mode = "score"
-        swapped._state.scores = {}
         seen = []
         for idx, layer in enumerate(model.model.layers):
             layer.self_attn.register_forward_pre_hook(
@@ -412,8 +411,22 @@ def test_cheap_scoring_pass_propagates_faithful_hidden_states():
                 )))(idx),
                 with_kwargs=True,
             )
+        # Drive the PRODUCTION entry point, not `model(ids)` directly.
+        #
+        # This test called the raw HF model until 2026-09-21 and so never set
+        # `use_cache=False` -- which compute_importance_scores sets
+        # deliberately, because SwappedAttention returns no real KV cache and
+        # the outer model then tries to convert a None to legacy format. The
+        # comment at model.py:530 predicts that failure verbatim, and on the
+        # measurement image (transformers 4.46.0) it is what happened:
+        #     AttributeError: 'NoneType' object has no attribute 'to_legacy_cache'
+        # while this file passed on the workstation's newer transformers,
+        # which no longer takes that path. A test that builds a configuration
+        # the production code never creates is testing something else -- and
+        # here "something else" was the one keyword that matters.
         with torch.no_grad():
-            model(ids)
+            swapped.compute_importance_scores(
+                ids, task="t", example_id="e", cache_dir=str(cache_dir))
         return seen
 
     cheap = hidden_states_per_layer("minference_meanpool")
