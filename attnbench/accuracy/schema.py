@@ -142,7 +142,8 @@ class AccuracyResult:
     task: str
     example_id: str
     context_length: int
-    mask_source: Optional[Literal["random", "importance"]]
+    mask_source: Optional[Literal["random", "importance",
+                                  "importance_randfree"]]
     sparsity: Optional[float]
     score_source: Optional[ScoreSource]
     haystack_mode: Optional[HaystackMode]

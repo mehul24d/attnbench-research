@@ -35,7 +35,8 @@ class AttnConfig:
     block_size: Optional[int] = None
     # "random" for Stage 2 kernel timing, "importance" for Stage 3 accuracy.
     # Conflating these is the failure mode this whole study exists to correct.
-    mask_source: Optional[Literal["random", "importance"]] = None
+    mask_source: Optional[Literal["random", "importance",
+                                 "importance_randfree"]] = None
 
     # Sliding-window only.
     window: Optional[int] = None

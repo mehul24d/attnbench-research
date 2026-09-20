@@ -196,6 +196,35 @@ def _mask_identity_key(cfg: AttnConfig) -> str:
     return hashlib.sha1(blob).hexdigest()[:12]
 
 
+def _free_blocks(n: int, *, kind: str, seed_int: int) -> list[int]:
+    """The kv block granted free to each query block, outside the budget.
+
+    `kind="sink"` gives kv block 0 to every row: the study's rule since
+    37675a0, matching Sparse Frontier's Appendix A.1.1.
+
+    `kind="random"` is the CONTROL for that rule (audit 2026-09-20). It grants
+    one arbitrary off-diagonal block per row instead, drawn deterministically
+    from the row's own candidates. Forcing the sink both grants the sink and
+    adds a block per row -- at 2048/0.9 that is +53.8% of active blocks -- and
+    the accuracy gain could come from either. This arm holds the block COUNT
+    identical and changes only WHICH block is free, so the difference between
+    them is the sink's own contribution and nothing else.
+
+    Row 0 has no off-diagonal candidate and gets none; row 1's only candidate
+    is block 0, so the control coincides with the sink there by necessity.
+    """
+    if kind == "sink":
+        return [0] * n
+    g = torch.Generator().manual_seed(seed_int ^ 0x5F3E_C0DE)
+    out = []
+    for qb in range(n):
+        if qb == 0:
+            out.append(-1)                      # nothing free: no candidates
+        else:
+            out.append(int(torch.randint(0, qb, (1,), generator=g).item()))
+    return out
+
+
 def _candidate_rows(n: int, causal: bool) -> list[list[int]]:
     """kv_block indices each q_block may legally SPEND BUDGET ON.
 
@@ -232,6 +261,17 @@ def _candidate_rows(n: int, causal: bool) -> list[list[int]]:
     if causal:
         return [[kv for kv in range(qb) if kv != 0] for qb in range(n)]
     return [[kv for kv in range(n) if kv != qb and kv != 0] for qb in range(n)]
+
+
+def _candidate_rows_excluding(n: int, causal: bool, free: list[int]) -> list[list[int]]:
+    """`_candidate_rows` with a per-row free block excluded instead of kv 0.
+
+    Same shape and the same budget arithmetic, so a mask built this way has
+    the same active-block count as the forced-sink mask it is the control for.
+    """
+    if causal:
+        return [[kv for kv in range(qb) if kv != free[qb]] for qb in range(n)]
+    return [[kv for kv in range(n) if kv != qb and kv != free[qb]] for qb in range(n)]
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +311,8 @@ def random_block_mask(seq_len: int, block_size: int, sparsity: float,
 
 def importance_block_mask(seq_len: int, block_size: int, sparsity: float,
                            importance_scores: torch.Tensor, *, causal: bool,
-                           identity_seed: str) -> BlockSparseMask:
+                           identity_seed: str,
+                           free_block: str = "sink") -> BlockSparseMask:
     """Accuracy-only. `importance_scores` (n_blocks, n_blocks) comes from
     Stage 3's model wrapper -- a real attention-score-derived ranking, not
     computed here, keeping this module hardware/model-agnostic. Keeps the
@@ -280,6 +321,12 @@ def importance_block_mask(seq_len: int, block_size: int, sparsity: float,
     budget is a top-k over a fixed ranking, so it always keeps the smaller
     budget's picks as a subset, never a resample. `identity_seed` only
     breaks exact score ties.
+
+    `free_block` selects which block is granted outside the budget: `"sink"`
+    (kv block 0, the study's rule since 37675a0) or `"random"` (the control
+    for that rule -- see `_free_blocks`). The block COUNT is identical either
+    way, so a difference between the two arms is the sink's own contribution
+    and not the extra block the sink fix also grants.
     """
     n = _n_blocks(seq_len, block_size)
     if tuple(importance_scores.shape) != (n, n):
@@ -287,12 +334,20 @@ def importance_block_mask(seq_len: int, block_size: int, sparsity: float,
             f"importance_scores shape {tuple(importance_scores.shape)} != "
             f"({n}, {n}) for seq_len={seq_len}, block_size={block_size}"
         )
+    if free_block not in ("sink", "random"):
+        raise ValueError(f"free_block must be 'sink' or 'random', got {free_block!r}")
     active = torch.zeros(n, n, dtype=torch.bool)
     active.fill_diagonal_(True)
-    active[:, 0] = True          # attention sink, granted free -- see _candidate_rows
-
-    rows = _candidate_rows(n, causal)
     seed_int = _int_seed(identity_seed)
+    if free_block == "sink":
+        active[:, 0] = True      # attention sink, granted free -- see _candidate_rows
+        rows = _candidate_rows(n, causal)
+    else:
+        free = _free_blocks(n, kind="random", seed_int=seed_int)
+        for qb, kv in enumerate(free):
+            if kv >= 0:
+                active[qb, kv] = True
+        rows = _candidate_rows_excluding(n, causal, free)
     g = torch.Generator().manual_seed(seed_int)
 
     for qb, kvs in enumerate(rows):
@@ -308,7 +363,9 @@ def importance_block_mask(seq_len: int, block_size: int, sparsity: float,
             active[qb, kvs[j]] = True
 
     return BlockSparseMask(seq_len=seq_len, block_size=block_size,
-                            active=active, seed=seed_int, source="importance",
+                            active=active, seed=seed_int,
+                            source=("importance" if free_block == "sink"
+                                    else "importance_randfree"),
                             causal=causal)
 
 
@@ -338,10 +395,12 @@ def mask_for(cfg: AttnConfig, *,
     if cfg.mask_source == "random":
         return random_block_mask(cfg.seq_len, cfg.block_size, cfg.sparsity,
                                   causal=causal, identity_seed=identity_seed)
-    if cfg.mask_source == "importance":
+    if cfg.mask_source in ("importance", "importance_randfree"):
         if importance_scores is None:
-            raise ValueError("mask_source == 'importance' requires importance_scores")
-        return importance_block_mask(cfg.seq_len, cfg.block_size, cfg.sparsity,
-                                      importance_scores, causal=causal,
-                                      identity_seed=identity_seed)
+            raise ValueError(
+                f"mask_source == {cfg.mask_source!r} requires importance_scores")
+        return importance_block_mask(
+            cfg.seq_len, cfg.block_size, cfg.sparsity, importance_scores,
+            causal=causal, identity_seed=identity_seed,
+            free_block=("sink" if cfg.mask_source == "importance" else "random"))
     raise ValueError(f"unknown mask_source: {cfg.mask_source!r}")

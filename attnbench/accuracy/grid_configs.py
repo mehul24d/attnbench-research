@@ -70,6 +70,8 @@ def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
                               dense_backend: str | None = None,
                               seq_lens: tuple[int, ...] | None = None,
                               include_gla: bool = True,
+                              sparsities: tuple[float, ...] | None = None,
+                              mask_source: str = "importance",
                               ) -> dict[str, list[AttnConfig]]:
     """Each backend's own curated config list.
 
@@ -114,11 +116,11 @@ def build_configs_by_backend(grid: AccuracyGrid, *, include_sage: bool,
             configs_by_backend["gla"].append(AttnConfig(
                 seq_len=seq_len, batch=1, n_heads_q=1, n_heads_kv=1,
                 head_dim=128, mask="causal"))
-        for sparsity in grid.sparsities:
+        for sparsity in (grid.sparsities if sparsities is None else sparsities):
             configs_by_backend["block_sparse"].append(AttnConfig(
                 seq_len=seq_len, batch=1, n_heads_q=1, n_heads_kv=1,
                 head_dim=128, mask="block_sparse", sparsity=sparsity,
-                block_size=grid.finest_block_size, mask_source="importance"))
+                block_size=grid.finest_block_size, mask_source=mask_source))
         if include_sage:
             configs_by_backend["sage"].append(AttnConfig(
                 seq_len=seq_len, batch=1, n_heads_q=1, n_heads_kv=1,

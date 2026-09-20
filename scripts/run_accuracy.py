@@ -281,6 +281,17 @@ def main():
                          "DENSE_DECODE_BACKEND, to replay an era's regime "
                          "(audit S1a: sdpa_math, as the pre-2026-09-08 bands "
                          "ran). Every row is stamped decode_pinned=True.")
+    ap.add_argument("--sparsities", default=None,
+                    help="comma-separated subset of the grid's sparsities. "
+                         "Narrows the grid, never adds to it.")
+    ap.add_argument("--mask-source", default="importance",
+                    choices=["importance", "importance_randfree"],
+                    help="importance: the study's rule, attention sink granted "
+                         "free. importance_randfree: the CONTROL for that rule "
+                         "-- one arbitrary off-diagonal block granted free "
+                         "instead, same block count per row, so a difference "
+                         "between the arms is the sink's own contribution and "
+                         "not the extra block the sink fix also grants.")
     ap.add_argument("--only-backends", default=None,
                     help="comma-separated subset of the grid's backends to run "
                          "(e.g. sdpa_flash). Narrows the grid, never adds to it. "
@@ -435,10 +446,21 @@ def main():
         for ex in exs
     }
 
+    selected_sparsities = None
+    if args.sparsities is not None:
+        want = tuple(float(s) for s in args.sparsities.split(",") if s.strip())
+        unknown = [s for s in want if s not in grid.sparsities]
+        if not want or unknown:
+            raise SystemExit(
+                f"--sparsities names {unknown or '(nothing)'}; the grid has "
+                f"{list(grid.sparsities)}. This filter narrows the grid.")
+        selected_sparsities = want
     configs_by_backend = build_configs_by_backend(
         grid, include_sage=args.include_sage,
         seq_lens=tuple(selected_seq_lens),
-        include_gla=not args.no_gla)
+        include_gla=not args.no_gla,
+        sparsities=selected_sparsities,
+        mask_source=args.mask_source)
     if args.only_backends is not None:
         want = [b.strip() for b in args.only_backends.split(",") if b.strip()]
         unknown = [b for b in want if b not in configs_by_backend]
