@@ -9,7 +9,7 @@ model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
 It stood at seventeen when that sentence was written. It stands at
-**forty-five**. The original sentence is kept rather than updated because the
+**forty-six**. The original sentence is kept rather than updated because the
 rate is the point: the count went on growing under a discipline built
 specifically to stop it growing.
 
@@ -2667,3 +2667,62 @@ is generated from, and at 16384, the headline band, 76 of 100 examples are in
 the vulnerable configuration. Settling it needs one GPU band. Until it is run,
 the honest statement is that the ladder was not a ladder in the tied rows, the
 affected fraction is small and measured, and the effect on scores is unknown.
+
+---
+
+## 46. The repository's prose has no equivalent of a test suite
+
+Found 2026-09-20, during the commit of instances 45 and the documentation
+corrections that came with it. It is the only entry in this file produced by
+*fixing* the others, and it is here because the artifact it damaged is this
+project's actual deliverable.
+
+Four workstreams had to land as four independently revertable commits. The
+edits were interleaved inside shared files — `claims.md` carried hunks from
+three of them — so each commit's tree was reconstructed by splicing the
+relevant diff hunks onto the file as `git show HEAD:<file>` returned it.
+
+`HEAD` moves as you commit. The first commit was built against the right base.
+The second was built against the first, **with hunk offsets still computed
+against the original**, so it spliced text at coordinates that no longer meant
+what they had. `claims.md` came out mangled: duplicated paragraphs, a table
+cut mid-row, roughly eighty lines wrong.
+
+**The test suite was green. 985 passed.** It was green because the corruption
+was entirely in prose, and no test in this project reads `claims.md` for
+sense. The commit was made and stood for two more build steps.
+
+What caught it was not a test. It was a `--stat` line:
+
+```
+docs/claims.md | 79 ++++++--------------------------------
+```
+
+in a commit whose workstream does not touch `claims.md`. A file that should
+not have appeared, and a deletion count that had no business existing in an
+additive change.
+
+**The rule.** *A repository's executable artifacts have a gate and its prose
+artifacts do not, so any mechanical transformation of prose needs its own
+end-state check.* The fix was to pin the base to a fixed commit rather than
+`HEAD`, and — the part that actually made it safe — to verify the final tree
+**byte-for-byte against the state that had been validated** before any of the
+commits were made, rather than trusting that four correct-looking steps
+compose. Every intermediate state also had its test count recorded (976 → 985
+→ 986 → 999), which is what makes a silently-skipped or silently-added step
+visible.
+
+**Why this matters more here than it usually would.** In most repositories the
+prose is documentation *about* the deliverable. In this one `claims.md` **is**
+the deliverable — it is the file the write-up is drafted from, and the whole
+premise of keeping it is that a claim and its boundary travel as one sentence.
+A corrupted `claims.md` that passes CI is a corrupted paper that passes review.
+
+**The shape is the file's own.** A green suite over a wrong artifact, caught by
+a number that did not fit — #10 (a correct stamp nobody read), #23 (a measured
+value a default overwrote), #45 (a fixture that could not express the failure).
+Here the missing gate was not a fixture or a reader; it was that prose has no
+executable form to assert against at all. That is not fixable in general, and
+the countermeasure is correspondingly blunt: **diff the end state against a
+known-good copy, and do not trust a sequence of individually plausible
+mechanical edits to compose into it.**
