@@ -92,8 +92,10 @@ not flat across length, so a delta alone hides which side moved.
 
 | | |
 |---|---|
-| **Supported** | *With an oracle importance ranking, the sparsity a task tolerates is a property of the **task**, not of the kernel: `niah_single` is intact to 0.75 in every band (98.3 / 99.7 / 99.7 vs 100.0 dense), while `niah_multikey` has already lost ground at 0.5 (89.3 / 88.7 / 71.0 vs 97.0 / 95.0 / 86.0 dense) and falls to 41.7 at 0.75 by 8192.* |
+| **Supported (re-measured 2026-09-20, forced sink, n=100)** | *With an oracle importance ranking, the sparsity a task tolerates is a property of the **task**, not of the kernel: `niah_single` is intact to **0.9** in every band (97 / 99 / 100 against 100 dense, deltas −3 / −1 / 0), while `niah_multikey` loses 15 to 21 points at 0.75 and 53 to 60 at 0.9 (deltas −15 / −18 / −21 and −54 / −53 / −60 at 2048 / 4096 / 8192).* |
 | **Not supported** | *Block-sparse attention holds dense accuracy to 0.5 sparsity.* |
+| **WITHDRAWN 2026-09-20** | *…`niah_multikey` has already lost ground at 0.5 (89.3 / 88.7 / 71.0).* Those figures were measured without the attention sink. Forced, the 0.5 deltas are **−3.0 [−8,+2] / −5.0 [−10,−1] / +2.0 [−3,+8]** — at 8192 the sparse arm is nominally *above* dense. The tolerance claim survives; the sentence naming 0.5 as where multikey breaks does not. |
+| **Also withdrawn** | *…`niah_single` is intact to 0.75.* It is intact to 0.9. The 0.75 figures (98.3 / 99.7 / 99.7) came from the same unforced-sink masks. |
 
 **Why the second is a different claim, three times over.** It generalises
 across tasks, across lengths, and against a fixed reference. Across tasks:
@@ -137,45 +139,65 @@ runs dense over the cache (`decode_backend` on every row).
 
 ---
 
-## The oracle can put sparse ABOVE dense, and that is contamination
+## The oracle can put sparse ABOVE dense — mostly withdrawn 2026-09-20
 
-The single most important thing measured this session, and it is bad news for
-the headline rather than good.
+**This section was headed "and that is contamination", and called the effect
+"the single most important thing measured this session".** The effect it
+described was `vt` sparse scoring above dense by +5.9 to +14.6 points. Audit
+item S1a re-measured it with the attention sink forced and found most of it
+gone, and the stopping analysis found a mechanism for the rest that is not
+about attention at all. The section is kept, corrected in place, because the
+reasoning it built on the effect is what the correction has to reach.
 
 | | |
 |---|---|
-| **Supported** | *`block_sparse` at 0.75 scores **above** the dense baseline on `vt` in all three bands: +10.8 (86.8 vs 76.0), +5.9 (90.6 vs 84.7), **+14.6** (85.1 vs 70.5), against standard errors of 1.0–1.4 on n=300.* |
+| **WITHDRAWN 2026-09-20** | *`block_sparse` at 0.75 scores **above** the dense baseline on `vt` in all three bands: +10.8, +5.9, +14.6.* Two causes, both measured. (1) **The sink.** Re-measured with it forced, same 100 examples: **+3.2 [−1.2,+7.4] / +0.8 [−1.8,+3.4] / −2.4 [−6.0,+1.2]** at 2048 / 4096 / 8192. The margin does not survive at any band at 0.75. (2) **Stopping.** `vt` scores recall over five names under a 40-token cap, and the unforced-sink sparse arms stopped early — 63–158 caps per 300 against dense's 214–279 — scoring full on a short name list while dense ran into the cap restating the chain. See `limitations.md`, "`vt`'s sparse-above-dense gap is substantially a STOPPING effect". |
+| **What is left of it, and it is narrow** | *At 16384 with the sink forced, 1.5B `vt` sparse is still above dense: +9.4 / +12.8 / +12.0 at 0.5 / 0.75 / 0.9 — but among pairs that stopped the same way that falls to +2.4 / +4.4 / +8.1, and at 7B there is no stopping component and the margin is +0.4 / +2.7 / +6.8. So a residual positive margin at high sparsity survives conditioning, on both models; the large gross margins do not.* |
 | **Not supported** | *Sparse attention improves accuracy on variable tracking.* |
+| **Not supported** | *The oracle acts as a denoiser on `vt`.* This was the proposed mechanism for the withdrawn margins. It is now one of three candidates, and the only one with a testable prediction — stopping — is the one the data supports. No experiment here separates denoising from block structure suiting multi-hop tracking (Sparse Frontier's account). |
 
-At 8192 that gap is roughly **nine standard errors**, same direction, three
-independent bands. It is not noise, and it survived being withheld from this
-file at one band and again at two.
+*The paragraph that stood here read: "At 8192 that gap is roughly **nine
+standard errors**, same direction, three independent bands. It is not noise,
+and it survived being withheld from this file at one band and again at two."
+The gap was real and the statistics were right. **Nine standard errors of a
+quantity that was not what it was taken for** — the arms were not generating
+comparable output, and the mask was missing a block the reference
+implementation grants for free. Reproducibility across bands does not test
+either of those, which is why three agreeing bands felt like confirmation.*
 
-**Discarding computation cannot improve a model.** What can is where the mask
-came from. The ranking is derived from the full attention scores, so the mask
-concentrates attention on blocks that dense attention identified as important
-but does not preferentially attend to. On a chain-of-assignments task that is
-a denoiser.
+**Discarding computation cannot improve a model.** That reasoning still holds
+and is why the effect demanded an explanation. What the study proposed was
+that the oracle's ranking concentrates attention on blocks dense attention
+identified as important — a denoiser on a chain-of-assignments task. What the
+2026-09-20 data says is that most of the effect needed no such explanation:
+forcing the sink removes it at 2048–8192, and the residual at 16384 is
+substantially the two arms stopping differently under a recall-scored 40-token
+cap.
 
-If that is the mechanism, **no deployable method reproduces it** — a cheap
-estimator computed from partial information does not know which blocks
-matter. The oracle here is not standing in for a deployable estimator; it is
-supplying information the deployable estimator cannot have. The mechanism is
-proposed; the effect and its size are measured. Separating them needs the
-same grid under a genuinely cheap `score_source`, which does not exist yet.
+**What survives.** A small positive margin at high sparsity, on both models,
+after conditioning on stopping: +8.1 at 1.5B/16384/0.9 and +6.8 at 7B. The
+denoiser account is *one of three* candidate explanations for that residual,
+alongside block structure suiting multi-hop tracking (Sparse Frontier) and
+whatever remains of the stopping effect that conditioning cannot remove
+cleanly (it is a mediator — see `limitations.md`). Nothing here separates
+them.
 
-**This changes the status of the oracle caveat.** It had been "accuracy here
-is an upper bound" — a bound on how good sparse can look. It is stronger: the
-oracle can make sparse look *better than dense*, which no deployable method
-could achieve. That is a different kind of contamination and belongs in its
-own statement, not as a footnote to the bound.
+**The oracle caveat returns to its original status**, which is still strong:
+accuracy measured with an oracle ranking is an **upper bound**. The stronger
+claim built here — that the oracle can make sparse look *better* than dense,
+a different kind of contamination — rested on the withdrawn margins and is no
+longer supported at 2048–8192. It remains possible at high sparsity and long
+context, at the sizes above, and is not established.
 
-**It also narrows every Stage 4 matched budget.** The protocol certifies
-non-inferiority to dense; where the oracle pushes sparse above dense, part of
-what clears the bar is oracle-supplied. A matched budget licenses *"non-
-inferior to dense when the mask is chosen with full knowledge of the
-attention scores"*, never *"this budget is free"*. Carried in
-`analysis/matched.py`'s docstring so it reaches the code that computes it.
+**What this does to the Stage 4 matched budgets.** The caveat that some of
+what clears the non-inferiority bar is oracle-supplied is *weaker* than
+stated, because the margins it was drawn from were mostly sink and stopping
+artifacts. But the budgets themselves are computed from the pre-fix accuracy
+and are **stale in a larger way**: S1a moved `niah_multikey` by up to 44
+points and `niah_single` at 0.9 by 34. Stage 4, Stage 6 and the Stage 7
+decision map all need rebuilding from the forced-sink data before any of them
+is quoted. `analysis/matched.py`'s docstring still carries the oracle
+qualifier, which is correct and unchanged.
 
 ## End-to-end speedup, which is the point of the whole study
 
@@ -434,15 +456,40 @@ every arm. All three sparsities are faster than dense and **all three score
 
 *(speedup vs dense / RULER score; dense scores 100.0 at every band)*
 
-**Both axes move together, monotonically, along the 0.9 row:** speedup
-0.992 → 1.005 → 1.062 → **1.186**, accuracy 62.0 → 93.0 → 99.0 → **100.0**.
-Two measurements, neither designed to produce a length dependence, agreeing
-on one. Paired bootstrap at 16384, n=100: 0.9 sparsity saves **+329 ms, 95%
-CI [+322.0, +337.3]**.
+**The accuracy figures in the 0.90 row are superseded** (2026-09-20): they were
+measured without the forced attention sink. Re-measured with it, the row reads
+**97 / 99 / 100** at 2048 / 4096 / 8192 (16384 unchanged at 100). The speedups
+are unaffected — they were measured on the masks of their own era, and the
+sink adds blocks rather than removing them (see `limitations.md`), so a
+re-timed 0.9 row would be slightly slower than shown.
+
+**~~Both axes move together, monotonically, along the 0.9 row~~ — WITHDRAWN
+2026-09-20.** The sentence read: *"speedup 0.992 → 1.005 → 1.062 → 1.186,
+accuracy 62.0 → 93.0 → 99.0 → 100.0. Two measurements, neither designed to
+produce a length dependence, agreeing on one."* The accuracy half was an
+artifact of the unforced sink. Re-measured at 0.9 with the sink forced, same
+examples: **97 → 99 → 100** at 2048 / 4096 / 8192, against 62 → 93 → 99. The
+accuracy axis is at or within 3 points of ceiling from the shortest band
+measured, so **it has no slope to agree with the speedup's**. The speedup
+half is untouched: 0.992 → 1.005 → 1.062 → 1.186 stands, and the paired
+bootstrap at 16384 (n=100, **+329 ms, 95% CI [+322.0, +337.3]**) stands.
+
+*S1a pinned the sparse decode kernel to `sdpa_math` while these accuracy
+figures were measured through `sdpa_flash`. On `niah_single` that choice is
+worth at most one example in 900 (`limitations.md`, "Changing the sparse
+arms' decode kernel"), which is why the comparison is quoted directly.*
+
+**What the convergence claim becomes.** Sparsity's *speed* benefit rises with
+length. Its accuracy cost at 0.9, once the mask is built the way the
+reference implementation builds it, is small at every band measured — 3
+points at 2048 and none by 8192. Those are two facts about length, not one
+mechanism showing up twice, and the second is much weaker evidence of a
+length dependence than a climb from 62 would have been.
 
 | | |
 |---|---|
-| **Supported** | *Block-sparse attention's end-to-end benefit rises with context length and is **1.186× at 16384 at zero accuracy cost** (100.0 vs 100.0). Below 8192 it is at or below 1.0×. The mechanism that makes sparsity affordable at long context is the same one that makes it accurate there.* |
+| **Supported** | *Block-sparse attention's end-to-end benefit rises with context length and is **1.186× at 16384 at zero accuracy cost** (100.0 vs 100.0). Below 8192 it is at or below 1.0×.* |
+| **WITHDRAWN 2026-09-20** | *…and the mechanism that makes sparsity affordable at long context is the same one that makes it accurate there.* The accuracy climb this rested on (62 → 93 → 99) was the missing attention sink. Forced, it reads 97 → 99 → 100. |
 | **Not supported** | *Block-sparse gives a 1.19× speedup.* One task, one band, batch 1, prefill-only sparsity, oracle-derived masks. Every one of those qualifiers is load-bearing. |
 | **Not supported** | *The trend will continue at 32768.* Three rising points do not establish an asymptote. 32768 is unmeasured and is the band where memory, not arithmetic, may dominate. |
 
@@ -480,7 +527,10 @@ sd of 32–44 ms, which needs n=19 for a 10 ms standard error).
 |---|---|---|---|---|---|
 | 0.50 | 0.984× / 100.0 | 0.968× / 100.0 | 0.998× / 100.0 | 1.071× / 100.0 | **1.098× / 100.0** |
 | 0.75 | 0.993× / 99.0 | 0.997× / 100.0 | 1.044× / 100.0 | 1.140× / 100.0 | **1.321× / 100.0** |
-| 0.90 | 0.992× / 62.0 | 1.005× / 93.0 | 1.062× / 99.0 | 1.186× / 100.0 | **1.404× / 98.0** |
+| 0.90 | 0.992× / 62.0* | 1.005× / 93.0* | 1.062× / 99.0* | 1.186× / 100.0 | **1.404× / 98.0** |
+
+*\* superseded: with the attention sink forced these read 97 / 99 / 100 — see
+the note under the 16384 table above. 32768 has not been re-measured.*
 
 Three separate things happen at 32768, and they do not all point the same way.
 
@@ -499,11 +549,17 @@ CI **[−6.00, +0.00]**, which includes zero.
 |---|---|
 | **Supported** | *Accuracy at 0.9 sparsity reaches ceiling (100.0) by 16384 and is at ceiling or indistinguishable from it at 32768.* |
 | **NOT supported** | *Accuracy turns over / declines at 32768.* One example in 50, CI touching zero. An earlier draft of this section stated the turnover as fact and built a two-axes argument on it; that was a single retrieval failure read as a trend. |
-| **NOT supported either** | *Speed and accuracy are one mechanism.* Accuracy saturates at 100.0 from 16384, so beyond that band the data **cannot distinguish** "accuracy would keep rising if it could" from "accuracy has stopped". The convergence claim is untestable past 16384, not refuted. |
+| **NOT supported either** | *Speed and accuracy are one mechanism.* Accuracy saturates at 100.0 from 16384, so beyond that band the data **cannot distinguish** "accuracy would keep rising if it could" from "accuracy has stopped". The convergence claim is untestable past 16384. **Refuted below it, 2026-09-20** — see the next paragraph. |
 
-What survives is narrower and holds: the convergence of the two trends is
-established over **2048–16384**, where both moved and neither was at ceiling.
-The 0.75 row holds 100.0 throughout and is the operating point to quote.
+*This paragraph read: "What survives is narrower and holds: the convergence
+of the two trends is established over **2048–16384**, where both moved and
+neither was at ceiling."* **It does not survive.** Accuracy at 0.9 was only
+below ceiling over that range because the masks omitted the attention sink;
+with it forced the row reads 97 / 99 / 100 at 2048 / 4096 / 8192 against 62 /
+93 / 99. So accuracy was never far from ceiling at any measured band, there
+is no accuracy trend to converge with the speed trend, and the range where
+the claim looked testable is exactly the range the re-measurement covers. The
+0.75 row holds 100.0 throughout and is still the operating point to quote.
 
 **3. The oracle ratio flattens and does not close.** Scoring cost against the
 best latency it buys: **249× → 49× → 36× → 35×** at 4096 / 8192 / 16384 /
@@ -582,14 +638,22 @@ end-to-end speedup 1.06×.* With the kernel confound removed, it is
 | **Superseded** | *Sparse is dominated by dense at matched accuracy.* True at 2048 and 4096; false at 8192. Stating it flatly reports the short-context result as the general one. |
 | **Still not supported** | *Sparsity pays off end-to-end.* One band, high sparsity, one task, 1.04–1.06×. That is a real effect and a small one. |
 
-**This aligns with the accuracy result rather than sitting beside it.** Stage
-3 found sparsity tolerance *rising* with context length (block-sparse at 0.9
-scored 26.3 at 2048, 73.0 at 4096, 69.7 at 8192 on the three-task mean; on
-`niah_single` alone, 62.0 / 93.0 / 99.0 at n=100). The latency result now has
-the same shape and the same direction: **longer context is where sparsity
-both keeps its accuracy and starts to pay.** Two independent measurements
-agreeing on a length dependence is a stronger claim than either alone, and
-neither was designed to produce it.
+**~~This aligns with the accuracy result rather than sitting beside it.~~
+WITHDRAWN 2026-09-20**, and this is the paragraph that made the withdrawn
+convergence claim most explicitly. It read: *"Stage 3 found sparsity tolerance
+rising with context length (block-sparse at 0.9 scored 26.3 at 2048, 73.0 at
+4096, 69.7 at 8192 on the three-task mean; on `niah_single` alone, 62.0 /
+93.0 / 99.0 at n=100) … Two independent measurements agreeing on a length
+dependence is a stronger claim than either alone, and neither was designed to
+produce it."*
+
+Both numbers moved. On `niah_single` at 0.9 the forced-sink figures are 97 /
+99 / 100. On the three-task mean the rise was carried by `vt` and
+`niah_multikey` cells that the sink fix moves by up to 44 points. **The
+latency length-dependence stands on its own; the accuracy one does not
+corroborate it.** Two measurements agreeing was the reason this was believed,
+and the agreement was manufactured by a shared defect in the masks both used
+— which is the same shape as the decode-era confound in `silent_failure_patterns.md` #42.
 
 #### The analytical method was validated where validation was possible
 
