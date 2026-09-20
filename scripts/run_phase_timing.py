@@ -28,6 +28,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from attnbench import provenance                                       # noqa: E402
+from attnbench import numerics                                    # noqa: E402
 from attnbench.accuracy.config import load_grid                        # noqa: E402
 from attnbench.accuracy.generation import ModelGeometry                # noqa: E402
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
@@ -54,6 +55,11 @@ def _write_reconciliation(recs, out) -> None:
 
 
 def main():
+    # Pin fp32 matmuls before anything measures or scores: TF32 is a
+    # global whose default has moved between torch versions, and this
+    # project's pin (torch>=2.6, no ceiling) permits both. See
+    # attnbench/numerics.py.
+    numerics.enforce_fp32_matmul()
     ap = argparse.ArgumentParser()
     ap.add_argument("--grid", default="configs/accuracy/stage3_grid.yaml")
     ap.add_argument("--out", default="results/stage5")

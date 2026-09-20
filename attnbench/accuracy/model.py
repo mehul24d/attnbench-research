@@ -36,6 +36,7 @@ from torch import nn
 
 from . import score_cache
 from .. import masks
+from .. import numerics
 from ..backends.base import AttentionBackend
 from ..backends.impls import SDPABackend
 from ..config import AttnConfig
@@ -506,6 +507,13 @@ class SwappableAttentionModel:
         (keyed on model+task+example+seq_len, covering every layer in one
         entry); only runs the dense scoring pass on a miss.
         """
+        # Before anything is keyed or computed: a run whose score_source
+        # claims fp32 must actually be getting fp32. See numerics.py -- the
+        # oracle's QK^T is TF32-eligible on Ampere and later, and the flag
+        # that decides it is a global whose default has moved between torch
+        # versions this project's pin permits.
+        numerics.assert_fp32_matmul(self._state.score_source)
+
         seq_len = input_ids.shape[-1]
         key = score_cache.cache_key(self.model_id, task, example_id, seq_len,
                                      self._state.score_source)

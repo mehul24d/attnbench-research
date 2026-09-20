@@ -130,7 +130,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 986 passed, 10 skipped, ~55s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 999 passed, 10 skipped, ~50s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import

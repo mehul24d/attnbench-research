@@ -61,6 +61,7 @@ from attnbench.accuracy.runner import (build_cells, check_decode_pin_continuity,
                                        run_accuracy)
 from attnbench.accuracy import stopping                                # noqa: E402
 from attnbench import provenance                                       # noqa: E402
+from attnbench import numerics                                    # noqa: E402
 from attnbench.config import AttnConfig                                # noqa: E402
 
 
@@ -189,6 +190,11 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
 
 
 def main():
+    # Pin fp32 matmuls before anything measures or scores: TF32 is a
+    # global whose default has moved between torch versions, and this
+    # project's pin (torch>=2.6, no ceiling) permits both. See
+    # attnbench/numerics.py.
+    numerics.enforce_fp32_matmul()
     ap = argparse.ArgumentParser()
     ap.add_argument("--grid", default="configs/accuracy/stage3_grid.yaml")
     ap.add_argument("--out", default="results/accuracy")

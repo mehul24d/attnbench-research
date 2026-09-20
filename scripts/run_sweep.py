@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from attnbench import compile_guard                    # noqa: E402
+from attnbench import numerics                                    # noqa: E402
 from attnbench.backends import all_backends            # noqa: E402
 from attnbench.backends.impls import SDPABackend       # noqa: E402
 from attnbench.config import SweepGrid                 # noqa: E402
@@ -39,6 +40,11 @@ def instantiate():
 
 
 def main():
+    # Pin fp32 matmuls before anything measures or scores: TF32 is a
+    # global whose default has moved between torch versions, and this
+    # project's pin (torch>=2.6, no ceiling) permits both. See
+    # attnbench/numerics.py.
+    numerics.enforce_fp32_matmul()
     # Raise the dynamo recompile ceiling before anything runs. Past the
     # default of 8, torch.compile silently runs eagerly -- which is how
     # Stage 1 certified flex block-sparse 72/72 for cells Stage 2 could
