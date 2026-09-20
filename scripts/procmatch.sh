@@ -52,6 +52,19 @@ else
   SIGNAL="${3:-TERM}"
 fi
 
+# Our own pgid, read ONCE and at top level. The sibling filter below is built
+# on it, and an inert filter here does not degrade gracefully -- it reports
+# this command's own subshells as live matches, which is the failure this
+# whole script exists to prevent. Refuse rather than answer badly. At top
+# level rather than inside genuine_pids, because `status` and `kill` call that
+# in a command substitution, where an `exit` would end only the subshell and
+# the refusal would be reported as NOT_RUNNING.
+MYPGID="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+if [ -z "$MYPGID" ]; then
+  echo "procmatch: cannot read own pgid; refusing to answer" >&2
+  exit 2
+fi
+
 # Every pid from here up to init. `pgrep` output containing any of these is
 # this command seeing itself, never the thing being looked for.
 ancestors() {
@@ -79,23 +92,46 @@ genuine_pids() {
   # (pgid of its own, ppid 1), that is the right way to be wrong: it errs
   # toward reporting NOT_RUNNING, and a false "not running" is investigated
   # while a false "running" is believed.
-  local mypgid; mypgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  local mypgid="$MYPGID"
   local found; found="$(pgrep -f -- "$PATTERN" 2>/dev/null || true)"
   local pid
   for pid in $found; do
     # skip self and every ancestor
     if printf '%s\n' "$anc" | grep -qx -- "$pid"; then continue; fi
-    # skip anything in our own process group (siblings, subshells, the job)
-    if [ -n "$mypgid" ]; then
-      pidpgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
-      [ "$pidpgid" = "$mypgid" ] && continue
-    fi
-    # Skip anything whose command line is this script (belt and braces: a
-    # sibling invocation of procmatch.sh is not the target either).
+
+    # ONE ps call for both remaining filters, and an EMPTY result excludes.
+    #
+    # This is the hole that made all three of this script's own tests fail on
+    # Linux on 2026-09-20, while passing on the macOS workstation. The
+    # matching pid is typically a subshell this very command forked for a
+    # pipeline or a command substitution: it carries our argv, so pgrep
+    # returns it, and it exits within milliseconds. Both filters below then
+    # ask `ps` about a pid that is already gone, `ps` prints nothing, and
+    # nothing is what BOTH tests were written against -- an empty pgid is not
+    # equal to ours, and an empty command line does not contain
+    # "procmatch.sh". So the phantom fell through both and was reported as a
+    # genuine match. `status` answered RUNNING for a pattern matching nothing,
+    # and `kill` signalled the phantom ("No such process").
+    #
+    # Both filters failed OPEN, which is the wrong direction and the script's
+    # own docstring says so: it must err toward NOT_RUNNING, because a false
+    # "not running" is investigated and a false "running" is believed. A pid
+    # `ps` cannot read has exited or is not ours to judge; either way it is
+    # not the live process anyone is asking about.
+    #
     # `-o args=`, NOT `-o cmd=`: the latter is GNU-only, and BSD/macOS ps
     # answers it by printing its list of format keywords, which silently
-    # turned this filter into a no-op on the workstation where tests run.
-    case "$(ps -o args= -p "$pid" 2>/dev/null)" in
+    # turned the second filter into a no-op on the workstation where tests run.
+    local info; info="$(ps -o pgid=,args= -p "$pid" 2>/dev/null | sed 's/^ *//')"
+    [ -n "$info" ] || continue
+
+    # skip anything in our own process group (siblings, subshells, the job)
+    local pidpgid="${info%% *}"
+    [ "$pidpgid" = "$mypgid" ] && continue
+
+    # Skip anything whose command line is this script (belt and braces: a
+    # sibling invocation of procmatch.sh is not the target either).
+    case "${info#* }" in
       *procmatch.sh*) continue ;;
     esac
     printf '%s\n' "$pid"

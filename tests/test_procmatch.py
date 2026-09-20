@@ -258,3 +258,66 @@ def test_an_empty_pattern_file_is_refused(tmp_path):
                          capture_output=True, text=True)
     assert out.returncode == 2
     assert "empty" in (out.stderr + out.stdout).lower()
+
+
+def _a_pid_that_has_exited() -> int:
+    """A pid that certainly existed and certainly does not now."""
+    dead = subprocess.Popen([sys.executable, "-c", ""])
+    dead.wait()
+    return dead.pid
+
+
+def test_a_pid_that_has_already_exited_is_not_a_live_match(tmp_path):
+    """The 2026-09-20 hole, and why all three integration tests above passed
+    here and failed on the instance.
+
+    `pgrep` returns a pid -- in practice a subshell this very command forked
+    for a pipeline, carrying our argv -- and by the time the filters ask `ps`
+    about it, it has exited. `ps` prints nothing, and nothing satisfied BOTH
+    filters: an empty pgid is not equal to ours, and an empty command line
+    does not contain "procmatch.sh". So the phantom fell through and was
+    reported as a genuine match. `status` said RUNNING for a pattern matching
+    nothing, and `kill` signalled it.
+
+    The integration tests could not catch this on the workstation because
+    macOS `pgrep -f` cannot see an ancestor shell's command line at all, so
+    the phantom is never produced here. This one is deterministic on every
+    platform: hand the stub a pid that has already exited. Whatever `ps` says
+    about it, it is not a live process, and the filters must fail CLOSED.
+    """
+    env = _pgrep_stub(tmp_path, [_a_pid_that_has_exited()])
+    out = subprocess.run(["bash", str(SCRIPT), "status", "anything"],
+                         capture_output=True, text=True, env=env)
+    assert out.stdout.strip() == "NOT_RUNNING", out.stdout
+    assert out.returncode == 1
+
+
+def test_kill_does_not_signal_a_pid_that_has_already_exited(tmp_path):
+    """The same hole on the path that does damage. The pid is dead here, so
+    the signal lands nowhere; on the instance the equivalent phantom was a
+    subshell of the CALLER, which is the 2026-09-03 incident -- `pkill -f`
+    taking the invoking SSH command with it."""
+    env = _pgrep_stub(tmp_path, [_a_pid_that_has_exited()])
+    out = subprocess.run(["bash", str(SCRIPT), "kill", "anything"],
+                         capture_output=True, text=True, env=env)
+    assert "killing" not in out.stdout, out.stdout
+    assert "NOT_RUNNING" in out.stdout, out.stdout
+    assert out.returncode == 1
+
+
+def test_an_unreadable_own_pgid_refuses_rather_than_answering(tmp_path):
+    """The sibling filter is built on our own pgid. If that cannot be read the
+    filter is inert, and an inert filter here does not degrade gracefully --
+    it reports this command's own subshells as live. Refusing is the only
+    answer that cannot be believed wrongly."""
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    (stub_dir / "ps").write_text("#!/usr/bin/env bash\nexit 0\n")   # prints nothing
+    (stub_dir / "ps").chmod(0o755)
+    (stub_dir / "pgrep").write_text("#!/usr/bin/env bash\necho 1\n")
+    (stub_dir / "pgrep").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+    out = subprocess.run(["bash", str(SCRIPT), "status", "anything"],
+                         capture_output=True, text=True, env=env)
+    assert out.returncode == 2, (out.stdout, out.stderr)
+    assert "refusing" in out.stderr, out.stderr
