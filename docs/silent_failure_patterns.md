@@ -2656,10 +2656,20 @@ nothing ever runs it and discovers its scope.
 
 ### What it cost, and what remains unmeasured
 
-Re-running the fixed builder over every banked score tensor changes **5.6% of
-(layer, sparsity) masks** and **0.23% of all active blocks**, concentrated in
-the ragged final block. Untied rows are bit-identical, since a different 1e-9
-perturbation cannot reorder distinct scores.
+Re-running the fixed builder over every banked score tensor changes 0.23% of
+all active blocks. The fraction of *masks* containing such a change is
+strongly length-dependent -- 1.7% at 2048, 5.8% at 4096, 35.3% at 8192,
+**73.8% at 16384**, 99.2% at 32768 -- because longer contexts pool thinner
+probabilities into more candidates per row and tie more often in fp16. Untied
+rows are bit-identical, since a different 1e-9 perturbation cannot reorder
+distinct scores.
+
+**The pooled figure across all bands is 5.6%, and quoting it was itself an
+instance of #13.** 81% of the banked tensors are 2048-band, so the pool
+describes the short bands. It was the first number computed and it reached
+both `limitations.md` and this file's own commit message before the per-band
+split existed. A blast radius averaged over a population the reader will not
+inspect is not a bound.
 
 **Whether any reported accuracy number moved is unmeasured.** The perturbation
 is confined to one query-block row out of 16–129 — but it is the row the answer

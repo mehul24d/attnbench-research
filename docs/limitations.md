@@ -2054,12 +2054,52 @@ future rows and leave every banked row unlabelled, which is the asymmetry that
 makes a half-populated provenance field worse than none (see
 `provenance.stamp_onto`). The table above is the register instead.
 
-**Size of the era-2 → era-3 difference**, measured rather than assumed, by
-rebuilding every banked score tensor under both rules: **5.6% of (layer,
-sparsity) masks change**, and **0.23% of all active blocks**, concentrated in
-the ragged final query block (0.92% of active blocks at `n_blocks=17`, 1.67%
-at 65, 0.0% where `seq_len` divides evenly by `block_size`). Untied rows are
-bit-identical. Whether that moves a score is **unmeasured** — audit item S7.
+**Size of the era-2 → era-3 difference. It is strongly length-dependent, and
+the aggregate hides that.** Rebuilding every banked score tensor under both
+rules:
+
+| band | layer-masks changed | |
+|---|---|---|
+| 2048 | 1288 / 75 600 | 1.7% |
+| 4096 | 487 / 8 400 | 5.8% |
+| 8192 | 2969 / 8 400 | 35.3% |
+| **16384** | 62 / 84 | **73.8%** |
+| 32768 | 250 / 252 | **99.2%** |
+| *all bands pooled* | *5175 / 92 904* | *5.6%* |
+
+> **The pooled 5.6% is not a summary of this table; it is an artifact of its
+> composition.** 81% of the banked score tensors are 2048-band, where 1.7% of
+> masks move, so the pooled figure describes the short bands and says nothing
+> about the long ones. It was the first number measured, and it was quoted
+> here and in the commit message for instance 45 before the per-band split was
+> computed. **Pooling across a differently-composed population is the failure
+> this project has now been caught by three times** (pattern #13;
+> `analysis/composition.py` exists because of the first two). Corrected 2026-09-20; the commit message
+> of `5cc3a40` still carries the pooled figure and cannot be amended.
+
+**Confirmed at 16384 on 200 real examples**, independent of the sample above:
+the banked forced-sink run used a cold cache, so its 0.75 and 0.9 arms ranked
+from the fp16 tensors that survive in GCS, and those masks are therefore
+reproducible byte-for-byte. Rebuilt under both rules, `niah_single` and
+`niah_multikey`, n=100 each:
+
+| | 0.75 | 0.9 |
+|---|---|---|
+| layers changed per example, median of 28 | 25–27 | 13–19 |
+| examples with **no** change | **0 / 200** | **0 / 200** |
+| active blocks differing | 0.28–0.60% | 0.13–0.28% |
+
+74.6% of layer-masks over the 200, against 73.8% from the single banked
+tensor — the two agree, which is the check that the GCS sample is
+representative.
+
+**Two things follow.** The block-level perturbation stays small at every band;
+what rises with length is how *many* masks contain one, because longer
+contexts pool thinner probabilities into more candidates per row and so tie
+more often in fp16. And **no example at 16384 can be excluded from a re-run**:
+every one of 200 has at least one layer whose mask moved, so the fraction of
+the cell that could flip is 100% and there is no cheap subset. Whether any
+score actually moves is still **unmeasured** — audit item S7.
 
 **Era 1 → era 2 is much larger** and is documented above: up to 44 points on
 individual cells, which is why Stages 4/6/7 were rebuilt.
