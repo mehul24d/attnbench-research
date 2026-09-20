@@ -837,8 +837,44 @@ silently.
 >
 > Resolving it needs one instance session that runs the suite, captures the
 > full failure output rather than the summary line, and records the verdict
-> per backend. Until then no claim in this study should be read as resting on
-> a checked timed region for anything but `flex` and `naive`.
+> per backend.
+
+### RESOLVED 2026-09-20, and the answer is worse than "unverified"
+
+That session ran (`attnbench-l4-s7-20260920-2158`, audit item S8). Both
+backends now have a verdict and neither is clean.
+
+**`block_sparse` does rebuild setup inside the timed region.** The detector
+reports `setup ops per call [1, 1, 1]` — a conversion on every call, not just
+the first. The call is
+[`backends/block_sparse.py:104`](../attnbench/backends/block_sparse.py#L104):
+
+    base_blockmask = mask.to_block_sparse_attn_mask(b, h, device=q.device)
+
+and `BlockSparseMask.__post_init__` **requires `active` to live on the CPU**
+(`masks.py:41`, `masks.py:58`). So that line is a host-to-device copy of the
+whole block grid, executed once per forward, inside the region Stage 2 times.
+A real deployment builds the kernel's mask once and reuses it across calls and
+layers — which is the exact argument this detector was written to make about
+`create_block_mask`, where the same shape cost a 10× error in a reported
+number.
+
+**`sdpa` could not be observed even on CUDA**, reporting `not runnable here:
+UnsupportedConfig` on the `causal` config. It is one arm of every end-to-end
+comparison in the study, and its timed region has therefore been checked
+**nowhere** — not on the workstation, not on the instance.
+
+**What this does and does not mean for the published numbers.** The magnitude
+is unmeasured (register item S11) and the bytes are small — 16 KB at
+16384/128, 64 KB at 32768 — so against a millisecond-scale kernel the tax is
+probably a fraction of a percent, and proportionally largest at the short
+seq_lens Stage 2 also sweeps. The **direction** is known and it is the
+conservative one: `block_sparse` is being measured slower than it is, so every
+reported `block_sparse`-over-dense speedup is **understated**, not inflated.
+That is the right way round to be wrong, and it is still wrong. Until S11
+measures it, no `block_sparse` timing number in this study is free of a
+per-call setup cost, and no claim rests on a checked timed region for `sdpa`
+at all.
 
 ## Sub-block causality: the oracle was leaking
 
@@ -2038,12 +2074,18 @@ assignment is per file:
 |---|---|---|
 | **1. pre-sink** | kv block 0 is an ordinary candidate; only the diagonal is free | `stage3_s1`, `stage3_s1b`, `stage3_16384`, `stage3_32768`, `stage3_flashdecode`, and the `gpu_session_2026090[678]*` copies of each |
 | **2. forced-sink** | kv block 0 granted free (`37675a0`, 2026-09-16); jitter drawn **after** the budget check | `accuracy_forced_sink`, `accuracy_forced_sink_cheap`, `s7_7b_16384`, `s9_7b_cheap_16384`, `s1a/accuracy_band2048`, `s1a/accuracy_bands2`, `s1a/accuracy_all_bands`, `sink_control` (`importance_randfree`) |
-| **3. post-jitter** | as era 2, plus jitter drawn unconditionally (instance 45, 2026-09-20) | **none yet** |
+| **3. post-jitter** | as era 2, plus jitter drawn unconditionally (instance 45, 2026-09-20) | `s7_jitter` — 16384, `niah_single` and `niah_multikey` only, n=100. **Supersedes the same cells of `accuracy_forced_sink`.** That file's `vt` cells at 16384, and every other band, remain era 2. |
 
-Every banked accuracy row is era 1 or era 2. **No file in `results/` was
-produced by the current mask builder**, so a bit-exact replicate of any
-published accuracy number is not obtainable from `HEAD` until a band is
-re-run.
+**One file is era 3, and it is a partial band.** `s7_jitter` covers 16384 at
+`niah_single` and `niah_multikey`; `vt` was deliberately excluded, because its
+stopping confound would make a flip unattributable. So `accuracy_forced_sink`
+at 16384 is now **split by task**: its `niah_*` cells are superseded and its
+`vt` cells are the only measurement there is. Do not read that file as one
+population — see "Which mask era each banked accuracy file belongs to" above
+and the composition rule in `analysis/composition.py`.
+
+Every other banked accuracy row is era 1 or era 2, so a bit-exact replicate of
+any published number outside that one cell is still not obtainable from `HEAD`.
 
 **How to tell without this table.** Era 1 and 2 split on `git_commit`: any
 commit that is an ancestor of `37675a0` is era 1. Era 2 and 3 split on date

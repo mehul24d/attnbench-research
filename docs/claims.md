@@ -64,10 +64,14 @@ exists. Stage 3 ships with two backends, dense and block-sparse.
 > from masks that did not force the sink (`limitations.md`, "The attention
 > sink is not forced"). They are correct measurements of that configuration,
 > and the current code does not build it. There is direct evidence they move:
-> post-fix, at 16384, `niah_multikey` at 0.5 is +0.0 against dense, where
+> post-fix, at 16384, `niah_multikey` at 0.5 is −1.0 against dense, where
 > pre-fix 8192 was −15.0. `vt` staying above dense *is* reproduced post-fix
 > (+9.4 / +12.8 / +12.0 at 16384), so that direction stands; its magnitudes
 > here do not yet. Re-run approved as audit item S1a (see
+> *(That figure read +0.0 until 2026-09-20. +0.0 is the era-2 cell; −1.0 is the same cell re-measured under the fixed tie-break, audit
+> S7. Each is inside the other's CI and the point this paragraph makes is
+> unaffected.)*
+> 
 > [`docs/audit_register.md`](audit_register.md) for what every cited item
 > asked and concluded); until it reports, quote
 > these with the era, or not at all.
@@ -490,6 +494,44 @@ are unaffected — they were measured on the masks of their own era, and the
 sink adds blocks rather than removing them (see `limitations.md`), so a
 re-timed 0.9 row would be slightly slower than shown.
 
+**The 16384 column of this table survives the tie-break fix intact
+(audit S7, 2026-09-20).** The band was re-measured under the corrected jitter
+draw (instance 45) on a fresh L4, cold cache, decode pinned to the banked
+`sdpa_flash`, with two gates: the dense arm reproduced the banked run
+**200/200 examples identical**, and the run's own fp16 score tensors were
+**200/200 bit-identical** to the banked ones, so the scoring pass is unchanged
+and every difference below belongs to the mask rule alone.
+
+| task | sparsity | banked (era 2) | re-run (era 3) | shift | 95% CI | texts changed |
+|---|---|---|---|---|---|---|
+| `niah_single` | 0.50 | 100.0 | **100.0** | 0.0 | [0, 0] | 14 / 100 |
+| `niah_single` | 0.75 | 100.0 | **100.0** | 0.0 | [0, 0] | 2 / 100 |
+| `niah_single` | 0.90 | 100.0 | **100.0** | 0.0 | [0, 0] | 2 / 100 |
+| `niah_multikey` | 0.50 | 66.0 | **65.0** | −1.0 | [−5.0, +2.0] | 14 / 100 |
+| `niah_multikey` | 0.75 | 59.0 | **53.0** | **−6.0** | **[−12.0, −1.0]** | 22 / 100 |
+| `niah_multikey` | 0.90 | 20.0 | **17.0** | −3.0 | [−7.0, +0.0] | 20 / 100 |
+
+*(paired bootstrap over the same 100 examples, 20,000 resamples; dense is
+100.0 / 66.0)*
+
+**Read the two tasks together — separately they each mislead.** `niah_single`
+is unchanged at 100.0 everywhere, which would read as "the bug did not
+matter"; but its *texts* changed on 14, 2 and 2 examples, so the masks
+demonstrably differ and the cell is only stable because it is at ceiling.
+`niah_multikey` has the headroom to show what that costs, and at 0.75 it
+costs **6 points, with a CI excluding zero**. The local bound predicted this
+shape: 0 of 200 examples at this band have an unchanged mask, so a cell that
+does not move is a cell with nowhere to move to.
+
+**Direction matters here.** The fixed builder scores *lower*, so the banked
+0.75 figure was flattered by masks that violated the study's own nesting
+property. The correction is against the study's interest, which is the
+direction that needs saying out loud.
+
+**`vt` at 16384 was deliberately not re-measured**, because its stopping
+confound would make a flip unattributable to the mask rule; those cells, and
+every band below 16384, remain era 2. See `limitations.md`.
+
 **~~Both axes move together, monotonically, along the 0.9 row~~ — WITHDRAWN
 2026-09-20.** The sentence read: *"speedup 0.992 → 1.005 → 1.062 → 1.186,
 accuracy 62.0 → 93.0 → 99.0 → 100.0. Two measurements, neither designed to
@@ -616,7 +658,8 @@ saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
 | **Supported** | *On an **NVIDIA L4 (sm_89)**, block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* **The card is not a detail of this sentence.** On an A100 the same configuration is 0.475× with the reference builder — and the cause is the builder, not the card. |
 | **Not supported** | *Block-sparse attention is slower than dense on an A100.* This was the published claim on 2026-09-16 and it is wrong as a statement about the method. It is true only of the reference mask builder, and it inverts when that builder is replaced — measured end-to-end, same process, same scores, only the builder changed, with bitwise-identical model outputs. |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192. The speedup is an upper bound no measured estimator approaches.* |
-| **Supported** | *The oracle requirement is **not** a small-model artifact. Against MInference's mean-pool estimator on `niah_multikey` at 16384, the oracle's advantage **widens** with scale — +32/+40/+19 points at 1.5B against **+39/+67/+76** at 7B — because better representations help the dense-softmax oracle far more than the estimator. At 0.9 sparsity the oracle retains 95% of dense at 7B while the estimator retains 16%.* |
+| **Supported; both arms are era-2 and the magnitudes move** | *The oracle requirement is **not** a small-model artifact. Against MInference's mean-pool estimator on `niah_multikey` at 16384, the oracle's advantage **widens** with scale — +32/+40/+19 points at 1.5B against **+39/+67/+76** at 7B — because better representations help the dense-softmax oracle far more than the estimator. At 0.9 sparsity the oracle retains 95% of dense at 7B while the estimator retains 16%.* |
+| **What S7 changed here, 2026-09-20** | S7 re-measured the **1.5B oracle arm at this exact cell** under the fixed tie-break: `niah_multikey` 66 / 59 / 20 → **65 / 53 / 17**. Holding the estimator fixed would make the 1.5B gaps +31 / +34 / +16 — but it cannot be held fixed, because the jitter fix is in the mask builder **both** arms use. **The post-fix gap is unmeasured on either side**; it needs the cheap arm re-run at the same cell (register item S12). The *direction* rests on differences far larger than a 6-point shift and is not in question. The magnitudes are. |
 | **Not supported** | *Scale will close the oracle-versus-estimator gap.* The opposite, on the one axis point available, and on the harder of the two discriminating tasks. `vt`'s gap does close at 7B (+8.6 → −0.6), so the two tasks differ in sign and a task-averaged summary hides the one that matters. |
 | **Not supported** | *Block-sparse attention delivers 1.321× at 32768.* Not as a system. It delivers that **given a mask nobody can afford to compute**, whose cost is 44.6 s per example against the 1286 ms saved — 35×, a ratio that has moved 4% since 16384. |
 | **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× against 0.75's 1.321×, for an accuracy difference of one example in 50 that the CI cannot separate from zero. At that margin 0.75 is the defensible pick, not because 0.9 is worse but because nothing here shows it is not. |

@@ -74,6 +74,25 @@ authority is the billing console.
 | 2026-09-19 | `attnbench-l4-s1a-20260919-1939` — audit S1a, band 2048 (forced sink, decode pinned, canary 300/300) | **39** | **52** | `gcp_session_elapsed.sh` |
 | 2026-09-20 | `attnbench-l4-s1a2-20260920-0437` — audit S1a, bands 4096 + 8192; asia-south1-c stocked out, ran in `-b` | **108** | **143** | `gcp_session_elapsed.sh` |
 | 2026-09-20 | `attnbench-l4-ctrl-20260920-1020` — arbitrary-free-block control, 2048/0.9 (canary 300/300) | **25** | **33** | `gcp_session_elapsed.sh` |
+| 2026-09-20 | `attnbench-l4-s7-20260920-2158` — audit S7 (jitter fix, 16384) + S8 + S9; **49 min idle** | **132** | **172** | operations log |
+
+### The 2026-09-20 S7 session: 83 minutes of work, 132 minutes billed
+
+Boot 16:28:38Z, last phase ended **17:51:19Z**, in-guest halt fired
+**18:40:54Z**, deferred delete 19:28Z. The measurement finished on the
+estimate — 83 minutes against a 76-minute projection — and then the instance
+sat idle for **49 minutes, ~Rs 64**, until its own halt collected it.
+
+Nothing failed. The halt was set to 130 minutes *for this session* precisely
+to bound an unattended overrun, and it did its job. But it was allowed to
+become the teardown instead of the backstop: the run's completion signal
+arrived and no delete followed it. That is the 2026-09-08 idle row again
+(162 minutes between halt and delete) in the version that costs money,
+because there the halt had already fired and here it had not.
+
+**The rule this adds: a completion signal must trigger a delete, not a
+report.** A ceiling bounds the loss from a session nobody is watching; it is
+not a substitute for ending one that is finished.
 
 **Two sessions were missing from this table until 2026-09-19**, found by
 listing every `instances.insert` in the audit log rather than trusting the

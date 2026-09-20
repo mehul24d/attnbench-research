@@ -9,7 +9,7 @@ model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
 It stood at seventeen when that sentence was written. It stands at
-**forty-six**. The original sentence is kept rather than updated because the
+**forty-eight**. The original sentence is kept rather than updated because the
 rate is the point: the count went on growing under a discipline built
 specifically to stop it growing.
 
@@ -2736,3 +2736,78 @@ executable form to assert against at all. That is not fixable in general, and
 the countermeasure is correspondingly blunt: **diff the end state against a
 known-good copy, and do not trust a sequence of individually plausible
 mechanical edits to compose into it.**
+
+## 47. A guard whose own tests are vacuous on the platform that runs them
+
+`scripts/procmatch.sh` exists because `pkill -f` killed an invoking SSH
+command and took a build with it (2026-09-03), and because `pgrep -f` reported
+a dead probe as RUNNING for six minutes (2026-09-04). It walks the ancestor
+chain and the process group so that neither can happen again. Its test file
+says so, at length, and the suite was green.
+
+On 2026-09-20 the suite was run **on the instance** for the first time with
+its output kept. Three of that script's own tests fail on Linux:
+
+    test_a_pattern_matching_only_the_caller_reports_not_running
+    test_the_reported_pids_exclude_the_matcher_itself
+    test_kill_refuses_when_only_the_caller_matches
+
+Reproduced by hand on the box: `status` against a pattern matching nothing
+answered `RUNNING pids=10710`, and `kill` against the same pattern printed
+`killing -TERM: 3697`. **The guard reproduces both incidents it was written to
+prevent.**
+
+One cause. The pid `pgrep` returns is a subshell the command forked for a
+pipeline — it carries the argv, so it matches, and it exits in milliseconds.
+Both filters then ask `ps` about a pid that is gone, `ps` prints nothing, and
+nothing satisfied either test: an empty pgid is not equal to ours, and an
+empty command line does not contain `procmatch.sh`. The phantom fell through
+and was reported as genuine.
+
+**Two rules, and the second is the one that generalises.**
+
+**A filter must fail closed.** Both of these failed open, in the direction the
+script's own docstring rules out — it must err toward NOT_RUNNING, "because a
+false 'not running' is investigated while a false 'running' is believed". An
+exclusion rule written as "skip it if `ps` says X" silently becomes "keep it"
+the moment `ps` says nothing, and `ps` saying nothing is the *normal* outcome
+for exactly the pids this filter is aimed at.
+
+**A test can be vacuous by platform, and the docstring saying so is not a
+substitute for a test that is not.** This file's own author had written it
+down: macOS `pgrep -f` cannot see an ancestor shell's command line, so "an
+integration test for it here is vacuous BY PLATFORM, which is exactly the
+'green tests can test nothing' trap." The trap was named, in the file, and
+then walked into — because naming it did not produce a test that runs
+everywhere. The fix adds three that do, by handing the matcher a pid that has
+already exited; they fail on macOS too. **A known-vacuous test is a gap with a
+comment on it, and a comment does not fail.**
+
+This is #21 and #22's shape ("tested on CPU" that tests the arithmetic and not
+the interfaces) applied to the operator tooling rather than the measurement
+code, and it is why the suite is now a per-session phase with its output
+synced (`scripts/gpu_suite_record.sh`) rather than a green tick remembered
+from the workstation.
+
+## 48. A spend ceiling used as a teardown
+
+The 2026-09-20 S7 session set `GCP_HALT_MINUTES=130` against a 3-hour delete,
+deliberately, to bound an unattended overrun. The measurement finished at
+17:51Z, on estimate. The instance was collected by its own halt at 18:40Z.
+**Forty-nine idle minutes, ~Rs 64, on a session whose useful work cost
+Rs 108.**
+
+Nothing failed. The ceiling did exactly what it was for. The error is that it
+was *allowed to be the teardown*: the run's completion signal arrived and
+produced a report rather than a delete.
+
+This is the 2026-09-08 idle row (162 minutes between halt and delete) in the
+version that costs money — there the halt had already fired, so the waste was
+Rs 0 and the lesson was free. It is also the same reasoning error as #19 in a
+different register: a safety mechanism was trusted to do the normal-path job,
+and normal-path correctness was never checked because the safety mechanism
+kept the outcome inside acceptable bounds.
+
+**A bound on the worst case is not a plan for the expected case.** A
+completion signal must trigger the delete.
+
