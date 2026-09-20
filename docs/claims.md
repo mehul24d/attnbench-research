@@ -70,6 +70,22 @@ exists. Stage 3 ships with two backends, dense and block-sparse.
 > here do not yet. Re-run approved as audit item S1a; until it reports, quote
 > these with the era, or not at all.
 
+> **S1a has now re-run band 2048** (2026-09-19, n=100, forced sink, decode
+> pinned to `sdpa_math` as the banked runs used, dense arm reproducing
+> 300/300). Sparse-minus-dense, same examples, 95% paired bootstrap:
+>
+> | task | 0.5 | 0.75 | 0.9 |
+> |---|---|---|---|
+> | `niah_multikey` | −15.0 → **−3.0** [−8,+2] | −26.0 → −15.0 [−23,−8] | −98.0 → −54.0 [−64,−43] |
+> | `niah_single` | 0.0 → 0.0 | −1.0 → −2.0 [−5,0] | −37.0 → **−3.0** [−7,0] |
+> | `vt` | −1.2 → −0.2 [−3.0,+2.6] | **+11.8 → +3.2** [−1.0,+7.4] | −49.2 → −4.6 [−10.2,+0.8] |
+>
+> 4096 and 8192 are not yet re-run, so the rows below are **not** rewritten
+> yet. What 2048 already shows: *"`niah_multikey` has already lost ground at
+> 0.5"* does not survive (−3.0, CI includes zero), and the `vt`
+> sparse-above-dense margin at 2048 mostly disappears.
+
+
 **Three bands measured (2048/4096/8192), n=300 per cell, standard errors
 0.0–2.1 points.** Report absolutes alongside deltas: the dense baseline is
 not flat across length, so a delta alone hides which side moved.
@@ -88,14 +104,30 @@ tolerance is length-dependent as well as task-dependent. And the reference
 moves: **dense itself degrades**, 97.0 → 95.0 → 86.0 on `niah_multikey`, so
 part of what looks like sparse degradation at 8192 is the baseline falling.
 
-**The 0.9 arm at 2048 is a grid artifact, not a sparsity result.** It scored
-0.0 / 63.3 / 26.3 there and 38.3 / 93.7 / 73.0 at 4096. With
-`block_size=128`, 0.9 sparsity retains 1.6 blocks at 2048, 3.2 at 4096, 6.4
-at 8192 — at 2048 there is almost no budget to be right with, whatever the
-ranking. A test was stated before 8192 ran: *if the budget explanation holds,
-0.9 keeps climbing.* **It plateaued** (38.3 → 35.3). So the threshold reading
-survives — 2048@0.9 is below a floor — and the smooth "more blocks, more
-accuracy" story does not.
+**~~The 0.9 arm at 2048 is a grid artifact, not a sparsity result.~~ WRONG,
+refuted 2026-09-19 by audit item S1a.** The paragraph read: *"It scored 0.0 /
+63.3 / 26.3 there and 38.3 / 93.7 / 73.0 at 4096. With `block_size=128`, 0.9
+sparsity retains 1.6 blocks at 2048 — at 2048 there is almost no budget to be
+right with, whatever the ranking."* It attributed the collapse to the budget.
+
+Re-measured at 2048/0.9 with the attention sink forced, same 100 examples,
+same pinned decode kernel, dense arm reproducing 300/300:
+
+| task | before | forced sink |
+|---|---|---|
+| `niah_single` | 63 | **97** |
+| `niah_multikey` | 0 | **44** |
+| `vt` | 25.8 | **70.4** |
+
+A 1.6-block budget is not what was wrong. **What the data cannot do is choose
+between two explanations, and both are real:** forcing the sink grants the
+*attention sink specifically*, and it also grants *one more block per row* —
+at this cell that is +53.8% active blocks (`limitations.md`, the sink
+section). A control that added one arbitrary block instead of the sink would
+separate them, and it was not run. So the honest statement is that the
+collapse was mask construction, not budget, and which part of the
+construction is unresolved. The old "2048@0.9 is below a floor" reading does
+not survive either way.
 
 **The oracle qualifier is load-bearing, and stronger than a ceiling.** See
 the dedicated section below.

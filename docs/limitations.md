@@ -1961,3 +1961,60 @@ replays the regime, only values in `DENSE_DECODE_BACKEND_HISTORY` are
 accepted, every row carries `decode_pinned=True`, and a pinned run refuses to
 resume into an unpinned output. S1a's rows are therefore **sink-corrected
 accuracy comparable to the banked numbers, not current-code accuracy**.
+
+### `vt`'s sparse-above-dense gap is substantially a STOPPING effect at 1.5B, and not at 7B
+
+Found 2026-09-19 from the `stop_reason` column, after S1a's band 2048 showed
+the `vt` margin collapsing from +11.8 to +3.2 under a forced sink. Measured
+by `scripts/run_vt_stopping_analysis.py` over every banked `vt` run, paired
+within each run (`results/diagnostics/vt_stopping.parquet`).
+
+`vt` is scored by recall over five variable names under a 40-token cap. An
+arm that emits a bare name list and stops scores full; an arm that restates
+the assignment chain (`VAR A = VAR B, ...`) runs into the cap before naming
+all five and loses the rest. **That is a property of the output, not of the
+attention** — and the arms did not stop alike. Before the sink fix, the
+sparse arms hit the cap 63–158 times per 300 against dense's 214–279, and
+generated 25.9–30.0 tokens against dense's 35.2–38.8.
+
+Paired sparse-minus-dense, all pairs / pairs that stopped the same way /
+pairs where both hit the cap:
+
+| run | 0.50 | 0.75 | 0.90 |
+|---|---|---|---|
+| 1.5B 16384 forced sink | +9.4 / **+2.4** / +3.8 | +12.8 / **+4.4** / +7.2 | +12.0 / +8.1 / +12.4 |
+| 1.5B 16384 cheap | +6.2 / +1.5 / +3.9 | +7.4 / +3.6 / +6.3 | +3.4 / +9.4 / +14.3 |
+| 7B 16384 forced sink | +0.6 / +0.4 / +0.5 | +3.2 / +2.7 / +2.9 | +6.0 / +6.8 / +7.1 |
+| 7B 16384 cheap | −1.0 / −1.3 / −1.4 | +2.8 / +2.9 / +2.9 | +6.6 / +6.9 / +7.0 |
+| 1.5B 2048 forced sink | −0.2 / −0.2 / 0.0 | +3.2 / +3.0 / +4.2 | −4.6 / −5.8 / −5.2 |
+
+**At 1.5B most of the margin at 0.5 and 0.75 is stopping** — +9.4 becomes
++2.4, +12.8 becomes +4.4. **At 7B there is no stopping component**: all three
+views agree within noise, and the cap counts are nearly equal (92 dense
+against 80–85 sparse, versus 68 against 43–51 at 1.5B). That is the
+prediction the smaller 7B `vt` gap already implied, confirmed on the
+mechanism rather than the outcome.
+
+**What does not go away.** The cap-cap gaps at 0.75 and 0.9 stay positive
+with CIs excluding zero, on both models. So stopping is a large part of the
+`vt` effect and not all of it.
+
+**The adjustment is post-treatment, and that bounds what it can show.**
+Sparsity changes stopping and stopping changes the score, so `stop_reason` is
+a mediator, not a covariate. Conditioning on it estimates neither the total
+effect nor a clean direct effect, and it can select in either direction: at
+8192/0.9 pre-fix the gap is −0.9 over all pairs and **+18.3** among same-stop
+pairs, a 19-point move from the conditioning alone. The clean experiment is a
+scorer or cap that does not reward stopping early, which is a re-scoring
+question, not a GPU one.
+
+**This is the accuracy-side twin of confound 2.** Unequal generation length
+between arms is already recorded here as a *latency* confound (`claims.md`,
+"Confound 2 — unequal generation length"). It reaches the *scores* too, by
+the same mechanism, and that was not recorded until now.
+
+**A third explanation for `vt`, and the only one with a testable mechanism.**
+The other two on record are the oracle acting as a denoiser (`claims.md`) and
+block structure suiting multi-hop tracking (Sparse Frontier). Both are
+inferences from the outcome; this one predicted where the effect would be
+absent (7B) and was checked there.
