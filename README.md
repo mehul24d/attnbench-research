@@ -172,7 +172,15 @@ Then, on any CUDA GPU:
   45 confirmed incidents, each one a plausible number produced by machinery
   that looked like it was working. No crash, no failed test. Several changed
   a published figure. Each entry records the detection method, which is the
-  transferable part.
+  transferable part. #45 is the first found by someone who did not write the
+  code, and it had survived the full suite plus a diagnostic written to test
+  the exact property it broke.
+- **[`docs/audit_register.md`](docs/audit_register.md)** — one row per audit
+  item: the question, the evidence, the disposition. Added 2026-09-20 because
+  items were cited by number in three documents with no list of what they
+  were, which meant a reader could not tell an item that was examined and
+  cleared from one that was never run. Two rows in it record dispositions
+  that did not survive being re-derived.
 
 Also: [`docs/hardware_constraints.md`](docs/hardware_constraints.md),
 [`results/stage3_s1/INVALID_ROWS.md`](results/stage3_s1/INVALID_ROWS.md).

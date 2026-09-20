@@ -2464,7 +2464,8 @@ tested against the real inputs that caused this.
 
 ## 43. A timestamp that records when a file was copied, read as when it was computed
 
-Found 2026-09-19 by the single-measurement audit, item S6. The question: could
+Found 2026-09-19 by the single-measurement audit, item S6
+([`docs/audit_register.md`](audit_register.md)). The question: could
 the banked 1.5B cheap-estimator run have loaded score tensors written by code
 with the "cheap scorer returns zeros" bug (fixed in `562374a`)? The cache key
 carries no code version and the rows record no cache hits, so the obvious

@@ -1935,7 +1935,16 @@ block-size dependence points the other way.
 
 ### The sparsity arms rank from different precision within a run — measured, and *that* does not break nesting
 
-Found by the 2026-09-19 single-measurement audit (item S5); nothing had
+> **Read the heading narrowly.** The precision split is not what broke
+> nesting; a sparsity-dependent tie-break was (instance 45, corrected
+> 2026-09-20, boxed below). The two were found in the same place and are
+> different defects, and the measurements in this section remain correct
+> for the question they asked.
+
+Found by the 2026-09-19 single-measurement audit (item S5 -- see
+[`docs/audit_register.md`](audit_register.md), which records that this
+item cleared the question it asked and that the extrapolation made from
+it did not survive); nothing had
 recorded it for accuracy. `generation.generate_one` fetches scores per
 (arm, example), and arms run dense → 0.5 → 0.75 → 0.9 (confirmed from row
 order in `stage3_s1b`, `accuracy_forced_sink` and the 7B run). On a cold

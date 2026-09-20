@@ -67,7 +67,9 @@ exists. Stage 3 ships with two backends, dense and block-sparse.
 > post-fix, at 16384, `niah_multikey` at 0.5 is +0.0 against dense, where
 > pre-fix 8192 was −15.0. `vt` staying above dense *is* reproduced post-fix
 > (+9.4 / +12.8 / +12.0 at 16384), so that direction stands; its magnitudes
-> here do not yet. Re-run approved as audit item S1a; until it reports, quote
+> here do not yet. Re-run approved as audit item S1a (see
+> [`docs/audit_register.md`](audit_register.md) for what every cited item
+> asked and concluded); until it reports, quote
 > these with the era, or not at all.
 
 > **Forcing the sink is not a clean improvement, and that matters for what it
