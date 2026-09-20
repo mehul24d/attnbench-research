@@ -721,6 +721,19 @@ prompt is measuring nothing, and one assertion catches it.
 
 ## The general hazards, stated once
 
+**A verification that runs downstream of the spend is diagnostic, not
+preventive.** Both are worth having and they are not interchangeable, so the
+question to ask of any check is *what does it still cost me if this fires*.
+`load_stage1_pass_set` refusing a dirty stamp before Stage 2 begins, the
+`run_phase.sh` clean-tree refusal, `gcp_verify_gcs_writable.sh` and the
+cold-cache guard are guards: they fire while failing is still free. The dense
+canary is a guard by construction — it is chained with `&&` ahead of the
+sparse arms, so a failure measures no sparse row. `run_s1a_comparison.py`
+refusing when the new and banked decode kernels disagree is a **check**: by
+the time it can fire, the GPU hours are spent and the only question left is
+whether the data is interpretable. A check that reads like a guard is how a
+session gets paid for twice.
+
 **A near-miss worth the same space as an instance: a session script is an
 era's configuration, and copying it forward copies the era.** Planning the
 2026-09-20 S7 re-measure, the decode pin was carried over from

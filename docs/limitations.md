@@ -2087,6 +2087,19 @@ and the composition rule in `analysis/composition.py`.
 Every other banked accuracy row is era 1 or era 2, so a bit-exact replicate of
 any published number outside that one cell is still not obtainable from `HEAD`.
 
+**A correction that breaks a comparison's internal consistency is worse than
+a known, labelled staleness.** The instinct on finding era 3 is to bring the
+nearest era-2 file up to date. Resist it where the file is one arm of a
+multi-arm comparison. The published oracle-versus-estimator row compares four
+arms — 1.5B oracle, 1.5B cheap, 7B oracle, 7B cheap — and all four being era 2
+made it a *correct* statement about a mask rule the code no longer builds. S7
+moved one of them. Re-running the 1.5B cheap arm to restore that pair would
+put an era-3 gap beside an era-2 gap and make the scale comparison cross-era,
+which is precisely what `analysis/composition.py` refuses. **All arms of a
+comparison move together or none of them do**, and "none, clearly labelled"
+is a legitimate disposition — the era label is the fix. See
+`audit_register.md`, item S12.
+
 **How to tell without this table.** Era 1 and 2 split on `git_commit`: any
 commit that is an ancestor of `37675a0` is era 1. Era 2 and 3 split on date
 only — the jitter fix carries no schema change, so a row cannot be assigned

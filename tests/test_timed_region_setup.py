@@ -48,6 +48,7 @@ import pytest
 import torch
 from torch.overrides import TorchFunctionMode
 
+from attnbench.accuracy.grid_configs import backend_instance
 from attnbench.backends import all_backends
 from attnbench.config import AttnConfig
 from attnbench import masks as M
@@ -139,14 +140,33 @@ def _cfg_for(cls, mask: str) -> tuple[AttnConfig, int, str]:
     return cfg, head_dim, dtype
 
 
-def _observe(cls, mask: str, monkeypatch) -> Observation:
-    name = cls.capability.name
+# SDPA is ONE registered class with a kernel pinned per INSTANCE, so
+# enumerating classes observes whichever kernel the constructor defaults to.
+# That default is `efficient` -- a kernel this study never measures, and the
+# one variant that raises UnsupportedConfig on CPU and on an L4 alike ("No
+# viable backend for scaled_dot_product_attention was found").
+#
+# The cost of that was three sessions of `sdpa` reading NOT_EXERCISED, a
+# withdrawn coverage claim in limitations.md, and an audit item (S14) asking
+# whether the dense reference arm's timed region was checkable anywhere --
+# while `sdpa_math` and `sdpa_flash`, the two the study actually uses, ran
+# fine on the workstation the whole time. Both are clean.
+#
+# A backend whose identity includes a kernel must be enumerated by instance.
+# Any class not listed here is enumerated as itself.
+INSTANCES: dict[str, tuple[str, ...]] = {
+    "sdpa": ("sdpa_math", "sdpa_flash", "sdpa_efficient"),
+}
+
+
+def _observe(cls, mask: str, monkeypatch, instance: Optional[str] = None) -> Observation:
+    name = instance or cls.capability.name
     cfg, head_dim, dtype = _cfg_for(cls, mask)
     counter: collections.Counter = collections.Counter()
     _watch_view_constructors(monkeypatch, counter)
 
     try:
-        backend = cls()
+        backend = backend_instance(instance) if instance else cls()
         m = M.mask_for(cfg) if mask == "block_sparse" else None
         counter.clear()                       # mask_for is not the backend's work
     except Exception as e:
@@ -176,14 +196,15 @@ def _observe(cls, mask: str, monkeypatch) -> Observation:
 
 def _all_observations(monkeypatch) -> list[Observation]:
     out = []
-    for _, cls in all_backends().items():
+    for registered, cls in all_backends().items():
         cap = cls.capability
         for mask in ("causal", "block_sparse"):
             if mask == "causal" and not cap.supports_causal:
                 continue
             if mask == "block_sparse" and not cap.supports_block_sparse:
                 continue
-            out.append(_observe(cls, mask, monkeypatch))
+            for instance in INSTANCES.get(registered, (None,)):
+                out.append(_observe(cls, mask, monkeypatch, instance))
     return out
 
 
@@ -215,7 +236,12 @@ def test_something_was_actually_exercised(monkeypatch):
 def test_every_registered_backend_is_considered(monkeypatch):
     """A new backend must appear in the report rather than escape it."""
     considered = {o.backend for o in _all_observations(monkeypatch)}
-    registered = {cls.capability.name for cls in all_backends().values()}
+    # Expanded the same way _all_observations expands it, so a class listed in
+    # INSTANCES must have every one of its instances examined -- adding a
+    # kernel variant there without observing it is the hole this test closes.
+    registered: set[str] = set()
+    for registered_name, cls in all_backends().items():
+        registered |= set(INSTANCES.get(registered_name, (cls.capability.name,)))
     missing = registered - considered
     assert not missing, (
         f"registered but never examined: {sorted(missing)}. Give it a causal "
@@ -336,9 +362,16 @@ def test_hoisted_setup_is_bounded_not_accumulated(backend_name):
 # A prose claim about coverage is exactly the thing that rots. These assert it.
 # ---------------------------------------------------------------------------
 
-# The two arms of every end-to-end comparison in this study. If the timed
-# region is unchecked for these, it is unchecked for the result.
-HEADLINE_BACKENDS = ("block_sparse", "sdpa")
+# The arms of every end-to-end comparison in this study, named as the study
+# names them. `sdpa` is not on this list because it is not a thing the study
+# measures -- `sdpa_math` and `sdpa_flash` are, and they are different kernels
+# of one class (see INSTANCES above).
+HEADLINE_BACKENDS = ("block_sparse", "sdpa_math", "sdpa_flash")
+
+# Which of them cannot run without a GPU. Everything else must be observed
+# HERE, on whatever machine runs the suite -- a skip for those would be the
+# "pass if unexercised" shape this file exists to remove.
+NEEDS_CUDA = {"block_sparse"}
 
 
 def test_coverage_on_this_machine_is_reported_not_assumed(monkeypatch, capsys):
@@ -366,7 +399,7 @@ def test_the_headline_backends_timed_region_is_checked_where_it_can_be(
     deliberately NOT written as "pass if unexercised", because that is the
     shape of the claim this replaces.
     """
-    if not torch.cuda.is_available():
+    if backend in NEEDS_CUDA and not torch.cuda.is_available():
         pytest.skip(f"{backend} needs CUDA; coverage for it is unverified here "
                     f"-- see docs/limitations.md, the withdrawn timed-region "
                     f"coverage claim")
@@ -374,7 +407,7 @@ def test_the_headline_backends_timed_region_is_checked_where_it_can_be(
     if not obs:
         pytest.skip(f"{backend} is not registered in this build")
     assert any(o.exercised for o in obs), (
-        f"{backend} reported NOT_EXERCISED on a CUDA machine: "
+        f"{backend} reported NOT_EXERCISED on this machine: "
         f"{[(o.mask, o.detail) for o in obs]}.\n\n"
         f"This backend is one arm of every end-to-end comparison in the study. "
         f"If its timed region cannot be observed here it is observed nowhere, "
