@@ -321,3 +321,62 @@ def test_hoisted_setup_is_bounded_not_accumulated(backend_name):
 
     keys = [k for k in backend.__dict__ if k.endswith("_key")]
     assert len(keys) <= 1, f"expected a single-entry cache, found keys {keys}"
+
+
+# ---------------------------------------------------------------------------
+# Coverage, asserted rather than assumed
+#
+# `limitations.md` claimed for months that the CUDA backends were "covered by
+# the same test on the instance, where the suite is a per-session
+# precondition". Both were untrue: the only two session logs that record the
+# suite running on a GPU show this file's main test FAILING, no log records it
+# passing, and the session that produced results/stage5/phases.parquet has no
+# suite record at all. The claim was withdrawn 2026-09-20.
+#
+# A prose claim about coverage is exactly the thing that rots. These assert it.
+# ---------------------------------------------------------------------------
+
+# The two arms of every end-to-end comparison in this study. If the timed
+# region is unchecked for these, it is unchecked for the result.
+HEADLINE_BACKENDS = ("block_sparse", "sdpa")
+
+
+def test_coverage_on_this_machine_is_reported_not_assumed(monkeypatch, capsys):
+    """Always prints the exercised/not-exercised split, so a reader of CI
+    output can see what the green tick covers. Never fails: on a workstation
+    the gap is expected and is the reason NOT_EXERCISED exists."""
+    obs = _all_observations(monkeypatch)
+    exercised = sorted({o.backend for o in obs if o.exercised})
+    missing = sorted({o.backend for o in obs if not o.exercised})
+    with capsys.disabled():
+        print(f"\n  timed-region coverage: {len(exercised)}/{len({o.backend for o in obs})} "
+              f"backends exercised here")
+        print(f"    exercised:     {', '.join(exercised) or 'none'}")
+        print(f"    NOT exercised: {', '.join(missing) or 'none'}")
+    assert obs, "no backends were even considered"
+
+
+@pytest.mark.parametrize("backend", HEADLINE_BACKENDS)
+def test_the_headline_backends_timed_region_is_checked_where_it_can_be(
+        monkeypatch, backend):
+    """On a CUDA machine, the backends the study's conclusions rest on must
+    actually be observed -- not reported NOT_EXERCISED and waved through.
+
+    Skipped on CPU, which is honest: the check cannot run there. It is
+    deliberately NOT written as "pass if unexercised", because that is the
+    shape of the claim this replaces.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip(f"{backend} needs CUDA; coverage for it is unverified here "
+                    f"-- see docs/limitations.md, the withdrawn timed-region "
+                    f"coverage claim")
+    obs = [o for o in _all_observations(monkeypatch) if o.backend == backend]
+    if not obs:
+        pytest.skip(f"{backend} is not registered in this build")
+    assert any(o.exercised for o in obs), (
+        f"{backend} reported NOT_EXERCISED on a CUDA machine: "
+        f"{[(o.mask, o.detail) for o in obs]}.\n\n"
+        f"This backend is one arm of every end-to-end comparison in the study. "
+        f"If its timed region cannot be observed here it is observed nowhere, "
+        f"and no result depending on it has a checked timed region. Fix the "
+        f"import/config that stops it running rather than accepting the skip.")

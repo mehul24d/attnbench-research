@@ -793,8 +793,52 @@ than assumed negligible.
 
 Backends needing CUDA or an extension (`fa2`, `gla`, `block_sparse`, `sage`,
 `xformers`) report as NOT_EXERCISED on a workstation rather than passing
-silently; the same test covers them on the instance, where the suite is a
-per-session precondition.
+silently.
+
+> **WITHDRAWN 2026-09-20. This paragraph ended "…the same test covers them on
+> the instance, where the suite is a per-session precondition." Neither half
+> of that is supported by the session record.**
+>
+> Instrumented on a workstation, the test exercises **4 of 11** backend/mask
+> pairs — `flex` and `naive` only. `block_sparse` and `sdpa`, which are the
+> two arms of every end-to-end comparison in this study, are among the seven
+> it does not reach.
+>
+> The claim that the instance covers them rests on two session logs, and both
+> record the test **failing**:
+>
+> | log | outcome |
+> |---|---|
+> | `results/stage5/stage5.log:5` | `FAILED test_no_backend_rebuilds_setup_inside_the_timed_region` |
+> | `results/h100_20260916_stage0_partial/logs/suite.log:56` | same test, same verdict |
+>
+> **No log in this repository records it passing on a GPU.** Which backend
+> offended, and whether the failure was environmental, is not recorded
+> anywhere — not in a commit message, not in this file, not in
+> `silent_failure_patterns.md`.
+>
+> "Per-session precondition" is also not what the harness does:
+> `results/stage5/stage5.log` prints `suite rc=1` on line 2 and proceeds to
+> phase timing on line 7. And the session that produced the banked
+> `results/stage5/phases.parquet` —
+> `results/gpu_session_20260907_stage5/stage5.log`, 65 lines — **contains no
+> suite record at all**. That file is the source of every `normalized_ms`
+> value, which is the latency axis of Stage 6 and the entire Stage 7 decision
+> map.
+>
+> **What is still true.** The two defects this test was written for — flex's
+> `create_block_mask` and `NaiveAttention`'s `torch.ones(S, S).triu(1)` — were
+> real, were found by it, and were fixed; both backends are among the four it
+> does exercise, and `test_the_detector_catches_a_deliberately_reintroduced_rebuild`
+> confirms the detector still fires. What is withdrawn is the coverage claim
+> for the CUDA backends. **Whether `block_sparse` or `sdpa` rebuild setup
+> inside Stage 2's and Stage 5's timed regions is, as of today, unverified in
+> either direction.**
+>
+> Resolving it needs one instance session that runs the suite, captures the
+> full failure output rather than the summary line, and records the verdict
+> per backend. Until then no claim in this study should be read as resting on
+> a checked timed region for anything but `flex` and `naive`.
 
 ## Sub-block causality: the oracle was leaking
 
