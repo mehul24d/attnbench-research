@@ -1863,7 +1863,7 @@ from a synthetic softmax and counted the causally-masked upper triangle. The
 real rate is 0.0%, the real mechanism is mantissa collision, and the real
 block-size dependence points the other way.
 
-### The sparsity arms rank from different precision within a run — measured, and it does not break nesting
+### The sparsity arms rank from different precision within a run — measured, and *that* does not break nesting
 
 Found by the 2026-09-19 single-measurement audit (item S5); nothing had
 recorded it for accuracy. `generation.generate_one` fetches scores per
@@ -1974,8 +1974,18 @@ arm that emits a bare name list and stops scores full; an arm that restates
 the assignment chain (`VAR A = VAR B, ...`) runs into the cap before naming
 all five and loses the rest. **That is a property of the output, not of the
 attention** — and the arms did not stop alike. Before the sink fix, the
-sparse arms hit the cap 63–158 times per 300 against dense's 214–279, and
-generated 25.9–30.0 tokens against dense's 35.2–38.8.
+sparse arms hit the cap **31–183** times per 300 against dense's 214–279, and
+generated 25.9–35.4 tokens against dense's 35.2–38.8.
+
+*Corrected 2026-09-20. This read "63–158 caps" and "25.9–30.0 tokens", which
+are the **2048 band's** min and max quoted as if they covered all nine
+pre-fix cells. From `results/diagnostics/vt_stopping.parquet`, `sparse_cap`
+across those cells is 31, 63, 70, 85, 103, 149, 158, 177, 183 and
+`sparse_tok` is 25.9–35.4. Dense's 214–279 was right. The direction of the
+argument is unaffected — the widest sparse value, 183, is still below the
+narrowest dense one, 214 — but the true range is nearly three times wider,
+and it hides that 8192/0.75 capped 183 times against dense's 279 rather than
+stopping early in any strong sense.*
 
 Paired sparse-minus-dense, all pairs / pairs that stopped the same way /
 pairs where both hit the cap:

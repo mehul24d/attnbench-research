@@ -115,13 +115,13 @@ this hardware**, and it says which and why.
 | 4 | Matched-accuracy operating points (non-inferiority + bootstrap) | derived |
 | 5 | Phase decomposition: prefill, decode step, scoring | locked clocks, exclusive |
 | 6 | Pareto frontiers per grid cell | CPU only |
+| 7 | Decision map | CPU only |
 
 *Stages 4, 6 and 7 were rebuilt on 2026-09-20 from forced-sink accuracy
-(audit item S1a). The versions published before that date are correct
-measurements of a mask the current code does not build, and are kept under
-`results/_superseded/` — see `docs/claims.md`, "The derived stages rebuilt on
-forced-sink accuracy".*
-| 7 | Decision map | CPU only |
+(audit item S1a) and now occupy `results/stage4|6|7`. The versions published
+before that date are correct measurements of a mask the current code does not
+build, and are kept under `results/_superseded/` — see `docs/claims.md`, "The
+derived stages rebuilt on forced-sink accuracy".*
 
 Only Stages 2 and 5 need rented, clock-locked, exclusive GPUs. Everything
 else runs on free-tier hardware or a laptop.

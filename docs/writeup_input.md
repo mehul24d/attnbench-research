@@ -504,7 +504,8 @@ close honestly.
 
 | | |
 |---|---|
-| **Supported** | *Under a matched decode kernel and matched generation length, **12 of 31** accuracy-matched sparse operating points remain dominated by dense, and the best speedup is **1.059×**, at `niah_single`/8192/0.9. Sparsity's end-to-end benefit is real, small, and confined to the longest band measured.* |
+| **Supported, with the count restated 2026-09-20** | *Under a matched decode kernel and matched generation length, **15 of 34** accuracy-matched sparse operating points remain dominated by dense, and the best speedup is **1.059×**, at `niah_single`/8192/0.9. Sparsity's end-to-end benefit is real, small, and confined to the longest band measured.* |
+| | **The count moved and the speedup did not.** The sentence read *12 of 31* until 2026-09-20. That figure is `dominated_normalized` from `results/_superseded/stage6_prefix_sink/decode_corrected.parquet` — the **pre-sink-fix** accuracy, which S1a superseded. Recomputed on the rebuild (`results/stage6/decode_corrected.parquet`) it is **15 of 34**: more points clear the accuracy bar, and the dominated fraction is 39% → 44%, essentially unchanged. The **1.059×** and its operating point are unchanged to four decimals (1.0585 in both). A Supported row must not rest on a superseded file; this is the one that did. |
 | **Not supported** | *The measured Stage 6 numbers are wrong.* They are correct measurements of a system in which one arm decodes through a slower kernel. That is a real property of this harness, and the qualifier is the regime, not an error bar. |
 
 **The unreachability, which is the more transferable result.** An unconfounded

@@ -175,7 +175,7 @@ reasoning it built on the effect is what the correction has to reach.
 
 | | |
 |---|---|
-| **WITHDRAWN 2026-09-20** | *`block_sparse` at 0.75 scores **above** the dense baseline on `vt` in all three bands: +10.8, +5.9, +14.6.* Two causes, both measured. (1) **The sink.** Re-measured with it forced, same 100 examples: **+3.2 [−1.2,+7.4] / +0.8 [−1.8,+3.4] / −2.4 [−6.0,+1.2]** at 2048 / 4096 / 8192. The margin does not survive at any band at 0.75. (2) **Stopping.** `vt` scores recall over five names under a 40-token cap, and the unforced-sink sparse arms stopped early — 63–158 caps per 300 against dense's 214–279 — scoring full on a short name list while dense ran into the cap restating the chain. See `limitations.md`, "`vt`'s sparse-above-dense gap is substantially a STOPPING effect". |
+| **WITHDRAWN 2026-09-20** | *`block_sparse` at 0.75 scores **above** the dense baseline on `vt` in all three bands: +10.8, +5.9, +14.6.* Two causes, both measured. (1) **The sink.** Re-measured with it forced, same 100 examples: **+3.2 [−1.2,+7.4] / +0.8 [−1.8,+3.4] / −2.4 [−6.0,+1.2]** at 2048 / 4096 / 8192. The margin does not survive at any band at 0.75. (2) **Stopping.** `vt` scores recall over five names under a 40-token cap, and the unforced-sink sparse arms stopped early — 31–183 caps per 300 against dense's 214–279 (range corrected 2026-09-20; the old 63–158 was the 2048 band only) — scoring full on a short name list while dense ran into the cap restating the chain. See `limitations.md`, "`vt`'s sparse-above-dense gap is substantially a STOPPING effect". |
 | **What is left of it, and it is narrow** | *At 16384 with the sink forced, 1.5B `vt` sparse is still above dense: +9.4 / +12.8 / +12.0 at 0.5 / 0.75 / 0.9 — but among pairs that stopped the same way that falls to +2.4 / +4.4 / +8.1, and at 7B there is no stopping component and the margin is +0.4 / +2.7 / +6.8. So a residual positive margin at high sparsity survives conditioning, on both models; the large gross margins do not.* |
 | **Not supported** | *Sparse attention improves accuracy on variable tracking.* |
 | **Not supported** | *The oracle acts as a denoiser on `vt`.* This was the proposed mechanism for the withdrawn margins. It is now one of three candidates, and the only one with a testable prediction — stopping — is the one the data supports. No experiment here separates denoising from block structure suiting multi-hop tracking (Sparse Frontier's account). |
@@ -372,7 +372,8 @@ is a correction nobody checked.
 
 | | |
 |---|---|
-| **Supported** | *Under a matched decode kernel and matched generation length, **12 of 31** accuracy-matched sparse operating points remain dominated by dense, and the best speedup is **1.059×**, at `niah_single`/8192/0.9. Sparsity's end-to-end benefit is real, small, and confined to the longest band measured.* |
+| **Supported, with the count restated 2026-09-20** | *Under a matched decode kernel and matched generation length, **15 of 34** accuracy-matched sparse operating points remain dominated by dense, and the best speedup is **1.059×**, at `niah_single`/8192/0.9. Sparsity's end-to-end benefit is real, small, and confined to the longest band measured.* |
+| | **The count moved and the speedup did not.** The sentence read *12 of 31* until 2026-09-20. That figure is `dominated_normalized` from `results/_superseded/stage6_prefix_sink/decode_corrected.parquet` — the **pre-sink-fix** accuracy, which S1a superseded. Recomputed on the rebuild (`results/stage6/decode_corrected.parquet`) it is **15 of 34**: more points clear the accuracy bar, and the dominated fraction is 39% → 44%, essentially unchanged. The **1.059×** and its operating point are unchanged to four decimals (1.0585 in both). A Supported row must not rest on a superseded file; this is the one that did. |
 | **Not supported** | *Block-sparse beats dense once you correct for the decode kernel.* Correcting only that gives 1.26×, which is confound 2 talking. |
 | **Not supported** | *The measured Stage 6 numbers are wrong.* They are correct measurements of a system in which one arm decodes through a slower kernel. That is a real property of this harness, and the qualifier is the regime, not an error bar. |
 
@@ -496,7 +497,11 @@ examples: **97 → 99 → 100** at 2048 / 4096 / 8192, against 62 → 93 → 99.
 accuracy axis is at or within 3 points of ceiling from the shortest band
 measured, so **it has no slope to agree with the speedup's**. The speedup
 half is untouched: 0.992 → 1.005 → 1.062 → 1.186 stands, and the paired
-bootstrap at 16384 (n=100, **+329 ms, 95% CI [+322.0, +337.3]**) stands.
+bootstrap at 16384 (n=100, **+327.5 ms, 95% CI [+322.0, +337.1]**)
+stands. *(Point estimate corrected 2026-09-20 from +329; it had been
+computed ad hoc and transcribed. Recomputed from
+`results/stage3_16384/accuracy.parquet` as the paired dense-minus-sparse
+mean over the 100 shared example_ids. The CI was right.)*
 
 *S1a pinned the sparse decode kernel to `sdpa_math` while these accuracy
 figures were measured through `sdpa_flash`. On `niah_single` that choice is
@@ -523,12 +528,23 @@ attention scores. Producing that ranking is a dense attention pass measured
 at **11.4 s per example at 16384**, against the **330 ms** the resulting
 sparsity saves:
 
-| band | scoring pass | best sparsity saves | ratio |
-|---|---|---|---|
-| 2048 | 288 ms | — (nothing is faster) | undefined |
-| 4096 | 929 ms | — | undefined |
-| 8192 | 3.25 s | 67 ms | **49×** |
-| 16384 | 11.8 s | 328 ms | **36×** |
+| band | scoring pass | best sparsity saves | ratio | at what accuracy |
+|---|---|---|---|---|
+| 2048 | 288 ms | — (nothing is faster) | undefined | — |
+| 4096 | 929 ms | 3.7 ms (0.9) | **249×** | 93.0 vs dense 100.0 |
+| 8192 | 3.25 s | 67 ms (0.9) | **49×** | 99.0 vs 100.0 |
+| 16384 | 11.8 s | 328 ms (0.9) | **36×** | 100.0 vs 100.0 |
+
+*The 4096 row read `—` / `undefined` until 2026-09-20, contradicting the
+`249× → 49× → 36× → 35×` ladder quoted twice below from the same quantity.
+The ladder was right: at 4096/0.9 with matched decode
+(`results/stage3_flashdecode/accuracy.parquet`) dense is 736.6 ms against
+732.9 ms, so sparsity does save 3.7 ms, and 929 / 3.7 = 249×. What is true is
+that 4096 has no point that is **both** faster and free — 0.9 buys 1.005× for
+seven accuracy points — which is why README's table, whose column is "best
+speedup at no accuracy cost", correctly reads `undefined` there. Two
+different questions; this table asks the first one, so the accuracy column
+is now explicit rather than implied.*
 
 | | |
 |---|---|
@@ -560,7 +576,7 @@ Three separate things happen at 32768, and they do not all point the same way.
 
 **1. The speedup trend continues and steepens.** At 0.75 sparsity:
 0.993 → 0.997 → 1.044 → 1.140 → **1.321×**, at 100.0 accuracy in every band
-from 4096 up. Paired bootstrap at 32768, n=50: **+1091 ms saved, 95% CI
+from 4096 up. Paired bootstrap at 32768, n=50: **+1088 ms saved, 95% CI
 [+1075, +1107]**. The gain is prefill: dense prefill 4018 ms against 2723 ms
 at 0.9 sparsity.
 
@@ -1183,9 +1199,23 @@ is for the ones that get lost.
 Stage 4, Stage 6 and the Stage 7 decision map were computed from the
 pre-sink-fix accuracy. S1a moved cells they consume by up to 44 points, so
 they were rebuilt from the forced-sink data (n=100 per cell, decode pinned to
-`sdpa_math`, dense canary 300/300 at every band). Outputs are in
-`results/s1a_stage4/`, `results/s1a_stage6/`, `results/s1a_stage7/`; the
-published `results/stage4|6|7` files are left in place as the pre-fix record.
+`sdpa_math`, dense canary 300/300 at every band).
+
+**Where the files are, as of commit `28fa00a` (2026-09-20).** The rebuild was
+promoted to the published paths and the pre-fix versions moved aside:
+
+| | path |
+|---|---|
+| rebuilt, **forced sink**, n=100 — quote these | `results/stage4/`, `results/stage6/`, `results/stage7/` |
+| pre-fix record, n=300 | `results/_superseded/stage4_prefix_sink/`, `stage6_prefix_sink/`, `stage7_prefix_sink/` |
+
+*This paragraph named `results/s1a_stage4|6|7/` and said the published files
+were "left in place as the pre-fix record" until 2026-09-20. Both were true
+when written and neither survived the promotion commit an hour later: the
+`s1a_stage*` directories do not exist, and `results/stage4|6|7` now hold the
+rebuild rather than the pre-fix record — the opposite of what the sentence
+said. `28fa00a` updated `README.md` and `writeup_input.md` and not this file,
+which is the ledger both of those point at.*
 
 **n is 100, not 300, and that is deliberate.** The n=300 budgets certified
 non-inferiority from accuracy now known to be wrong by up to 44 points.
@@ -1207,10 +1237,35 @@ sparsity, and that outweighs the wider CIs in most cells:
 Two cells move the other way — `niah_single` 2048 at ε=5 (0.75 → 0.50) and
 `vt` 4096 at ε=1 (0.75 → 0.50) — which is where the lower power shows.
 
-**Stage 6: more points are accuracy-matched, and more of them are dominated.**
-16 of 31 dominated becomes **28 of 34**. Accuracy stopped being the binding
-constraint in several cells and latency took over; the sparse arms are not
-faster at 2048 and 4096 regardless of what they now score.
+**Stage 6: more points are accuracy-matched. Whether more of them are
+dominated depends on which latency column you read, and the two disagree
+sharply.** Both columns are in `results/stage6/decode_corrected.parquet`:
+
+| | `dominated_measured` | `dominated_normalized` |
+|---|---|---|
+| pre-fix | 16 / 31 (52%) | 12 / 31 (39%) |
+| rebuilt | **28 / 34 (82%)** | **15 / 34 (44%)** |
+
+`measured` still carries the cross-arm decode confound — the sparse arms
+decode through `sdpa_math` and dense through `sdpa_flash` (`pareto.parquet`
+is stamped `cross_arm_decode_confound=True`). This file rules that quantity
+inadmissible everywhere else: see ["What survives the correction"](#what-survives-the-correction-and-what-does-not),
+where *16 of 31* is marked **DOES NOT SURVIVE** and the Supported row quotes
+the normalized count. The same rule applies here.
+
+**So the reportable figure is 12 of 31 → 15 of 34** — dominance goes 39% to
+44%, which is essentially unchanged. The measured pair is kept beside it
+because it is the era-matched comparison and because a rebuild that only
+ever showed one column would be a rebuild nobody could check. Accuracy did
+stop being the binding constraint in several cells, and the sparse arms are
+not faster at 2048 and 4096 regardless of what they now score — but neither
+of those needs the confounded count to say.
+
+*This paragraph read "16 of 31 dominated becomes **28 of 34**" until
+2026-09-20. Both numbers were correct `dominated_measured` values and the
+comparison was era-matched, but quoting the confounded column — in the one
+direction that makes the rebuild look more decisive than it is — is the
+error this file exists to catch.*
 
 **Stage 7: 4 of 27 cells change, all at 8192, all toward more sparsity.**
 `niah_single` 8192 at ε=1 (dense → `block_sparse@0.9`) and ε=2
