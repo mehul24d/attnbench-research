@@ -172,6 +172,22 @@ reference; Stage 2 is kernel microbenchmarks on synthetic tensors with
 masks; Stage 4 derives accuracy-matched operating points by non-inferiority
 test with a paired bootstrap; Stage 5 decomposes latency into prefill, decode
 step and scoring; Stages 6–7 produce Pareto frontiers and the decision map.
+
+**At 8192 prefill is mostly fixed work, and that is a result, not a detail.**
+Fitting the three measured sparsities at that band gives
+`prefill_ms = 618.4 + 0.0556 × active_blocks`: going from 1,072 active blocks
+per layer to 262 — skipping three quarters of the attention work — moves
+prefill by about 45 ms on a 677 ms pass. So **the block count is nearly
+irrelevant to prefill cost at this band**, which is another way of saying the
+sparse kernel's end-to-end advantage here is small and structural rather than
+proportional to the work it skips. This is also why the study's speedups at
+8192 are 1.03–1.06× while the kernel-level ratio at the same band is 1.28×:
+the kernel's saving is real and lands on a component that is not what the
+prefill pass is made of. It was found by checking whether pairing forced-sink
+masks with pre-fix phase timings would change the decision map — scaling the
+whole prefill by the block excess said four recommendations flip, the fit
+says they cost 3–4 ms and stand. The naive version is recorded in
+`claims.md` beside the fix, because it pointed the other way.
 Only 2 and 5 need clock-locked exclusive GPUs.
 
 **Two facts about the instrument that bound everything below.** Absolute
@@ -474,8 +490,11 @@ separates them.
 **So the oracle caveat is back to "accuracy here is an upper bound"**, which
 is still the load-bearing qualifier. The stronger claim — that the oracle can
 make sparse look *better* than dense — is no longer supported at 2048–8192.
-The Stage 4 matched budgets keep their oracle qualifier and need rebuilding
-anyway: S1a moved cells they are computed from by up to 44 points.
+The Stage 4 matched budgets keep their oracle qualifier. They were rebuilt on
+2026-09-20 from the forced-sink data (n=100): budgets mostly move **up**,
+Stage 6 dominance goes 16/31 → 28/34, the decision map changes 4 of 27 cells,
+and epsilon invariance strengthens to 0 of 9 cells varying across
+ε ∈ {1,2,5}. The pre-fix files are kept under `results/_superseded/`.
 
 ### Gap 4 — Accuracy and latency measured apart vs at matched accuracy — **PARTIALLY ANSWERED; unreachable on two of three tasks**
 
