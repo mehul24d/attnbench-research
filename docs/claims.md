@@ -1166,3 +1166,61 @@ A row belongs here when the honest claim and the appealing claim differ by a
 qualifier that a reader would not miss. If the qualifier is obvious from the
 supported sentence alone, it belongs in `limitations.md` instead — this file
 is for the ones that get lost.
+
+---
+
+## The derived stages rebuilt on forced-sink accuracy (2026-09-20)
+
+Stage 4, Stage 6 and the Stage 7 decision map were computed from the
+pre-sink-fix accuracy. S1a moved cells they consume by up to 44 points, so
+they were rebuilt from the forced-sink data (n=100 per cell, decode pinned to
+`sdpa_math`, dense canary 300/300 at every band). Outputs are in
+`results/s1a_stage4/`, `results/s1a_stage6/`, `results/s1a_stage7/`; the
+published `results/stage4|6|7` files are left in place as the pre-fix record.
+
+**n is 100, not 300, and that is deliberate.** The n=300 budgets certified
+non-inferiority from accuracy now known to be wrong by up to 44 points.
+Certifying fewer budgets from correct data at lower power is the better
+position: a budget that fails to certify says *"we could not show this is
+free"*, where the old ones say *"we showed this is free"* using a mask the
+reference implementation would not build.
+
+**Matched budgets move up, not down.** The forced-sink arms tolerate more
+sparsity, and that outweighs the wider CIs in most cells:
+
+| task | band | ε=1 old → new | ε=2 | ε=5 |
+|---|---|---|---|---|
+| `niah_single` | 8192 | 0.50 → **0.90** | 0.75 → 0.90 | 0.90 → 0.90 |
+| `niah_single` | 4096 | 0.50 → 0.75 | 0.75 → 0.75 | 0.75 → **0.90** |
+| `vt` | 8192 | 0.75 → **0.90** | 0.75 → 0.90 | 0.90 → 0.90 |
+| `niah_multikey` | 8192 | none → none | none → none | none → **0.50** |
+
+Two cells move the other way — `niah_single` 2048 at ε=5 (0.75 → 0.50) and
+`vt` 4096 at ε=1 (0.75 → 0.50) — which is where the lower power shows.
+
+**Stage 6: more points are accuracy-matched, and more of them are dominated.**
+16 of 31 dominated becomes **28 of 34**. Accuracy stopped being the binding
+constraint in several cells and latency took over; the sparse arms are not
+faster at 2048 and 4096 regardless of what they now score.
+
+**Stage 7: 4 of 27 cells change, all at 8192, all toward more sparsity.**
+`niah_single` 8192 at ε=1 (dense → `block_sparse@0.9`) and ε=2
+(`@0.75` → `@0.9`); `vt` 8192 at ε=1 and ε=2 (`@0.75` → `@0.9`). Recommended
+speedups are 1.033× to 1.058×.
+
+| | |
+|---|---|
+| **Supported** | *The epsilon-invariance finding survives the rebuild and strengthens: across ε ∈ {1, 2, 5}, **0 of 9** (task, band) cells change their recommendation, against 2 of 9 before. Latency, not the accuracy tolerance, decides every cell in the map.* |
+| **Why that matters for the sample size** | *Wider accuracy CIs at n=100 do not change decisions, because the accuracy axis is not what is binding. Spending ~₹410 on the remaining 200 examples per cell would buy precision on the axis that decides nothing. It becomes worth buying the day a cell's recommendation turns on the accuracy bound rather than on latency.* |
+
+**One era mismatch inside the rebuild, checked rather than assumed.** The
+map's latency is `normalized_ms`, built from Stage 5 phases measured on
+**pre-fix masks**, while S1a's masks carry more blocks (+8.3% at 8192/0.75,
++21.8% at 8192/0.9). Pairing the two is the shape of pattern #29. Scaling the
+whole prefill by the block excess would drop the 8192/0.9 recommendations to
+0.94× — but that is the wrong model: fitting the three measured sparsities
+gives `prefill_ms = 618.4 + 0.0556 × blocks` at 8192, so prefill is dominated
+by fixed work and the extra blocks cost **3–4 ms**, not 8–22%. Re-evaluated at
+the post-fix block counts the recommendations stand: 1.059 → **1.054**
+(`niah_single`) and 1.016 → **1.014** (`vt`). The check is recorded because
+the naive version of it pointed the other way.
