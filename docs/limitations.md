@@ -864,6 +864,8 @@ UnsupportedConfig` on the `causal` config. It is one arm of every end-to-end
 comparison in the study, and its timed region has therefore been checked
 **nowhere** — not on the workstation, not on the instance.
 
+**The tax is one-sided, and that is the load-bearing fact.** S14 established that the SDPA kernels this study actually measures — `sdpa_math` and `sdpa_flash` — rebuild nothing per call (`per_call = [0, 0, 0]`, on causal and block_sparse alike). So the per-call copy depresses the numerator of every block_sparse-over-dense ratio and never touches the denominator. **Every reported block_sparse speedup is a lower bound on the true one**, arithmetically, independent of how large the tax turns out to be. S11 tightens the magnitude; it cannot change the sign.
+
 **What this does and does not mean for the published numbers.** The magnitude
 is unmeasured (register item S11) and the bytes are small — 16 KB at
 16384/128, 64 KB at 32768 — so against a millisecond-scale kernel the tax is
