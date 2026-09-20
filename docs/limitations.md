@@ -1824,12 +1824,38 @@ candidate).
 | 256 | 64 | 0.0% | **0.4%** | 1.0% |
 | 512 | 32 | 0.0% | **0.1%** | 0.4% |
 
-**Nothing underflows.** The exact-zero rate is 0.0% at every block size. The
-mechanism is fp16 *mantissa* collisions, not underflow: `score_cache.save`
-stores fp16, and in a row of 256 candidates the pooled probabilities average
-~0.004, where adjacent distinct values land on the same fp16 representable
-number. Where the top-k boundary falls inside such a group, which member gets
-kept is decided by the tie-break, not by the score.
+**Nothing underflows in the interior rows, and the mechanism there is fp16
+*mantissa* collisions rather than underflow:** `score_cache.save` stores fp16,
+and in a row of 256 candidates the pooled probabilities average ~0.004, where
+adjacent distinct values land on the same fp16 representable number. Where the
+top-k boundary falls inside such a group, which member gets kept is decided by
+the tie-break, not by the score.
+
+> **CORRECTED 2026-09-20. This paragraph read "Nothing underflows. The
+> exact-zero rate is 0.0% at every block size", and that is true only of the
+> row it was measured on.** The table above was taken on a tensor whose final
+> query block is full. It is not, for the **final query block of a prompt that
+> does not land on a block boundary** — which is 95–100% of every banked
+> accuracy row (`accuracy_forced_sink`: 300/300; `stage3_16384`: 100/100).
+> `_scoring_forward_chunked` zero-pads that block's query rows to a full
+> `block_size` before pooling, so its pooled means are divided by the padding
+> and a large share fall below fp16's representable range. Measured across
+> every banked oracle score tensor, candidates of the final query block that
+> are **exactly 0.0**:
+>
+> | n_blocks | final block | exactly zero |
+> |---|---|---|
+> | 16 / 32 / 64 / 128 / 256 | full | **0.0%** |
+> | 17 | 1–128 real rows | **15.0%** |
+> | 65 | 1–128 real rows | **52.8%** |
+> | 309 | 1–128 real rows | **7.7%** |
+>
+> So the exact-zero rate is 0.0% exactly where `seq_len` divides evenly and
+> substantial everywhere else. In that row the top-k is decided almost
+> entirely by the tie-break rather than by the score, which is what made
+> instance 45 reach a nesting break instead of staying a curiosity. The
+> mantissa-collision account above is still correct for the interior; it is
+> not the whole story.
 
 **The direction is the opposite of what coarse-block dilution would predict.**
 Tie density falls roughly 6x per doubling of `block_size`. Coarser blocks pool
@@ -1910,13 +1936,86 @@ disagreement roughly doubles from 4096, to 0.18–0.19% of active blocks at
 0.5 and up to 55 of 84 layer-masks, and nesting still holds in all of them.
 So the disagreement grows with length, as the thinner probabilities predict,
 and still stays confined to the boundaries. **16384 was not sampled**; its
-fp16 tie density is 3.0% of candidates (the table above), and there the
-structural argument carries the claim, not a sample. All three bands S1a
-re-runs are now covered. The fix, if one is
-ever wanted, is to return the fp16 round-trip on a miss too, so every arm
-ranks from one tensor. It is **deliberately not made before audit item S1a**:
-S1a re-runs the pre-fix bands to isolate the sink, and must reproduce the
-originals' per-arm precision (a cold cache) to do that.
+fp16 tie density is 3.0% of candidates (the section above), and there a
+structural argument was carrying the claim rather than a sample.
+
+> **That structural argument was wrong, and the thing it was covering for was
+> a real bug — see instance 45 (2026-09-20).** The argument assumed the three
+> arms break a tie the same way, so that a tie group could reorder without
+> reaching across a budget boundary. They did not: `importance_block_mask`
+> drew its jitter *after* a `budget <= 0` early return, and `budget` depends
+> on `sparsity`, so the arms ran off different positions in one shared
+> generator. Where scores tied, each arm broke the tie differently and nesting
+> failed — 70 of 112 layer-masks at `n_blocks=65` on banked oracle tensors.
+> Fixed in `masks.py` by drawing unconditionally before any sparsity-dependent
+> branch; the same sweep now reports **0 breaks in 30,968 layer-masks across
+> 1,106 banked examples**, at every block count including 128 and 256.
+>
+> **The fix proposed in the next sentence would not have fixed it.** Returning
+> the fp16 round-trip on a miss makes every arm rank from one *tensor*; the
+> defect was that they did not share a *tie-break*. The reproduction above
+> used a single fp16 tensor for all three sparsities and still broke.
+>
+> **What this costs the banked data.** Re-running the fixed builder over every
+> banked score tensor changes **5.6% of (layer, sparsity) masks** and 0.23% of
+> all active blocks, concentrated in the ragged final block (0.92% of active
+> blocks at `n_blocks=17`, 1.67% at 65). Untied rows are bit-identical, because
+> a different 1e-9 perturbation cannot reorder distinct scores. So the banked
+> accuracy rows are **not bit-reproducible under the current code**, and
+> whether any score moved is **unmeasured** — it needs one GPU band at 16384,
+> which is the headline band and the one with the most ragged final blocks
+> (76 of 100 examples have ≤16 real tokens there).
+
+The remaining per-arm precision asymmetry is untouched by that fix. The
+remedy for it, if one is ever wanted, is to return the fp16 round-trip on a
+miss too, so every arm ranks from one tensor. It was **deliberately not made
+before audit item S1a**: S1a re-runs the pre-fix bands to isolate the sink,
+and must reproduce the originals' per-arm precision (a cold cache) to do
+that.
+
+### Which mask era each banked accuracy file belongs to
+
+**There are now three, and a replicate of any banked number will disagree
+across an era boundary for a reason that is not drift.** Stating that eras
+exist is not enough — a canary comparison that straddles one fails with no
+indication why, and the next person spends a session finding out. So the
+assignment is per file:
+
+| era | mask rule | banked files |
+|---|---|---|
+| **1. pre-sink** | kv block 0 is an ordinary candidate; only the diagonal is free | `stage3_s1`, `stage3_s1b`, `stage3_16384`, `stage3_32768`, `stage3_flashdecode`, and the `gpu_session_2026090[678]*` copies of each |
+| **2. forced-sink** | kv block 0 granted free (`37675a0`, 2026-09-16); jitter drawn **after** the budget check | `accuracy_forced_sink`, `accuracy_forced_sink_cheap`, `s7_7b_16384`, `s9_7b_cheap_16384`, `s1a/accuracy_band2048`, `s1a/accuracy_bands2`, `s1a/accuracy_all_bands`, `sink_control` (`importance_randfree`) |
+| **3. post-jitter** | as era 2, plus jitter drawn unconditionally (instance 45, 2026-09-20) | **none yet** |
+
+Every banked accuracy row is era 1 or era 2. **No file in `results/` was
+produced by the current mask builder**, so a bit-exact replicate of any
+published accuracy number is not obtainable from `HEAD` until a band is
+re-run.
+
+**How to tell without this table.** Era 1 and 2 split on `git_commit`: any
+commit that is an ancestor of `37675a0` is era 1. Era 2 and 3 split on date
+only — the jitter fix carries no schema change, so a row cannot be assigned
+between them from its own contents. That is a deliberate limitation being
+recorded rather than a gap: adding a `mask_rule` column now would stamp only
+future rows and leave every banked row unlabelled, which is the asymmetry that
+makes a half-populated provenance field worse than none (see
+`provenance.stamp_onto`). The table above is the register instead.
+
+**Size of the era-2 → era-3 difference**, measured rather than assumed, by
+rebuilding every banked score tensor under both rules: **5.6% of (layer,
+sparsity) masks change**, and **0.23% of all active blocks**, concentrated in
+the ragged final query block (0.92% of active blocks at `n_blocks=17`, 1.67%
+at 65, 0.0% where `seq_len` divides evenly by `block_size`). Untied rows are
+bit-identical. Whether that moves a score is **unmeasured** — audit item S7.
+
+**Era 1 → era 2 is much larger** and is documented above: up to 44 points on
+individual cells, which is why Stages 4/6/7 were rebuilt.
+
+**What this means for the dense canary.** `scripts/check_dense_canary.py`
+compares the dense arm, which builds no mask and is therefore **era-invariant**
+— it is expected to reproduce 300/300 across all three eras, and did across
+1→2. A canary failure is still a real signal. A *sparse* arm disagreeing across
+an era boundary is not.
 
 ### Changing the sparse arms' decode kernel moves their text, not their scores
 

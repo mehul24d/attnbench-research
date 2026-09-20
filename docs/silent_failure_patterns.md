@@ -8,10 +8,20 @@ Nobody is going to tamper with these results. The entire realistic threat
 model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
-It stood at seventeen when that sentence was written. It stands at **thirty-two**.
-The original sentence is kept rather than updated because the rate is the
-point: the count went on growing under a discipline built specifically to
-stop it growing.
+It stood at seventeen when that sentence was written. It stands at
+**forty-five**. The original sentence is kept rather than updated because the
+rate is the point: the count went on growing under a discipline built
+specifically to stop it growing.
+
+**#45 is the first one found from outside.** Every instance before it was
+found by the author, usually while working on something adjacent. #45 was
+found by an adversarial audit that had this file in hand and was explicitly
+looking for the instance it did not contain — and it found one that had
+survived the full test suite, a diagnostic written to test the exact property
+it broke, and a structural argument standing in for the measurement at the
+band where it mattered most. **A catalogue of one's own mistakes is not a
+substitute for someone else reading the code**, and the three near-misses in
+#45 are all the same failure: a fixture that could not express the defect.
 
 ---
 
@@ -2539,3 +2549,120 @@ correct and stay in the file. What is withdrawn is the inference *from their
 agreement*. A reader who finds two agreeing results in this study should now
 check `limitations.md` for what they were both built on before treating the
 second as support for the first.
+
+---
+
+## 45. A shared RNG stream advanced under a condition the arms do not share
+
+Found 2026-09-20 by an external adversarial audit of the whole repository. It
+is the first entry in this file found by someone who did not write the code,
+and it had survived every prior audit, the 976-test suite, and a diagnostic
+written specifically to test the property it broke.
+
+`masks.importance_block_mask` builds the sparsity ladder. Its contract is
+**nesting**: the 0.9 mask must be a strict subset of the 0.75 mask, which must
+be a strict subset of the 0.5 mask, so that accuracy-versus-sparsity measures
+sparsity rather than resampling noise. The module docstring states this as an
+automatic consequence of the design — *"deriving the shuffle/ranking from an
+identity that excludes `sparsity` … makes that automatic rather than something
+callers arrange."*
+
+One generator `g` serves every query-block row, supplying the jitter that
+breaks exact score ties. The loop read:
+
+```python
+budget = round((1.0 - sparsity) * len(kvs))
+if budget <= 0:
+    continue                                     # <-- returns before the draw
+scores = importance_scores[qb, kvs]
+jitter = torch.rand(len(kvs), generator=g) * 1e-9
+```
+
+`budget` depends on `sparsity`. Short rows cross the `budget <= 0` threshold at
+different sparsities, so an arm that skips a row's draw leaves the generator
+one row behind an arm that takes it. At 2048/`block_size=128` the 0.5 stream
+has consumed 14 draws by `qb=7`, the 0.75 stream 12, and the 0.9 stream none.
+**From the first short row onward, no two arms of the ladder ever draw the same
+jitter.** Where scores tie, the jitter *is* the decision, and three different
+tie-breaks are three unrelated masks.
+
+**Where it bit.** `_scoring_forward_chunked` zero-pads the final query block
+to a full `block_size` before pooling, so when a prompt does not land on a
+block boundary that row's pooled means are divided by the padding and fall out
+of fp16's range. Measured on banked oracle tensors, **52.8% of that row's
+candidates are exactly 0.0** at `n_blocks=65`. Its top-k is therefore decided
+entirely by jitter — and 95–100% of every banked accuracy row has a ragged
+final block, because `ruler.generate_examples` solves the filler count once per
+budget and reuses it while needle content varies. Nesting broke in **70 of 112
+layer-masks** at that block count, and in **126 of the 128 `seq_len` values**
+that produce it, so it was never a seed artifact.
+
+**The rule.** *A shared RNG stream is a shared input, and the condition under
+which it advances is part of its identity.* Any branch that can skip a draw
+must not depend on a variable the callers are supposed to hold constant. Draw
+unconditionally, before the branch — or give each arm its own generator. The
+cost of an unused draw is nothing; the cost of a shifted stream is that two
+runs which agree about everything they were supposed to agree about disagree
+about everything they were not.
+
+### Why three independent checks all missed it
+
+This is the reusable part, and all three failures have the same shape:
+**a fixture whose distribution cannot express the failure.**
+
+1. **`test_masks_determinism.py` seeded with `torch.rand`.** Continuous floats
+   essentially never tie, so jitter never decided anything and the property
+   under test was never exercised. `limitations.md` *already said this* —
+   "torch.rand produces essentially no ties" — in a section about a different
+   bug. The sentence that names the blind spot was written, filed, and not
+   connected to the test that had it.
+2. **`check_score_dtype_asymmetry.py` used real scores and real `seq_len`s,
+   and still missed it.** It computes exactly the right quantity
+   (`nest_break_single_ranking`) and reported 0 at 2048/4096/8192. It sampled
+   3–9 examples per band, and the examples it drew happened to have well-filled
+   final blocks. The instrument was correct; the *sample* could not reach the
+   configuration where the defect lives.
+3. **A structural argument stood in for a measurement at 16384.**
+   `limitations.md` said 16384 "was not sampled" and that "the structural
+   argument carries the claim, not a sample". The structural argument assumed
+   the arms share a tie-break. That assumption was the bug. **An argument is
+   only as good as the premise nobody checked, and the premise here was a
+   property of the code, which is checkable.**
+
+**The countermeasure, applied.** The fixture is now adversarial rather than
+representative: `_tied_scores` builds a tensor shaped like the real failing
+case (fp16 round-trip, near-empty final block), parametrised over the block
+counts that actually occur — 16, 17, 32, 65, 128 — and the ragged ones are
+included *because* they are ragged. Alongside it,
+`test_every_sparsity_draws_the_same_jitter_for_the_same_row` asserts the
+mechanism directly by recording the draw sequence, so a shifted stream is
+caught even where no fixture happens to tie. All nine parametrisations were
+verified to fail against the pre-fix code before the fix was kept.
+
+### The fix that was written down, and would not have worked
+
+`limitations.md` carried a proposed remedy for a *neighbouring* defect — the
+cold-cache fp32 / warm-cache fp16 split — that read: *"return the fp16
+round-trip on a miss too, so every arm ranks from one tensor."*
+
+It is a correct fix for that problem and it would not have touched this one.
+The arms did not need to share a *tensor*; they needed to share a
+*tie-break*. The reproduction that found this used a single fp16 tensor for
+all three sparsities and broke anyway. **A remedy filed against the symptom
+you noticed does not generalise to the symptom you did not** — and a remedy
+sitting unexecuted in a limitations file is especially prone to this, because
+nothing ever runs it and discovers its scope.
+
+### What it cost, and what remains unmeasured
+
+Re-running the fixed builder over every banked score tensor changes **5.6% of
+(layer, sparsity) masks** and **0.23% of all active blocks**, concentrated in
+the ragged final block. Untied rows are bit-identical, since a different 1e-9
+perturbation cannot reorder distinct scores.
+
+**Whether any reported accuracy number moved is unmeasured.** The perturbation
+is confined to one query-block row out of 16–129 — but it is the row the answer
+is generated from, and at 16384, the headline band, 76 of 100 examples are in
+the vulnerable configuration. Settling it needs one GPU band. Until it is run,
+the honest statement is that the ladder was not a ladder in the tied rows, the
+affected fraction is small and measured, and the effect on scores is unknown.

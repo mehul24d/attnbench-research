@@ -237,3 +237,125 @@ def test_forcing_the_sink_does_not_break_nesting(sparsity):
     loose = M.importance_block_mask(n * 128, 128, sparsity, s, causal=True,
                                     identity_seed="n").active
     assert int((tight & ~loose).sum()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Nesting when scores TIE -- instance 45
+#
+# Every nesting test above seeds with `torch.rand`, which produces essentially
+# no ties, so the jitter that breaks ties never decides anything and a bug in
+# how it is drawn cannot show. `limitations.md` says so in as many words:
+# "torch.rand produces essentially no ties". That made the whole nesting suite
+# blind to the defect below for as long as it existed.
+#
+# The real scores tie constantly. `score_cache` stores fp16, and the final
+# query block is zero-padded by `_scoring_forward_chunked` whenever the prompt
+# does not land on a block boundary -- which is 95-100% of banked rows. In that
+# row, measured on banked oracle tensors, 52.8% of candidates are exactly 0.0,
+# so the top-k is decided entirely by the tie-break.
+#
+# The defect: `jitter` was drawn AFTER `if budget <= 0: continue`, and `budget`
+# depends on `sparsity`, so the three arms of the ladder ran off different
+# positions in one shared generator and broke ties differently. These fixtures
+# are built to make that visible rather than to be realistic.
+# ---------------------------------------------------------------------------
+
+def _tied_scores(n: int, *, zeros_in_last_row: bool = True) -> torch.Tensor:
+    """Scores shaped like a real fp16-cached tensor with a padded last block.
+
+    Distinct and well separated everywhere except the final query block, where
+    most candidates collapse to exactly 0.0 -- the pattern that makes the
+    tie-break, not the score, decide which blocks are kept.
+    """
+    g = torch.Generator().manual_seed(7)
+    s = (torch.rand(n, n, generator=g) + 1.0)
+    if zeros_in_last_row:
+        s[n - 1, :] = 0.0
+        s[n - 1, 1] = 5.0          # one genuine winner, the rest tied at zero
+    return s.half().float()         # round-trip through the cache's dtype
+
+
+@pytest.mark.parametrize("tight,loose", ((0.9, 0.75), (0.9, 0.5), (0.75, 0.5)))
+def test_nesting_holds_when_most_candidates_tie(tight, loose):
+    """The fixture the suite was missing: ties, not `torch.rand`.
+
+    Before the fix this failed at n=65 with 8-17 blocks in the tighter mask
+    absent from the looser one. Parametrised over ordered PAIRS rather than
+    over a single sparsity: comparing 0.9 against a loose value drawn from a
+    list that contains 0.9 makes one case compare a mask with itself, which
+    passes whatever the code does.
+    """
+    n = 65
+    s = _tied_scores(n)
+    tight_mask = M.importance_block_mask(n * 128, 128, tight, s, causal=True,
+                                         identity_seed="tied").active
+    loose_mask = M.importance_block_mask(n * 128, 128, loose, s, causal=True,
+                                         identity_seed="tied").active
+    violations = int((tight_mask & ~loose_mask).sum())
+    assert violations == 0, (
+        f"nesting broken under ties: {violations} block(s) in the {tight} mask "
+        f"are absent from the {loose} mask. The two arms broke the same tie "
+        f"differently, which means they did not share a jitter draw."
+    )
+
+
+@pytest.mark.parametrize("n", (16, 17, 32, 65, 128))
+def test_nesting_holds_under_ties_at_every_block_count(n):
+    """n=17/65 are the shapes that actually occur: a prompt one token over a
+    block boundary gives a final query block that is almost entirely padding.
+    n=16/32/128 are the exact-multiple cases, kept so a fix that only helps
+    the ragged shapes is not mistaken for a general one."""
+    s = _tied_scores(n)
+    masks_by_sparsity = {
+        sp: M.importance_block_mask(n * 128, 128, sp, s, causal=True,
+                                    identity_seed=f"tied{n}").active
+        for sp in _SPARSITIES
+    }
+    for tight, loose in ((0.9, 0.75), (0.9, 0.5), (0.75, 0.5)):
+        bad = int((masks_by_sparsity[tight] & ~masks_by_sparsity[loose]).sum())
+        assert bad == 0, (
+            f"n_blocks={n}: {bad} block(s) of the {tight} mask are missing "
+            f"from the {loose} mask")
+
+
+def test_every_sparsity_draws_the_same_jitter_for_the_same_row():
+    """The structural form of the property, which holds with or without ties.
+
+    Asserting on masks can only catch the bug when the fixture happens to tie.
+    This asserts the mechanism directly: for one identity, the jitter handed to
+    query block `qb` must not depend on `sparsity`. Recording the draws in
+    order is what makes a shifted stream visible even where it changes nothing.
+    """
+    n = 65
+    s = _tied_scores(n, zeros_in_last_row=False)
+    seen: dict[float, list[tuple[int, float]]] = {}
+    real_rand = torch.rand
+
+    for sp in _SPARSITIES:
+        draws: list[tuple[int, float]] = []
+
+        def recording_rand(*args, **kwargs):
+            out = real_rand(*args, **kwargs)
+            if kwargs.get("generator") is not None and out.ndim == 1:
+                draws.append((int(out.numel()), float(out[0])))
+            return out
+
+        torch.rand = recording_rand
+        try:
+            M.importance_block_mask(n * 128, 128, sp, s, causal=True,
+                                    identity_seed="stream")
+        finally:
+            torch.rand = real_rand
+        seen[sp] = draws
+
+    reference = seen[_SPARSITIES[0]]
+    for sp in _SPARSITIES[1:]:
+        assert seen[sp] == reference, (
+            f"the jitter stream differs between sparsity {_SPARSITIES[0]} and "
+            f"{sp}: {len(reference)} vs {len(seen[sp])} draws, first divergence "
+            f"at index "
+            f"{next((i for i, (a, b) in enumerate(zip(reference, seen[sp])) if a != b), 'length')}."
+            f"\n\nA draw that is skipped on one arm and taken on another shifts "
+            f"every later row's tie-break, so the arms stop agreeing about "
+            f"equal-scoring blocks. Draw unconditionally, before any "
+            f"sparsity-dependent branch.")

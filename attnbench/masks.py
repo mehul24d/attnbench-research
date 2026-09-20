@@ -353,11 +353,36 @@ def importance_block_mask(seq_len: int, block_size: int, sparsity: float,
     for qb, kvs in enumerate(rows):
         if not kvs:
             continue
+        # DRAW BEFORE THE BUDGET CHECK, and never conditionally. `g` is one
+        # stream shared by every row, so a row that skips its draw shifts
+        # every later row's jitter. `budget` depends on `sparsity`; the draw
+        # must not, or the three arms of the ladder stop sharing a tie-break
+        # and nesting fails wherever scores tie.
+        #
+        # This is instance 45 (docs/silent_failure_patterns.md). The draw sat
+        # after `if budget <= 0: continue` until 2026-09-20. Short rows cross
+        # that threshold at different sparsities -- at 2048/block128 the 0.5
+        # stream has consumed 14 draws by qb=7, 0.75 has consumed 12 and 0.9
+        # has consumed 0 -- so from the first short row onward no two arms
+        # drew the same jitter. Where scores tie, the tie-break decides the
+        # mask, and three different tie-breaks are three unrelated masks.
+        #
+        # Measured on banked oracle score tensors: at n_blocks=65 nesting
+        # broke in 70 of 112 layer-masks, and in 126 of the 128 seq_lens that
+        # produce that block count, so it was never a seed artifact. The
+        # breaks are concentrated in the final query block, which
+        # `_scoring_forward_chunked` zero-pads -- 52.8% of that row's
+        # candidates are exactly 0.0 in fp16 there, so its top-k is decided
+        # entirely by jitter. Drawing unconditionally takes that count to 0.
+        #
+        # Note what this does NOT change: with no ties, adding a different
+        # 1e-9 perturbation cannot reorder distinct scores, so every
+        # untied row builds the identical mask it did before.
+        jitter = torch.rand(len(kvs), generator=g) * 1e-9
         budget = round((1.0 - sparsity) * len(kvs))
         if budget <= 0:
             continue
         scores = importance_scores[qb, kvs]
-        jitter = torch.rand(len(kvs), generator=g) * 1e-9
         top = (scores + jitter).topk(k=min(budget, len(kvs))).indices
         for j in top.tolist():
             active[qb, kvs[j]] = True
