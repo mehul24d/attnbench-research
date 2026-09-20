@@ -721,6 +721,26 @@ prompt is measuring nothing, and one assertion catches it.
 
 ## The general hazards, stated once
 
+**A near-miss worth the same space as an instance: a session script is an
+era's configuration, and copying it forward copies the era.** Planning the
+2026-09-20 S7 re-measure, the decode pin was carried over from
+`s1a_run_band.sh`, which pins `sdpa_math` because the 2048–8192 bands decoded
+through it. The 16384 rows stamp `decode_backend=sdpa_flash` — they were
+measured after `DENSE_DECODE_BACKEND` moved on 2026-09-08. Had it shipped,
+the decode kernel would have changed alongside the variable under test, on the
+one band the session existed to measure, and the −6.0 point shift it found
+would have been unattributable between two causes.
+
+It was caught by reading the banked rows' own `decode_backend` column before
+writing the runner, which cost two minutes. **The near-miss is recorded
+because the catch was not structural** — no gate would have fired. The
+comparison script does refuse when the new and banked sparse decode kernels
+disagree, so it would have surfaced *after* the measurement was paid for,
+which is a check and not a guard. The general shape: a script that encodes
+"what was true for that run" reads like a script that encodes "how we do
+this", and the difference is invisible at the call site.
+
+
 ### A tolerance bounds noise, not bias that fits inside it
 
 **Standing rule, promoted from #27 on 2026-09-08.** Any check of the form
@@ -2789,25 +2809,53 @@ code, and it is why the suite is now a per-session phase with its output
 synced (`scripts/gpu_suite_record.sh`) rather than a green tick remembered
 from the workstation.
 
-## 48. A spend ceiling used as a teardown
+## 48. A rule that was already derived, already demonstrated, and dropped at the call site
 
-The 2026-09-20 S7 session set `GCP_HALT_MINUTES=130` against a 3-hour delete,
-deliberately, to bound an unattended overrun. The measurement finished at
-17:51Z, on estimate. The instance was collected by its own halt at 18:40Z.
-**Forty-nine idle minutes, ~Rs 64, on a session whose useful work cost
-Rs 108.**
+The 2026-09-20 S7 session finished at 17:51Z, on estimate, and was collected
+by its own 130-minute cap at 18:40Z. **Forty-nine idle minutes, ~Rs 64, on a
+session whose useful work cost Rs 108.**
 
-Nothing failed. The ceiling did exactly what it was for. The error is that it
-was *allowed to be the teardown*: the run's completion signal arrived and
-produced a report rather than a delete.
+The first write-up of this called it "a spend ceiling used as a teardown" and
+drew the lesson that a bound on the worst case is not a plan for the expected
+case. That is true and it is not the finding, because **the project had
+already derived that rule, and demonstrated it**:
 
-This is the 2026-09-08 idle row (162 minutes between halt and delete) in the
-version that costs money — there the halt had already fired, so the waste was
-Rs 0 and the lesson was free. It is also the same reasoning error as #19 in a
-different register: a safety mechanism was trusted to do the normal-path job,
-and normal-path correctness was never checked because the safety mechanism
-kept the outcome inside acceptable bounds.
+> A long run must arm its own teardown on completion, so the idle window is
+> bounded by the machine rather than by whether anyone is awake.
+> — `spend_ledger.md`, after the 2026-09-06 row burned ~7 idle hours
 
-**A bound on the worst case is not a plan for the expected case.** A
-completion signal must trigger the delete.
+It was demonstrated on 2026-09-07, when a chained `; sudo shutdown -h +5`
+fired with nobody watching (341 min, Rs 455, against a Rs 581–641 bracket).
+It was re-derived after the 2026-09-17 A100 session idled 90.6 minutes for
+**Rs 429**. And the standing rule — *never end a turn with an instance
+running* — was written down as well.
+
+**It was in the usage line of the script that was run.**
+
+    # Usage (on the instance, from the repo root):
+    #   bash scripts/s7_run_jitter_band.sh; sudo shutdown -h +5
+
+The launch command was `nohup bash scripts/s7_run_jitter_band.sh > /tmp/band.log 2>&1 &`.
+The chain was dropped. Not overruled, not traded away — dropped, by an
+operator who had written that usage line an hour earlier.
+
+**This is instance 47 in a different costume.** There the lesson was that "a
+rule that must be remembered at every call site will be forgotten at one of
+them", and the `[n]vcc` bracket trick had been written down twice before it
+was forgotten twice. Here the rule had been written down three times, priced
+at Rs 575, Rs 429 and a standing turn-level instruction, and was forgotten at
+the one call site that mattered. **Documentation is not a mechanism. The
+number of times a rule is written down is not correlated with whether it is
+followed; it is evidence that it keeps not being followed.**
+
+So it is now armed inside `s7_run_jitter_band.sh`, `s1a_run_band.sh` and
+`sink_control_run.sh`, in the same `finish()` that already writes the rc —
++5 minutes on success, +20 on failure so a broken run can still be inspected,
+`ATTNBENCH_NO_HALT=1` to opt out when chaining bands. The thing an operator
+now has to remember is the *exception*, not the rule.
+
+**The general form.** When an incident's write-up ends in a rule for a human
+to follow, the write-up is not finished. Ask what would have to be true for
+the rule to be unforgettable, and build that instead. A rule stated for the
+third time is a design task that has been deferred twice.
 

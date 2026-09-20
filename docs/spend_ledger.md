@@ -90,9 +90,18 @@ arrived and no delete followed it. That is the 2026-09-08 idle row again
 (162 minutes between halt and delete) in the version that costs money,
 because there the halt had already fired and here it had not.
 
-**The rule this adds: a completion signal must trigger a delete, not a
-report.** A ceiling bounds the loss from a session nobody is watching; it is
-not a substitute for ending one that is finished.
+**This adds no rule. It violated one that was already here.** The 2026-09-06
+row derives it ("a long run must arm its own teardown on completion"), the
+2026-09-07 row demonstrates it firing unattended, and the 2026-09-17 row
+re-prices it at Rs 429. It was also in the usage line of the script that ran:
+`bash scripts/s7_run_jitter_band.sh; sudo shutdown -h +5`. The launch dropped
+the chain.
+
+Written down three times and forgotten at the call site, so it is no longer
+written down: `finish()` in `s7_run_jitter_band.sh`, `s1a_run_band.sh` and
+`sink_control_run.sh` now arms the halt itself (+5 on success, +20 on failure,
+`ATTNBENCH_NO_HALT=1` to opt out when chaining bands). See
+`silent_failure_patterns.md` #48.
 
 **Two sessions were missing from this table until 2026-09-19**, found by
 listing every `instances.insert` in the audit log rather than trusting the
