@@ -2486,3 +2486,56 @@ or a field inside the file. Nothing in the score cache has one yet. If the
 cache's provenance ever matters again, the fix is a small sidecar written at
 `score_cache.save` (commit and score_source), not a re-read of bucket
 metadata.
+
+
+## 44. Two measurements agreeing, because they share an input
+
+Found 2026-09-20, when audit item S1a withdrew the convergence claim.
+
+The claim was that block-sparse attention's speed benefit and its accuracy
+both rise with context length — *"two independent measurements agreeing on a
+length dependence, neither designed to produce it."* That sentence was the
+reason it was believed, and it is stated in `claims.md` as the reason.
+
+The two measurements were a latency sweep and an accuracy sweep. They are
+independent in every way people usually check: different scripts, different
+output files, different sessions, different failure modes, neither written to
+show a length dependence. **They ran on masks built by the same function**,
+and that function omitted the attention sink. Re-measured with the sink
+forced, the accuracy ladder at 0.9 reads 97 / 99 / 100 instead of 62 / 93 /
+99 — no slope — while the speed ladder is unchanged. One of the two trends
+was an artifact of the shared input. The agreement was never evidence about
+length; it was evidence that both measurements used the same mask builder.
+
+**The rule.** Two measurements corroborate a phenomenon only to the extent
+their *inputs* are independent, not their code paths, authors or sessions. An
+input every measurement shares — a mask builder, a tokenizer, a prompt
+template, a generated example set, a cached tensor — is a common cause, and a
+defect in it produces agreement of exactly the shape corroboration produces.
+Before treating agreement as confirmation, list what both sides consumed.
+Where the list is non-empty, the agreement is conditional on those inputs and
+should be written down that way.
+
+**Why this is not #42.** Pattern 42 is one comparison whose confound is
+collinear with the variable being credited — a single measurement that cannot
+separate two causes. This is *two* measurements, each individually sound,
+whose agreement carries no information because the thing they share is the
+thing that is wrong. #42 is about what one number cannot distinguish; this is
+about why a second number did not help.
+
+**What made it diagnosable, and it is worth copying.** The re-run held
+everything fixed except the mask rule — same example ids, decode kernel
+pinned to the original regime, per-arm score precision reproduced — and the
+dense arm was required to reproduce the banked run **exactly, 300/300
+examples at every band, as a gate that fails the session** (`scripts/
+check_dense_canary.py`). Because the dense arm reproduced, the change in the
+sparse arms could be attributed to the mask rule rather than to the machine,
+the model, the library stack or the examples. An unchanged control that is
+*verified per example* is what converts "the numbers moved" into "this input
+moved them".
+
+**The honest form of the retraction.** The individual measurements were
+correct and stay in the file. What is withdrawn is the inference *from their
+agreement*. A reader who finds two agreeing results in this study should now
+check `limitations.md` for what they were both built on before treating the
+second as support for the first.
