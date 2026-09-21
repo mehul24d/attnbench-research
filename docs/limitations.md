@@ -914,17 +914,18 @@ UnsupportedConfig` on the `causal` config. It is one arm of every end-to-end
 comparison in the study, and its timed region has therefore been checked
 **nowhere** — not on the workstation, not on the instance.
 
-**The tax is one-sided, and that is the load-bearing fact.** S14 established that the SDPA kernels this study actually measures — `sdpa_math` and `sdpa_flash` — rebuild nothing per call (`per_call = [0, 0, 0]`, on causal and block_sparse alike). So the per-call copy depresses the numerator of every block_sparse-over-dense ratio and never touches the denominator. **Every reported block_sparse speedup is a lower bound on the true one**, arithmetically, independent of how large the tax turns out to be. S11 tightens the magnitude; it cannot change the sign.
+**The tax is one-sided, and that is the load-bearing fact.** S14 established that the SDPA kernels this study actually measures — `sdpa_math` and `sdpa_flash` — rebuild nothing per call (`per_call = [0, 0, 0]`, on causal and block_sparse alike). So the per-call copy depresses the numerator of every block_sparse-over-dense ratio and never touches the denominator. **Every reported block_sparse speedup is a lower bound on the true one**, arithmetically, independent of how large the tax turns out to be. S11 measured the magnitude (closed 2026-09-21); it did not change the sign.
 
 **What this does and does not mean for the published numbers.** The magnitude
-is unmeasured (register item S11) and the bytes are small — 16 KB at
-16384/128, 64 KB at 32768 — so against a millisecond-scale kernel the tax is
-probably a fraction of a percent, and proportionally largest at the short
-seq_lens Stage 2 also sweeps. The **direction** is known and it is the
+is measured (register item S11, closed 2026-09-21, A100-SXM4-80GB, p50 29.7-34.6
+us per call) and the bytes are small — 16 KB at 16384/128, 64 KB at
+32768 — so against a millisecond-scale kernel the tax is a fraction of a
+percent (0.24-1.9% depending on the cell), and proportionally largest at the
+short seq_lens Stage 2 also sweeps. The **direction** is known and it is the
 conservative one: `block_sparse` is being measured slower than it is, so every
 reported `block_sparse`-over-dense speedup is **understated**, not inflated.
-That is the right way round to be wrong, and it is still wrong. Until S11
-measures it, no `block_sparse` timing number in this study is free of a
+That is the right way round to be wrong, and it is still wrong. S11 has
+measured it: no `block_sparse` timing number in this study is free of a
 per-call setup cost, and no claim rests on a checked timed region for `sdpa`
 at all.
 
@@ -2132,9 +2133,13 @@ structural argument was carrying the claim rather than a sample.
 > Untied rows are bit-identical, because
 > a different 1e-9 perturbation cannot reorder distinct scores. So the banked
 > accuracy rows are **not bit-reproducible under the current code**, and
-> whether any score moved is **unmeasured** — it needs one GPU band at 16384,
-> which is the headline band and the one with the most ragged final blocks
-> (76 of 100 examples have ≤16 real tokens there).
+> whether any score moved is **measured — S7, closed 2026-09-21**, on the one
+> GPU band that matters, 16384, the headline band and the one with the most
+> ragged final blocks (76 of 100 examples have ≤16 real tokens there): dense
+> canary 200/200 identical, score canary 200/200 score tensors bit-identical,
+> and `niah_multikey` moved **66/59/20 → 65/53/17** (−6.0 at 0.75, 95% CI
+> [−12.0, −1.0], excludes zero), while `niah_single` held at 100.0 despite
+> 14/2/2 of its texts changing underneath it. One published number moved.
 
 The remaining per-arm precision asymmetry is untouched by that fix. The
 remedy for it, if one is ever wanted, is to return the fp16 round-trip on a
@@ -2260,7 +2265,10 @@ contexts pool thinner probabilities into more candidates per row and so tie
 more often in fp16. And **no example at 16384 can be excluded from a re-run**:
 every one of 200 has at least one layer whose mask moved, so the fraction of
 the cell that could flip is 100% and there is no cheap subset. Whether any
-score actually moves is still **unmeasured** — audit item S7.
+score actually moves is **measured — audit item S7, closed 2026-09-21**:
+dense canary 200/200 identical, score canary 200/200 bit-identical, and
+`niah_multikey` moved 66/59/20 → 65/53/17 (−6.0 at 0.75, 95% CI [−12.0, −1.0]).
+One published number moved.
 
 **Era 1 → era 2 is much larger** and is documented above: up to 44 points on
 individual cells, which is why Stages 4/6/7 were rebuilt.

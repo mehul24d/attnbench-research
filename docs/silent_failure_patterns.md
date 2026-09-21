@@ -2708,7 +2708,7 @@ you noticed does not generalise to the symptom you did not** — and a remedy
 sitting unexecuted in a limitations file is especially prone to this, because
 nothing ever runs it and discovers its scope.
 
-### What it cost, and what remains unmeasured
+### What it cost, and what it moved (S7, closed 2026-09-21)
 
 Re-running the fixed builder over every banked score tensor changes 0.23% of
 all active blocks — **itself a pooled figure, and understating the same way
@@ -2731,12 +2731,17 @@ both `limitations.md` and this file's own commit message before the per-band
 split existed. A blast radius averaged over a population the reader will not
 inspect is not a bound.
 
-**Whether any reported accuracy number moved is unmeasured.** The perturbation
-is confined to one query-block row out of 16–129 — but it is the row the answer
-is generated from, and at 16384, the headline band, 76 of 100 examples are in
-the vulnerable configuration. Settling it needs one GPU band. Until it is run,
-the honest statement is that the ladder was not a ladder in the tied rows, the
-affected fraction is small and measured, and the effect on scores is unknown.
+**Whether any reported accuracy number moved is measured — S7, closed
+2026-09-21.** The perturbation is confined to one query-block row out of
+16–129 — but it is the row the answer is generated from, and at 16384, the
+headline band, 76 of 100 examples were in the vulnerable configuration. The
+one GPU band it needed has been run: dense canary 200/200 identical, score
+canary 200/200 bit-identical, and `niah_multikey` moved 66/59/20 → 65/53/17
+(−6.0 at 0.75, 95% CI [−12.0, −1.0], excludes zero) while `niah_single` held
+at ceiling despite 14/2/2 of its texts changing underneath it. The honest
+statement is now that the ladder was not a ladder in the tied rows, the
+affected fraction is small and measured, and the effect on scores is a real,
+measured −6.0-point drop at one cell.
 
 ---
 
