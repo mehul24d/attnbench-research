@@ -9,7 +9,7 @@ model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
 It stood at seventeen when that sentence was written. It stands at
-**forty-eight**. The original sentence is kept rather than updated because the
+**fifty**. The original sentence is kept rather than updated because the
 rate is the point: the count went on growing under a discipline built
 specifically to stop it growing.
 
@@ -753,6 +753,27 @@ which is a check and not a guard. The general shape: a script that encodes
 "what was true for that run" reads like a script that encodes "how we do
 this", and the difference is invisible at the call site.
 
+
+**A measurement is wrong wherever it is written; a status is wrong only after
+the moment it described.** Both go stale, and the difference decides what to
+do about them. `16 of 31 matched points are dominated` is false on every page
+that carries it, today and next year, so it stays in
+`docs/withdrawn_figures.md` under permanent watch -- and a correction that
+paraphrases it rather than quoting it removes the string the watch is keyed
+on, which is a loss of provenance disguised as tidying. *"The re-run is
+approved as audit item S1a"* was true when written and stopped being true when
+the re-run happened; there is no page on which it is now a false claim about
+the world, only pages on which it is out of date. Those entries retire.
+
+The consequence is a working rule for anything that tracks the currency of
+claims: **watch the quantities, date the statuses.** Entries that keep
+watching must have something to watch, so a withdrawal note quotes the
+withdrawn sentence verbatim; entries that retire must say when they stopped
+applying, so a status carries the date it was true on. Mixing the two
+produces the two failures this project has now seen — a guard that goes dead
+because the string it watched was paraphrased away, and a status block
+asserting a pending action that completed five days earlier, in a document
+that had itself been corrected in the same session.
 
 ### A tolerance bounds noise, not bias that fits inside it
 
@@ -2690,7 +2711,13 @@ nothing ever runs it and discovers its scope.
 ### What it cost, and what remains unmeasured
 
 Re-running the fixed builder over every banked score tensor changes 0.23% of
-all active blocks. The fraction of *masks* containing such a change is
+all active blocks — **itself a pooled figure, and understating the same way
+the 5.6% below does**: it is 0.0% wherever `seq_len` divides evenly, 0.92% at
+`n_blocks=17` and 1.67% at 65, and the evenly-dividing configurations dominate
+the denominator. Both numbers in this section's opening sentence are pools;
+only one of them was marked as such until 2026-09-21, which is how a
+correction gets applied to a figure and not to the figure beside it. The
+fraction of *masks* containing such a change is
 strongly length-dependent -- 1.7% at 2048, 5.8% at 4096, 35.3% at 8192,
 **73.8% at 16384**, 99.2% at 32768 -- because longer contexts pool thinner
 probabilities into more candidates per row and tie more often in fp16. Untied
@@ -2872,3 +2899,121 @@ to follow, the write-up is not finished. Ask what would have to be true for
 the rule to be unforgettable, and build that instead. A rule stated for the
 third time is a design task that has been deferred twice.
 
+## 49. A correction's replacement value goes stale inside its own disclaimer
+
+**Found 2026-09-21, by the guard written for instance 46 — but not by the
+rule that guard was built on.** `docs/claims.md` carries a table titled "What
+survives the correction", whose entire function is recording which of the
+study's claims have gone stale. One row read:
+
+    | *16 of 31 matched sparse points are dominated by dense* |
+      **DOES NOT SURVIVE.** Normalized: **12 of 31**. |
+
+`16 of 31` is correctly marked. `12 of 31` is the answer the row offers in its
+place, and it had itself been superseded by `15 of 34` on 2026-09-20 by the
+S1a rebuild. The row was wrong in the half a reader would actually use.
+
+**Why nothing found it.** `tests/test_no_stale_figures.py` permits an
+occurrence inside a block carrying a withdrawal marker. The marker in that row
+is about the left-hand figure; the checker has no way to know that, so it
+covers the whole row — including the replacement. **A withdrawal note is a
+permanently marked context, so every later supersession hides inside the
+previous one's disclaimer.** The more diligently a document records its own
+corrections, the more marked ground it creates for the next stale figure to
+stand on.
+
+Two adversarial audits read that table and missed it, and so did the first
+version of the guard built specifically to catch stale figures in prose. It
+was found only when the guard was tightened for an unrelated reason and the
+tightening was break-tested against the historical text — the mutation passed,
+which was the signal that the diagnosis was wrong.
+
+**The rule that was measured and rejected.** The obvious generalisation is
+"inside a marked unit, only the first registry match is covered". Written and
+run against the live tree, it produced three violations, all of them on blocks
+quoting a withdrawn paragraph verbatim. That construction is the one the
+registry exists to encourage — it is how the provenance of a number survives
+its correction — so the rule would have bought a narrow catch by taxing the
+mechanism's main benefit. **A guard that makes the right practice expensive
+will be switched off, and it will be switched off by someone who is right to
+do it.**
+
+**What shipped instead.** The rule is restricted to markdown table rows, where
+it flags nothing in the live tree and still catches the row above. The
+justification is structural rather than empirical: a quotation is one act,
+governed by one disclaimer, while a table row is a record whose verdict cell
+is asserted in the reader's present tense. Supersession tables are therefore
+exactly where a replacement value is stated as current, and exactly where this
+fails. `docs/withdrawn_figures.md` gained a second check at the same time —
+no entry may name a replacement that is itself a withdrawn figure — because
+the moment a figure is withdrawn is the only moment anyone is looking at the
+entries that pointed to it.
+
+**The general form.** A disclaimer covers the claim it was written about, not
+the text it happens to share a container with. Any mechanism that grants
+immunity by proximity — a marker covering a block, an allowlist entry covering
+a directory, a `# noqa` covering a line with two problems on it — grants it to
+whatever moves in next. Ask what the exemption was *about*, and whether the
+thing now sitting inside it is that.
+
+
+## 50. A false claim copied into new code, one day after the guard against copying was built
+
+**Found 2026-09-21, by running `git log` for the first time.** Both audits ran
+in a tree with no `.git`, so every commit-dependent sentence was accepted as
+written. When the real checkout arrived, the first check confirmed the era-1
+boundary exactly as documented. The second one did not.
+
+`limitations.md` said:
+
+> Era 1 and 2 split on `git_commit`: any commit that is an ancestor of
+> `37675a0` is era 1. Era 2 and 3 split on date only — the jitter fix carries
+> no schema change, so a row cannot be assigned between them from its own
+> contents. That is a deliberate limitation being recorded rather than a gap.
+
+The first sentence is true. The second is false, and false twice over. The
+jitter fix **is** a commit, `5cc3a40`, so the mechanism named in the sentence
+before it settles the question: all seven era-2 commits predate it, the single
+era-3 commit descends from it, and the partition is exact. And the substitute
+rule does not work — `179c894`, `44ab65c` and `33598b4` are era 2 and share
+2026-09-20 with `39e1d6d`, which is era 3, so a date rule at day granularity
+misfiles three of four.
+
+**The part that makes it an instance rather than an erratum.** On 2026-09-21 a
+new module, `attnbench/analysis/eras.py`, was written to close the S12 gap —
+the discovery that three documents credited `analysis/composition.py` with
+refusing cross-era comparisons when it has no concept of a commit. That module
+is the project's era authority. Its docstring opened by restating the
+paragraph above, verbatim in substance, including the claim that a row "cannot
+be assigned between them from its own contents".
+
+So the fix for one propagated false claim propagated another, in the same
+session, **one day after `tests/test_no_stale_figures.py` was built to make
+exactly this a test failure** — and it was invisible to that guard, because
+the guard watches *figures* and this was a *mechanism*. Nobody re-derived the
+sentence from the commit graph at any point: not when it was first written,
+not when the era table was added, not when the new module was reviewed, and
+not when the tier containing it was approved.
+
+**What was actually wrong with the reasoning.** The paragraph reached a
+correct conclusion — do not add a `mask_rule` column — through an incorrect
+premise. A half-populated provenance field really is worse than none, and that
+argument survives untouched. But "the information is unavailable" was doing
+the persuading, and it was the part that was false. **An argument that reaches
+the right answer through a wrong premise is harder to catch than one that
+reaches the wrong answer**, because the conclusion looks reviewed.
+
+**Fixed** by giving `eras.py` the two boundary commits as constants and an
+`era_from_git()` that derives the era with `git merge-base --is-ancestor`.
+`COMMIT_ERA` is now documented as a cache of that function — it has to exist,
+because the comparison scripts must run in a checkout with banked results and
+no history, which is the condition that let this survive two audits — and
+`tests/test_eras.py` requires the two to agree wherever git is present, with
+break-tests for a mislabelled entry and for a wrong boundary commit.
+
+**The general form.** A guard written against a defect you have just found
+will be shaped like that defect. This project's prose guard watches withdrawn
+*numbers*, so a withdrawn *mechanism* walked straight past it into new code.
+When you build a check in response to an incident, ask what the incident's
+sibling looks like — same failure, different type of thing — because that is
+what will arrive next, and your new check will not be looking at it.

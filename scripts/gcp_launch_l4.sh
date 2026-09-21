@@ -4,16 +4,23 @@
 # hourly rate and session estimate with whoever owns the billing account.
 #
 # Non-negotiables baked in, per the validation-session spending rules:
-#   - startup script hard-caps the instance to 4 hours via `shutdown -h +240`,
-#     so a forgotten instance self-terminates instead of billing indefinitely.
+#   - startup script hard-caps the instance via `shutdown -h +$HALT_MINUTES`
+#     (default 300, i.e. 5h), so a forgotten instance self-terminates instead
+#     of billing indefinitely. Every figure below is interpolated from the
+#     variables rather than written out: this block said "4 hours" and
+#     "shutdown -h +240" until 2026-09-21, against defaults of 300 minutes
+#     and a 7h ceiling, because the values were made overridable and the
+#     prose describing them was not.
 #   - --maintenance-policy=TERMINATE (required for GPU instances anyway;
 #     stated explicitly so it can never silently drift to MIGRATE).
 #   - --scopes=cloud-platform. NOT OPTIONAL: default GCE scopes grant only
 #     devstorage.read_only, so every gsutil cp to the results bucket 403s.
 #     A 4h47m H100 session (Rs 2,029) was lost to its absence on 2026-09-15.
 #   - --max-run-duration with DELETE, so a forgotten session cannot bill past
-#     the ceiling; the in-guest halt is set WELL short of it (90 min vs 3h) so
-#     there is a window in which the disk still exists and can be recovered.
+#     the ceiling; the in-guest halt is set WELL short of it -- see the
+#     GCP_HALT_MINUTES / GCP_MAX_RUN defaults below, and the summary the
+#     script prints before it creates anything -- so there is a window in
+#     which the disk still exists and can be recovered.
 #   - --provisioning-model is left at its default (STANDARD/on-demand) --
 #     deliberately NOT spot for this session: preemption mid-probe would
 #     waste more than spot pricing saves.
@@ -53,9 +60,11 @@ STARTUP_SCRIPT="$(mktemp)"
 trap 'rm -f "$STARTUP_SCRIPT"' EXIT
 cat > "$STARTUP_SCRIPT" <<EOF
 #!/bin/bash
-# Hard 4-hour cap: this instance self-terminates even if every teardown
-# step in the session runbook is skipped or forgotten. Scheduled from
-# instance boot time, not from launch-script invocation time.
+# Hard cap: this instance self-terminates even if every teardown step in the
+# session runbook is skipped or forgotten. Scheduled from instance boot time,
+# not from launch-script invocation time. The interval is whatever
+# HALT_MINUTES was at launch, and the logger line below records it, so the
+# guest's own log says what the cap actually is.
 logger "attnbench-l4: scheduling in-guest halt in ${HALT_MINUTES} minutes"
 shutdown -h +${HALT_MINUTES}
 EOF
@@ -97,7 +106,9 @@ gcloud compute instances create "$INSTANCE_NAME" \
 
 echo
 echo "Created. This instance is now billing. Remember:"
-echo "  - it self-terminates at 4 hours from boot regardless of what you do"
+echo "  - it halts at +${HALT_MINUTES} min from boot regardless of what you do"
+echo "    (GPU billing stops; the disk survives until DELETE)"
+echo "  - it DELETES at $MAX_RUN from boot, disk included"
 echo "  - delete (not stop) it the moment the session is done:"
 echo "      gcloud compute instances delete $INSTANCE_NAME --zone=$ZONE --project=$PROJECT"
 echo "  - run scripts/gcp_cleanup_check.sh afterward to confirm nothing is left billing"

@@ -10,7 +10,14 @@ scorers are the SAME. Weakening the other script's guard to serve both would
 have deleted the check that caught a 30-point artifact.
 
 Held fixed and asserted: model, band, tasks, n per cell, block_size,
-mask_source, and `git_dirty=False` on both sides.
+mask_source, `git_dirty=False` on both sides, and the MASK ERA -- see
+`analysis/eras.py`. The era check matters more here than in the scale
+comparison, because the scorer gap is read against a dense control that is
+supposed to be computing the identical thing on both sides. It is not doing
+so across an era boundary: `sdpa_flash` rows build no mask, so the dense arm
+is genuinely era-independent, which means a cross-era run makes the noise
+floor look clean while the sparse arm carries a mask-rule change. The
+calibration would certify the very comparison it cannot see.
 
 The dense arm is the calibration. `sdpa_flash` rows build no mask and consult
 no scores, so the two runs compute the identical thing; any disagreement
@@ -28,6 +35,8 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from attnbench.analysis import eras  # noqa: E402
 
 SPARSE = "block_sparse"
 
@@ -50,6 +59,7 @@ def main():
     ap.add_argument("--cheap", required=True)
     ap.add_argument("--band", type=int, required=True)
     ap.add_argument("--allow-n-mismatch", action="store_true")
+    eras.add_cross_era_flags(ap)
     args = ap.parse_args()
 
     a = _load(args.oracle, "oracle")
@@ -59,6 +69,10 @@ def main():
                                            args.band * 1.25)].index, inplace=True)
     if a.empty or b.empty:
         raise SystemExit(f"no rows at band {args.band} in one of the inputs")
+
+    for line in eras.licence(*eras.sides(eras.commits_of(a), eras.commits_of(b),
+                                         "oracle", "cheap"), args):
+        print(line, flush=True)
 
     sa, sb = _scorers(a), _scorers(b)
     if sa == sb:

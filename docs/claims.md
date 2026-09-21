@@ -222,12 +222,23 @@ context, at the sizes above, and is not established.
 **What this does to the Stage 4 matched budgets.** The caveat that some of
 what clears the non-inferiority bar is oracle-supplied is *weaker* than
 stated, because the margins it was drawn from were mostly sink and stopping
-artifacts. But the budgets themselves are computed from the pre-fix accuracy
-and are **stale in a larger way**: S1a moved `niah_multikey` by up to 44
-points and `niah_single` at 0.9 by 34. Stage 4, Stage 6 and the Stage 7
-decision map all need rebuilding from the forced-sink data before any of them
-is quoted. `analysis/matched.py`'s docstring still carries the oracle
-qualifier, which is correct and unchanged.
+artifacts. The budgets themselves were also computed from the pre-fix
+accuracy — S1a moved `niah_multikey` by up to 44 points and `niah_single` at
+0.9 by 34 — and **Stages 4, 6 and 7 were rebuilt on 2026-09-20** accordingly;
+see "The derived stages rebuilt on forced-sink accuracy". One visible
+consequence of the rebuild belongs here: `vt` at 2048 is **no longer
+`oracle_sensitive`** at any epsilon (it was, at all three), because with the
+sink forced no sparsity level exceeds dense beyond noise there. Six of the
+nine `vt` cells still carry the flag.
+
+`analysis/matched.py`'s docstring carries the oracle qualifier, which is
+correct and unchanged. The **evidence sentence** under it — that 0.75 was
+measured superior to dense on `vt` in all three bands by +10.8 / +5.9 / +14.6
+— is one of the margins withdrawn here, and was corrected 2026-09-21.
+
+*This paragraph said Stages 4/6/7 "all need rebuilding … before any of them is
+quoted" until 2026-09-21. They were rebuilt the previous day, by the commit
+this section's own numbers come from.*
 
 ## End-to-end speedup, which is the point of the whole study
 
@@ -237,20 +248,29 @@ stated ways (no warmup control, scoring pass excluded, no prefill/decode
 split) and the run order biases *against* the finding — the dense arm runs
 first in every band, so warmup penalises the baseline.
 
-> **These are the measured numbers, and they were measured under two
-> confounds Stage 5 later found — an unmatched decode kernel between arms,
-> and unequal generation length on `vt`. Read
+> **Two warnings, and the second was missing until 2026-09-21.**
+>
+> **1. Two confounds live inside the measured numbers** — an unmatched decode
+> kernel between arms, and unequal generation length on `vt`. Read
 > ["The dominance result was measured under two confounds"](#the-dominance-result-was-measured-under-two-confounds)
-> below before quoting any figure in this section.** The headline **1.06×**
-> survives normalization unchanged; the operating point behind it and the
-> dominance counts do not.
+> below before quoting any figure here. The reportable axis is
+> **`normalized_ms`**, not `measured_ms`.
+>
+> **2. Every figure in this section was rebuilt on 2026-09-20.** It was
+> computed from pre-sink-fix accuracy, which audit S1a superseded; the numbers
+> below are from `results/stage6/`, and the pre-fix ones are marked where they
+> appear. This section carried the pre-fix figures for a day after the rebuild
+> because the correction was applied in ["The derived stages rebuilt on
+> forced-sink accuracy"](#the-derived-stages-rebuilt-on-forced-sink-accuracy-2026-09-20)
+> and propagated no further up the file.
 
 | | |
 |---|---|
-| **Supported, as measured** | *At batch 1 with prefill-only sparsity and dense decode, the best end-to-end speedup any accuracy-matched block-sparse operating point achieves is **1.06×** — `vt`, 0.5 sparsity, 4096. On `niah_single` every matched point is **slower** than dense (0.8–0.9×) and dominated by it on both axes.* |
-| **Superseded by the correction** | *…and that best point is `vt`/0.5/4096.* Normalized, the best point is `niah_single`/0.9/8192, at the same 1.057×. *…and every `niah_single` point is dominated.* Normalized, 9 of 15 are. |
+| **Supported** | *At batch 1 with prefill-only sparsity and a decode kernel matched across arms, the best end-to-end speedup any accuracy-matched block-sparse operating point achieves is **1.059×**, at `niah_single`/8192/0.9. **15 of 34** matched points remain dominated by dense. Three distinct operating points are faster than dense by more than their cell's resolution floor, and all three are at **8192**.* |
+| **The three** | `niah_single`/8192/0.90 at **1.059×**, `niah_single`/8192/0.75 at **1.039×**, `vt`/8192/0.90 at **1.033×** — the same three the Stage 7 decision map recommends at every epsilon. Five further cells exceed 1.0 and do not clear their floor: `niah_single`, `niah_multikey` and `vt` at 8192/0.5 (+0.9% to +1.6% against a 1.7% floor), and `niah_single` and `vt` at 4096/0.9 (+0.4% and +0.2% against 0.6%). They are not wins and are not reported as any. |
 | **Not supported** | *Block-sparse attention is slower than dense.* |
 | **Also not supported** | *Block-sparse attention gives a 1.24× speedup.* |
+| **WITHDRAWN 2026-09-20** | *…the best is **1.06×** — `vt`, 0.5 sparsity, 4096, and on `niah_single` every matched point is slower than dense and dominated on both axes.* Pre-sink-fix, and on the confounded `measured` axis. That operating point is still matched in the rebuild but its measured speedup is now 0.844×, because the forced-sink masks change the text and the arm generates 36.8 tokens instead of 27.7. |
 
 **Why the second is a different claim.** It drops the regime, and the regime
 is doing all the work. Sparsity is applied during **prefill only**; decode
@@ -270,11 +290,30 @@ distance between them is the gap this study exists to measure. Reporting the
 kernel figure as a system result is the same regime-vs-unit error that has
 already appeared three times in this project's own analysis.
 
-**16 of 31 accuracy-matched sparse operating points are dominated by the
-dense baseline** on both axes. All 15 `niah_single` points are dominated.
-The survivors are all `vt` — and `vt` is the `oracle_sensitive` task, so most
-of what keeps them on the frontier is the oracle rather than the sparsity.
-Only **two distinct operating points** are genuinely faster than dense.
+**15 of 34 accuracy-matched sparse operating points are dominated by the dense
+baseline** on the normalized axis. By task: 9 of 19 `niah_single`, 6 of 14
+`vt`, 0 of 1 `niah_multikey`. **Three distinct operating points are faster
+than dense beyond their cell's resolution floor**, all at 8192, and two of the
+three are `niah_single` — so the survivors are no longer confined to the
+`oracle_sensitive` task, which is a change from the pre-fix picture and not a
+small one.
+
+*This paragraph read: "**16 of 31 accuracy-matched sparse operating points are
+dominated by the dense baseline** on both axes. All 15 `niah_single` points
+are dominated. The survivors are all `vt` — and `vt` is the
+`oracle_sensitive` task, so most of what keeps them on the frontier is the
+oracle rather than the sparsity. Only **two distinct operating points** are
+genuinely faster than dense." Every clause of it moved: the counts, the task
+the survivors belong to, and the reason given for their surviving. It is
+quoted whole rather than summarised because three of those four clauses would
+survive a careless summary.*
+
+*On the confounded `measured` axis the rebuild reads 28 of 34 dominated and
+**no** point faster than dense at all (best 0.891×). That axis is not the one
+reported: it moves dominance by 13 points and flips the sign of the headline
+on a quantity that carries a known kernel handicap. See
+["What survives the correction"](#what-survives-the-correction-and-what-does-not)
+and the rebuild table below.*
 
 This is recorded as data, not prose: `dominated_by_dense` on every Stage 6
 row, and the dense baseline carried as a point (`is_dense_reference`) so a
@@ -344,15 +383,26 @@ visible without recomputing it.
 
 #### What survives the correction, and what does not
 
-| claim | status |
-|---|---|
-| *The best end-to-end speedup at any accuracy-matched point is ≤1.06×* | **SURVIVES.** Measured best 1.057× (`vt`/4096/0.5); normalized best **1.059×** (`niah_single`/8192/0.9). The normalized figure read 1.057× until 2026-09-12, when it was recomputed under the `(n − 1)` identity from era-matched phases; ≤1.06× is unaffected. |
-| *…and that point is `vt`, 0.5 sparsity, 4096* | **DOES NOT SURVIVE.** Normalized, the best point is **`niah_single`, 0.9 sparsity, 8192**. The number is unchanged and the operating point behind it is different. |
-| *16 of 31 matched sparse points are dominated by dense* | **DOES NOT SURVIVE.** Normalized: **12 of 31**. |
-| *All 15 `niah_single` points are dominated* | **DOES NOT SURVIVE.** Normalized: **9 of 15**. The six that leave are all at 8192. |
-| *The survivors are all `vt`* | **DOES NOT SURVIVE.** Six `niah_single` points at 8192 survive normalization. |
-| *A 1.24× kernel speedup becomes ≤1.06× end-to-end* | **SURVIVES**, and is strengthened — the gap is now measured against a matched-kernel baseline rather than one carrying a handicap. |
-| *`vt`'s matched budgets are `oracle_sensitive`* | **UNTOUCHED.** Nothing here bears on the oracle. |
+**This table judges the 2026-09-12 decode-kernel correction only.** Every
+figure in it was computed from pre-sink-fix accuracy, and the S1a rebuild of
+2026-09-20 moved several of them again. Both passes are shown, because a claim
+that survived one correction and not the other is the case a single column
+hides. The right-hand column is the current answer.
+
+| claim | survives the decode correction? | and the S1a rebuild? |
+|---|---|---|
+| *The best end-to-end speedup at any accuracy-matched point is ≤1.06×* | **SURVIVES.** Normalized best **1.059×** (`niah_single`/8192/0.9). The normalized figure read 1.057× until 2026-09-12, when it was recomputed under the `(n − 1)` identity from era-matched phases; ≤1.06× is unaffected. | **SURVIVES**, unchanged to four decimals (1.0585 pre-fix and rebuilt alike). |
+| *…and that point is `vt`, 0.5 sparsity, 4096* | **DOES NOT SURVIVE.** Normalized, the best point is **`niah_single`, 0.9 sparsity, 8192**. | Still does not. That cell is 0.844× measured in the rebuild, against 1.057× pre-fix, because its arm now generates 36.8 tokens instead of 27.7. |
+| *16 of 31 matched sparse points are dominated by dense* | **DOES NOT SURVIVE.** Normalized: **12 of 31**. | Moves again: **15 of 34** normalized, 28 of 34 measured. |
+| *All 15 `niah_single` points are dominated* | **DOES NOT SURVIVE.** Normalized: **9 of 15**. The six that leave are all at 8192. | Moves again: there are now **19** `niah_single` points, 9 of them dominated normalized. |
+| *The survivors are all `vt`* | **DOES NOT SURVIVE.** Six `niah_single` points at 8192 survive normalization. | Still does not, and more strongly — two of the three points that clear their resolution floor are `niah_single`. |
+| *A 1.24× kernel speedup becomes ≤1.06× end-to-end* | **SURVIVES**, and is strengthened — the gap is now measured against a matched-kernel baseline rather than one carrying a handicap. | **SURVIVES.** |
+| *`vt`'s matched budgets are `oracle_sensitive`* | **UNTOUCHED.** Nothing in the decode correction bears on the oracle. | **DOES NOT SURVIVE as stated.** The rebuild clears the flag on `vt` at 2048 at all three epsilons — with the sink forced, no sparsity level there exceeds dense beyond noise. Six of nine `vt` cells still carry it. |
+
+*The right-hand column was added 2026-09-21. Until then this table judged one
+correction and was read as judging the figures, so a row marked **UNTOUCHED**
+by the decode correction — `oracle_sensitive` — read as untouched full stop,
+eleven days after a different correction had changed it.*
 
 **Seven points leave the dominated set**, every one of them at 8192 —
 sparsity's prefill saving only becomes visible at the longest band measured:
@@ -661,7 +711,7 @@ saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
 | **Supported; both arms are era-2 and the magnitudes move** | *The oracle requirement is **not** a small-model artifact. Against MInference's mean-pool estimator on `niah_multikey` at 16384, the oracle's advantage **widens** with scale — +32/+40/+19 points at 1.5B against **+39/+67/+76** at 7B — because better representations help the dense-softmax oracle far more than the estimator. At 0.9 sparsity the oracle retains 95% of dense at 7B while the estimator retains 16%.* |
 | **What S7 changed here, 2026-09-20** | S7 re-measured the **1.5B oracle arm at this exact cell** under the fixed tie-break: `niah_multikey` 66 / 59 / 20 → **65 / 53 / 17**. Holding the estimator fixed would make the 1.5B gaps +31 / +34 / +16 — but it cannot be held fixed, because the jitter fix is in the mask builder **both** arms use. **The post-fix gap is unmeasured on either side**; it needs the cheap arm re-run at the same cell (register item S12). The *direction* rests on differences of 30–76 points and is not in question against a 6-point shift. The magnitudes are era-2.
 
-**As published, this row is internally consistent and should stay that way.** All four arms — 1.5B oracle, 1.5B cheap, 7B oracle, 7B cheap — are era 2, so the comparison is a correct statement about a mask rule the code no longer builds. **Re-measuring the 1.5B cheap arm alone would break that**: it would put an era-3 1.5B gap beside an era-2 7B gap and make the scale comparison cross-era, which is the composition failure `analysis/composition.py` exists to refuse. Either all four arms move to era 3 (two cards, ~Rs 650) or none do. Given that no conclusion turns on the magnitudes, **none is the recommendation**, and the era label is the fix. |
+**As published, this row is internally consistent and should stay that way.** All four arms — 1.5B oracle, 1.5B cheap, 7B oracle, 7B cheap — are era 2, so the comparison is a correct statement about a mask rule the code no longer builds. **Re-measuring the 1.5B cheap arm alone would break that**: it would put an era-3 1.5B gap beside an era-2 7B gap and make the scale comparison cross-era, which `scripts/run_scale_comparison.py` refuses from `git_commit` via `analysis/eras.py`. *(This clause read "which is precisely what `analysis/composition.py` refuses" until 2026-09-21. That was wrong: composition refuses on facet balance and has no concept of a commit, so nothing refused a cross-era comparison at all. `scripts/run_scale_comparison.py` and `scripts/run_scorer_comparison.py` now do, from `git_commit` via `analysis/eras.py`, unless `--cross-era era2:era3` is passed with a stated reason.)* Either all four arms move to era 3 (two cards, ~Rs 650) or none do. Given that no conclusion turns on the magnitudes, **none is the recommendation**, and the era label is the fix. |
 | **Not supported** | *Scale will close the oracle-versus-estimator gap.* The opposite, on the one axis point available, and on the harder of the two discriminating tasks. `vt`'s gap does close at 7B (+8.6 → −0.6), so the two tasks differ in sign and a task-averaged summary hides the one that matters. |
 | **Not supported** | *Block-sparse attention delivers 1.321× at 32768.* Not as a system. It delivers that **given a mask nobody can afford to compute**, whose cost is 44.6 s per example against the 1286 ms saved — 35×, a ratio that has moved 4% since 16384. |
 | **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× against 0.75's 1.321×, for an accuracy difference of one example in 50 that the CI cannot separate from zero. At that margin 0.75 is the defensible pick, not because 0.9 is worse but because nothing here shows it is not. |
@@ -684,14 +734,36 @@ The second clause is not a caveat on the first. It is the finding. A measured
 advantage purchased with a mask nobody can afford to compute is not an
 advantage any deployed system has.
 
-**The break-even bar this sets.** To make the operating point profitable, a
-deployable importance estimator would have to produce a good-enough ranking
-for **under ~3% of the scoring pass's cost** (1/35), while preserving enough
-of the oracle's ordering to keep accuracy at ceiling. This study measures
-neither half of that: no cheap estimator was implemented, and none is
-evaluated. `score_source` on every row is `dense_softmax_fp32` precisely so
-that the day a cheap estimator exists it enters as a new value rather than a
-silent change of meaning.
+**The break-even bar this sets, and which half of it was measured.** To make
+the operating point profitable, a deployable importance estimator would have
+to clear two bars at once: produce its ranking for **under ~3% of the scoring
+pass's cost** (1/35), *and* preserve enough of the oracle's ordering to keep
+accuracy at ceiling. This study measured the **second** bar and not the first.
+
+- **Ordering: measured, and the one estimator tried fails it.** MInference's
+  mean-pool estimator is implemented (`accuracy/model.py`,
+  `minference_meanpool_scores`; `score_source="minference_meanpool"` on every
+  row it produces) and evaluated at 16384 on both model sizes —
+  `results/accuracy_forced_sink_cheap/` and `results/s9_7b_cheap_16384/`. It
+  trails the oracle by +32 / +40 / +19 points at 1.5B and +39 / +67 / +76 at
+  7B on `niah_multikey`, and the gap **widens** with scale. See the
+  oracle-versus-estimator row above.
+- **Cost: never measured.** No timing exists for either scorer's pass as a
+  deployable component, so the ~3% bar is untested from the side the ratio is
+  about.
+
+So the honest statement is narrower than "nobody has tried" and worse than it:
+one deployable estimator was tried, it failed the accuracy half decisively,
+and its cost — the half that would decide whether passing would even have
+helped — is unknown.
+
+*This paragraph read "no cheap estimator was implemented, and none is
+evaluated" until 2026-09-21, twenty-nine lines after the row reporting that
+estimator's evaluation as **Supported**. It also said `score_source` on every
+row is `dense_softmax_fp32` "precisely so that the day a cheap estimator
+exists it enters as a new value" — the mechanism worked exactly as designed on
+2026-09-16, and this paragraph did not notice. Registered as
+`cheap-estimator-not-implemented` in `withdrawn_figures.md`.*
 
 **The ratio's own trend is the discouraging part.** 249× → 49× → 36× → 35× at
 4096 / 8192 / 16384 / 32768. It improved fivefold from 4096 to 8192 and 4%
@@ -1333,5 +1405,14 @@ whole prefill by the block excess would drop the 8192/0.9 recommendations to
 gives `prefill_ms = 618.4 + 0.0556 × blocks` at 8192, so prefill is dominated
 by fixed work and the extra blocks cost **3–4 ms**, not 8–22%. Re-evaluated at
 the post-fix block counts the recommendations stand: 1.059 → **1.054**
-(`niah_single`) and 1.016 → **1.014** (`vt`). The check is recorded because
+(`niah_single`) and 1.033 → **1.031** (`vt`). The check is recorded because
 the naive version of it pointed the other way.
+
+*The `vt` pair read "1.016 → **1.014**" until 2026-09-21. 1.016 corresponds
+to no figure in `results/stage7/` or `results/stage6/`: the map gives
+`vt`/8192/0.9 at **1.0327** at every epsilon, and this section says so
+eighteen lines above ("Recommended speedups are 1.033× to 1.058×"). The
+arithmetic of the old pair is self-consistent against a `vt` dense-normalized
+reference of ~1953.8 ms; the artifact's is 1985.9. The conclusion is
+unaffected — the re-evaluated value still clears 1.0 — and the margin it
+clears by is larger than was claimed, not smaller.*

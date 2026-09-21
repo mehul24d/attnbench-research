@@ -227,7 +227,11 @@ def main():
     numerics.enforce_fp32_matmul()
     ap = argparse.ArgumentParser()
     ap.add_argument("--grid", default="configs/accuracy/stage3_grid.yaml")
-    ap.add_argument("--out", default="results/s7_vec_endtoend")
+    # s8, not s7. The banked output of this script is results/s8_vec_endtoend;
+    # the default named a directory that has never existed, so re-running it
+    # without --out would write a second copy nothing reads and leave the
+    # first looking current.
+    ap.add_argument("--out", default="results/s8_vec_endtoend")
     ap.add_argument("--bands", default="8192,16384")
     ap.add_argument("--sparsities", default="0.5,0.75,0.9")
     ap.add_argument("--warmup", type=int, default=3)

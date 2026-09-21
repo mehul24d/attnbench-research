@@ -50,6 +50,7 @@ from torch.overrides import TorchFunctionMode
 
 from attnbench.accuracy.grid_configs import backend_instance
 from attnbench.backends import all_backends
+from attnbench.backends.base import Capability
 from attnbench.config import AttnConfig
 from attnbench import masks as M
 
@@ -155,8 +156,15 @@ def _cfg_for(cls, mask: str) -> tuple[AttnConfig, int, str]:
 # A backend whose identity includes a kernel must be enumerated by instance.
 # Any class not listed here is enumerated as itself.
 INSTANCES: dict[str, tuple[str, ...]] = {
-    "sdpa": ("sdpa_math", "sdpa_flash", "sdpa_efficient"),
+    "sdpa": ("sdpa_math", "sdpa_flash", "sdpa_efficient", "sdpa_cudnn"),
 }
+# `sdpa_cudnn` was added 2026-09-21 -- not because it can run here (it cannot;
+# it needs CUDA, and above seq_len=8192 on sm_89 it faults the device, which
+# is why `Capability.faults_above_seq_len` exists) but because it is a kernel
+# `SDPABackend` accepts and `backend_instance("sdpa_cudnn")` will construct.
+# It is observed and reported as unexercised, which is the honest state.
+# Coverage on this workstation therefore reads 4/11 rather than 4/10: the
+# denominator got bigger because the test stopped choosing it.
 
 
 def _observe(cls, mask: str, monkeypatch, instance: Optional[str] = None) -> Observation:
@@ -233,19 +241,91 @@ def test_something_was_actually_exercised(monkeypatch):
         f"naive must always be exercisable -- it is pure torch. Got {names}")
 
 
+def expected_instances(classes: dict) -> set[str]:
+    """Every instance name the registered classes can produce.
+
+    **Derived from the classes, never from `INSTANCES`.** The version of this
+    that shipped until 2026-09-21 built the expected set out of `INSTANCES`
+    and compared it against observations that `_all_observations` had also
+    expanded through `INSTANCES` -- the same table on both sides of the
+    assertion. It could not fail. An audit mutated `SDPABackend` to accept a
+    fifth kernel and the test stayed green at 4/10; that is the second
+    coverage fix in this project to have been vacuous by construction, and
+    the first was in this same file.
+
+    The source of truth is the class's own `KERNELS`, because that is what
+    `accuracy.grid_configs.backend_instance` will actually construct from a
+    result row's name. A class without `KERNELS` has exactly one instance.
+    """
+    out: set[str] = set()
+    for registered_name, cls in classes.items():
+        kernels = getattr(cls, "KERNELS", None)
+        if kernels:
+            out |= {f"{registered_name}_{k}" for k in kernels}
+        else:
+            out.add(cls.capability.name)
+    return out
+
+
 def test_every_registered_backend_is_considered(monkeypatch):
     """A new backend must appear in the report rather than escape it."""
     considered = {o.backend for o in _all_observations(monkeypatch)}
-    # Expanded the same way _all_observations expands it, so a class listed in
-    # INSTANCES must have every one of its instances examined -- adding a
-    # kernel variant there without observing it is the hole this test closes.
-    registered: set[str] = set()
-    for registered_name, cls in all_backends().items():
-        registered |= set(INSTANCES.get(registered_name, (cls.capability.name,)))
-    missing = registered - considered
+    missing = expected_instances(all_backends()) - considered
     assert not missing, (
         f"registered but never examined: {sorted(missing)}. Give it a causal "
         f"or block_sparse capability, or state why it is exempt.")
+
+
+def test_INSTANCES_lists_every_kernel_its_class_accepts():
+    """`INSTANCES` drives what gets observed, so a kernel absent from it is a
+    kernel nobody looks at. Stated separately from the coverage assertion
+    because the message is the useful part: it names the kernel."""
+    for registered_name, cls in all_backends().items():
+        kernels = getattr(cls, "KERNELS", None)
+        if not kernels:
+            continue
+        listed = set(INSTANCES.get(registered_name, ()))
+        want = {f"{registered_name}_{k}" for k in kernels}
+        assert want <= listed, (
+            f"{sorted(want - listed)} are kernels {cls.__name__} accepts and "
+            f"INSTANCES does not list, so nothing observes them. Add them "
+            f"there -- an instance that cannot run here is reported as "
+            f"unexercised, which is information; omitting it is not.")
+
+
+def test_a_kernel_variant_missing_from_INSTANCES_is_caught():
+    """The break-test, kept rather than run once.
+
+    The audit mutated `SDPABackend` to accept a fifth kernel and the suite
+    stayed green at 4/10, because the expected set and the observed set were
+    both built from `INSTANCES`. This drives the two derivations side by side
+    against a class that has a kernel `INSTANCES` has never heard of, and
+    requires them to disagree. If someone re-circularises
+    `expected_instances`, this goes red without needing anyone to mutate
+    production code again.
+    """
+    class _StubSDPA:
+        KERNELS = ("math", "flash", "brandnew")
+        capability = Capability(name="sdpa", family="dense_exact",
+                                min_compute_capability=(0, 0))
+
+    classes = {"sdpa": _StubSDPA}
+
+    # what the class actually offers
+    from_class = expected_instances(classes)
+    assert "sdpa_brandnew" in from_class
+
+    # the derivation that shipped until 2026-09-21: INSTANCES on both sides
+    from_instances = set()
+    for name, cls in classes.items():
+        from_instances |= set(INSTANCES.get(name, (cls.capability.name,)))
+    assert "sdpa_brandnew" not in from_instances, (
+        "INSTANCES now lists a kernel invented by this test, which means the "
+        "fixture and the real table have collided")
+
+    assert from_class - from_instances == {"sdpa_brandnew"}, (
+        "expected_instances no longer sees a kernel that INSTANCES does not "
+        "list -- the coverage check has gone circular again")
 
 
 def test_no_stale_allowlist(monkeypatch):

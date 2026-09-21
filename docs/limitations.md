@@ -463,35 +463,70 @@ is recorded on every row as `score_source="dense_softmax_fp32"` rather than
 left in a docstring. A future cheap-estimator variant becomes a new
 `score_source` value, not a silent change in meaning.
 
-### The oracle is not only a ceiling. It can put sparse ABOVE dense.
+### The oracle is not only a ceiling. It can put sparse ABOVE dense — mostly WITHDRAWN 2026-09-20
 
 Stated as "an upper bound" this reads as a bound on how good sparse can be
-made to look. Measured on 2026-09-07 it is stronger than that, and the
-difference is qualitative rather than one of degree.
+made to look. Measured on 2026-09-07 it looked stronger than that, and the
+difference looked qualitative rather than one of degree. **Most of the effect
+did not survive re-measurement.** The section is kept because the reasoning
+built on it is what the correction has to reach — the same treatment
+`claims.md` gives it under "The oracle can put sparse ABOVE dense".
 
-**`block_sparse` at sparsity 0.75 beats the dense baseline on `vt` in all
-three measured bands** -- +10.8 at 2048 (86.8 vs 76.0), +5.9 at 4096 (90.6 vs
-84.7), **+14.6 at 8192** (85.1 vs 70.5) -- against standard errors of 1.0-1.4
-points on n=300 cells. At 8192 that is roughly nine standard errors, in the
-same direction, on three independent bands.
+**What was measured, and is withdrawn.** `block_sparse` at sparsity 0.75 beat
+the dense baseline on `vt` in all three bands -- +10.8 at 2048 (86.8 vs 76.0),
++5.9 at 4096 (90.6 vs 84.7), **+14.6 at 8192** (85.1 vs 70.5) -- against
+standard errors of 1.0-1.4 points on n=300 cells. At 8192 that was roughly
+nine standard errors, in the same direction, on three independent bands.
 
-Discarding computation cannot improve a model. What can is *where the mask
-comes from*: the ranking is derived from the full attention scores, so the
-mask concentrates attention on blocks that dense attention itself identified
-as important but does not preferentially attend to. On a task that requires
-following a chain of assignments, that acts as a denoiser -- it suppresses
-distractor blocks the dense model was still spending probability mass on.
+**Two causes, both measured, neither about attention.**
 
-If that mechanism is right, **no deployable method can reproduce this
-result**, because a cheap estimator computed from partial information does
-not know which blocks matter. The oracle is not standing in for a deployable
-estimator here; it is supplying information the deployable estimator cannot
-have.
+1. **The sink.** Those masks did not force kv block 0 (see "The attention sink
+   is not forced" below). Audit S1a re-measured the same 100 examples with it
+   forced: **+3.2 / +0.8 / −2.4** at 2048 / 4096 / 8192. The margin does not
+   survive at any band at 0.75.
+2. **Stopping.** `vt` scores recall over five names under a 40-token cap, and
+   the unforced-sink sparse arms stopped early -- 31-183 caps per 300 against
+   dense's 214-279. An arm that stops before restating the chain scores full
+   on a short list while dense runs into the cap. See "`vt`'s
+   sparse-above-dense gap is substantially a STOPPING effect at 1.5B, and not
+   at 7B".
 
-Proposed mechanism, not a demonstrated one. What is demonstrated is the
-effect and its size. Distinguishing it would need the same grid under a
-genuinely cheap estimator, which is a `score_source` this study does not yet
-have.
+Reproducing across three bands tested neither of those, which is why three
+agreeing bands felt like confirmation. **Nine standard errors of a quantity
+that was not what it was taken for.**
+
+**What survives, and it is narrow.** At 16384 with the sink forced, `vt`
+sparse is still above dense -- +9.4 / +12.8 / +12.0 at 0.5 / 0.75 / 0.9 -- but
+among pairs that stopped the same way that falls to +2.4 / +4.4 / +8.1, and at
+7B the conditioned margin is +0.4 / +2.7 / +6.8. So a residual positive margin
+at high sparsity survives conditioning, on both models; the large gross
+margins do not.
+
+**The mechanism proposed for it.** Discarding computation cannot improve a
+model. What can is *where the mask comes from*: the ranking is derived from
+the full attention scores, so the mask concentrates attention on blocks that
+dense attention itself identified as important but does not preferentially
+attend to. On a task that requires following a chain of assignments, that
+would act as a denoiser -- suppressing distractor blocks the dense model was
+still spending probability mass on.
+
+**That account is now one of three**, and it is the only one with a testable
+prediction. The others are block structure suiting multi-hop tracking (Sparse
+Frontier's reading) and whatever the stopping conditioning cannot remove
+cleanly, since stopping is a mediator rather than a covariate. **Nothing here
+separates them**, and the residual they are competing to explain is 6-8 points
+at one band, not the 14.6 this section was written around.
+
+*Until 2026-09-21 this section continued: "If that mechanism is right, **no
+deployable method can reproduce this result**, because a cheap estimator
+computed from partial information does not know which blocks matter." That
+inference was drawn from the withdrawn margins. It is also no longer the state
+of the evidence: the same grid under a genuinely cheap estimator has since
+been run -- `score_source="minference_meanpool"`,
+`results/accuracy_forced_sink_cheap/` and `results/s9_7b_cheap_16384/` -- and
+on `vt` at 16384 the cheap arm is +6.2 / +7.4 / +3.4 above dense, i.e. it
+reproduces a positive margin rather than failing to. The sentence claimed an
+impossibility that the measurement contradicts.*
 
 **Consequence for Stage 4 (`analysis/matched.py`).** The matched-accuracy
 protocol certifies "the smallest sparsity budget whose accuracy is
@@ -502,6 +537,21 @@ certifies is narrower than "this budget is free". It is: *this budget is
 non-inferior to dense **when the mask is chosen with full knowledge of the
 attention scores***. That qualifier belongs in every statement of a matched
 budget, not only here.
+
+**The qualifier survives the withdrawal; its reach shrank.** It was drawn from
+margins that were mostly sink and stopping artifacts, so it now rests on the
+conditioned residual at 16384 (+8.1 at 1.5B, +6.8 at 7B) rather than on
++14.6 at 8192. The mechanism by which oracle knowledge could flatter a matched
+budget is unchanged and the wording above is unchanged; what changed is how
+much of the published margin it is being asked to explain.
+
+**Visible in the rebuilt Stage 4.** `oracle_sensitive` is derived from "at
+least one sparsity level EXCEEDED dense beyond noise", so the withdrawal moves
+the flag itself: in `results/stage4/matched_budgets.parquet`, `vt` at 2048 is
+`False` at all three epsilons where the pre-fix file
+(`results/_superseded/stage4_prefix_sink/`) had it `True`. Six of nine `vt`
+cells still carry it. A caveat that is recorded as a column rather than as
+prose moves with the data, which is the argument for recording it that way.
 
 ## Batching does not help, and the reason is not the obvious one
 
@@ -1863,13 +1913,23 @@ it — nothing in the suite had tested the sink either way, which is why the
 defect survived every previous green run.
 
 **Realised density is now above nominal**, because two blocks per row are free
-instead of one: measured 0.506 / 0.260 / 0.111 against nominal 0.50 / 0.25 /
-0.10. The reference implementation binary-searches k to hit a target exactly;
-this study does not. *(Added 2026-09-19: those three figures are the long-band
-case. The excess grows as context shrinks — 0.610 / 0.419 / 0.294 at 2048 —
-see the table under "What it does not affect" above, which is where the
-"~1%" this paragraph originally claimed turned out to be wrong.)* It is in the
-conservative direction for speedup.
+instead of one: measured **0.508 / 0.262 / 0.114** at 32768 against nominal
+0.50 / 0.25 / 0.10. The reference implementation binary-searches k to hit a
+target exactly; this study does not. *(Added 2026-09-19: those three figures
+are the long-band case. The excess grows as context shrinks — 0.610 / 0.419 /
+0.294 at 2048 — see the table under "What it does not affect" above, which is
+where the "~1%" this paragraph originally claimed turned out to be wrong.)* It
+is in the conservative direction for speedup.
+
+> *This line read 0.506 / 0.260 / 0.111 until 2026-09-21, and named no band.
+> Those three numbers reconcile with no band the study runs: rebuilding the
+> masks gives 0.515 / 0.273 / 0.128 at 16384 and 0.508 / 0.262 / 0.114 at
+> 32768, and the density is deterministic given band and sparsity — the budget
+> fixes how many blocks are active, only which ones vary — so this is not a
+> draw-to-draw difference. The correction is small, in the same direction, and
+> changes no conclusion; it is made because an unattributable measurement is
+> the thing this file is about, and three digits that belong to no band are
+> exactly that.*
 
 **Every accuracy number predating this change is superseded, not deleted.**
 The unforced-sink rows are retained and marked, because the forced-versus-
@@ -1878,15 +1938,27 @@ the cleanest demonstration this study contains of why a mask-construction
 detail that papers put in an appendix is load-bearing. Regeneration is
 pending.
 
-*Status 2026-09-19, from the single-measurement audit:* still pending, and the
-affected set is named. Regenerated post-fix: 16384 (1.5B oracle and cheap,
-7B oracle and cheap). **Not regenerated: every 1.5B accuracy number at 2048,
-4096 and 8192** — `stage3_s1`, `stage3_s1b`, `stage3_flashdecode` — and
-everything derived from them (Stage 4 matched budgets, Stage 6, the Stage 7
-decision map). There is direct evidence it moves: at 16384, post-fix,
-`niah_multikey` at 0.5 is +0.0 against dense, where pre-fix 8192 was −15.0.
-The re-run is approved as audit item S1a (n=100, same example ids, dense arm
-as a hard canary).
+**Status 2026-09-20: done, and here is what is left.** Audit item S1a re-ran
+2048, 4096 and 8192 at n=100 with the sink forced, same example ids, decode
+pinned to the banked `sdpa_math`, dense arm as a hard canary (300/300 at every
+band) — `results/s1a/accuracy_all_bands.parquet`. Stage 4, Stage 6 and the
+Stage 7 decision map were rebuilt from it and promoted to
+`results/stage4|6|7`; the pre-fix versions are under `results/_superseded/`.
+See `claims.md`, "The derived stages rebuilt on forced-sink accuracy".
+
+**Still not regenerated:** `stage3_flashdecode` (the sparse-decode-through-
+`sdpa_flash` comparison at 2048–8192) and `stage3_32768`. Both remain era 1.
+The 16384 band was already post-fix (1.5B oracle and cheap, 7B oracle and
+cheap) and its 1.5B oracle arm has since moved again, to era 3, under audit
+S7.
+
+*This block read "still pending" and listed Stage 4, Stage 6 and the Stage 7
+decision map as not regenerated until 2026-09-21. They were rebuilt on
+2026-09-20 — the day after the status was written, and a day before it was
+read by an audit that had to check the directories to find out. It also said
+that at 16384 post-fix `niah_multikey` at 0.5 is +0.0 against dense: that is
+the era-2 cell, and S7 re-measured it at −1.0 under the fixed tie-break. Each
+is inside the other's CI.*
 
 ---
 
@@ -2049,8 +2121,15 @@ structural argument was carrying the claim rather than a sample.
 >
 > **What this costs the banked data.** Re-running the fixed builder over every
 > banked score tensor changes **5.6% of (layer, sparsity) masks** and 0.23% of
-> all active blocks, concentrated in the ragged final block (0.92% of active
-> blocks at `n_blocks=17`, 1.67% at 65). Untied rows are bit-identical, because
+> all active blocks, concentrated in the ragged final block — **0.0% where
+> `seq_len` divides evenly**, 0.92% at `n_blocks=17`, 1.67% at 65. **Both
+> figures are pools, and both understate where the change concentrates.** The
+> 5.6% is flagged as such below; the 0.23% was not until 2026-09-21, and it is
+> the same defect — the zero-rate configurations dominate the denominator, so
+> the pooled fraction describes the bands where nothing moved. The third term
+> was in the commit message of `5cc3a40` and was dropped when the figure was
+> quoted here, which is precisely the term that makes the pooling visible.
+> Untied rows are bit-identical, because
 > a different 1e-9 perturbation cannot reorder distinct scores. So the banked
 > accuracy rows are **not bit-reproducible under the current code**, and
 > whether any score moved is **unmeasured** — it needs one GPU band at 16384,
@@ -2083,8 +2162,12 @@ assignment is per file:
 stopping confound would make a flip unattributable. So `accuracy_forced_sink`
 at 16384 is now **split by task**: its `niah_*` cells are superseded and its
 `vt` cells are the only measurement there is. Do not read that file as one
-population — see "Which mask era each banked accuracy file belongs to" above
-and the composition rule in `analysis/composition.py`.
+population — see "Which mask era each banked accuracy file belongs to" above.
+(The composition rule in `analysis/composition.py` is a separate matter
+and does not cover this: it balances facet levels within an aggregation
+and cannot see a mask rule. The era check is `analysis/eras.py`, and it
+reaches this file only through the comparison scripts, not through
+`aggregate()`.)
 
 Every other banked accuracy row is era 1 or era 2, so a bit-exact replicate of
 any published number outside that one cell is still not obtainable from `HEAD`.
@@ -2097,19 +2180,40 @@ arms — 1.5B oracle, 1.5B cheap, 7B oracle, 7B cheap — and all four being era
 made it a *correct* statement about a mask rule the code no longer builds. S7
 moved one of them. Re-running the 1.5B cheap arm to restore that pair would
 put an era-3 gap beside an era-2 gap and make the scale comparison cross-era,
-which is precisely what `analysis/composition.py` refuses. **All arms of a
+which `scripts/run_scale_comparison.py` refuses from `git_commit` via
+`analysis/eras.py`. *(This clause read "which is precisely what `analysis/composition.py` refuses" until 2026-09-21. That was wrong: composition refuses on facet balance and has no concept of a commit, so nothing refused a cross-era comparison at all. `scripts/run_scale_comparison.py` and `scripts/run_scorer_comparison.py` now do, from `git_commit` via `analysis/eras.py`, unless `--cross-era era2:era3` is passed with a stated reason.)* **All arms of a
 comparison move together or none of them do**, and "none, clearly labelled"
 is a legitimate disposition — the era label is the fix. See
 `audit_register.md`, item S12.
 
-**How to tell without this table.** Era 1 and 2 split on `git_commit`: any
-commit that is an ancestor of `37675a0` is era 1. Era 2 and 3 split on date
-only — the jitter fix carries no schema change, so a row cannot be assigned
-between them from its own contents. That is a deliberate limitation being
-recorded rather than a gap: adding a `mask_rule` column now would stamp only
-future rows and leave every banked row unlabelled, which is the asymmetry that
-makes a half-populated provenance field worse than none (see
-`provenance.stamp_onto`). The table above is the register instead.
+**How to tell without this table.** Both boundaries are commits and
+`git_commit` decides both. Era 1 is any commit that is not a descendant of the
+sink fix `37675a0`; era 3 is any commit that is a descendant of the jitter fix
+`5cc3a40`; era 2 is what lies between. Each boundary commit belongs to the era
+it opens. Verified against the real history on 2026-09-21: the partition is
+exact for all thirteen registered commits, and `attnbench/analysis/eras.py`
+derives it with `git merge-base --is-ancestor` rather than restating it.
+
+> **This paragraph said "Era 2 and 3 split on date only — the jitter fix
+> carries no schema change, so a row cannot be assigned between them from its
+> own contents", and called that "a deliberate limitation being recorded
+> rather than a gap". It was wrong, and wrong in the direction that made the
+> project look less careful than it is.** `5cc3a40` is an ordinary commit, so
+> the same mechanism this paragraph uses one sentence earlier for era 1/2
+> settles era 2/3. The substitute it offered does not even work: `179c894`,
+> `44ab65c` and `33598b4` are era 2 and share 2026-09-20 with `39e1d6d`, which
+> is era 3, so a date rule at day granularity misfiles three of four. The
+> claim was then copied verbatim into `analysis/eras.py` when that module was
+> written on 2026-09-21 — one day after the guard against copying stale
+> statements was built, and by the same hand. Nobody re-derived it from the
+> commit graph until an audit was told to.
+
+**Why there is still no `mask_rule` column.** Not because the information is
+unavailable — it is, from `git_commit`. Because adding the column now would
+stamp only future rows and leave every banked row unlabelled, which is the
+asymmetry that makes a half-populated provenance field worse than none (see
+`provenance.stamp_onto`). That argument stands on its own; the availability
+argument never did.
 
 **Size of the era-2 → era-3 difference. It is strongly length-dependent, and
 the aggregate hides that.** Rebuilding every banked score tensor under both

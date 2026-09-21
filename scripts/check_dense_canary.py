@@ -8,7 +8,7 @@ row. The verdict, including how many examples were checked, is written to
 --record whether it passes or fails.
 
     python scripts/check_dense_canary.py \\
-        --new results/s1a/accuracy.parquet \\
+        --new results/s1a/accuracy_band2048.parquet \\
         --banked canary_ref/stage3_s1.parquet \\
         --seq-len 2048 --min-checked 300 --record results/s1a/canary_2048.json
 """

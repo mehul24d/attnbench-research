@@ -50,7 +50,7 @@ end-to-end at 32K context at zero accuracy cost** (100.0 vs 100.0):
 
 | context | best speedup at no accuracy cost | oracle cost ÷ saving |
 |---|---|---|
-| 2048 | 0.993× (sparsity loses) | undefined — nothing is faster |
+| 2048 | 0.984× (sparsity loses) | undefined — nothing is faster |
 | 4096 | 0.997× | undefined |
 | 8192 | 1.044× | **49×** |
 | 16384 | 1.186× | **36×** |
@@ -59,6 +59,13 @@ end-to-end at 32K context at zero accuracy cost** (100.0 vs 100.0):
 The oracle ratio flattens near 35 rather than heading toward 1 — scoring and
 the saving grow at similar rates, so the gap is structural, not a small-scale
 artefact.
+
+*The 2048 row read "0.993× (sparsity loses)" until 2026-09-21. That is the 0.75-sparsity cell,
+which scores 99.0 — so it is the best speedup at a SMALL accuracy cost, in a
+column headed "at no accuracy cost". The only 2048 cell at 100.0 is 0.5
+sparsity, at 0.984×. Forcing the sink does not change which cell qualifies:
+the 0.90 row moves from 62.0 to 97.0 and still does not reach 100. The
+correction makes the row worse and the column's own rule is what requires it.*
 
 ## The five gaps this targets
 
@@ -88,8 +95,8 @@ task family** (RULER-style NIAH and variable tracking), **batch 1**,
 **prefill-only sparsity**, **inference only**. Context tops out at **32768
 tokens**, which is a hardware ceiling, not a design choice.
 
-Total rented GPU time: **₹7,879 itemised** (≈ US$85 at the rate implied by
-the ledger's own A100 pricing), across 30 priced sessions in
+Total rented GPU time: **₹8,279 itemised** (≈ US$94 at the ₹88/$ the ledger
+prices its own audit-log rows at), across 34 priced sessions in
 [`docs/spend_ledger.md`](docs/spend_ledger.md), plus one early validation
 session recorded only in prose. The figure is summed from the ledger's table,
 not restated here — this line previously said "roughly ₹6,000, of which ₹2,413
@@ -98,7 +105,7 @@ said to be part of. The ledger says which rows come from an instance's own
 boot clock or the audit log and which are reconstructed, and records ₹218 that
 a green test spent by creating real instances on every suite run.
 
-[`docs/limitations.md`](docs/limitations.md) is over 950 lines and is not
+[`docs/limitations.md`](docs/limitations.md) is over 2,300 lines and is not
 decoration. Two of this study's questions are **permanently unanswerable on
 this hardware**, and it says which and why.
 
@@ -130,7 +137,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 999 passed, 10 skipped, ~50s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1109 passed, 35 skipped, ~65s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -143,12 +150,32 @@ The suite runs on CPU and needs no GPU, no model download, and no
 credentials. Verified from a clean clone into a fresh virtualenv on
 2026-09-12, resolving dependencies from scratch.
 
-The 11 skips are the honest part: 2 need CUDA, and 9 read banked result files
-that `results/` correctly keeps out of git. Those 9 validate real measured
-data — including the check that the cross-arm decode guard actually fires on
-the confounded Stage 3 rows — so a fresh clone is green **without** running
-them. Each skips with a message naming the file it wanted, rather than
-passing silently.
+The 35 skips are the honest part, and they split four ways: **3** need CUDA,
+**24** read banked result files that `results/` correctly keeps out of git,
+**4** are scripts `test_script_call_sites.py` has nothing to check because
+they import nothing from `attnbench`, and **4** are the same scripts skipped
+again by `test_import_resolution.py`, which only has something to say about a
+script that imports the package. The 24 validate real measured data —
+including the check that the cross-arm decode guard actually fires on the
+confounded Stage 3 rows, and the check that the two comparison scripts refuse
+the banked era-2/era-3 pair, and the check that segment 1's 2026-09-03 probe
+still carries the eager-flex fingerprint — so a fresh clone is green **without** running
+them. Each skips with a message naming the file it wanted, rather than passing
+silently.
+
+*That third number was 6 until 2026-09-21. It is 4 now because
+`run_scale_comparison.py` and `run_scorer_comparison.py` acquired the mask-era
+check and therefore import `attnbench` for the first time — two scripts moved
+out of the "nothing to check" bucket by being given something to check.*
+
+Those counts are for a fresh clone. **With `results/` present the suite reads
+1133 passed, 11 skipped**, because the 24 banked-file tests run instead of
+skipping. Measured on transformers 5.17.0 and again on **4.46.0**, the version
+the 2026-09-20 instance ran: identical, test for test. *(This paragraph said "The 11 skips … 2 need CUDA, and 9 read banked
+result files" against a code block saying 10 skipped, while the real numbers
+were 23 and 9. Three figures for one quantity, none of them measured;
+`tests/test_doc_derived_numbers.py` now asserts the two here agree with each
+other and with their own breakdown.)*
 
 Then, on any CUDA GPU:
 
@@ -169,12 +196,18 @@ Then, on any CUDA GPU:
   on what, and what each number licenses, organised by the five gaps. Drafted
   from `claims.md` with every claim's boundary attached.
 - **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
-  46 confirmed incidents, each one a plausible number produced by machinery
+  50 confirmed incidents, each one a plausible number produced by machinery
   that looked like it was working. No crash, no failed test. Several changed
   a published figure. Each entry records the detection method, which is the
   transferable part. #45 is the first found by someone who did not write the
   code, and it had survived the full suite plus a diagnostic written to test
   the exact property it broke.
+- **[`docs/withdrawn_figures.md`](docs/withdrawn_figures.md)** — every
+  figure this study has withdrawn or superseded, paired with what replaced it.
+  `tests/test_no_stale_figures.py` reads it and fails if one of them appears
+  anywhere as a live statement. Added 2026-09-21 because five separate defects
+  in that audit were one defect: a correction applied in `claims.md` and
+  propagated nowhere else.
 - **[`docs/audit_register.md`](docs/audit_register.md)** — one row per audit
   item: the question, the evidence, the disposition. Added 2026-09-20 because
   items were cited by number in three documents with no list of what they

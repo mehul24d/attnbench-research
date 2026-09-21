@@ -671,10 +671,12 @@ neither was at ceiling — and *not* beyond.
 
 **One number that was wrong for four days, as a caution about the artifacts.**
 `decode_corrected.parquet` was built from a phases file of the wrong decode
-era between 2026-09-08 and 2026-09-12; `claims.md` said 12 of 31 while the
-file said 10, and nothing compared them. Both now agree at 12. The lesson is
-recorded as `silent_failure_patterns.md` #31: a regeneration that inherits its
-input verifies nothing.
+era between 2026-09-08 and 2026-09-12; `claims.md` had said 12 of 31 while the
+file said 10, and nothing compared them. They were reconciled at 12 on
+2026-09-12, and the figure has since been superseded again — the S1a rebuild
+puts it at **15 of 34**. The lesson is recorded as
+`silent_failure_patterns.md` #31: a regeneration that inherits its input
+verifies nothing.
 
 ---
 

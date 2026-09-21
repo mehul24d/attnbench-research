@@ -166,6 +166,21 @@ class SDPABackend(AttentionBackend):
         family="dense_exact",
         min_compute_capability=(0, 0),
         supports_sliding=False,
+        # True since 2026-09-21. It was False while `state_from_prefill` was
+        # defined below, i.e. this class DECLARED less than it implements --
+        # and a capability is a pre-filter, so `claims_support` answered "no
+        # decode support" for every sdpa decode config and the probe recorded
+        # it as unsupported rather than running it. A backend declaring less
+        # than it does produces silent EXCLUSIONS, which look like a clean
+        # sweep; only a backend declaring more produces the mismatch that
+        # `gates.probe` is built to catch. That asymmetry is why
+        # `test_declared_decode_support_matches_the_implementation` exists.
+        #
+        # No banked row changes. Stage 3 asks `supports_decode()` directly
+        # (accuracy/model.py, grid_configs.py) and so has always decoded the
+        # dense arm through this class; the capability was only ever consulted
+        # by the Stage 0/1 probe, whose decode cells for sdpa were skipped.
+        supports_decode=True,
         notes="Backend forced per instance; recorded in results.",
     )
 
@@ -191,9 +206,20 @@ class SDPABackend(AttentionBackend):
     # completed 16384.
     _CUDNN_FAULTS_ABOVE = 8192
 
+    # The kernels this class accepts, named once. It was an inline tuple in
+    # `__init__` until 2026-09-21, which made it unreadable from outside --
+    # and `tests/test_timed_region_setup.py` was therefore deriving its list
+    # of things-that-must-be-observed from its own `INSTANCES` table, i.e.
+    # from the answer. Adding a kernel variant without observing it was
+    # invisible to the test written to make that impossible. Anything that
+    # needs to know what instances this class has reads this.
+    KERNELS: tuple[str, ...] = ("flash", "efficient", "math", "cudnn")
+
     def __init__(self, kernel: str = "efficient"):
-        if kernel not in ("flash", "efficient", "math", "cudnn"):
-            raise ValueError(kernel)
+        if kernel not in self.KERNELS:
+            raise ValueError(
+                f"{kernel!r} is not an SDPA kernel; expected one of "
+                f"{', '.join(self.KERNELS)}")
         self.kernel = kernel
         if kernel == "cudnn":
             # Per-INSTANCE capability: the four SDPA variants share one class,

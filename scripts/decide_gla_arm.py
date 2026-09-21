@@ -48,7 +48,12 @@ def main() -> int:
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--dtype", default="bfloat16")
-    ap.add_argument("--out", default="results/stage3_s1/gla_arm_verdict.json",
+    # s1b, not s1: the verdict this writes is the GLA arm decision, and the
+    # one that exists is at results/stage3_s1b/gla_arm_verdict.json -- the
+    # session ran it there and the default here pointed one directory over.
+    # A default output path that nobody reads is harmless until someone runs
+    # the script with it and then looks for the file where the last one is.
+    ap.add_argument("--out", default="results/stage3_s1b/gla_arm_verdict.json",
                     help="where the verdict is written. The decision "
                          "changes what the remaining segments measure, "
                          "so it must outlive the instance that made it.")

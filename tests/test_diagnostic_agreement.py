@@ -105,3 +105,68 @@ def test_loads_the_real_eager_reference():
         # displayed, while the parquet holds full precision. The compiled
         # literals are exact because they came through a 6dp detail string.
         assert ref[key] == pytest.approx(expected, rel=1e-4)
+
+
+# --- against the banked probes, not only the literals above ----------------
+#
+# Everything above drives `compare()` with dictionaries written into this
+# file. That validates the comparison and nothing else: `observed_from_
+# correctness` -- the function that turns a real Stage 1 probe into those
+# dictionaries -- had no caller anywhere in the suite until 2026-09-21, while
+# `docs/stage2_plan.md` said the removed `check_stage1_against_diagnostic.py`
+# had been replaced by "the comparison ... in tests/test_diagnostic_
+# agreement.py, which runs in the ordinary suite". The comparison was there.
+# The reading of a probe file was not, so the path from a parquet on disk to a
+# verdict was exercised by nothing.
+#
+# Both fingerprints are on disk, which makes this a real-data test in both
+# directions rather than a happy-path one.
+
+SEG2_PROBES = (
+    "results/stage3_s1/probe/correctness.parquet",
+    "results/stage3_s1b/probe/correctness.parquet",
+    "results/stage2/seg2c_20260904/probe/correctness.parquet",
+    "results/stage2/seg2d_20260904/probe/correctness.parquet",
+)
+
+# Segment 1, 2026-09-03: the run that fell back to eager flex. Kept because
+# the incident is the reason this module exists.
+SEG1_PROBE = "results/stage2/segment_20260903_seg1/probe/correctness.parquet"
+
+
+def _probe(rel: str):
+    from pathlib import Path
+    p = Path(__file__).resolve().parent.parent / rel
+    if not p.exists():
+        pytest.skip(f"{rel} not present (results/ is gitignored)")
+    return DA.observed_from_correctness(p)
+
+
+@pytest.mark.parametrize("rel", SEG2_PROBES)
+def test_a_banked_segment_2_probe_reproduces_the_compiled_diagnostic(rel):
+    """The assertion the removed script made, now made by the suite."""
+    observed = _probe(rel)
+    assert set(observed) >= set(COMPILED), (
+        f"{rel} does not carry the diagnostic configs "
+        f"{sorted(set(COMPILED) - set(observed))}; the probe grid or the "
+        f"config_key hash has changed and this check is reading nothing")
+    rows = DA.compare({k: observed[k] for k in COMPILED}, COMPILED, EAGER)
+    assert [r.verdict for r in rows] == ["AGREES", "AGREES"], (
+        f"{rel}: {[(r.config_key, r.verdict, r.observed) for r in rows]}")
+    DA.assert_agreement(rows)
+
+
+def test_the_banked_segment_1_probe_still_carries_the_eager_fingerprint():
+    """The negative case, from banked data rather than a fixture.
+
+    A detector shown to fire only on numbers typed into its own test file is
+    a detector shown to fire on numbers typed into its own test file. This
+    one fires on the parquet the incident actually produced.
+    """
+    observed = _probe(SEG1_PROBE)
+    rows = DA.compare({k: observed[k] for k in COMPILED}, COMPILED, EAGER)
+    assert [r.verdict for r in rows] == ["EAGER_SIGNATURE"] * 2, (
+        f"segment 1's probe no longer reports the eager fallback: "
+        f"{[(r.config_key, r.verdict, r.observed) for r in rows]}")
+    with pytest.raises(DA.DiagnosticAgreementError, match="EAGER"):
+        DA.assert_agreement(rows)

@@ -72,7 +72,17 @@ echo "  machine-type : $MACHINE_TYPE"
 echo "  accelerator  : $ACCELERATOR"
 echo "  image        : $IMAGE"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
-echo "  provisioning : FLEX_START (DWS)  -- Rs 417/h all-in"
+# Priced per zone: asia-southeast1 Rs 417/h, us-central1 Rs 425/h (header).
+# ZONE is overridable and defaults to us-central1-a, so a fixed "Rs 417/h"
+# here understated the rate for the default zone -- and the Rs 2,125 ceiling
+# below is computed at 425. Printing the zone's own rate keeps the two
+# consistent; an unrecognised zone says so rather than guessing.
+case "$ZONE" in
+  asia-southeast1-*) RATE_LINE="Rs 417/h all-in (asia-southeast1, 2026-09-13)" ;;
+  us-central1-*)     RATE_LINE="Rs 425/h all-in (us-central1, 2026-09-15)" ;;
+  *)                 RATE_LINE="rate NOT PRICED for $ZONE -- confirm before proceeding" ;;
+esac
+echo "  provisioning : FLEX_START (DWS)  -- $RATE_LINE"
 echo "  in-guest halt: +${HALT_MINUTES} min (3h30m) -- GPU billing stops, disk survives"
 echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 2,125 ceiling)"
 echo "  recovery win : ~1h30m between halt and DELETE"

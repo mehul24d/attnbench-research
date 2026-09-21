@@ -160,7 +160,17 @@ Then, **on the instance, before any sweep cell runs**:
    This ran as `scripts/check_stage1_against_diagnostic.py` against each
    segment's `probe/correctness.parquet`, non-zero exit meaning stop. The
    script was removed after the last segment; the comparison it made is in
-   `tests/test_diagnostic_agreement.py`, which runs in the ordinary suite. The diagnostic path (a script calling
+   `tests/test_diagnostic_agreement.py`, which runs in the ordinary suite --
+   including, since 2026-09-21, against the banked probes themselves:
+   `stage3_s1`, `stage3_s1b`, `seg2c` and `seg2d` must all report `AGREES`,
+   and segment 1's 2026-09-03 probe must still report `EAGER_SIGNATURE`.
+   *(Until then this sentence overstated what had replaced the script. The
+   suite carried the comparison but drove it with dictionaries written into
+   the test file; `diagnostic_agreement.observed_from_correctness`, the
+   function that turns a probe parquet into those dictionaries, had no caller
+   anywhere. The verdict logic was tested and the path from a file on disk to
+   a verdict was not, which is the difference between the script's check and
+   what stood in for it.)* The diagnostic path (a script calling
    `check_for_family` directly) and the pipeline path (`run_probe.py` over the
    full grid) must agree, or something differs between them and it is worth
    knowing at the cost of one comparison rather than 504 cells.

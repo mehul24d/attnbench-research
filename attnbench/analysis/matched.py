@@ -24,17 +24,29 @@ rather than leave implicit in the code:
 
 WHAT A MATCHED BUDGET CERTIFIES, AND WHAT IT DOES NOT.
 
-The bar is "non-inferior to dense". On 2026-09-07 block_sparse at 0.75 was
-measured *superior* to dense on `vt` in all three bands (+10.8, +5.9, +14.6
-points against 1.0-1.4 point standard errors). A sparse method cannot beat
-dense by discarding computation; what it can do is benefit from where the
-mask came from, which here is an oracle ranking derived from the full
-attention scores (`score_source="dense_softmax_fp32"`).
+The bar is "non-inferior to dense", and a sparse arm can clear it from above.
+A sparse method cannot beat dense by discarding computation; what it can do is
+benefit from where the mask came from, which here is an oracle ranking derived
+from the full attention scores (`score_source="dense_softmax_fp32"`).
 
-So on at least one task, part of what clears the non-inferiority bar is
-supplied by the oracle rather than by sparsity. Nothing about the statistics
-below is affected -- the paired bootstrap measures exactly what it claims on
-the rows it is given. What changes is the sentence a matched budget licenses:
+The evidence for that, and its size, CHANGED on 2026-09-20. This docstring
+said: "On 2026-09-07 block_sparse at 0.75 was measured *superior* to dense on
+`vt` in all three bands (+10.8, +5.9, +14.6 points against 1.0-1.4 point
+standard errors)." Those margins are WITHDRAWN -- they were measured on masks
+that did not force the attention sink, and most of what remained was the two
+arms stopping differently under a recall-scored cap. Forced sink, same
+examples: +3.2 / +0.8 / -2.4. See docs/withdrawn_figures.md,
+`vt-sparse-above-dense-margins`.
+
+What the qualifier now rests on is the residual at 16384 that survives
+conditioning on how each example stopped: +8.1 at 1.5B/0.9 and +6.8 at 7B.
+Smaller, on one band rather than three, and still in the direction that makes
+a matched budget partly oracle-supplied -- so the qualifier below is unchanged
+and the reason to carry it is unchanged. Only its magnitude moved.
+
+Nothing about the statistics below is affected -- the paired bootstrap
+measures exactly what it claims on the rows it is given. What changes is the
+sentence a matched budget licenses:
 
     NOT  "sparsity 0.75 is free at 8192 on vt"
     BUT  "sparsity 0.75 is non-inferior to dense at 8192 on vt WHEN THE MASK

@@ -73,6 +73,54 @@ def _logits_to_keep_kwarg(version: str) -> str:
 
 _LOGITS_TO_KEEP_KWARG = _logits_to_keep_kwarg(transformers.__version__)
 
+
+# **This gate fails SILENTLY, and its sibling above does not.** That asymmetry
+# is the whole reason this function exists.
+#
+# Get the tuple arity wrong and the decoder layer raises ValueError on the
+# first forward -- measured on both real installs 2026-09-21: "not enough
+# values to unpack (expected 3, got 2)" on 4.46.0, "too many values to unpack
+# (expected 2)" on 5.16/5.17. You cannot ship that.
+#
+# Get THIS name wrong and nothing happens. `CausalLM.forward` carries
+# `**kwargs` on both versions, so the unknown keyword is swallowed, the
+# parameter keeps its default of 0, and `hidden_states[:, -0:, :]` is every
+# position rather than none. Measured at seq_len=64: the correct name returns
+# logits of shape (1, 1, V), the wrong name (1, 64, V) -- byte-identical to
+# passing nothing at all. At the real 40K positions and ~150K vocab that is
+# the 11+ GiB allocation that OOM'd the first GPU validation session,
+# reappearing with no error anywhere.
+#
+# So the check is made explicit, once, against the model actually being
+# wrapped. A silent failure on a paid GPU is worth a signature lookup in a
+# constructor.
+def _assert_logits_kwarg_accepted(model: nn.Module) -> None:
+    import inspect
+
+    try:
+        params = inspect.signature(type(model).forward).parameters
+    except (AttributeError, TypeError, ValueError):
+        # No `forward`, or one that cannot be introspected. Say nothing:
+        # the architecture check below is the one that owns "this is not a
+        # model we can wrap", and pre-empting it with a message about an
+        # lm_head keyword would point the reader at the wrong problem.
+        return
+    if _LOGITS_TO_KEEP_KWARG in params:
+        return
+    other = ("logits_to_keep" if _LOGITS_TO_KEEP_KWARG == "num_logits_to_keep"
+             else "num_logits_to_keep")
+    hint = (f" It does accept {other!r}, so the version test in "
+            f"_logits_to_keep_kwarg() is wrong for transformers "
+            f"{transformers.__version__}." if other in params else
+            " It accepts neither name, so this model cannot restrict lm_head "
+            "to the last position and every scoring forward will compute "
+            "logits over the whole sequence.")
+    raise UnsupportedModelArchitecture(
+        f"{type(model).__name__}.forward does not accept "
+        f"{_LOGITS_TO_KEEP_KWARG!r}.{hint} Passing it anyway would be "
+        f"swallowed by **kwargs and silently compute logits over every "
+        f"position -- the allocation that OOM'd the 2026-09-04 session.")
+
 Mode = Literal["score", "measured", "decode"]
 
 
@@ -469,6 +517,7 @@ class SwappableAttentionModel:
                  *, model_id: str, finest_block_size: int = 64,
                  chunk_blocks: int = 4,
                  score_source: str = "dense_softmax_fp32"):
+        _assert_logits_kwarg_accepted(model)
         self.model = model
         self.model_id = model_id
         self.finest_block_size = finest_block_size

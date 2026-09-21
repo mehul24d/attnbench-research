@@ -42,7 +42,19 @@ GUARD_ARGS=(--max-jobs "$MAX_JOBS" --nvcc-threads "$NVCC_THREADS")
 if [[ -n "${FA_FREE_GB_OVERRIDE:-}" ]]; then
   GUARD_ARGS+=(--free-gb "$FA_FREE_GB_OVERRIDE")
 fi
-python3 -m attnbench.build_guards "${GUARD_ARGS[@]}" || exit 1
+# PYTHONPATH from this script's own location, not from the caller's cwd.
+# `python3 -m attnbench.build_guards` puts the CURRENT DIRECTORY on sys.path,
+# so run from anywhere but the repo root it resolves `attnbench` to whatever
+# is installed in site-packages. On the 2026-09-21 audit workstation that was
+# a non-editable copy eleven days stale, carrying a pre-sink-fix `masks.py`.
+# It happened to be harmless here -- build_guards.py was byte-identical and
+# imports nothing from the package -- but "harmless by coincidence" is not a
+# property worth relying on. Every `scripts/*.py` already derives the repo
+# root from `__file__`; this is the one invocation that could not, because
+# `-m` has no `__file__` to derive from until after the resolution it needs.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 -m attnbench.build_guards "${GUARD_ARGS[@]}" || exit 1
 
 # ---------------------------------------------------------------------------
 # 2. ninja must be on PATH, or torch silently compiles serially.

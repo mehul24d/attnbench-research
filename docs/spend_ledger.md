@@ -477,6 +477,6 @@ estimator's disadvantage against the oracle *widens* with scale on
 requirement is not a small-model artifact. That is the more consequential of
 the two possible outcomes and the less convenient one.
 
-**Day total: ₹1,303 across four sessions** (10 → 11 → 12 plus the ~₹1
+**Day total: ₹1,304 across four sessions** (10 → 11 → 12 plus the ~₹1
 boot-test), against ₹1,005 for session 10 alone. The three sessions after the
 idle-burn correction cost ₹299 combined and produced three results.

@@ -20,16 +20,19 @@ from dataclasses import replace
 import pytest
 import torch
 
-pytest.importorskip("transformers")
+transformers = pytest.importorskip("transformers")
 from transformers import LlamaConfig, LlamaForCausalLM  # noqa: E402
 
 from attnbench.accuracy.model import (  # noqa: E402
     SwappableAttentionModel,
     UnsupportedModelArchitecture,
+    _assert_logits_kwarg_accepted,
     _scoring_forward_chunked,
+    _logits_to_keep_kwarg,
     _self_attn_returns_3tuple,
     pool_scores_to_block_size,
 )
+import attnbench.accuracy.model as _model_mod  # noqa: E402
 from attnbench.accuracy import score_cache  # noqa: E402
 from attnbench.backends.impls import NaiveAttention, SDPABackend  # noqa: E402
 from attnbench.config import AttnConfig  # noqa: E402
@@ -306,6 +309,121 @@ def test_l_self_attn_tuple_arity_matches_known_transformers_versions():
     changing this again fails a fast CPU test instead of a CUDA crash."""
     assert _self_attn_returns_3tuple("4.46.0") is True
     assert _self_attn_returns_3tuple("5.16.1") is False
+
+
+def test_l_logits_to_keep_kwarg_matches_known_transformers_versions():
+    """The sibling of the tuple-arity pin above, added 2026-09-21.
+
+    The 2026-09-21 audit first reported this gate as untested. That was
+    wrong, and the correction is worth keeping: `test_logits_to_keep_
+    restricts_shape_and_matches_last_position` above has covered the
+    BEHAVIOUR since the original OOM fix, and it goes red on both
+    transformers versions when the gate is inverted -- verified by mutation
+    rather than assumed. What was missing was narrower: the version-string
+    pin its sibling has, and a guard for the case no test can reach, which
+    is a model accepting NEITHER spelling. Both are here now.
+    """
+    assert _logits_to_keep_kwarg("4.46.0") == "num_logits_to_keep"
+    assert _logits_to_keep_kwarg("5.16.1") == "logits_to_keep"
+
+
+def test_the_logits_kwarg_actually_restricts_lm_head():
+    """**A distinguishing test, not a smoke test.**
+
+    Asserting "a forward with the kwarg returns some logits" passes under
+    both the right name and the wrong one, because the wrong name is
+    swallowed by `CausalLM.forward`'s `**kwargs` and simply ignored. The
+    property that separates them is the SHAPE: restricting lm_head to the
+    last position must produce fewer positions than not restricting it.
+
+    `logits_to_keep=0` is the default and `hidden_states[:, -0:, :]` is
+    every position, so "ignored" and "explicitly asked for everything" are
+    the same tensor. At 40K positions and a ~150K vocab that is the 11+ GiB
+    allocation that OOM'd the 2026-09-04 session.
+    """
+    model = _toy_model()
+    ids = torch.randint(0, 64, (1, 32),
+                        generator=torch.Generator().manual_seed(3))
+    with torch.no_grad():
+        restricted = model(input_ids=ids, use_cache=False,
+                           **{_model_mod._LOGITS_TO_KEEP_KWARG: 1}).logits
+        unrestricted = model(input_ids=ids, use_cache=False).logits
+
+    assert unrestricted.shape[1] == ids.shape[1], (
+        f"expected the unrestricted forward to emit one logit row per "
+        f"position, got {tuple(unrestricted.shape)}")
+    assert restricted.shape[1] == 1, (
+        f"{_model_mod._LOGITS_TO_KEEP_KWARG!r}=1 should emit ONE position; "
+        f"got {tuple(restricted.shape)}. On transformers "
+        f"{transformers.__version__} that keyword is being ignored -- "
+        f"CausalLM.forward swallows unknown kwargs, so the name is wrong "
+        f"for this version and lm_head is running over the whole sequence.")
+    assert restricted.shape[1] != unrestricted.shape[1], (
+        "the restricted and unrestricted forwards produced the same number "
+        "of positions, so this test cannot tell them apart and proves "
+        "nothing")
+
+
+def test_the_wrong_logits_kwarg_is_indistinguishable_from_passing_nothing():
+    """The hazard itself, asserted rather than described.
+
+    This is what makes the guard in `_assert_logits_kwarg_accepted`
+    necessary: there is no observable difference at the call site between
+    "wrong keyword" and "no keyword", so nothing downstream can notice.
+    """
+    model = _toy_model()
+    ids = torch.randint(0, 64, (1, 32),
+                        generator=torch.Generator().manual_seed(3))
+    right = _model_mod._LOGITS_TO_KEEP_KWARG
+    wrong = ("logits_to_keep" if right == "num_logits_to_keep"
+             else "num_logits_to_keep")
+    with torch.no_grad():
+        swallowed = model(input_ids=ids, use_cache=False, **{wrong: 1}).logits
+        nothing = model(input_ids=ids, use_cache=False).logits
+    assert swallowed.shape == nothing.shape, (
+        f"{wrong!r} changed the output shape on transformers "
+        f"{transformers.__version__}, so it is not being swallowed after "
+        f"all -- re-check which names this version accepts")
+
+
+def test_the_constructor_refuses_a_model_that_cannot_restrict_lm_head():
+    """Silent becomes loud, at the one place that knows both the version and
+    the model."""
+    class _NoKwarg(torch.nn.Module):
+        def forward(self, input_ids=None, use_cache=None):
+            raise AssertionError("not called")
+
+    with pytest.raises(UnsupportedModelArchitecture, match="does not accept"):
+        _assert_logits_kwarg_accepted(_NoKwarg())
+
+
+def test_the_constructor_accepts_the_real_model():
+    """Anti-vacuity for the check above: it must pass on what the study
+    actually wraps, or it is a guard that refuses everything."""
+    _assert_logits_kwarg_accepted(_toy_model())
+
+
+def test_the_refusal_names_the_other_spelling_when_that_is_the_one_accepted():
+    """The realistic failure is not a model without the feature -- it is the
+    version test being wrong, so the model accepts the OTHER name. The
+    message has to say so, or the next person debugs the model instead of
+    the gate."""
+    class _OtherSpelling(torch.nn.Module):
+        def forward(self, input_ids=None, use_cache=None, **kw):
+            raise AssertionError("not called")
+
+    other = ("logits_to_keep"
+             if _model_mod._LOGITS_TO_KEEP_KWARG == "num_logits_to_keep"
+             else "num_logits_to_keep")
+    ns = {"torch": torch}
+    exec(f"""
+class _Sig(torch.nn.Module):
+    def forward(self, input_ids=None, use_cache=None, {other}=0):
+        raise AssertionError("not called")
+""", ns)
+    with pytest.raises(UnsupportedModelArchitecture,
+                       match="version test in _logits_to_keep_kwarg"):
+        _assert_logits_kwarg_accepted(ns["_Sig"]())
 
 
 # ---------------------------------------------------------------------------

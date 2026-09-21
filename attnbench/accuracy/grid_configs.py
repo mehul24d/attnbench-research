@@ -162,8 +162,14 @@ ACCURACY_EXCLUDED_BACKENDS = ("gla",)
 # the phase that dominates the bill at batch 1. Stage 5 priced it: +23.3% /
 # +21.5% / +60.8-63.7% per decode token at 2048 / 4096 / 8192, which is
 # 18% / 16% / 29% of the sparse arm's end-to-end total. Under a matched
-# kernel and matched generation length, 12 of 31 accuracy-matched operating
-# points remain dominated by dense rather than 16.
+# kernel and matched generation length, 15 of 34 accuracy-matched operating
+# points remain dominated by dense rather than 28.
+#
+# Those two counts read "12 of 31 ... rather than 16" until 2026-09-21. Both
+# were correct when written and both were superseded on 2026-09-20 by the S1a
+# rebuild, which docs/claims.md corrected and this comment did not -- the only
+# copy of that figure outside docs/, and the first thing
+# tests/test_no_stale_figures.py caught. See docs/withdrawn_figures.md.
 #
 # `sdpa_math` carried no stated justification, and the alternative was never
 # speculative. `sdpa_math` and `sdpa_flash` are the SAME class -- SDPABackend

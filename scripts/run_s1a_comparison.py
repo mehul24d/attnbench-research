@@ -12,7 +12,7 @@ Refuses rather than compares when the new rows are not decode-pinned to the
 banked kernel, when the dense arm does not match exactly, or when any cell
 has other than the expected number of paired examples.
 
-    python scripts/run_s1a_comparison.py --new results/s1a/accuracy.parquet \\
+    python scripts/run_s1a_comparison.py --new results/s1a/accuracy_band2048.parquet \\
         --banked results/stage3_s1/accuracy.parquet results/stage3_s1b/accuracy.parquet \\
         --seq-len 2048 --n 100
 """

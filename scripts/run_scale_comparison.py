@@ -12,6 +12,12 @@ Checked before any number is printed:
     not the same experiment -- that collision is pattern 36)
   - same block_size and mask_source
   - neither side carries git_dirty=True
+  - same MASK ERA, from `git_commit` via `analysis/eras.py`. This one was
+    missing until 2026-09-21, and its absence was being described in three
+    documents as a guard that `analysis/composition.py` provided. It does
+    not: composition refuses on facet composition and has no concept of a
+    commit. Crossing an era boundary needs --cross-era LEFT:RIGHT with a
+    stated reason, and the declaration is verified against the register.
 
 The comparison is model-vs-model, so a host or card difference is NOT a
 disqualifier and is deliberately not checked: an accuracy score does not
@@ -28,6 +34,8 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from attnbench.analysis import eras  # noqa: E402
 
 KEY = ["task", "backend", "sparsity"]
 
@@ -55,6 +63,7 @@ def main():
                     help="report cells whose n differs instead of refusing. "
                          "Use only for a run still in progress; a partial "
                          "cell's mean is not the cell's mean.")
+    eras.add_cross_era_flags(ap)
     args = ap.parse_args()
 
     a = _load(args.small, "small")
@@ -63,6 +72,13 @@ def main():
     b = b[b.context_length.apply(lambda c: abs(int(c) - args.band) <= args.band // 4)]
     if a.empty or b.empty:
         raise SystemExit(f"no rows at band {args.band} in one of the inputs")
+
+    # After the band filter, so the commits reported are the ones that
+    # actually contribute rows to the tables below rather than every commit
+    # in the file.
+    for line in eras.licence(*eras.sides(eras.commits_of(a), eras.commits_of(b),
+                                         "small", "large"), args):
+        print(line, flush=True)
 
     for col in ("score_source", "block_size", "mask_source"):
         for name, d in (("small", a), ("large", b)):
