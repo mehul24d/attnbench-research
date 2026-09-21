@@ -917,10 +917,11 @@ comparison in the study, and its timed region has therefore been checked
 **The tax is one-sided, and that is the load-bearing fact.** S14 established that the SDPA kernels this study actually measures — `sdpa_math` and `sdpa_flash` — rebuild nothing per call (`per_call = [0, 0, 0]`, on causal and block_sparse alike). So the per-call copy depresses the numerator of every block_sparse-over-dense ratio and never touches the denominator. **Every reported block_sparse speedup is a lower bound on the true one**, arithmetically, independent of how large the tax turns out to be. S11 measured the magnitude (closed 2026-09-21); it did not change the sign.
 
 **What this does and does not mean for the published numbers.** The magnitude
-is measured (register item S11, closed 2026-09-21, A100-SXM4-80GB, p50 29.7-34.6
-us per call) and the bytes are small — 16 KB at 16384/128, 64 KB at
-32768 — so against a millisecond-scale kernel the tax is a fraction of a
-percent (0.24-1.9% depending on the cell), and proportionally largest at the
+is measured on both cards (register item S11, closed 2026-09-21: A100-SXM4-80GB
+p50 29.7-34.6 us per call, L4 p50 26.5-31.7 us per call) and the bytes are
+small — 16 KB at 16384/128, 64 KB at 32768 — so against a millisecond-scale
+kernel the tax is a fraction of a percent (0.24-3.3% depending on the cell
+and which card measured it), and proportionally largest at the
 short seq_lens Stage 2 also sweeps. The **direction** is known and it is the
 conservative one: `block_sparse` is being measured slower than it is, so every
 reported `block_sparse`-over-dense speedup is **understated**, not inflated.
