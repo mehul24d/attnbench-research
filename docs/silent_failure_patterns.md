@@ -9,7 +9,7 @@ model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
 It stood at seventeen when that sentence was written. It stands at
-**fifty**. The original sentence is kept rather than updated because the
+**fifty-one**. The original sentence is kept rather than updated because the
 rate is the point: the count went on growing under a discipline built
 specifically to stop it growing.
 
@@ -3022,3 +3022,53 @@ will be shaped like that defect. This project's prose guard watches withdrawn
 When you build a check in response to an incident, ask what the incident's
 sibling looks like — same failure, different type of thing — because that is
 what will arrive next, and your new check will not be looking at it.
+
+---
+
+## 51. A claim that it's pushed, true locally and never checked against the remote
+
+**Found 2026-09-22, during a final commit-and-publish pass ordered specifically
+because nothing had ever verified it.** `git branch -vv` on `main` read
+`[origin/main: ahead 118]`. `origin/main` was at `0d6a7a7`, a commit from well
+before this entire audit series. The branch this session had been committing
+to, `audit/third-pass-and-git-verification`, was 122 commits ahead of the
+remote — the 118 plus this pass's own 4.
+
+Every commit this project's own docs cite by SHA — `2964405`, `cb41359`,
+`fdf513a`, and the whole audit register before them, referenced throughout
+`claims.md`, `limitations.md` and this file — had been sitting on one laptop.
+Nobody had run `git push` in the span this audit series covers. A reviewer
+cloning the public repository at any point across it would have received a
+checkout missing most of the work these documents describe, including most of
+this catalogue.
+
+**Why it is this file's shape and not a separate kind of oversight.** It is a
+claim — "this is committed," extended by nobody ever contradicting it into
+"this is in the repository" — that was true of the one checkout anyone had
+looked at and never checked against the thing it was actually a claim about.
+Every other instance here is a number or a status checked against local
+state — a parquet, a commit graph, a test's own assertion — and found to
+disagree with the prose describing it. This is the same failure one layer up:
+the *local* state was never wrong, and nothing here was lying about what was
+on disk. The gap was between disk and the only copy anyone besides the author
+could actually reach.
+
+**Why no test in this repository could have caught it.** A repository cannot
+observe its own remote from a `skipif` or an assertion — `git log`,
+`git status`, every check this project runs in CI-shaped form, all read state
+that is local by construction. The one check that would have caught this is
+an explicit one against `origin`, run from outside the assumption that the
+working copy is representative, and until this session nobody had run it.
+
+**Fixed** by pushing `main` (fast-forward, `0d6a7a7..fdf513a`, no divergence)
+and the audit branch, then treating the remote as ground truth exactly the
+way the third audit pass treated the local checkout as ground truth once it
+finally had one: cloning fresh and re-deriving every claim from that clone
+rather than from belief about what had been pushed. See #52, found by that
+same clone.
+
+**The general form.** "Committed" and "pushed" are different claims, and
+nothing local — including a clean `git log` — proves the second one. If a claim is
+about a shared or remote system, the only check that verifies it is one that
+asks that system, not one that inspects the local copy more carefully.
+

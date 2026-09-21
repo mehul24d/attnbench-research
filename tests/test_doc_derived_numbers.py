@@ -193,7 +193,8 @@ def test_the_readme_suite_counts_are_internally_consistent():
 
 WORDS = {40: "forty", 41: "forty-one", 42: "forty-two", 43: "forty-three",
          44: "forty-four", 45: "forty-five", 46: "forty-six",
-         47: "forty-seven", 48: "forty-eight", 49: "forty-nine", 50: "fifty"}
+         47: "forty-seven", 48: "forty-eight", 49: "forty-nine", 50: "fifty",
+         51: "fifty-one"}
 
 
 def test_the_patterns_file_states_its_own_count_correctly():
