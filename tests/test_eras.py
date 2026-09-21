@@ -20,9 +20,17 @@ partly on a guard that did not exist.
      era, the banked parquets carry the COMMITS, and the join of the two is
      what the register has to equal.
 
-The derivation runs only where `results/` is present, and the cross-check of
-the refusal itself does not -- so a fresh clone still proves the guard fires,
-and a working tree additionally proves it is pointed at the right commits.
+The derivation runs only where the full banked tree is present, and the
+cross-check of the refusal itself does not -- so a fresh clone still proves
+the guard fires, and a working tree additionally proves it is pointed at the
+right commits.
+
+**Not `results/` existing (instance #52).** `results/` is gitignored but
+carries a handful of force-committed evidence files (`git ls-files results/`),
+so it exists in every clone. The first version of this guard checked bare
+existence, passed here because the full tree happens to also be present
+locally, and failed the first time it ran anywhere else -- see
+`_full_results_tree_present()` below.
 """
 
 from __future__ import annotations
@@ -187,8 +195,19 @@ def banked_commits() -> dict[str, set[str]]:
     return found
 
 
-@pytest.mark.skipif(not RESULTS.exists(),
-                    reason="banked results/ not present in this checkout")
+def _full_results_tree_present() -> bool:
+    """True only when the banked accuracy data itself is present, not merely
+    when `results/` exists -- see the module docstring, instance #52.
+    Mirrors the `> 8` floor `test_the_register_agrees_...` already asserts on
+    `banked_commits()`, computed here without needing pandas so it is cheap
+    enough to call from a `skipif` condition."""
+    return len(list(RESULTS.rglob("accuracy.parquet"))) > 8
+
+
+@pytest.mark.skipif(not _full_results_tree_present(),
+                    reason="only a handful of force-committed evidence files, "
+                           "not the full banked results/ tree, is present in "
+                           "this checkout")
 def test_the_register_agrees_with_the_documented_era_table():
     """The join that makes `eras.COMMIT_ERA` a derivation rather than a
     restatement: the table says which era each FILE is in, the parquet says
@@ -215,8 +234,10 @@ def test_the_register_agrees_with_the_documented_era_table():
     assert checked >= 13, f"only {checked} commit/era pairs cross-checked"
 
 
-@pytest.mark.skipif(not RESULTS.exists(),
-                    reason="banked results/ not present in this checkout")
+@pytest.mark.skipif(not _full_results_tree_present(),
+                    reason="only a handful of force-committed evidence files, "
+                           "not the full banked results/ tree, is present in "
+                           "this checkout")
 def test_no_registered_commit_is_absent_from_the_banked_data():
     """The other direction: a register entry for a commit no file carries is
     either a typo or a file that has been deleted, and both make the register

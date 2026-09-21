@@ -196,7 +196,7 @@ Then, on any CUDA GPU:
   on what, and what each number licenses, organised by the five gaps. Drafted
   from `claims.md` with every claim's boundary attached.
 - **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
-  51 confirmed incidents, each one a plausible number produced by machinery
+  52 confirmed incidents, each one a plausible number produced by machinery
   that looked like it was working. No crash, no failed test. Several changed
   a published figure. Each entry records the detection method, which is the
   transferable part. #45 is the first found by someone who did not write the

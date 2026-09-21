@@ -9,7 +9,7 @@ model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
 It stood at seventeen when that sentence was written. It stands at
-**fifty-one**. The original sentence is kept rather than updated because the
+**fifty-two**. The original sentence is kept rather than updated because the
 rate is the point: the count went on growing under a discipline built
 specifically to stop it growing.
 
@@ -3072,3 +3072,66 @@ nothing local — including a clean `git log` — proves the second one. If a cl
 about a shared or remote system, the only check that verifies it is one that
 asks that system, not one that inspects the local copy more carefully.
 
+---
+
+## 52. A skip condition that was never exercised as a skip
+
+**Found 2026-09-22, by finally running the suite from a genuinely fresh
+clone** (the direct consequence of #51 — the first fresh clone this series
+had ever made). Three tests failed outright instead of skipping:
+`test_eras.py::test_the_register_agrees_with_the_documented_era_table`,
+`test_eras.py::test_no_registered_commit_is_absent_from_the_banked_data`, and
+`test_script_usage_paths.py::test_every_documented_input_path_exists`. All
+three were written in this same audit pass, commit `2964405` — days old, not
+years.
+
+Each carried `@pytest.mark.skipif(not RESULTS.exists(), ...)` or the
+equivalent, meant to make the test inert in a checkout without the banked
+`results/` tree the tests need. But `results/` is gitignored while carrying
+nine force-committed evidence files — `results/s7_7b_16384/accuracy.parquet`,
+`results/s8_vec_endtoend/*.parquet`, and similar S7/S8 proof artifacts kept
+outside the ignore deliberately, for exactly the kind of audit trail these
+tests are part of. So `results/` **exists** in every clone. The skip condition
+was false everywhere, always — not because the tests were run somewhere with
+the full tree, but because a directory existing and a directory holding the
+data a test needs are two different facts, and the guard only ever checked
+the first.
+
+Locally this was invisible because the full banked tree, accumulated across
+many GPU sessions, happens to also be present — so "the directory exists" and
+"the real data is here" were the same fact in the one environment these tests
+were ever run in, right up until a clone that had the directory and not the
+data.
+
+**Distinguish this from #47, deliberately, rather than folding it in.** #47
+catalogued a guard that could not fail *by construction* — its expected set
+was built from the same table its observations were compared against, so no
+mutation could ever turn it red. This is a different shape. The skip
+condition here **could** have been false, and would have correctly produced a
+skip, in any environment that actually lacked the banked tree — the logic was
+not vacuous. It simply had never *run* in such an environment before this
+session, because nobody had constructed one. A guard that cannot fail is
+broken by design. A guard whose one untested branch turns out to be wrong is
+a guard whose author never watched it take that branch — the same
+break-test discipline this project already applies to a guard's positive
+branch (does it fire on the defect?) applies exactly as much to the negative
+one (does the skip actually skip, where it is supposed to?), and until now
+nobody had built the checkout state that would prove it either way.
+
+**Fixed** by replacing bare `results/` existence with a check against the
+thing each test actually needs — a count of `accuracy.parquet` files well
+above the nine-file evidence floor for the two era tests (`> 8`, matching the
+threshold `test_the_register_agrees_...` already asserted internally on its
+own data), and a total file count for the usage-path test, whose inputs span
+many stages' worth of paths rather than one parquet shape (`> 20`, clear of
+the floor of 9 and the real tree's 1,600+). Break-tested in both directions
+in a scratch checkout: the nine tracked evidence files alone make all three
+tests skip; the same checkout with the full tree restored makes them run and
+pass.
+
+**The general form.** An untested skip is exactly as unverified as an
+untested assertion. "This test correctly does nothing here" is a claim like
+any other one in this file, and it needs the same thing every other claim
+here turned out to need: a check against the actual state of the thing it is
+a claim about, not against the one state its author happened to already be
+standing in.
