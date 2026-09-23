@@ -9,7 +9,7 @@ model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
 It stood at seventeen when that sentence was written. It stands at
-**fifty-two**. The original sentence is kept rather than updated because the
+**fifty-four**. The original sentence is kept rather than updated because the
 rate is the point: the count went on growing under a discipline built
 specifically to stop it growing.
 
@@ -3135,3 +3135,171 @@ any other one in this file, and it needs the same thing every other claim
 here turned out to need: a check against the actual state of the thing it is
 a claim about, not against the one state its author happened to already be
 standing in.
+
+## 53. A proxy replaced by another proxy, inside the fix for the first one
+
+**Found 2026-09-23, by a fourth audit pass, in the repair committed for #52
+the day before.** #52 was three tests guarding themselves with
+`skipif(not RESULTS.exists())` when `results/` exists in every clone. The fix
+replaced bare directory existence with a count: `> 8` files named
+`accuracy.parquet` for `test_eras.py`'s two banked-data tests, `> 20` files
+under `results/` for `test_script_usage_paths.py`. Break-tested in both
+directions against a checkout holding only the nine tracked evidence files,
+which skipped, and against the full tree, which ran.
+
+Both of those states are the extremes. The state nobody built is the one in
+between, and it is the ordinary one: a clone plus **part** of the banked tree —
+what a partial bucket sync gives you, or one session's tarball. Restoring only
+the `results/gpu_session_*` archive directories produces **1,275 files and nine
+paths named `accuracy.parquet`**, clearing both thresholds, and **the same
+three tests fail outright again**, with the same messages:
+
+```
+test_the_register_agrees_with_the_documented_era_table
+  AssertionError: only 6 banked files found / assert 6 > 8
+test_no_registered_commit_is_absent_from_the_banked_data
+  AssertionError: eras.COMMIT_ERA registers ['0397c60','166b2df', ...],
+  which no banked accuracy file carries.
+test_every_documented_input_path_exists
+  16 usage-block paths missing
+```
+
+**The specific arithmetic, because it is the whole lesson.** The skip condition
+counted `rglob("accuracy.parquet")` **paths**. The assertion it was supposed to
+mirror counted `banked_commits()` **keys** — parent directory names, so the
+archived copies of `stage3_s1`, `stage3_s1b`, `stage3_32768`,
+`stage3_flashdecode` and `stage3_16384` under
+`results/gpu_session_2026090{6,7,8}*/results/` collapse onto the canonical key.
+The full tree holds **19 paths and 14 keys**. A partial checkout can therefore
+hold nine paths and six keys: above the floor by one measure, below it by the
+one that mattered. And the guard's own docstring asserted the mirroring
+explicitly — *"Mirrors the `> 8` floor `test_the_register_agrees_...` already
+asserts on `banked_commits()`"* — so the false claim was written down beside the
+code that made it false.
+
+**Why this is worth a separate number rather than a footnote on #52.** #52's
+general form was already correct: *"an untested skip is exactly as unverified as
+an untested assertion … a check against the actual state of the thing it is a
+claim about, not against the one state its author happened to already be
+standing in."* The fix then checked a different proxy for that state. Knowing
+the rule and applying it are two things (#35's corollary), and the gap between
+them here was one word: the repair asked *"is there enough data?"* when the
+question is *"is the data this test reads present?"* A count answers the first.
+Only the thing itself answers the second.
+
+**The fix, and what makes it different in kind.** `test_eras.py` now derives
+both the skip condition and the assertion from one function, `_banked_files()`,
+so they cannot count different quantities — the mirroring is structural rather
+than asserted in a docstring. `test_script_usage_paths.py` gates on whether the
+**directories** its documented paths live in exist, which is the right
+granularity for a reason specific to what it tests: every defect it was written
+for was a wrong *filename* inside a directory that existed
+(`results/s1a/accuracy.parquet` against `results/s1a/accuracy_band2048.parquet`).
+So a missing directory means "this checkout lacks that stage" and skips, while a
+present directory missing the named file means "the usage line is wrong" and
+fails. A file count cannot tell those apart.
+
+**And the break-tests are fixtures now, not events.**
+`test_the_skip_condition_counts_keys_not_paths` builds the nine-path/six-key
+partial checkout in `tmp_path` and asserts both halves: that a path count
+clears the floor on it and a key count does not. Reverting `_banked_files` to
+path keys turns it red. `test_the_gate_skips_a_checkout_missing_a_whole_stage`
+and its anti-vacuity twin do the same for the usage-path gate. #52's
+break-test was performed once, by hand, on the two states its author thought of;
+these are in the suite, and the state nobody thought of is one of them.
+
+**The general form.** A proxy is not wrong because it is a proxy — it is wrong
+when the set of states it distinguishes is chosen from the states you have seen
+rather than from the states the claim has to survive. "Directory exists" and
+"nine files exist" and "1,275 files exist" are all proxies for "the banked tree
+is here". The first two were picked by looking at the checkouts that existed on
+one laptop. Ask instead what the *assertion* reads, and gate on that.
+
+## 54. A disposition written from what the tool printed, not from what it banked
+
+**Found 2026-09-23. Audit item S11 was closed 26 hours after the measurement
+that closed it, and the measurement had already answered the question the
+closure got wrong.** `scripts/measure_mask_h2d_tax.py` banked, per band, **four**
+candidate per-call figures — the bare `.to()` copy and the whole
+`to_block_sparse_attn_mask()` call, each timed latency-style and
+throughput-style — plus a **resolution floor**: the cost of a 1-byte copy under
+the identical double-sync harness. The disposition used one of the four, and
+compared nothing to the floor.
+
+Three defects followed, and **all three ran in the same direction**, which is
+why no consumer noticed:
+
+1. **Wrong column.** The row asks what `to_block_sparse_attn_mask()` adds per
+   call. That is `full_call_p50_us` (43.07–48.10 µs A100). The row quoted
+   `copy_p50_us` (29.70–34.56 µs), a sub-component, making every percentage
+   ~39% low.
+2. **Wrong denominator at one band.** The 8192 cell divided by **1.969 ms**, a
+   figure from the `(32,8)`-head table in `claims.md` that the *same file*
+   supersedes 20 lines later under "The same comparison at the model's real head
+   geometry". It is also in no banked parquet at all — while the row claimed
+   each denominator was *"checked against the banked parquet directly, not
+   assumed"*.
+3. **A structural conclusion that was an artifact of the instrument.** The row
+   reported the cost as **launch-dominated**, "roughly flat across a 256x size
+   range: A100 moves 1.16x". Both numbers in that ratio are ~99% harness floor
+   — at 1024 the copy sits **0.266 µs above a 29.443 µs floor**. Net of the
+   floor the marginal cost rises **19.3× (A100) / 16.7× (L4)** across the same
+   range.
+
+**The script had already said all of this would matter.** Its header
+pre-registers four falsifiers, in the file, before the run:
+
+```
+  - measured p50 outside 15-30 us  -> the assumed range was wrong ...
+  - cost rises with size           -> "roughly constant per call" is false
+  - cost falls with size           -> measurement error, not a result
+  - sync overhead ~ copy cost      -> the timing method cannot resolve
+                                      this quantity; report and stop
+```
+
+The fourth was met at **four of five bands**. The second fires the moment the
+floor is subtracted. And the header separately promises that a disagreement
+between the latency and throughput forms "is itself information" — they
+disagree by **40%**, and the throughput form (15.17–22.90 µs across both cards)
+sits **wholly inside** the 15–30 µs range the row reported as contradicted "at
+every band". *(That phrase was also simply false: three of five A100 bands are
+below 30 µs.)*
+
+**Why a pre-registration in a comment is not a pre-registration.** Every one of
+those four conditions was checkable from the banked columns in one line of
+arithmetic. None was code. The script computed the floor, printed it, and
+stored it in every row as `floor_p50_us` — and then never compared anything to
+it, because comparing was a thing the *reader* was supposed to do. The reader
+read the headline instead. This is #10's shape (a flag set correctly and read
+by nobody) applied to a falsification criterion, and #31's (a recomputation is
+only a check if its inputs were checked) applied to a disposition.
+
+**What makes it different from the register's earlier failures.** S5 and S6 were
+found by re-deriving a disposition instead of reading it, and the register was
+built to make that possible. This one survived that: an auditor did re-derive
+it, in the third pass, and confirmed the *arithmetic*, which was correct to the
+digit. `29.709 / 801 = 3.31%` is true. It is the wrong quantity divided by the
+wrong denominator, and checking the division cannot find that. **A disposition
+has to be checked against its inputs, not against itself** — and the reason
+nothing else caught it is the reason it looked safe: the tax is one-sided, so
+nothing downstream could disagree with any value it took. *No consumer can
+contradict a number that only ever makes a bound more conservative.*
+
+**The fix.** The stop condition is code: `analyse()` flags every band whose
+copy is within 10% of the harness floor, computes the structural verdict from
+the **marginal** cost, and tabulates every candidate against the assumed range
+so a claim of contradiction has to name which one. The throughput form of the
+full call is now measured too, since only the copy had one. The disposition is
+stated as a **bracket** — throughput as the like-for-like lower bound, latency
+as the conservative upper bound — because the run does not pin a single
+constant. And `tests/test_s11_tax_derivation.py` recomputes every figure in the
+row from the banked parquets, replays them through `analyse()`, and asserts the
+register and `limitations.md` state what the data gives: reverting any of the
+three defects turns it red.
+
+**The general form.** When a tool reports a summary and banks its inputs, the
+summary is a convenience and the inputs are the evidence. A disposition written
+from the summary is a citation of a citation. If the tool also wrote down what
+would falsify its own conclusion, that sentence is not documentation — it is an
+unimplemented test, and it will be honoured exactly as often as someone
+remembers to read it.

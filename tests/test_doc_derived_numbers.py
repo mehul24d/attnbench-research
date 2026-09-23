@@ -30,6 +30,8 @@ passes when the number is wrong is decoration.
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -191,19 +193,105 @@ def test_the_readme_suite_counts_are_internally_consistent():
         f"the breakdown {parts} sums to {sum(parts)}, not {block_skips}.")
 
 
-WORDS = {40: "forty", 41: "forty-one", 42: "forty-two", 43: "forty-three",
-         44: "forty-four", 45: "forty-five", 46: "forty-six",
-         47: "forty-seven", 48: "forty-eight", 49: "forty-nine", 50: "fifty",
-         51: "fifty-one", 52: "fifty-two"}
+def _collected_test_count() -> int:
+    """How many tests pytest collects from `tests/`, by asking pytest.
+
+    A subprocess because a test cannot count the suite it is part of: reading
+    `request.session.items` gives whatever this invocation selected, which is
+    the whole suite in CI and one file when someone is iterating -- a guard
+    that silently measures the selection instead of the suite is the shape this
+    file exists to catch. `--collect-only` runs nothing, so there is no
+    recursion. ~5s, which is why it backs one test rather than several.
+    """
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
+         "-p", "no:randomly", "-p", "no:cacheprovider"],
+        cwd=REPO, capture_output=True, text=True)
+    m = re.search(r"(\d+) tests? collected", r.stdout)
+    if m is None:
+        pytest.skip(f"could not read a collected count from pytest:\n"
+                    f"{r.stdout[-2000:]}{r.stderr[-2000:]}")
+    return int(m.group(1))
+
+
+def test_the_readme_suite_counts_match_the_collected_suite():
+    """The check that was missing, and the reason F3 survived a pass.
+
+    `test_the_readme_suite_counts_are_internally_consistent` pins the SKIP
+    count three ways and the PASSED count nowhere, so when two commits added
+    three tests both README totals went stale together -- 1109+35 and 1133+11
+    both summed to 1144 while the suite collected 1147, and internal
+    consistency held the whole time. A document can only be wrong about its own
+    size in one way that matters: disagreeing with the suite.
+    """
+    total = _collected_test_count()
+    text = README.read_text()
+
+    block = re.search(r"pytest tests/ -q\s*#\s*(\d+) passed, (\d+) skipped", text)
+    assert block, "the quick-start block no longer reports passed/skipped"
+    # The `**` opens on the line above ("**With `results/` present the suite
+    # reads"), so anchor on the closing pair only.
+    prose = re.search(r"(\d+) passed, (\d+) skipped\*\*", text)
+    assert prose, "the with-results paragraph no longer reports passed/skipped"
+
+    for label, m in (("the quick-start block (fresh clone)", block),
+                     ("the with-results paragraph", prose)):
+        passed, skipped = int(m.group(1)), int(m.group(2))
+        assert passed + skipped == total, (
+            f"{label} says {passed} passed + {skipped} skipped = "
+            f"{passed + skipped}, but pytest collects {total} tests from "
+            f"tests/. Every collected test either passes, skips or fails, and "
+            f"the README documents a green run, so these must be equal. "
+            f"Difference: {total - passed - skipped:+d}.")
+
+
+_ONES = ("zero", "one", "two", "three", "four", "five", "six", "seven",
+         "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+         "fifteen", "sixteen", "seventeen", "eighteen", "nineteen")
+_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+         "eighty", "ninety")
+
+
+def spelled(n: int) -> str:
+    """`52` -> "fifty-two".
+
+    This was a hand-maintained dict from 40 to the current instance count, and
+    the test below SKIPPED when the count outran it -- so the guard that keeps
+    the file's prose count honest switched itself off on precisely the event it
+    exists to catch: someone adding an instance. Two of the last three audit
+    passes added one. Derived now, because a lookup table that has to be
+    extended by the same commit that breaks it is not a guard.
+    """
+    if not 0 <= n < 100:
+        raise ValueError(f"no spelling for {n}; this file counts instances")
+    if n < 20:
+        return _ONES[n]
+    tens, ones = divmod(n, 10)
+    return _TENS[tens] + (f"-{_ONES[ones]}" if ones else "")
+
+
+def test_the_spelling_helper_is_right_where_it_used_to_be_a_table():
+    """The dict it replaced ran 40..52; those are the values in live use, so
+    they are the ones worth pinning, plus the boundaries around them."""
+    assert spelled(40) == "forty"
+    assert spelled(48) == "forty-eight"
+    assert spelled(50) == "fifty"
+    assert spelled(52) == "fifty-two"
+    assert spelled(53) == "fifty-three"      # the one the dict lacked
+    assert spelled(60) == "sixty"
+    assert spelled(99) == "ninety-nine"
+    assert spelled(19) == "nineteen"
+    with pytest.raises(ValueError):
+        spelled(100)
 
 
 def test_the_patterns_file_states_its_own_count_correctly():
+    """No skip branch. An unspellable count raises from `spelled()` rather than
+    quietly standing down."""
     highest = numbered_instances()[-1]
-    if highest not in WORDS:
-        pytest.skip(f"no spelled form for {highest}; extend WORDS")
     text = PATTERNS.read_text()
     m = re.search(r"It stands at\s*\n?\*\*([a-z-]+)\*\*", text)
     assert m, "the 'It stands at N' sentence is no longer in the expected form"
-    assert m.group(1) == WORDS[highest], (
+    assert m.group(1) == spelled(highest), (
         f"the file says it stands at {m.group(1)}; it numbers "
-        f"{highest} ({WORDS[highest]}).")
+        f"{highest} ({spelled(highest)}).")

@@ -181,27 +181,123 @@ def documented_eras() -> dict[str, int]:
     return out
 
 
+def _banked_files(root: Path | None = None) -> dict[str, list[Path]]:
+    """file key -> the parquet paths that contribute rows to it.
+
+    `root` is injectable so the break-test below can build the exact partial
+    checkout that defeated the previous guard, rather than relying on someone
+    having constructed one by hand once.
+
+    The single source of both the skip condition and the assertion below, so
+    the two cannot describe different quantities. That is not hypothetical:
+    until 2026-09-23 the skip counted `rglob("accuracy.parquet")` PATHS while
+    the assertion counted `banked_commits()` KEYS, and the tree holds more
+    paths than keys because `results/gpu_session_2026090{6,7,8}*/results/`
+    carries archived copies of `stage3_s1`, `stage3_s1b`, `stage3_32768`,
+    `stage3_flashdecode` and `stage3_16384` that collapse onto the canonical
+    key. 19 paths, 14 keys. A partial checkout holding only the session
+    archives reaches 9 paths -- clearing a `> 8` PATH floor -- while offering
+    6 keys, so the guard passed and the assertion failed. See instance #53.
+    """
+    base = RESULTS if root is None else root
+    found: dict[str, list[Path]] = {}
+    paths = list(base.rglob("accuracy.parquet"))
+    paths += list((base / "s1a").glob("accuracy*.parquet"))
+    for p in sorted(paths):
+        key = (f"s1a/{p.stem}" if p.parent.name == "s1a" else p.parent.name)
+        found.setdefault(key, []).append(p)
+    return found
+
+
+# The floor, named once. Both the skip condition and the assertion inside
+# `test_the_register_agrees_...` read it, so "enough banked data to run" and
+# "enough banked data to have proved anything" are the same number.
+MIN_BANKED_KEYS = 8
+
+
 def banked_commits() -> dict[str, set[str]]:
     """file key -> the commits its rows carry."""
     pd = pytest.importorskip("pandas")
     found: dict[str, set[str]] = {}
-    paths = list(RESULTS.rglob("accuracy.parquet"))
-    paths += list((RESULTS / "s1a").glob("accuracy*.parquet"))
-    for p in paths:
-        key = (f"s1a/{p.stem}" if p.parent.name == "s1a" else p.parent.name)
-        d = pd.read_parquet(p, columns=["git_commit"]) if True else None
-        found.setdefault(key, set()).update(
-            str(c) for c in d.git_commit.dropna().unique())
+    for key, paths in _banked_files().items():
+        for p in paths:
+            d = pd.read_parquet(p, columns=["git_commit"])
+            found.setdefault(key, set()).update(
+                str(c) for c in d.git_commit.dropna().unique())
     return found
 
 
 def _full_results_tree_present() -> bool:
     """True only when the banked accuracy data itself is present, not merely
-    when `results/` exists -- see the module docstring, instance #52.
-    Mirrors the `> 8` floor `test_the_register_agrees_...` already asserts on
-    `banked_commits()`, computed here without needing pandas so it is cheap
-    enough to call from a `skipif` condition."""
-    return len(list(RESULTS.rglob("accuracy.parquet"))) > 8
+    when `results/` exists (instance #52) and not merely when enough FILES
+    named `accuracy.parquet` exist (instance #53).
+
+    Counts the same keys `banked_commits()` will build, from paths alone so it
+    needs no pandas and is cheap enough to call from a `skipif` condition.
+    """
+    return len(_banked_files()) > MIN_BANKED_KEYS
+
+
+def _partial_checkout(root: Path) -> None:
+    """The checkout that defeated the previous guard, built rather than
+    described: a clone's nine force-committed evidence files plus ONLY the
+    archived `gpu_session_*` copies -- what you get from a partial bucket sync
+    or one session's tarball. Nine paths named `accuracy.parquet`, six keys.
+    """
+    for rel in (
+        # the one tracked accuracy.parquet a clone always has
+        "s7_7b_16384/accuracy.parquet",
+        # archived duplicates: five distinct keys across eight paths
+        "gpu_session_20260906_stage3_s1/results/stage3_s1/accuracy.parquet",
+        "gpu_session_20260907/results/stage3_s1/accuracy.parquet",
+        "gpu_session_20260907/results/stage3_s1b/accuracy.parquet",
+        "gpu_session_20260908/results/stage3_s1/accuracy.parquet",
+        "gpu_session_20260908/results/stage3_s1b/accuracy.parquet",
+        "gpu_session_20260908/results/stage3_32768/accuracy.parquet",
+        "gpu_session_20260908/results/stage3_flashdecode/accuracy.parquet",
+        "gpu_session_20260908_band16384/stage3_16384/accuracy.parquet",
+    ):
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+
+
+def test_the_skip_condition_counts_keys_not_paths(tmp_path):
+    """Break-test for instance #53, permanent rather than performed once.
+
+    The previous guard counted paths and would have run the derivation against
+    six keys; this one counts keys and skips. Both halves are asserted, so
+    reverting `_banked_files` to a path count turns this red.
+    """
+    _partial_checkout(tmp_path)
+
+    paths = list(tmp_path.rglob("accuracy.parquet"))
+    keys = _banked_files(tmp_path)
+    assert len(paths) == 9, [str(p) for p in paths]
+    assert len(keys) == 6, sorted(keys)
+
+    # The defeated guard: a PATH count clears the floor on this tree.
+    assert len(paths) > MIN_BANKED_KEYS, (
+        "the fixture no longer reproduces instance #53 -- it must hold MORE "
+        "paths than the floor, or it is not the state that broke the guard")
+    # The guard that holds: a KEY count does not.
+    assert not len(keys) > MIN_BANKED_KEYS, (
+        f"{len(keys)} keys clears the {MIN_BANKED_KEYS} floor, so this tree "
+        f"would RUN the era derivation against a partial checkout instead of "
+        f"skipping it. That is instance #53.")
+
+
+def test_the_skip_condition_admits_the_real_tree():
+    """Anti-vacuity for the break-test above: a guard that skipped everywhere
+    would also pass it. Runs only where the real tree is present."""
+    if not RESULTS.exists() or len(_banked_files()) <= MIN_BANKED_KEYS:
+        pytest.skip("no full banked tree here to admit")
+    keys, paths = _banked_files(), list(RESULTS.rglob("accuracy.parquet"))
+    assert len(keys) > MIN_BANKED_KEYS
+    assert len(paths) > len(keys), (
+        f"{len(paths)} paths, {len(keys)} keys -- if these are ever equal the "
+        f"archived-duplicate shape is gone and the distinction this guard "
+        f"draws no longer has a live example in the tree")
 
 
 @pytest.mark.skipif(not _full_results_tree_present(),
@@ -214,7 +310,11 @@ def test_the_register_agrees_with_the_documented_era_table():
     which COMMIT it was produced at."""
     documented, banked = documented_eras(), banked_commits()
     assert len(documented) > 10, f"only {len(documented)} files in the table"
-    assert len(banked) > 8, f"only {len(banked)} banked files found"
+    assert len(banked) > MIN_BANKED_KEYS, (
+        f"only {len(banked)} banked files found, at or below the "
+        f"{MIN_BANKED_KEYS} floor the skip condition uses. If this fires, the "
+        f"skip condition and this assertion have drifted apart again -- they "
+        f"read the same `_banked_files()` precisely so they cannot.")
 
     checked = 0
     for key, commits in sorted(banked.items()):
@@ -242,7 +342,13 @@ def test_no_registered_commit_is_absent_from_the_banked_data():
     """The other direction: a register entry for a commit no file carries is
     either a typo or a file that has been deleted, and both make the register
     look more complete than it is."""
-    seen = {c[:7] for commits in banked_commits().values() for c in commits}
+    banked = banked_commits()
+    assert len(banked) > MIN_BANKED_KEYS, (
+        f"only {len(banked)} banked files found; this direction of the check "
+        f"gets STRICTER as data goes missing, so without a floor a partial "
+        f"tree makes it fail rather than skip -- which is exactly how "
+        f"instance #53 presented.")
+    seen = {c[:7] for commits in banked.values() for c in commits}
     stale = sorted(k for k in eras.COMMIT_ERA if k not in seen)
     assert not stale, (
         f"eras.COMMIT_ERA registers {stale}, which no banked accuracy file "
@@ -371,3 +477,54 @@ def test_the_era_2_era_3_split_is_not_decidable_by_date():
         "rather than deleting this test")
     for c in same_day_era2:
         assert eras.era_from_git(c, repo=str(REPO)) == 2
+
+
+# --- a provenance column present on one side only ---------------------------
+#
+# Added 2026-09-23. Both comparison scripts checked their comparability columns
+# behind `if col in a and col in b`, so a file recording `mask_source` compared
+# against one that does not passed in silence. In run_scale_comparison.py the
+# check was additionally preceded by a loop whose entire body was `continue`.
+# Silence reads as agreement, and these are the columns that exist to stop two
+# different experiments being averaged together.
+
+@pytest.mark.skipif(not (ERA3_FILE.exists() and ERA2_FILE.exists()),
+                    reason="the era-2/era-3 pair is not present in this checkout")
+@pytest.mark.parametrize("script,left,right", SCRIPTS)
+def test_the_script_refuses_a_provenance_column_present_on_one_side_only(
+        script, left, right, tmp_path):
+    """End-to-end, from the command line, against a real banked file with one
+    column dropped -- not against the helper."""
+    pd = pytest.importorskip("pandas")
+
+    full = pd.read_parquet(ERA3_FILE)
+    col = next((c for c in ("mask_source", "block_size", "model_id")
+                if c in full.columns), None)
+    assert col is not None, f"{ERA3_FILE} records none of the checked columns"
+
+    other = full.drop(columns=[col]).copy()
+    if script == "run_scorer_comparison.py":
+        # That script refuses two inputs sharing a score_source BEFORE it looks
+        # at the comparability columns, and rightly so -- it exists to compare
+        # two different scorers. Give it a difference there so the refusal under
+        # test is the one being tested and not a louder earlier one.
+        other["score_source"] = "cheap_estimator_fp16"
+
+    both = tmp_path / "both.parquet"
+    one = tmp_path / "missing.parquet"
+    full.to_parquet(both, index=False)
+    other.to_parquet(one, index=False)
+
+    cmd = [sys.executable, str(REPO / "scripts" / script),
+           left, str(both), right, str(one), "--band", "16384",
+           # the same commit on both sides, so the era check permits the pair
+           # and whatever refuses has to be the column check
+           "--allow-n-mismatch"]
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, (
+        f"{script} exited 0 with {col!r} recorded on one side only:\n"
+        f"{out[-2000:]}")
+    assert "side only" in out and col in out, (
+        f"{script} refused for some other reason than the one-sided "
+        f"{col!r}:\n{out[-2000:]}")

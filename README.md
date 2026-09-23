@@ -137,7 +137,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1109 passed, 35 skipped, ~65s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1124 passed, 52 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -150,18 +150,25 @@ The suite runs on CPU and needs no GPU, no model download, and no
 credentials. Verified from a clean clone into a fresh virtualenv on
 2026-09-12, resolving dependencies from scratch.
 
-The 35 skips are the honest part, and they split four ways: **3** need CUDA,
-**24** read banked result files that `results/` correctly keeps out of git,
+The 52 skips are the honest part, and they split four ways: **3** need CUDA,
+**41** read banked result files that `results/` correctly keeps out of git,
 **4** are scripts `test_script_call_sites.py` has nothing to check because
 they import nothing from `attnbench`, and **4** are the same scripts skipped
 again by `test_import_resolution.py`, which only has something to say about a
-script that imports the package. The 24 validate real measured data —
+script that imports the package. The 41 validate real measured data —
 including the check that the cross-arm decode guard actually fires on the
 confounded Stage 3 rows, and the check that the two comparison scripts refuse
 the banked era-2/era-3 pair, and the check that segment 1's 2026-09-03 probe
-still carries the eager-flex fingerprint — so a fresh clone is green **without** running
+still carries the eager-flex fingerprint, and the fourteen that recompute audit
+item S11's published tax percentages from the parquets they are derived from —
+so a fresh clone is green **without** running
 them. Each skips with a message naming the file it wanted, rather than passing
 silently.
+
+*That second number was 24 until 2026-09-23. Fourteen of the seventeen added
+are `tests/test_s11_tax_derivation.py`, which exists because S11's disposition
+was written from the figures its measurement script printed rather than the
+columns it banked — see `silent_failure_patterns.md` #54.*
 
 *That third number was 6 until 2026-09-21. It is 4 now because
 `run_scale_comparison.py` and `run_scorer_comparison.py` acquired the mask-era
@@ -169,13 +176,28 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1133 passed, 11 skipped**, because the 24 banked-file tests run instead of
-skipping. Measured on transformers 5.17.0 and again on **4.46.0**, the version
-the 2026-09-20 instance ran: identical, test for test. *(This paragraph said "The 11 skips … 2 need CUDA, and 9 read banked
+1165 passed, 11 skipped**, because the 41 banked-file tests run instead of
+skipping. Both totals are 1176, which is what `pytest --collect-only` reports —
+asserted, not transcribed, by
+`test_the_readme_suite_counts_match_the_collected_suite`.
+
+*Cross-version equality was measured once, on 2026-09-21, against the suite as
+it stood that day: transformers 5.17.0 and 4.46.0 agreed test for test. It has
+not been re-measured since, and this workstation now runs **5.16.1**, so treat
+it as a result about that suite on those two versions rather than a standing
+property of this one. Reproducing 4.46.0 needs a Linux container and this host
+has no container runtime — it is the one item on the audit register's
+could-not-verify list that is still open.* *(This paragraph said "The 11 skips … 2 need CUDA, and 9 read banked
 result files" against a code block saying 10 skipped, while the real numbers
-were 23 and 9. Three figures for one quantity, none of them measured;
-`tests/test_doc_derived_numbers.py` now asserts the two here agree with each
-other and with their own breakdown.)*
+were 23 and 9. Three figures for one quantity, none of them measured. The
+PASSED figures then went stale on their own: they read 1109 and 1133 from
+2026-09-21 until 2026-09-23, three short, because two later commits added
+tests and one of them recorded the correct 1136 in its own commit message while
+editing this file for something else. `tests/test_doc_derived_numbers.py`
+asserts the skip counts agree with each other and with their own breakdown, and
+now also that both passed+skipped totals equal the number of tests pytest
+actually collects -- which is the check that was missing, since internal
+consistency held while both halves were wrong.)*
 
 Then, on any CUDA GPU:
 
@@ -196,7 +218,7 @@ Then, on any CUDA GPU:
   on what, and what each number licenses, organised by the five gaps. Drafted
   from `claims.md` with every claim's boundary attached.
 - **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
-  52 confirmed incidents, each one a plausible number produced by machinery
+  54 confirmed incidents, each one a plausible number produced by machinery
   that looked like it was working. No crash, no failed test. Several changed
   a published figure. Each entry records the detection method, which is the
   transferable part. #45 is the first found by someone who did not write the

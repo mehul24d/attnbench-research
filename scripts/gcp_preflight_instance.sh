@@ -78,8 +78,12 @@ if [[ "$MODE" == "--quarantine" ]]; then
   # Anything that must expand on the far side has to survive as text.
   QDIR="attnbench_quarantine"
   STAMP="$QDIR/results_$(date -u +%Y%m%dT%H%M%SZ)"
-  # `results/` is gitignored, but TWO FILES INSIDE IT ARE TRACKED
-  # (results/stage3_s1/INVALID_ROWS.md, results/stage3_s1b/README.md). Moving
+  # `results/` is gitignored, but IT ALSO HOLDS FORCE-COMMITTED FILES --
+  # `git ls-files results/` is the list, and it GROWS: it was two files
+  # (stage3_s1/INVALID_ROWS.md, stage3_s1b/README.md) when this comment was
+  # written on 2026-09-16 and nine by 2026-09-17, once the S7/S8 evidence
+  # artifacts were force-added. Do not restate the count here; the command
+  # above is the answer and cannot go stale. Moving
   # the directory aside therefore deletes tracked paths and leaves the tree
   # dirty -- which makes provenance.capture() stamp git_dirty=True on every
   # row the session goes on to write, and a dirty stamp disqualifies those

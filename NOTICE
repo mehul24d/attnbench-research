@@ -24,15 +24,30 @@ file carries a comment naming its upstream path and commit.
         From scripts/eval/synthetic/constants.py. VERBATIM — no modification.
 
     attnbench/_vendor/ruler/niah.py
-        From scripts/data/synthetic/niah.py. MODIFIED. The needle/haystack
-        algorithm is unchanged. Restructured from a CLI script — which calls
-        argparse.parse_args() at *import* time and reads its configuration
-        from a module-level `args` Namespace and global RNG state — into
-        plain functions taking explicit parameters and a local
+        From scripts/data/synthetic/niah.py. MODIFIED. Restructured from a CLI
+        script — which calls argparse.parse_args() at *import* time and reads
+        its configuration from a module-level `args` Namespace and global RNG
+        state — into plain functions taking explicit parameters and a local
         random.Random(seed). Two upstream options raise NotImplementedError
         rather than silently substituting: haystack_mode="essay" (needs NLTK
         and a separately downloaded essay corpus) and type_needle="words"
         (needs the `wonderwords` package).
+
+        ONE CHANGE TO THE ALGORITHM ITSELF, added to this list 2026-09-23 when
+        the vendored files were first diffed against upstream at the commit
+        they cite. Needle insertion samples
+        `min(len(needles), num_haystack)` positions where upstream samples
+        `len(needles)`. Upstream therefore RAISES ("Sample larger than
+        population") when there is less filler than there are needles; this
+        copy silently inserts fewer needles than it has answers for, which
+        yields an unanswerable example rather than an error. Measured at
+        num_needle_k=4: unanswerable for 74.8% of seeds at num_haystack=1,
+        53.8% at 2, 24.8% at 3, and 0% at 4 and above. No result in this
+        repository is affected — every measured band is >= 2048 tokens, i.e.
+        hundreds of filler sentences — and `accuracy/ruler.py` now derives its
+        minimum filler count from num_needle_k so the sizing search cannot
+        enter that range. Previously this file said "The needle/haystack
+        algorithm is unchanged"; that was true of everything except this.
 
     attnbench/_vendor/ruler/variable_tracking.py
         From scripts/data/synthetic/variable_tracking.py. MODIFIED, for the
@@ -42,13 +57,37 @@ file carries a comment naming its upstream path and commit.
     Not implemented from upstream: common_words_extraction (needs
     `wonderwords`) and qa (needs a separately downloaded QA dataset).
 
+    TASK PARAMETERS THAT DIFFER FROM RULER'S OWN PRESETS. Vendoring the code
+    faithfully is not the same as running the benchmark, and the presets this
+    harness's tasks are modeled on live in RULER's scripts/synthetic.yaml,
+    which is not vendored here. Diffed against it 2026-09-23:
+
+      niah_single  vs niah_single_1   — type_needle_k is "uuids" here and
+                                        "words" upstream (wonderwords). Every
+                                        other argument matches.
+      niah_multikey vs niah_multikey_3 — num_needle_k is 4 here and 1
+                                        upstream. Everything else matches
+                                        (type_haystack "needle",
+                                        uuids/uuids, num_needle_v 1,
+                                        num_needle_q 1).
+      vt           vs vt              — matches (num_chains 1, num_hops 4).
+
+    The num_needle_k difference is deliberate — four genuine needles hidden
+    among same-shaped decoys, which is a harder retrieval task than the
+    preset's single needle — but it was undocumented until 2026-09-23, and
+    accuracy/ruler.py described this task as matching its preset "exactly — no
+    substitution needed for this one". It changes the task, not just the
+    vocabulary, and it is the larger of the two deviations.
+
     Consequence for comparability, stated because it is a methodological
     difference and not a footnote: this harness uses RULER's task-construction
     algorithm with a dependency-free filler-text haystack in place of real
-    prose, and numeric/UUID needles rather than word needles. Filler text is
-    a measurably easier haystack to search, so absolute accuracy numbers from
-    this repository are NOT comparable to published RULER results. Every
-    result row records this in its `haystack_mode` column.
+    prose, numeric/UUID needles rather than word needles, and (for
+    niah_multikey) four keys rather than one. Filler text is a measurably
+    easier haystack to search and four keys is harder than one, so absolute
+    accuracy numbers from this repository are NOT comparable to published
+    RULER results — in either direction. Every result row records the haystack
+    substitution in its `haystack_mode` column.
 
     Full detail: attnbench/_vendor/ruler/VENDORED.md
 

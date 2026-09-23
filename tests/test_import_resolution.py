@@ -128,24 +128,84 @@ SH_SCRIPTS = sorted(SCRIPTS.glob("*.sh"))
 MODULE_CALL = re.compile(r"python3?\s+-m\s+attnbench\.")
 
 
+# A PYTHONPATH that is derived from the script's own location. `$0` is
+# unreliable when a script is sourced, so `BASH_SOURCE` is the idiom this repo
+# uses; either is accepted, and a literal `.` or `$PWD` is not.
+SELF_DERIVED = re.compile(r"BASH_SOURCE|\$\{?0\}?")
+CWD_TRUSTING = re.compile(r"""PYTHONPATH=["']?(\.|\$\{?PWD\}?)["']?[\s:"']""")
+
+
 def test_no_shell_script_runs_python_m_attnbench_without_setting_pythonpath():
     """`-m` resolves the package from cwd, before any of our code can run.
-    A launcher using it must put the repo root on PYTHONPATH itself,
-    derived from its own location rather than from where it was called."""
-    offenders = []
+    A launcher using it must put the repo root on PYTHONPATH itself, derived
+    from its own location rather than from where it was called.
+
+    **Both halves are checked, which they were not until 2026-09-23.** The
+    original version asserted only that the string `PYTHONPATH` appeared near
+    the call, so `PYTHONPATH="."` passed -- the cwd-trusting form this module's
+    docstring names as the defect and `build_flash_attn.sh` was changed away
+    from. A test that catches the absence of a fix but not the wrongness of one
+    is a regression test posing as a coverage test (#22), and it was green on a
+    mutation to exactly the defect it documents.
+    """
+    missing, cwd_trusting = [], []
     for sh in SH_SCRIPTS:
         text = sh.read_text()
+        lines = text.splitlines()
         for m in MODULE_CALL.finditer(text):
             line_no = text[:m.start()].count("\n") + 1
+            # A comment that TALKS about `-m attnbench.…` is not an invocation.
+            # build_flash_attn.sh's own explanation of this hazard quotes the
+            # command, and the previous version of this check counted that
+            # quotation as a call -- passing only because the word PYTHONPATH
+            # happened to appear in the sentence above it.
+            if lines[line_no - 1].lstrip().startswith("#"):
+                continue
             # The PYTHONPATH assignment may prefix the call on the same line
-            # or sit on the line above (a `\`-continued command).
+            # or sit on the line above (a `\`-continued command). The value may
+            # be built a few lines earlier (REPO_ROOT=...), so the derivation is
+            # looked for in a wider window than the assignment itself.
             window = "\n".join(text.splitlines()[max(0, line_no - 3):line_no])
+            wider = "\n".join(text.splitlines()[max(0, line_no - 8):line_no])
             if "PYTHONPATH" not in window:
-                offenders.append(f"{sh.name}:{line_no}")
-    assert not offenders, (
+                missing.append(f"{sh.name}:{line_no}")
+            elif CWD_TRUSTING.search(window) or not SELF_DERIVED.search(wider):
+                cwd_trusting.append(f"{sh.name}:{line_no}")
+    assert not missing, (
         "these run `python -m attnbench.…` without putting the repo root on "
         "PYTHONPATH, so the package resolves from the caller's working "
-        "directory: " + ", ".join(offenders))
+        "directory: " + ", ".join(missing))
+    assert not cwd_trusting, (
+        "these set PYTHONPATH but not from the script's own location, so it "
+        "still resolves relative to wherever the caller happened to be -- "
+        "which is the defect, not the fix. Derive it: "
+        "REPO_ROOT=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")/..\" && pwd)\". "
+        + ", ".join(cwd_trusting))
+
+
+def test_the_pythonpath_check_can_tell_a_derived_value_from_a_cwd_one():
+    """Anti-vacuity, and the break-test the previous version never had: the two
+    regexes must actually separate the fix from the defect."""
+    assert CWD_TRUSTING.search('PYTHONPATH="." \\')
+    assert CWD_TRUSTING.search("PYTHONPATH=. python3 -m attnbench.x")
+    assert CWD_TRUSTING.search('PYTHONPATH="$PWD" python3 -m attnbench.x')
+    assert not CWD_TRUSTING.search(
+        'PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" \\')
+    assert SELF_DERIVED.search(
+        'REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"')
+    assert not SELF_DERIVED.search('REPO_ROOT="$(pwd)"')
+
+    # ...and that skipping comments has not left the check scanning nothing.
+    real = 0
+    for sh in SH_SCRIPTS:
+        lines = sh.read_text().splitlines()
+        for i, line in enumerate(lines, 1):
+            if MODULE_CALL.search(line) and not line.lstrip().startswith("#"):
+                real += 1
+    assert real >= 1, (
+        "no uncommented `-m attnbench.…` invocation is left in scripts/*.sh, so "
+        "the check above now passes on an empty set. If that is deliberate, "
+        "delete it rather than leaving it to pass on nothing.")
 
 
 def test_the_shell_check_can_see_a_module_call():

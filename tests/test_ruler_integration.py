@@ -16,6 +16,8 @@ def _gen(*args, **kwargs):
     pass the target model's tokenizer; there is deliberately no default."""
     return generate_examples(*args, count_tokens=approximate_token_count, **kwargs)
 from attnbench._vendor.ruler import niah, variable_tracking
+from attnbench.accuracy.ruler import (  # noqa: E402
+    _NIAH_PARAMS, _min_haystack_units, _render)
 
 
 def test_determinism_same_seed_reproduces_identical_examples():
@@ -156,3 +158,97 @@ def test_the_prefix_property_holds_across_tasks_and_budgets():
                    [e.example_id for e in small], (task, budget)
             assert [e.context for e in big[:2]] == \
                    [e.context for e in small], (task, budget)
+
+
+# --- the filler floor, and the defect it exists to keep out of reach --------
+#
+# Added 2026-09-23, when the vendored generators were first diffed against
+# upstream. `_min_haystack_units` returned a hardcoded 1 for NIAH while its own
+# docstring said the floor is "derived from the task's own params, never
+# hardcoded" -- honoured in the vt branch, ignored in the NIAH one, where the
+# binding parameter is num_needle_k. Below the floor the vendored builder's
+# `min(len(needles), num_haystack)` clamp silently drops needles whose answers
+# it still reports, where upstream would raise "Sample larger than population".
+
+_UNANSWERABLE_SEEDS = 200
+
+
+def _unanswerable(task: str, num_haystack: int, seeds: int = _UNANSWERABLE_SEEDS) -> int:
+    """How many seeds produce an example whose own answer is absent from its
+    prompt -- a question scored as a model failure that no model could pass."""
+    params = _NIAH_PARAMS[task]
+    bad = 0
+    for seed in range(seeds):
+        text, answers = niah.generate_niah_example(
+            num_haystack=num_haystack, seed=seed, **params)
+        if any(a not in text for a in answers):
+            bad += 1
+    return bad
+
+
+@pytest.mark.parametrize("task", ["niah_single", "niah_multikey"])
+def test_the_niah_filler_floor_is_derived_from_the_tasks_own_params(task):
+    """Not the value 4 -- the derivation. Pinning the number would pass again
+    the moment a preset changed and the floor did not follow it."""
+    params = _NIAH_PARAMS[task]
+    expected = max(params["num_needle_k"], params["num_needle_q"])
+    assert _min_haystack_units(task) == expected, (
+        f"{task}: floor is {_min_haystack_units(task)}, but the builder needs "
+        f"{expected} filler units to place all its needles")
+
+
+@pytest.mark.parametrize("task", ["niah_single", "niah_multikey"])
+def test_no_example_at_the_floor_is_unanswerable(task):
+    """The property the floor is FOR. Every example the sizing search can
+    return must contain the answer it is scored against."""
+    floor = _min_haystack_units(task)
+    bad = _unanswerable(task, floor)
+    assert bad == 0, (
+        f"{task}: {bad}/{_UNANSWERABLE_SEEDS} seeds at the floor "
+        f"num_haystack={floor} produce an example whose answer is not in its "
+        f"own prompt. Those score 0 for every model and are indistinguishable "
+        f"from a retrieval failure.")
+
+
+def test_below_the_floor_examples_ARE_unanswerable():
+    """The break-test, permanent rather than performed once.
+
+    Expresses the defect as a fixture so the floor cannot be lowered back to 1
+    and stay green. `niah_single` cannot express it -- with one needle the
+    clamp is a no-op and its floor is legitimately 1 -- which is exactly why
+    the hardcoded 1 looked correct to whoever wrote it.
+    """
+    floor = _min_haystack_units("niah_multikey")
+    assert floor > 1, "niah_multikey's floor is 1 again; the derivation is gone"
+
+    bad = _unanswerable("niah_multikey", 1)
+    assert bad > _UNANSWERABLE_SEEDS // 2, (
+        f"only {bad}/{_UNANSWERABLE_SEEDS} seeds are unanswerable at "
+        f"num_haystack=1, so this fixture no longer demonstrates the defect "
+        f"the floor prevents (it was ~75%)")
+
+    # monotone: the closer to the floor, the fewer bad examples, reaching zero
+    # AT it. If this ever inverts, the clamp is not what is causing them.
+    rates = [_unanswerable("niah_multikey", n) for n in range(1, floor + 1)]
+    assert rates == sorted(rates, reverse=True), rates
+    assert rates[-1] == 0, rates
+
+
+def test_the_sizing_search_cannot_return_below_the_floor():
+    """Where it actually bites: `search_units` starts at `min_units` and returns
+    it, so the floor is the only thing standing between a small budget and an
+    unanswerable example. A budget too small must raise, not round down."""
+    from attnbench.accuracy.sizing import (BudgetTooSmallError,
+                                           fit_units_to_budget)
+
+    floor = _min_haystack_units("niah_multikey")
+    render = lambda n: _render("niah_multikey", 7, n)[0]      # noqa: E731
+
+    at_floor = approximate_token_count(render(floor))
+    r = fit_units_to_budget(render, approximate_token_count, at_floor,
+                            min_units=floor)
+    assert r.units >= floor, r
+
+    with pytest.raises(BudgetTooSmallError):
+        fit_units_to_budget(render, approximate_token_count, at_floor - 1,
+                            min_units=floor)

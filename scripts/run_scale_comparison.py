@@ -80,17 +80,30 @@ def main():
                                          "small", "large"), args):
         print(line, flush=True)
 
+    # A column present on ONE side only used to be skipped in silence: the
+    # inner `for name, d in ...: if col not in d: continue` here was a loop
+    # whose body was only that `continue`, so it iterated and did nothing, and
+    # the real check then sat behind `if col in a and col in b`. So a file
+    # carrying `mask_source` compared against one that does not passed the
+    # comparability check without comment -- which is the same asymmetry the
+    # column exists to expose. Refuse instead: a missing provenance column is
+    # not evidence that the provenance matches.
     for col in ("score_source", "block_size", "mask_source"):
-        for name, d in (("small", a), ("large", b)):
-            if col not in d:
-                continue
-        if col in a and col in b:
-            sa = set(a[a.backend == "block_sparse"][col].dropna().unique())
-            sb = set(b[b.backend == "block_sparse"][col].dropna().unique())
-            if sa != sb:
-                raise SystemExit(
-                    f"{col} differs on the sparse rows: small={sorted(sa)} "
-                    f"large={sorted(sb)}. These are not the same experiment.")
+        present = [name for name, d in (("small", a), ("large", b)) if col in d]
+        if not present:
+            continue          # neither side records it; nothing to compare
+        if len(present) == 1:
+            raise SystemExit(
+                f"{col} is recorded on the {present[0]} side only, so the two "
+                f"inputs cannot be shown to share it. One file predates the "
+                f"column and the other does not, which is itself a reason to "
+                f"doubt they are the same experiment.")
+        sa = set(a[a.backend == "block_sparse"][col].dropna().unique())
+        sb = set(b[b.backend == "block_sparse"][col].dropna().unique())
+        if sa != sb:
+            raise SystemExit(
+                f"{col} differs on the sparse rows: small={sorted(sa)} "
+                f"large={sorted(sb)}. These are not the same experiment.")
 
     da, db = _describe(a), _describe(b)
     m = da.merge(db, on=KEY, how="outer", suffixes=("_small", "_large"))

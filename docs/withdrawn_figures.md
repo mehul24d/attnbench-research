@@ -253,7 +253,7 @@ replacement, and nothing here will say so.
       "id": "multikey-16384-sink-delta",
       "pattern": "\\+0\\.0 against dense",
       "was": "niah_multikey at 16384/0.5 scoring +0.0 against dense post-sink-fix",
-      "replacement": "−1\\.0|-1\\.0",
+      "replacement": "\u22121\\.0|-1\\.0",
       "note": "+0.0 is the era-2 cell (results/accuracy_forced_sink/). Re-measured under the fixed tie-break, audit S7, it is -1.0 (era 3, results/s7_jitter/). Each is inside the other's CI."
     },
     {
@@ -274,17 +274,18 @@ replacement, and nothing here will say so.
     },
     {
       "id": "stage7-vt-pre-adjustment-speedup",
-      "pattern": "1\\.016 → ",
+      "pattern": "1\\.016 \u2192 ",
       "was": "vt's Stage 7 recommended speedup before the post-fix block-count re-evaluation",
       "replacement": "1\\.033|1\\.0327",
       "note": "results/stage7/decision_map.parquet gives vt/8192/0.9 at 1.0327 at every epsilon, and claims.md states the range as 1.033x-1.058x eighteen lines earlier. The corrected pair is 1.033 -> 1.031."
     },
     {
       "id": "s11-tax-against-kernel-denominator",
-      "pattern": "0\\.8-1\\.7%|0\\.8–1\\.7%",
+      "pattern": "0\\.8-1\\.7%|0\\.8\u20131\\.7%",
       "was": "the per-call mask-conversion tax as a fraction of the A100 16384 cells carrying the 1.090x/1.201x/1.282x claim",
       "replacement": "0\\.1[0-9]",
-      "note": "Computed against single-call kernel p50s (3.373/2.266/1.795 ms) but attributed to 28-layer end-to-end prefill cells (400.4/363.4/340.4 ms). Correct range for those cells is 0.11-0.25%. Sign and the floor conclusion are unaffected; keep the kernel-cell figures and label them as kernel cells."
+      "note": "Computed against single-call kernel p50s (3.373/2.266/1.795 ms) but attributed to 28-layer end-to-end prefill cells (400.4/363.4/340.4 ms). Correct range for those cells is 0.11-0.25%. Sign and the floor conclusion are unaffected; keep the kernel-cell figures and label them as kernel cells. RETIRED 2026-09-23: the 2026-09-23 S11 rewrite removed the 'was 0.8-1.7% assumed' parenthetical this pattern matched, along with the rest of the assumed-constant arithmetic, so the pattern now matches nowhere. The defect it recorded -- kernel-cell percentages attributed to end-to-end cells -- is superseded by a stricter statement: the register now names the denominator, its file and its card for every cell, and tests/test_s11_tax_derivation.py recomputes each one from the parquet. Retiring rather than repointing, because the successor guard is a derivation and not a string match.",
+      "retired": true
     },
     {
       "id": "composition-refuses-cross-era",
@@ -302,9 +303,9 @@ replacement, and nothing here will say so.
     },
     {
       "id": "readme-2048-no-accuracy-cost",
-      "pattern": "0\\.993× \\(sparsity loses\\)",
+      "pattern": "0\\.993\u00d7 \\(sparsity loses\\)",
       "was": "the README's 2048 row in the 'best speedup at no accuracy cost' table",
-      "replacement": "0\\.984×",
+      "replacement": "0\\.984\u00d7",
       "note": "0.993x is the 0.75-sparsity cell at 2048, which scores 99.0. The column requires 100.0, and the only 2048 cell that reaches it is 0.5 sparsity at 0.984x. Registered with the parenthetical in the pattern because 0.993 on its own is a correct measurement in the claims.md grid and a registry entry that fires on a correct statement is a bad entry."
     },
     {
@@ -320,6 +321,34 @@ replacement, and nothing here will say so.
       "was": "562374a described as the commit carrying the cheap-scorer zeros defect",
       "replacement": "562374a` REMOVED|fixed in `562374a`",
       "note": "562374a deletes `out = torch.zeros_like(q)`; it is the fix. silent_failure_patterns.md already used the unambiguous form, 'fixed in 562374a'. A commit cited as a defect when it is the repair sends the next reader to check out the wrong tree."
+    },
+    {
+      "id": "s11-copy-as-the-measured-constant",
+      "pattern": "29\\.70-34\\.56|29\\.7-34\\.6|26\\.53-31\\.68|26\\.5-31\\.7",
+      "was": "the bare `.to()` copy reported as the measured per-call cost of `to_block_sparse_attn_mask()`, in the S11 disposition and in limitations.md's timed-region section",
+      "replacement": "43\\.0[0-9]|43\\.07|48\\.10|39\\.19|44\\.18|full call",
+      "note": "S11 asks what to_block_sparse_attn_mask() adds per call. The run banked that as full_call_p50_us (43.07-48.10 us A100, 39.19-44.18 us L4) and the disposition quoted copy_p50_us instead, a sub-component. backends/block_sparse.py:104 calls the whole function per forward, so the whole function is inside the timed region. Every S11 percentage was ~39% low as a result. Direction unaffected -- the tax is one-sided, so the corrected figures deepen an already-conservative floor."
+    },
+    {
+      "id": "s11-launch-dominated",
+      "pattern": "launch-dominated|roughly flat across a 256x size range",
+      "was": "the S11 finding that the per-call copy is launch-dominated and roughly constant in size, from a raw p50 ratio of 1.16x (A100) / 1.19x (L4)",
+      "replacement": "size-sensitive|SIZE-SENSITIVE|19\\.3|16\\.7",
+      "note": "The ratio was computed on figures that are ~99% timing harness: a 1-byte copy under the same double-sync costs 29.443 us (A100) / 26.202 us (L4), against copy p50s of 29.709 / 26.531 at 1024. Net of that floor the marginal cost rises 19.3x (A100) and 16.7x (L4) across the same 256x range, which is the measurement script's own pre-registered falsifier for 'roughly constant per call'. The script computed, printed and banked the floor in every row and never compared anything to it; scripts/measure_mask_h2d_tax.py now does, in analyse(), and tests/test_s11_tax_derivation.py replays the banked parquets through it."
+    },
+    {
+      "id": "s11-contradicts-the-assumed-range-at-every-band",
+      "pattern": "at or above the assumed upper end at every band",
+      "was": "the claim that the A100 constant exceeded the assumed 15-30 us range at every band, and that both cards' constants contradicted the range rather than confirming it",
+      "replacement": "three of five|3/5|below 30",
+      "note": "False as stated: the A100 p50s at 1024, 2048 and 4096 are 29.709, 29.698 and 29.879, all below 30, so three of five bands are INSIDE the assumed range. And the same run's throughput form -- one sync around N calls, which is how Stage 2 times -- is 17.95-22.90 us (A100) and 15.17-19.88 us (L4), wholly inside the range at every band on both cards. The run does not pin one constant; it brackets one, and which candidate contradicts the assumption has to be named."
+    },
+    {
+      "id": "s11-8192-denominator-from-the-superseded-geometry",
+      "pattern": "1\\.969",
+      "was": "the A100 8192 block_sparse kernel time used as the S11 denominator at that band",
+      "replacement": "1\\.230|1\\.544|1\\.133|32-head|\\(32,8\\)|real head geometry",
+      "note": "1.969 ms is from the (32,8)-head table at claims.md:1026, which claims.md:1046 supersedes under 'The same comparison at the model's real head geometry' because Qwen2.5-1.5B is (12,2) and the 32-head sweep overstated the kernel. It is also in no banked parquet -- results/a100/sweep_a100.parquet, the only A100 Stage 2 sweep in the tree, has zero block_sparse rows -- so S11's claim to have checked each denominator against the banked parquet could not have been true of it. The real-geometry figures are 1.544 / 1.230 / 1.133 ms (results/s7_sweep_hl122/sweep.parquet). Keep 1.969 where the 32-head table states it as its own measurement; it is withdrawn only as an S11 input."
     }
   ]
 }

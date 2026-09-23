@@ -22,15 +22,16 @@ why this file checks only inputs: a wrong input path fails loudly the first
 time, a wrong output path silently produces a second copy of something while
 the first one goes on looking current.
 
-Skips without the full banked `results/` tree, like the other banked-data
-tests -- not merely without `results/` itself. `results/` is gitignored but
-carries a handful of force-committed evidence files, so it exists in every
-clone; bare existence was never the right check (instance #52,
-`silent_failure_patterns.md`).
+Skips when whole result stages are absent, like the other banked-data tests.
+Not on bare `results/` existence -- it is gitignored but carries
+force-committed evidence files, so it exists in every clone (instance #52) --
+and not on a file count either, which a partial bucket sync clears while still
+lacking the inputs (instance #53). See `_missing_stage_dirs()`.
 """
 
 from __future__ import annotations
 
+import pathlib
 import re
 from pathlib import Path
 
@@ -67,23 +68,33 @@ def test_some_scripts_document_a_results_path():
         f"scripts/*.py; the docstring extraction has probably broken")
 
 
-def _full_results_tree_present() -> bool:
-    """True only when the banked results tree itself is present, not merely
-    when `results/` exists (instance #52, see the module docstring). This
-    file's inputs span many stages' worth of paths rather than one parquet
-    shape, so the threshold is a raw file count comfortably above the
-    force-committed evidence subset (9 files) and comfortably below a real
-    session tree (1000+)."""
-    results = REPO / "results"
-    if not results.exists():
-        return False
-    return sum(1 for p in results.rglob("*") if p.is_file()) > 20
+def _missing_stage_dirs(root: Path | None = None) -> list[str]:
+    """The directories documented input paths live in that are absent here.
+
+    The gate, and it is deliberately about DIRECTORIES rather than a file
+    count (instance #53: a raw `> 20` file count is cleared by any partial
+    bucket sync, which then FAILS this test instead of skipping it -- one
+    partial-sync tree cleared it with 1,275 files and 16 missing inputs).
+
+    Directories are the right granularity because of what this test is FOR.
+    Every defect it was written for was a wrong FILENAME inside a directory
+    that existed: `run_s1a_comparison.py` and `check_dense_canary.py` both
+    named `results/s1a/accuracy.parquet` while `results/s1a/` held
+    `accuracy_band2048.parquet`. So a missing directory means "this checkout
+    does not have that stage" -- skip -- and a present directory missing the
+    named file means "the usage line is wrong" -- fail. A file count cannot
+    tell those apart; this can.
+    """
+    base = REPO if root is None else root
+    return sorted({str(pathlib.Path(path).parent)
+                   for _, path in documented_paths()
+                   if not (base / path).parent.is_dir()})
 
 
-@pytest.mark.skipif(not _full_results_tree_present(),
-                    reason="only a handful of force-committed evidence files, "
-                           "not the full banked results/ tree, is present in "
-                           "this checkout")
+@pytest.mark.skipif(bool(_missing_stage_dirs()),
+                    reason=f"this checkout is missing whole result stages, so "
+                           f"it cannot say whether a usage line names the "
+                           f"right file within one: {_missing_stage_dirs()}")
 def test_every_documented_input_path_exists():
     missing = [(s, p) for s, p in documented_paths()
                if not (REPO / p).exists()]
@@ -92,3 +103,44 @@ def test_every_documented_input_path_exists():
         + "\n  ".join(f"{s}: {p}" for s, p in missing)
         + "\nA usage line is the most-copied line in a script. Name the file "
           "the session actually wrote.")
+
+
+# --- the gate, break-tested in both directions ------------------------------
+#
+# Instance #53's lesson: a skip branch nobody has watched take is as unverified
+# as an assertion nobody has watched fail. Both branches are exercised here
+# against constructed trees, so neither depends on someone having built the
+# right checkout by hand once.
+
+def _stage_tree(root: Path, *, complete: bool) -> None:
+    """A tree holding the directories every documented input path names.
+    `complete=False` drops one stage, which is what a partial sync looks like.
+    """
+    dirs = sorted({pathlib.Path(path).parent for _, path in documented_paths()})
+    if not complete:
+        dirs = dirs[1:]
+    for d in dirs:
+        (root / d).mkdir(parents=True, exist_ok=True)
+
+
+def test_the_gate_skips_a_checkout_missing_a_whole_stage(tmp_path):
+    """The branch instance #53 proved nobody had watched."""
+    _stage_tree(tmp_path, complete=False)
+    missing = _missing_stage_dirs(tmp_path)
+    assert missing, (
+        "a tree missing an entire result stage reported nothing missing, so "
+        "this test would RUN against a partial checkout -- instance #53")
+
+
+def test_the_gate_runs_when_every_stage_is_present_even_with_files_absent(tmp_path):
+    """Anti-vacuity, and the property that makes directories the right
+    granularity: all stages present but the FILES absent must still RUN, since
+    a wrong filename inside an existing stage is the defect this file exists
+    for. A gate keyed on the files themselves could never fail."""
+    _stage_tree(tmp_path, complete=True)
+    assert _missing_stage_dirs(tmp_path) == [], _missing_stage_dirs(tmp_path)
+    still_missing = [p for _, p in documented_paths()
+                     if not (tmp_path / p).exists()]
+    assert still_missing, (
+        "the fixture created the files as well as the directories, so it no "
+        "longer distinguishes 'stage absent' from 'filename wrong'")

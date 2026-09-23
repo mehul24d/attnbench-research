@@ -82,11 +82,20 @@ def main():
             f"paths is not the arm you think it is.")
     print(f"scorers  : oracle={sorted(sa)}  cheap={sorted(sb)}")
 
+    # Present on one side only is a refusal, not a skip -- same reasoning as
+    # run_scale_comparison.py: a provenance column that only one file records
+    # cannot be shown to match, and silence reads as agreement.
     for col in ("model_id", "block_size", "mask_source"):
-        if col in a and col in b:
-            va = set(a[col].dropna().unique()); vb = set(b[col].dropna().unique())
-            if va != vb:
-                raise SystemExit(f"{col} differs: {sorted(va)} vs {sorted(vb)}")
+        present = [name for name, d in (("oracle", a), ("cheap", b)) if col in d]
+        if not present:
+            continue
+        if len(present) == 1:
+            raise SystemExit(
+                f"{col} is recorded on the {present[0]} side only, so the two "
+                f"inputs cannot be shown to share it.")
+        va = set(a[col].dropna().unique()); vb = set(b[col].dropna().unique())
+        if va != vb:
+            raise SystemExit(f"{col} differs: {sorted(va)} vs {sorted(vb)}")
     if "model_id" in a:
         print(f"model    : {sorted(set(a.model_id.dropna().unique()))}")
 

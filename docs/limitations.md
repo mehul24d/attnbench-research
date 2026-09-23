@@ -914,21 +914,46 @@ UnsupportedConfig` on the `causal` config. It is one arm of every end-to-end
 comparison in the study, and its timed region has therefore been checked
 **nowhere** — not on the workstation, not on the instance.
 
-**The tax is one-sided, and that is the load-bearing fact.** S14 established that the SDPA kernels this study actually measures — `sdpa_math` and `sdpa_flash` — rebuild nothing per call (`per_call = [0, 0, 0]`, on causal and block_sparse alike). So the per-call copy depresses the numerator of every block_sparse-over-dense ratio and never touches the denominator. **Every reported block_sparse speedup is a lower bound on the true one**, arithmetically, independent of how large the tax turns out to be. S11 measured the magnitude (closed 2026-09-21); it did not change the sign.
+**The tax is one-sided, and that is the load-bearing fact.** S14 established that the SDPA kernels this study actually measures — `sdpa_math` and `sdpa_flash` — rebuild nothing per call (`per_call = [0, 0, 0]`, on causal and block_sparse alike). So the per-call copy depresses the numerator of every block_sparse-over-dense ratio and never touches the denominator. **Every reported block_sparse speedup is a lower bound on the true one**, arithmetically, independent of how large the tax turns out to be. S11 measured the magnitude (re-closed 2026-09-23, after the first closure was found to have quoted the wrong column of its own output); it did not change the sign, and that is why three errors in the magnitude moved no published number.
 
 **What this does and does not mean for the published numbers.** The magnitude
-is measured on both cards (register item S11, closed 2026-09-21: A100-SXM4-80GB
-p50 29.7-34.6 us per call, L4 p50 26.5-31.7 us per call) and the bytes are
-small — 16 KB at 16384/128, 64 KB at 32768 — so against a millisecond-scale
-kernel the tax is a fraction of a percent (0.24-3.3% depending on the cell
-and which card measured it), and proportionally largest at the
-short seq_lens Stage 2 also sweeps. The **direction** is known and it is the
-conservative one: `block_sparse` is being measured slower than it is, so every
-reported `block_sparse`-over-dense speedup is **understated**, not inflated.
-That is the right way round to be wrong, and it is still wrong. S11 has
-measured it: no `block_sparse` timing number in this study is free of a
-per-call setup cost, and no claim rests on a checked timed region for `sdpa`
-at all.
+is measured on both cards (register item S11, re-closed 2026-09-23) and the
+bytes are small — 16 KB at 16384/128, 64 KB at 32768. It is reported as a
+**bracket, not a constant**, because the measurement produced two defensible
+per-call figures and they differ by 40%: Stage 2 times N calls under one sync,
+so the throughput form is the like-for-like lower bound, and the
+one-sync-per-call latency form is the conservative upper bound.
+
+| | A100-SXM4-80GB | L4 |
+|---|---|---|
+| upper bound — `to_block_sparse_attn_mask()`, latency form | 43.07–48.10 µs | 39.19–44.18 µs |
+| lower bound — the copy, throughput form | 17.95–22.90 µs | 15.17–19.88 µs |
+| timing-harness floor (1-byte copy, same method) | 29.443 µs | 26.202 µs |
+
+Against a millisecond-scale kernel that is **1.4–4.9% per kernel call** at the
+upper bound (0.7–1.9% at the lower), largest at the short seq_lens Stage 2 also
+sweeps, and **0.34–0.40% end-to-end** at the A100 16384 cells (0.16–0.19%
+lower). *(This paragraph read "a fraction of a percent (0.24-3.3% depending on
+the cell and which card measured it)" until 2026-09-23. Two things were wrong
+with it: the figures came from the bare `.to()` rather than from the function
+the backend actually calls per forward, and 3.3% is not a fraction of a
+percent — the sentence contradicted its own parenthesis.)*
+
+**Two caveats on the constant itself, both from the same run.** The harness
+floor above is a **1-byte** copy timed the same way, so at 1024–8192 the copy
+under test is 0.9–6.3% of the latency-form figure and is **not resolved by this
+method**; only the 16384 band is. And net of that floor the marginal cost rises
+**19.3× (A100) / 16.7× (L4)** across a 256× size range, so this copy is
+size-sensitive. *(The register said it was **launch-dominated**, "roughly flat …
+A100 moves 1.16x, L4 1.19x". That ratio was two numbers that are ~99% harness.
+See S11.)* Neither caveat touches the direction.
+
+The **direction** is known and it is the conservative one: `block_sparse` is
+being measured slower than it is, so every reported
+`block_sparse`-over-dense speedup is **understated**, not inflated. That is the
+right way round to be wrong, and it is still wrong. No `block_sparse` timing
+number in this study is free of a per-call setup cost, and no claim rests on a
+checked timed region for `sdpa` at all.
 
 ## Sub-block causality: the oracle was leaking
 

@@ -5,8 +5,11 @@
 # What went wrong that day, in order:
 #
 #  1. The instance was "cleaned" with `rm -rf results`. results/ is gitignored
-#     but TWO TRACKED FILES live under it -- results/stage3_s1/INVALID_ROWS.md
-#     and results/stage3_s1b/README.md -- so the clean silently deleted them.
+#     but TRACKED FILES live under it -- two on the day this happened
+#     (results/stage3_s1/INVALID_ROWS.md, results/stage3_s1b/README.md), nine
+#     from 2026-09-17 once the S7/S8 evidence artifacts were force-added, and
+#     `git ls-files results/` whenever you are reading this -- so the clean
+#     silently deleted them.
 #     Second occurrence: the preflight's `mv results <stamp>` did the same
 #     thing earlier and stamped git_dirty=True on 492 Stage 1 passes.
 #     gitignored and untracked are NOT the same set, and this repo is a

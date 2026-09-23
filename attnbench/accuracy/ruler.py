@@ -35,9 +35,20 @@ _NIAH_PARAMS = {
     "niah_single": dict(haystack_mode="noise", type_needle_k="uuids",
                          type_needle_v="numbers", num_needle_k=1,
                          num_needle_v=1, num_needle_q=1),
-    # Modeled on RULER's niah_multikey_3: haystack_mode="needle" +
-    # uuids/uuids matches that preset exactly -- no substitution needed for
-    # this one, since it never used word needles or an essay haystack.
+    # Modeled on RULER's niah_multikey_3, and DEVIATING from it on one axis:
+    # haystack_mode="needle" and uuids/uuids match that preset, but
+    # `num_needle_k` is 4 here and **1** upstream (scripts/synthetic.yaml at
+    # the vendored commit). Four genuine needles among same-shaped decoys is a
+    # harder retrieval task than the preset's single needle, and it is the
+    # deviation that matters most for comparability -- it changes the task, not
+    # the vocabulary. Recorded in NOTICE's comparability section.
+    #
+    # This comment read "matches that preset exactly -- no substitution needed
+    # for this one" until 2026-09-23, when the vendored tree was first diffed
+    # against upstream. Three audit passes had deferred that diff, so the one
+    # entry here claiming to need no note was the one carrying the larger of
+    # the two deviations. The header above promises each entry names its axis;
+    # this one did the opposite.
     "niah_multikey": dict(haystack_mode="needle", type_needle_k="uuids",
                            type_needle_v="uuids", num_needle_k=4,
                            num_needle_v=1, num_needle_q=1),
@@ -85,9 +96,22 @@ def _min_haystack_units(task: str) -> int:
     chain link into the noise sentences via `rng.sample(range(len(
     sentences)), len(chain))`, which raises "Sample larger than population"
     whenever there is less filler than chain. With num_chains=1/num_hops=4
-    that floor is 5. NIAH clamps its own insertion with `min(len(needles),
-    num_haystack)` and so tolerates 0, but a haystack of zero filler is a
-    degenerate example rather than a short one, so it gets a floor of 1.
+    that floor is 5.
+
+    NIAH needs the same floor for the opposite reason, and this returned a
+    hardcoded 1 until 2026-09-23. Its vendored builder clamps insertion with
+    `min(len(needles), num_haystack)` where upstream samples `len(needles)`, so
+    it does not raise -- it silently inserts fewer needles than it has answers
+    for and emits an example whose answer is absent from its own prompt.
+    "Tolerates 0" meant "does not crash", not "produces a valid example".
+    Measured at num_needle_k=4: unanswerable for 74.8% of seeds at
+    num_haystack=1, 53.8% at 2, 24.8% at 3, 0% at 4. So the binding constraint
+    is `num_haystack >= num_needle_k` (which the builder itself raises to
+    `max(num_needle_k, num_needle_q)`), and that is what is derived below.
+    No banked measurement was in that range -- every band is >= 2048 tokens,
+    i.e. hundreds of filler sentences -- but the sizing search starts at this
+    floor and RETURNS it, so a small enough budget reached it and
+    BudgetTooSmallError did not fire.
 
     The sizing search starts here, and a budget too small to fit even this
     raises BudgetTooSmallError rather than silently producing a malformed
@@ -109,7 +133,13 @@ def _min_haystack_units(task: str) -> int:
         statements_per_chain = params["num_hops"] + 1
         return params["num_chains"] * statements_per_chain
     if task in _NIAH_PARAMS:
-        return 1
+        params = _NIAH_PARAMS[task]
+        # The builder's own `num_needle_k = max(num_needle_k, num_needle_q)`,
+        # mirrored here so a future preset change moves this floor with it
+        # rather than reintroducing silent unanswerable examples at a different
+        # number. Derived from the task's params, never hardcoded -- a rule this
+        # function's docstring already stated and the NIAH branch ignored.
+        return max(params["num_needle_k"], params["num_needle_q"])
     raise ValueError(f"unknown task {task!r}")
 
 
