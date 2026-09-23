@@ -24,3 +24,14 @@ results/
 # not license Stage 2. The sync wrapper added to prevent data loss was
 # invalidating the provenance of everything it wrapped.
 logs/
+
+# The virtualenv README's Quick Start tells every reader to create, at the
+# repo root, with that exact name. Untracked it made `git status --porcelain`
+# non-empty in any checkout that followed the documented setup, so
+# provenance.capture() stamped git_dirty=True on every row measured from a
+# fresh clone -- the same defect recorded above for logs/, arriving through
+# the one command the README opens with. It was invisible on the workstation
+# this project is developed on, whose venvs happen to sit in the PARENT
+# directory, outside the repo: the failure existed only in the configuration
+# the documentation actually describes.
+.venv/
