@@ -168,10 +168,26 @@ def segment_digest(df: pd.DataFrame) -> str:
     the file bytes: parquet encoding, column order and row order are all
     incidental, and a digest that changes when they do would cry wolf. Two
     segments with the same digest recorded the same measurements.
+
+    **A cell that did not produce a latency is still a measurement.** A sweep
+    banks rows whose `latency_ms_p50` is NaN -- unsupported configs, OOMs,
+    anything `ok=False` -- and this runs at LOAD time, before any status
+    filtering, so those rows reach it. Under pandas 2 `astype(str)` rendered
+    them as the literal `"nan"`; under pandas 3 it preserves them as missing,
+    and `"|".join` then raises `TypeError: sequence item 3: expected str
+    instance, float found`. `pyproject.toml` permits both (`pandas>=2.2`), so
+    the same code either worked or could not run at all depending on the
+    resolver -- and `run_cross_arch_analysis.py` could not run at all, on the
+    real banked tree, where segment 1 alone carries 72 such rows.
+
+    `fillna("nan")` is chosen over any other sentinel deliberately: it
+    reproduces the pandas-2 rendering byte for byte, so every digest that was
+    ever successfully computed is unchanged by this fix.
     """
     cols = [c for c in ("config_key", "backend", "host", "latency_ms_p50")
             if c in df.columns]
-    payload = df[cols].astype(str).agg("|".join, axis=1).sort_values().str.cat(sep="\n")
+    rendered = df[cols].astype(str).fillna("nan")
+    payload = rendered.agg("|".join, axis=1).sort_values().str.cat(sep="\n")
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 

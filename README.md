@@ -137,7 +137,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1124 passed, 52 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1126 passed, 52 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -176,8 +176,8 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1165 passed, 11 skipped**, because the 41 banked-file tests run instead of
-skipping. Both totals are 1176, which is what `pytest --collect-only` reports —
+1167 passed, 11 skipped**, because the 41 banked-file tests run instead of
+skipping. Both totals are 1178, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 
@@ -218,7 +218,7 @@ Then, on any CUDA GPU:
   on what, and what each number licenses, organised by the five gaps. Drafted
   from `claims.md` with every claim's boundary attached.
 - **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
-  54 confirmed incidents, each one a plausible number produced by machinery
+  55 confirmed incidents, each one a plausible number produced by machinery
   that looked like it was working. No crash, no failed test. Several changed
   a published figure. Each entry records the detection method, which is the
   transferable part. #45 is the first found by someone who did not write the

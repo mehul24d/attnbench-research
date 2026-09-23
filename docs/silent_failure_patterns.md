@@ -9,7 +9,7 @@ model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
 It stood at seventeen when that sentence was written. It stands at
-**fifty-four**. The original sentence is kept rather than updated because the
+**fifty-five**. The original sentence is kept rather than updated because the
 rate is the point: the count went on growing under a discipline built
 specifically to stop it growing.
 
@@ -3303,3 +3303,91 @@ from the summary is a citation of a citation. If the tool also wrote down what
 would falsify its own conclusion, that sentence is not documentation — it is an
 unimplemented test, and it will be honoured exactly as often as someone
 remembers to read it.
+
+## 55. Fixtures that only ever hold the easy case, under a dependency floor that permits both behaviours
+
+**Found 2026-09-23, by the fifth audit pass, running every CPU-runnable script
+from a fresh clone.** `scripts/run_cross_arch_analysis.py` could not execute at
+all. Not a wrong number — a `TypeError`, raised at load time, before any
+analysis ran:
+
+```
+TypeError: sequence item 3: expected str instance, float found
+  attnbench/analysis/cross_arch.py:174 in segment_digest
+  df[cols].astype(str).agg("|".join, axis=1)
+```
+
+`segment_digest` renders four columns to strings and joins them. One of those
+is `latency_ms_p50`, and **a sweep banks rows that have no latency** —
+unsupported configs, OOMs, anything `ok=False`. `results/stage2/segment_20260903_seg1/segment.parquet`
+carries **72 such rows out of 303**. `load_segments` calls the digest on the raw
+frame *before* any status filtering, so one failed cell anywhere in a sweep took
+the whole cross-architecture analysis down.
+
+**The version dependence is the part worth keeping.** Under pandas 2,
+`astype(str)` rendered a missing value as the literal string `"nan"` and the
+join succeeded. Under pandas 3 it preserves missingness, and the join raises.
+`pyproject.toml` pins `pandas>=2.2` — **which permits both**. So the same commit
+either worked perfectly or could not run at all, decided by nothing in the
+repository, and a reader resolving dependencies today gets the broken side. Both
+environments on this workstation had already moved to pandas 3 (3.0.5 and
+3.0.6), so this was not a hypothetical about a future release; it was the
+current state, unnoticed.
+
+**Why 1,165 green tests said nothing.** Every fixture in
+`tests/test_cross_arch.py` builds rows through one helper, `_row(...)`, and
+every call site passes a concrete float:
+
+```python
+_row("host-a", L4, "sdpa_math", "c1", 100.0)
+```
+
+There was no fixture anywhere in the file with a NaN latency. The suite
+therefore exercised `segment_digest` thoroughly — order independence, content
+sensitivity, digest attachment across two machines — on the one input shape the
+real data is *not* guaranteed to have. The tests were not vacuous in the sense
+of #47; each could fail, and would have caught a real regression in what it
+covered. They simply covered the easy half of the domain, and the hard half was
+the ordinary one.
+
+**Distinguish this from #52 and #53, which it rhymes with.** Those were about a
+*skip condition* whose untested branch was wrong, and then about a *proxy*
+chosen from the states its author had seen. This is neither a guard nor a proxy:
+it is ordinary production code with ordinary passing tests, where the **fixture
+generator** — not the assertions — decided which states could ever be observed.
+`_row` is a convenience that made every test in the file agree about what a row
+looks like, and what it agreed on was wrong. A shared fixture helper propagates
+a blind spot to every test that uses it, silently and by construction, which is
+the same leverage that makes it worth having.
+
+**Severity, because it is higher than the two above.** #52 and #53 broke tests.
+This broke the only code path that produces `results/cross_arch/*.parquet`, and
+those files are the sole support for a **Supported** row in `claims.md`:
+*"On the 11 cells measured on both sm_80 and sm_89, the backend ranking is
+stable except where noted"* (`claims.md:845`). The banked outputs were produced
+under pandas 2 and are correct. But a Supported claim whose production script
+cannot be re-executed on a current dependency resolution is not reproducible,
+and nothing in the repository said so.
+
+**The fix.** `segment_digest` fills missing values explicitly, with
+`fillna("nan")` chosen over any other sentinel **because it reproduces the
+pandas-2 rendering byte for byte** — so every digest that was ever successfully
+computed is unchanged, and this repair cannot silently invalidate a comparison
+made before it. Two tests were added: one driving `segment_digest` on a frame
+with a NaN latency, one driving `load_segments` end to end on a segment
+containing a failed cell, at the exact point production broke. The first carries
+an anti-vacuity assertion that the fixture really does contain a NaN, so a later
+edit cannot quietly return it to the easy case. **Break-tested**: removing
+`fillna` turns both red with the production `TypeError` verbatim. **Confirmed on
+the real data, not only the fixtures** — `run_cross_arch_analysis.py --dry-run`
+now completes on the true 303-row/72-NaN segment 1 and reproduces the 11-cell
+table `claims.md:845` rests on.
+
+**The general form.** A dependency range that permits two behaviours is a
+branch, and it is a branch no test selects. When the floor (`>=2.2`) and the
+resolved version (3.0.6) straddle a semantic change, the repository is
+describing a configuration nobody runs. And a fixture helper is a claim about
+what the data looks like: if it can only construct the complete, well-formed
+case, then every test built on it is a statement about that case only, however
+many of them there are. Count the shapes your fixtures can express, not the
+tests you wrote.

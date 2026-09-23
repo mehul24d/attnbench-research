@@ -386,6 +386,56 @@ def test_segment_digest_is_order_independent_but_content_sensitive(tmp_path):
     assert segment_digest(pd.DataFrame(changed)) != d1
 
 
+def test_segment_digest_handles_a_cell_that_produced_no_latency():
+    """A NaN latency is a real banked row, not a malformed one.
+
+    Every other fixture in this file hands `segment_digest` concrete floats,
+    which is why the suite stayed green while
+    `scripts/run_cross_arch_analysis.py` could not run at all: under pandas 3
+    `astype(str)` leaves missing values missing, `"|".join` gets a float, and
+    the load raises `TypeError` before any analysis happens. The real tree has
+    72 such rows in segment 1 alone (unsupported configs and OOMs), so the
+    path this exercises is the ordinary one, not an edge case.
+    """
+    from attnbench.analysis.cross_arch import segment_digest
+
+    rows = [_row("host-a", L4, "sdpa_math", "c1", 100.0),
+            _row("host-a", L4, "block_sparse", "c1", float("nan"), ok=False)]
+
+    # Anti-vacuity: if a future edit makes this fixture all-concrete, the test
+    # goes on passing while covering nothing. Assert the NaN is really here.
+    assert pd.DataFrame(rows)["latency_ms_p50"].isna().sum() == 1
+
+    d = segment_digest(pd.DataFrame(rows))
+    assert len(d) == 16
+
+    # Order-independent, as for any other segment.
+    assert segment_digest(pd.DataFrame(list(reversed(rows)))) == d
+
+    # And still content-sensitive: the failed cell is part of what was
+    # measured, so dropping it must change the digest.
+    assert segment_digest(pd.DataFrame(rows[:1])) != d
+
+
+def test_load_segments_admits_a_segment_containing_a_failed_cell(tmp_path):
+    """The production entry point, at the point it actually broke.
+
+    `load_segments` calls `segment_digest` on the raw frame BEFORE any
+    `ok`/status filtering, so one unsupported cell anywhere in a sweep was
+    enough to take the whole cross-architecture analysis down.
+    """
+    rows = [_row("host-a", L4, "sdpa_math", "c1", 100.0),
+            _row("host-a", L4, "block_sparse", "c1", float("nan"), ok=False),
+            _row("host-b", H100, "sdpa_math", "c1", 50.0),
+            _row("host-b", H100, "block_sparse", "c1", 25.0)]
+    path = _write(tmp_path, "seg_with_failed_cell.parquet", rows)
+
+    loaded = load_segments([path])
+    assert len(loaded) == 4
+    assert loaded["latency_ms_p50"].isna().sum() == 1
+    assert loaded["segment_digest"].nunique() == 1
+
+
 def test_digest_is_attached_to_every_loaded_row(tmp_path):
     l4, h100 = _two_machine_sweep(tmp_path)
     joined = load_segments([l4, h100])
