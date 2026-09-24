@@ -9,7 +9,7 @@ model is self-inflicted, and this file is the record of it, kept because
 seventeen instances in seven days is no longer a coincidence.
 
 It stood at seventeen when that sentence was written. It stands at
-**fifty-five**. The original sentence is kept rather than updated because the
+**fifty-six**. The original sentence is kept rather than updated because the
 rate is the point: the count went on growing under a discipline built
 specifically to stop it growing.
 
@@ -3391,3 +3391,104 @@ what the data looks like: if it can only construct the complete, well-formed
 case, then every test built on it is a statement about that case only, however
 many of them there are. Count the shapes your fixtures can express, not the
 tests you wrote.
+
+## 56. A correction that was performed, whose artifact was never banked
+
+**Found 2026-09-24, not by an audit pass, but while rebuilding every published
+figure into CSVs from raw parquet for an external deliverable.** The trigger was
+mechanical: a build script has to name a source file, so a figure with no source
+file cannot be built.
+
+`claims.md:1137` records a real defect and its correction, in the same
+paragraph:
+
+> **No banked corroboration existed when the first version of this section was
+> written.** The A100 Stage 2 sweep contained **no `block_sparse` rows at all**
+> (`mask: ['causal']` only) — not a capability limit, but a flag: `run_sweep.py`
+> builds sparse cells only when `--mask-source random` is passed, and that
+> session never passed it. Writing a mechanism without it was the error; the
+> 107-cell sweep that corrected this took **two minutes** of GPU.
+
+**That corrective sweep is not in the tree.** Searched across all seven
+sweep/segment parquets under `results/`: the only A100 Stage 2 file is
+`results/a100/sweep_a100.parquet` (2026-09-05, head layouts `32:8` and `32:32`)
+and it is the *uncorrected* one — zero `block_sparse` rows, exactly as the
+paragraph says. The only banked A100 sweep carrying `block_sparse` is
+`results/s7_sweep_hl122/sweep.parquet`, which is the `(12,2)` real-geometry run
+and a different measurement.
+
+**What that leaves unsourced, which is more than the one cell already
+registered.** The `(32,8)` table at `claims.md:1021` has an A100 row at each of
+three bands. Searching every float and integer column of every parquet under
+`results/`, at 1×, 10³, 10⁶ and 10⁻³ scale:
+
+| figure | where it is stated | banked? |
+|---|---|---|
+| A100 4096 `sdpa_flash` **0.841** | `claims.md:1024` | **no** |
+| A100 4096 `block_sparse` **1.175** | `claims.md:1024` | **no** |
+| A100 8192 `sdpa_flash` **2.960** | `claims.md:1026` | yes — `a100/sweep_a100.parquet` |
+| A100 8192 `block_sparse` **1.969** | `claims.md:1026` | **no** — already WITHDRAWN as the S11 denominator; real geometry 1.230 |
+| A100 16384 `sdpa_flash` **11.363** | `claims.md:1027` | **no** |
+| A100 16384 `block_sparse` **5.386** | `claims.md:1027` | **no** |
+
+and therefore every ratio built from them: 0.72×, 1.50×, 2.11×, 2.44× and
+1.49×. **One cell of six resolves.**
+
+**The two unbanked `sdpa_flash` cells have near-misses, and that matters.**
+`a100/sweep_a100.parquet` holds `sdpa_flash` rows at both those bands — 0.839168
+at 4096 against the stated 0.841, and 11.486720 at 16384 against the stated
+11.363 — while its 8192 row is 2.960384 against a stated 2.960, an exact match.
+So the flash column is *nearly* sourced at two of three bands and exactly
+sourced at one. A reader checking a single cell, or eyeballing the file for
+"roughly these numbers", concludes the table is banked. It is the near-miss that
+makes this hard to see: had the corrective sweep left nothing resembling its
+output, the gap would have been obvious at the first cell anyone checked.
+
+That single resolving cell is why `claims.md:1132` reads *"3.20× against
+1.91×"* with one figure reproducing exactly and the other not reproducing at
+all: 3.20× is `9.473 / 2.960`, both
+banked, while 1.91× is `3.762 / 1.969` and only the L4 numerator exists. Two
+figures in one sentence, from two columns of one `(32,8)` table, one of which
+was never banked.
+
+**Why five audit passes missed it, and this is the transferable part.** Every
+pass audited claims against artifacts that exist — recomputing a number from its
+parquet, checking a disposition against its inputs (#54), break-testing a guard
+(#47, #52). **This failure mode is an artifact that does not exist**, and none of
+those methods can see it: there is no wrong number to recompute, no disposition
+contradicting its own inputs, no guard to mutate. The prose is internally
+consistent, the correction *did* propagate, and the citation reads as a
+provenance reference. Pass 4 found the 1.969 cell and correctly scoped its
+withdrawal to the S11 consumer (`withdrawn_figures.md`,
+`s11-8192-denominator-from-the-superseded-geometry`, which says "Keep 1.969
+where the 32-head table states it as its own measurement") — a decision that was
+right about S11 and never asked whether the table *itself* was sourced.
+
+**Verification by reconstruction finds a class of error that verification by
+inspection structurally cannot.** Building a CSV forces you to name a source
+file; reading a document does not. That asymmetry is the whole finding.
+
+**Distinguish it from #31 and #54, which it rhymes with.** #31 is a regeneration
+that inherits its input and therefore verifies nothing — there, the artifact
+exists and is stale. #54 is a disposition written from what a tool printed
+rather than from what it banked — there, the artifact exists and was not read.
+This is the third case: **the artifact was never written.** All three are gaps
+between a claim and its evidence, and only this one leaves nothing at the far
+end of the citation.
+
+**Disposition: no substitute measurement.** Re-running A100 `block_sparse` at
+`(32,8)` would produce traceable numbers describing a geometry nothing else in
+the study uses — Qwen2.5-1.5B is `(12,2)` — which relocates the problem from
+*untraceable* to *irrelevant*. The correct handling is to withdraw **the column,
+not the cell**, and to re-scope `claims.md:1132` to its flash-only half:
+*"flash gains 3.20× from the better card"* is complete, traceable and real on
+its own, and the sparse comparison at the geometry that runs already exists
+twenty lines later at `claims.md:1129` (1.28× at 8192, 1.96× at 16384). This
+supersedes the narrower B1 disposition, which named one cell.
+
+**The general form, and it is checkable.** *Any sentence of the shape "X was
+wrong and we re-ran Y to fix it" is a provenance claim about Y.* Resolve Y to a
+result path before trusting the figures it licenses. **A corrective run cited
+without a result path is the tell** — and it is the most credible-looking
+citation in a document, because a paragraph that contains its own correction
+reads as more careful than one that does not.
