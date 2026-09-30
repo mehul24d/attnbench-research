@@ -137,7 +137,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1126 passed, 52 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1131 passed, 56 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -150,17 +150,19 @@ The suite runs on CPU and needs no GPU, no model download, and no
 credentials. Verified from a clean clone into a fresh virtualenv on
 2026-09-12, resolving dependencies from scratch.
 
-The 52 skips are the honest part, and they split four ways: **3** need CUDA,
-**41** read banked result files that `results/` correctly keeps out of git,
+The 56 skips are the honest part, and they split four ways: **3** need CUDA,
+**45** read banked result files that `results/` correctly keeps out of git,
 **4** are scripts `test_script_call_sites.py` has nothing to check because
 they import nothing from `attnbench`, and **4** are the same scripts skipped
 again by `test_import_resolution.py`, which only has something to say about a
-script that imports the package. The 41 validate real measured data —
+script that imports the package. The 45 validate real measured data —
 including the check that the cross-arm decode guard actually fires on the
 confounded Stage 3 rows, and the check that the two comparison scripts refuse
 the banked era-2/era-3 pair, and the check that segment 1's 2026-09-03 probe
 still carries the eager-flex fingerprint, and the fourteen that recompute audit
-item S11's published tax percentages from the parquets they are derived from —
+item S11's published tax percentages from the parquets they are derived from,
+and the four that derive the mask builder's sparsity-dependent cost and the
+L4-host bound in `limitations.md` —
 so a fresh clone is green **without** running
 them. Each skips with a message naming the file it wanted, rather than passing
 silently.
@@ -176,16 +178,19 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1167 passed, 11 skipped**, because the 41 banked-file tests run instead of
-skipping. Both totals are 1178, which is what `pytest --collect-only` reports —
+1176 passed, 11 skipped**, because the 45 banked-file tests run instead of
+skipping. Both totals are 1187, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 
 *Cross-version equality was measured once, on 2026-09-21, against the suite as
 it stood that day: transformers 5.17.0 and 4.46.0 agreed test for test. It has
-not been re-measured since, and this workstation now runs **5.16.1**, so treat
-it as a result about that suite on those two versions rather than a standing
-property of this one. Reproducing 4.46.0 needs a Linux container and this host
+not been re-measured since, so treat it as a result about that suite on those
+two versions rather than a standing property of this one. The project
+virtualenv on this workstation runs **5.17.0**, the version it was measured
+at. *(This sentence said the workstation "now runs 5.16.1" until 2026-10-01;
+that is the system `python3`, which the suite does not use — register item
+D1.)* Reproducing 4.46.0 needs a Linux container and this host
 has no container runtime — it is the one item on the audit register's
 could-not-verify list that is still open.* *(This paragraph said "The 11 skips … 2 need CUDA, and 9 read banked
 result files" against a code block saying 10 skipped, while the real numbers

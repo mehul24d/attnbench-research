@@ -1031,17 +1031,31 @@ than the L4 one, so the cross-card comparison understates the A100's sparse
 kernel. The L4 rows are the 2026-09-04 sweep (before the fix); the A100 rows
 are 2026-09-16 (after it).*
 
+> **WITHDRAWN 2026-10-01 — the A100 rows of this table, except `flash` at
+> 8192.** Only 2.960 ms resolves to a banked parquet
+> (`results/a100/sweep_a100.parquet`). That is the only A100 Stage 2 sweep in
+> the tree, it carries `mask: ['causal']` and zero `block_sparse` rows, and
+> 0.841 / 11.363 (flash) and 1.175 / 1.969 / 5.386 (bs) are in no parquet under
+> `results/` (instance 56: withdraw the column, not the cell). Every ratio
+> built from them is withdrawn with them. The conclusion that the kernel beats
+> flash on the A100 does not depend on them: it is re-established from banked
+> data at the model's own `(12,2)` geometry in the next subsection.
+
 **The block-sparse kernel BEATS flash attention on the A100** — by 1.50× at
-8192 and 2.11× at 16384. End-to-end at those same configurations it loses
+8192 and 2.11× at 16384 *(these two figures WITHDRAWN 2026-10-01 with the
+column above; the `(12,2)` figures below replace them)*. End-to-end at those same configurations it loses
 (0.735× and 0.615×). The penalty therefore lives **outside the attention
 kernel**, in per-call work the kernel never sees — mask conversion is the
 known candidate, already measured on L4 as a constant per-call tax.
 
-What survives from the original claim is narrower and still true: **flash
-gains more from the better card than block-sparse does** — 3.20× against
-1.91× at 8192, 2.44× against 1.49× at 4096. So the sparse kernel's *margin*
-shrinks on the A100 (2.52× → 1.50× at 8192). But a shrinking margin is not a
-lost race, and the race is lost somewhere else.
+What survives from the original claim is narrower: **flash gains 3.20× from
+the better card at 8192** (9.473 → 2.960 ms at `(32,8)`, both banked). *This
+paragraph read "3.20× against 1.91× at 8192, 2.44× against 1.49× at 4096 … the
+sparse kernel's margin shrinks on the A100 (2.52× → 1.50×)" until 2026-10-01;
+everything after the 3.20× rested on the unbanked A100 cells withdrawn above.*
+Whether the sparse kernel's margin shrinks at this geometry is unmeasured. At
+the model's `(12,2)` geometry the kernel beats flash on the A100 from 8192 up,
+so the race is lost somewhere else.
 
 ### The same comparison at the model's real head geometry
 
@@ -1125,11 +1139,13 @@ is CPU mask construction" in `limitations.md`.
 
 | | |
 |---|---|
-| **Supported** | *The end-to-end block-sparse prefill speedup is **hardware-conditional**. On an L4 it reaches 1.373× at 32768/0.75; on an A100 the same configuration is 0.475×, and sparse is slower than dense at every band and sparsity measured.* |
+| **Supported** | *The end-to-end block-sparse prefill speedup is **hardware-conditional**. On an L4 it reaches 1.373× at 32768/0.75; on an A100 the same configuration is 0.475×, and sparse is slower than dense at every band and sparsity measured.* **"Hardware" here is the whole host + card + builder setup, not the GPU** (qualified 2026-10-01): the two hosts are the same CPU SKU running identical code, yet the L4's rows bound its mask-construction cost at 8192/0.50 below half what the A100's forward paid. The leading candidate is host–device overlap — the slower L4 hides more of the same CPU work behind queued kernels — which is untested. Not established as an attention-kernel effect — see `limitations.md`, "Host CPU provenance". |
 | **Supported** | *At the kernel level the block-sparse kernel is FASTER than flash on A100 at long context — **at the model's own `(12,2)` head geometry, 1.28× at 8192 and 1.96× at 16384 (sparsity 0.75), rising to 2.47× at 16384/0.9**. The end-to-end reversal is therefore caused by per-call work outside the attention kernel, not by the kernel. Earlier figures of 1.50× / 2.11× came from a 32-head sweep and **overstated** the advantage at the geometry that runs.* |
 | **Supported** | *At 4096 the same kernel is **slower** than flash at every sparsity measured (0.48–0.57×) at the model's real geometry, with no mask construction involved. The kernel's usefulness on this card has a short-context floor.* |
-| **Not established** | *That the kernel saving and the mask-construction cost compose into the observed end-to-end gap.* Composing them has been wrong in both directions — undershooting by ~2.5× with laptop construction timings and overshooting by 1.7–2.5× with the instance's own, from the same arithmetic with a strictly better input. The end-to-end effect is measured end-to-end (item 4) rather than predicted. |
-| **Supported** | *Flash attention gains more from the better card than block-sparse does: 3.20× against 1.91× at 8192. The sparse kernel's margin shrinks on A100 but does not invert.* |
+| **Supported, 2026-10-01** | *Taken at matching sparsity, the kernel saving and the mask-construction cost compose into the observed A100 end-to-end gap to within 30 ms in all six cells at 8192 and 16384* (at 0.75: −58.3 vs −68.8 ms, −264.8 vs −274.3 ms). Construction cost scales with (1 − sparsity); it is measured per sparsity by the builder swap. Derived in `tests/test_construction_cost_by_sparsity.py`. |
+| **Not established — SUPERSEDED 2026-10-01 by the row above** | *That the kernel saving and the mask-construction cost compose into the observed end-to-end gap.* The overshoot came from composing a *standalone* construction time; the forward pays less, because construction partly overlaps GPU work already queued (`limitations.md`, "CORRECTED 2026-10-01"). Composing them has been wrong in both directions — undershooting by ~2.5× with laptop construction timings and overshooting by 1.7–2.5× with the instance's own, from the same arithmetic with a strictly better input. The end-to-end effect is measured end-to-end (item 4) rather than predicted. |
+| **Supported** | *Flash attention gains **3.20×** from the better card at 8192 (L4 9.473 ms → A100 2.960 ms, `(32,8)`, both banked).* |
+| **WITHDRAWN 2026-10-01** | *…against 1.91× for block-sparse; the sparse kernel's margin shrinks on A100 but does not invert.* 1.91× = 3.762 / 1.969, and 1.969, like every A100 `bs` cell of the `(32,8)` table, is in no banked parquet (instance 56, register item B1). The sparse comparison at the model's real geometry is the `(12,2)` row above. |
 | **Not supported** | *The overhead outside the kernel is N milliseconds.* Not computable from these two datasets: Stage 2 times 32 query heads, the model has 12, so per-layer scaling between them is invalid. Sign and location only. |
 | **Not supported** | *Block-sparse attention is useless on A100.* One kernel (`block_sparse_attn`, block size 128), prefill only, batch 1, one model. A better-optimised sparse kernel is not excluded by this. |
 | **Not supported** | *The A100 result invalidates the L4 result.* Both are correct measurements of their own hardware. What is invalid is any sentence that states either number without naming the card. |
@@ -1225,12 +1241,20 @@ sentences differ sharply depending on which of their claims is being answered.
 | **Not supported** | *This study contradicts Sparse Frontier.* It does not. It measures a quantity they scope out, on one sparse family (block-sparse), in one regime (prefill), on one model family at two sizes (Qwen2.5 1.5B and 7B). Where the two overlap, they agree. |
 | **Not supported** | *Sparse attention does not pay off.* NSA (arXiv:2502.11089) reports 9.0× forward at 64k against FlashAttention-2, and this study's own vectorised-builder run wins on the A100. Beyond that: prefill-only, block-sparse-only, oracle-masked. See the scope banner at the top of `limitations.md`. Their own positive results are strongest in regimes this study excludes by construction — decode sparsity, and large-batch serving, which per their Appendix B.3 is a decode phenomenon because weights load once per forward pass regardless of batch. |
 
-**The batch axis is not a gap.** Their Appendix B.3 states that for prefilling
-all cost components scale linearly with batch size, so the attention-to-total
-ratio stays constant. A prefill sparsity result is therefore batch-invariant
-**by their own model**, and this study's batch=1 measurements do not need a
-batch-size caveat. The large-batch regime where sparse attention pays is
-decode, which is out of scope. One limitation, not two.
+**The batch axis is argued, not measured.** Their Appendix B.3 states that
+for prefilling all cost components scale linearly with batch size, so the
+attention-to-total ratio stays constant, and a prefill sparsity result is
+batch-invariant **by their own model**. That model covers device-side cost; it
+does not cover this harness's per-example, per-layer, serial host-side mask
+construction, and the sparse arm has never run at batch > 1
+(`compute_importance_scores` is batch = 1; the batch probe measured
+`sdpa_flash` and GLA only). *This paragraph read "The batch axis is not a gap
+… this study's batch=1 measurements do not need a batch-size caveat" until
+2026-10-01, contradicting `writeup_input.md`, which lists batch as an axis
+predicted to differ.* Batch = 1 is therefore a stated limitation for the
+sparse arm, with Sparse Frontier's model as the reason to expect it to be a
+weak one. The large-batch regime where sparse attention pays is decode, which
+is out of scope.
 
 **Their block size is unreachable here, and the bias is in the safe
 direction.** Block-Sparse-Attention hardcodes 128 and flex's 64 is

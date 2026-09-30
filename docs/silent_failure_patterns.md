@@ -3444,8 +3444,9 @@ sourced at one. A reader checking a single cell, or eyeballing the file for
 makes this hard to see: had the corrective sweep left nothing resembling its
 output, the gap would have been obvious at the first cell anyone checked.
 
-That single resolving cell is why `claims.md:1132` reads *"3.20× against
-1.91×"* with one figure reproducing exactly and the other not reproducing at
+That single resolving cell is why `claims.md:1132` read *"3.20× against
+1.91×"* (the 1.91× half WITHDRAWN 2026-10-01; the row now states the flash
+half only) with one figure reproducing exactly and the other not reproducing at
 all: 3.20× is `9.473 / 2.960`, both
 banked, while 1.91× is `3.762 / 1.969` and only the L4 numerator exists. Two
 figures in one sentence, from two columns of one `(32,8)` table, one of which

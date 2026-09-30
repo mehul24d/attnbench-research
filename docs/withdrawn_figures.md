@@ -349,6 +349,34 @@ replacement, and nothing here will say so.
       "was": "the A100 8192 block_sparse kernel time used as the S11 denominator at that band",
       "replacement": "1\\.230|1\\.544|1\\.133|32-head|\\(32,8\\)|real head geometry",
       "note": "1.969 ms is from the (32,8)-head table at claims.md:1026, which claims.md:1046 supersedes under 'The same comparison at the model's real head geometry' because Qwen2.5-1.5B is (12,2) and the 32-head sweep overstated the kernel. It is also in no banked parquet -- results/a100/sweep_a100.parquet, the only A100 Stage 2 sweep in the tree, has zero block_sparse rows -- so S11's claim to have checked each denominator against the banked parquet could not have been true of it. The real-geometry figures are 1.544 / 1.230 / 1.133 ms (results/s7_sweep_hl122/sweep.parquet). Keep 1.969 where the 32-head table states it as its own measurement; it is withdrawn only as an S11 input."
+    },
+    {
+      "id": "cheap-estimator-cost-0.2ms",
+      "pattern": "0\\.2 ms\\s+per\\s+call",
+      "was": "writeup_input.md's statement that MInference's mean-pool estimator costs 0.2 ms per call, four orders of magnitude under the 3% bar",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (peer-review audit 2026-09-30, Part A item 1). No banked parquet times the estimator's scoring pass; the only timing columns in results/accuracy_forced_sink_cheap and results/s9_7b_cheap_16384 are per-example latency_ms. claims.md already said 'Cost: never measured'. The estimator is cheap by construction ((S/b)^2 score entries against S^2), which is stated as such."
+    },
+    {
+      "id": "mechanism-dense-baseline",
+      "pattern": "cause\\s+is\\s+the\\s+dense\\s+baseline",
+      "was": "the attribution of the A100 sign reversal to the dense baseline being stronger there",
+      "replacement": "mask builder",
+      "note": "Refuted 2026-09-17 by the builder swap (limitations.md, 'The A100 reversal is CPU mask construction'), but left live in writeup_input.md and limitations.md's scope banner until 2026-10-01 (audit Part A item 10)."
+    },
+    {
+      "id": "b1-a100-sparse-margin-1.91",
+      "pattern": "against\\s+1\\.91|against\\s+1\\.49",
+      "was": "'flash gains 3.20x against 1.91x at 8192, 2.44x against 1.49x at 4096' -- the block-sparse halves of the cross-card gain comparison at (32,8)",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (register B1, instance 56). Built from A100 (32,8) cells -- 1.969, 1.175 ms -- that are in no banked parquet. The flash half, 3.20x at 8192, resolves and stays."
+    },
+    {
+      "id": "batch-axis-not-a-gap",
+      "pattern": "batch\\s+axis\\s+is\\s+not\\s+a\\s+gap|no\\s+batch\\s+hole",
+      "was": "the claim that batch invariance is established for the prefill result and needs no caveat",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (audit Part A item 6). Sparse Frontier's App. B.3 model covers device-side cost only; the sparse arm never ran at batch > 1. Now stated as an argued, untested axis."
     }
   ]
 }

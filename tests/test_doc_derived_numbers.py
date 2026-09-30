@@ -41,6 +41,7 @@ README = REPO / "README.md"
 LEDGER = REPO / "docs" / "spend_ledger.md"
 LIMITATIONS = REPO / "docs" / "limitations.md"
 PATTERNS = REPO / "docs" / "silent_failure_patterns.md"
+WRITEUP = REPO / "docs" / "writeup_input.md"
 
 
 def test_the_documents_exist():
@@ -153,6 +154,27 @@ def test_the_instance_count_agrees_in_three_places():
     assert int(m.group(1)) == highest, (
         f"README says {m.group(1)} confirmed incidents; "
         f"silent_failure_patterns.md numbers {highest}.")
+
+
+def test_every_restated_instance_count_agrees():
+    """Every occurrence, in every document that restates the count -- not the
+    first one in the README.
+
+    The test above reads one match from one file. At the 2026-09-30 audit
+    `writeup_input.md` said **39** confirmed incidents in one section and
+    **32** in another, against a register that numbered 56 -- two stale
+    copies of one number in the document the paper is drafted from, and
+    nothing read either of them."""
+    highest = numbered_instances()[-1]
+    stale = []
+    for doc in (README, WRITEUP):
+        for m in re.finditer(r"(\d+)\s+confirmed\s+incidents", doc.read_text()):
+            if int(m.group(1)) != highest:
+                line = doc.read_text().count("\n", 0, m.start()) + 1
+                stale.append(f"{doc.name}:{line} says {m.group(1)}")
+    assert not stale, (
+        f"silent_failure_patterns.md numbers {highest}; stale restatements: "
+        + "; ".join(stale))
 
 
 def test_the_readme_suite_counts_are_internally_consistent():

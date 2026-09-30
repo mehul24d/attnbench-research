@@ -62,18 +62,24 @@ by the same policy:
 | 32768 | L4 | 1.014 | **1.373** | 1.475 |
 | 32768 | **A100** | **0.281** | **0.475** | **0.817** |
 
-Sparse is slower than dense at every band and sparsity on the A100. The cause
-is the dense baseline, not the sparse kernel: flash attention gains **3.63×**
-moving L4→A100 at 32768, while block-sparse gains **1.01× at 0.5** and 1.26×
-at 0.75. Sparse attention wins on the L4 by beating a dense baseline that is
-weak there. Stage 0 records `block_sparse` supported on A100 and Stage 1
+Sparse is slower than dense at every band and sparsity on the A100 **with the
+harness's reference mask builder**. The cause is per-call host work outside
+the attention kernel: attnbench's own `importance_block_mask`, a
+per-query-block Python loop, not an upstream implementation. Swapping in a
+vectorised builder and changing nothing else turns the A100 16384 cells into
+wins (1.090× / 1.201× / 1.282×) with bitwise-identical outputs. *This paragraph
+read "the cause is the dense baseline, not the sparse kernel" until
+2026-10-01; the ledger had already refuted that.* Why the L4 host did not pay
+the same construction cost — same CPU SKU, same code — is open
+(`limitations.md`, "Host CPU provenance"). Stage 0 records `block_sparse` supported on A100 and Stage 1
 passes 90/90 correctness cells, and the kernel tracks sparsity more steeply on
 A100 (65.7% spread) than on L4 (31.2%), so this is not a missing-kernel
 artifact — see `claims.md`, "The speedup does not survive a change of card."
 
 **Read the two findings together.** The operating point needs an importance
 oracle that costs 35× what it saves, whose affordable substitute loses 32–40
-accuracy points, **and** a card whose dense attention is weak enough to beat.
+accuracy points, **and** a mask builder cheap enough that host-side construction
+does not absorb the kernel's saving.
 Neither condition was visible from the L4 data alone.
 
 **The break-even bar this sets, and the answer to it.** To make the operating
@@ -81,10 +87,13 @@ point profitable, a deployable importance estimator would have to produce a
 good-enough ranking for **under ~3% of the scoring pass's cost** (1/35) while
 preserving enough of the oracle's ordering to keep accuracy at ceiling.
 
-**The cheap half of that bar is met and the accuracy half is not.**
-MInference's mean-pool estimator (arXiv:2407.02490, Algorithm 3) costs 0.2 ms
-per call against the oracle's 12.4 s per example at 16384 — four orders of
-magnitude under the bar, comfortably inside the 3%. It was run as its own arm
+**The accuracy half of that bar fails; the cost half was never measured.**
+MInference's mean-pool estimator (arXiv:2407.02490, Algorithm 3) forms a
+(S/b)×(S/b) score matrix instead of the oracle's S×S — about 16,000× fewer
+score entries at 32768/128 — so it is cheap **by construction**. No timing of
+its scoring pass exists in any banked result (`claims.md`, "Cost: never
+measured"). *This paragraph read "costs 0.2 ms per call … four orders of
+magnitude under the bar" until 2026-10-01; no parquet carries that figure.* It was run as its own arm
 on 2026-09-16 at 16384, n=100 per task, both arms on one host, clocks locked,
 `git_dirty=False`, with the dense reference coming out identical in both arms
 to the decimal (66.0 / 100.0 / 78.8) as the control:
@@ -135,7 +144,7 @@ small-scale artifact.**
 |---|---|
 | **Supported** | *Block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192.* |
-| **Supported** | *The affordable substitute does not recover the accuracy. MInference's mean-pool estimator costs four orders of magnitude less than the oracle and loses 32 to 40 points on the one task with headroom at 16384, the gap widening with sparsity. At block size 128; an upper bound on the gap at their 16.* |
+| **Supported** | *The affordable substitute does not recover the accuracy. MInference's mean-pool estimator — cheap by construction, its cost unmeasured — loses 32 to 40 points on the one task with headroom at 16384, the gap widening with sparsity. At block size 128; an upper bound on the gap at their 16.* |
 | **Not supported** | *Block-sparse attention delivers 1.321× at 32768.* Not as a system. It delivers that **given a mask nobody can afford to compute**, whose cost is 44.6 s per example against the 1286 ms saved — 35×, a ratio that has moved 4% since 16384. |
 | **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× against 0.75's 1.321×, for an accuracy difference of one example in 50 that the CI cannot separate from zero. At that margin 0.75 is the defensible pick — not because 0.9 is worse, but because nothing here shows it is not. |
 
@@ -218,7 +227,7 @@ cost is excluded from every latency number — which is priced in §1 rather tha
 left implicit.
 
 **Why these numbers can be trusted: the infrastructure caught what review
-did not.** This project keeps a register of 39 confirmed incidents in
+did not.** This project keeps a register of 56 confirmed incidents in
 `docs/silent_failure_patterns.md`, each a plausible number produced by
 machinery that looked like it was working — no crash, no failed test. The
 register is not a confession; it is the evidence that the detection layer
@@ -482,7 +491,7 @@ baseline falling. The across-lengths leg is weaker than it was: at 0.75 the
 forced-sink deltas are −15 / −18 / −21, a drift rather than the 73.0 → 72.3 →
 41.7 collapse the unforced masks produced.
 
-### Gap 3 — The estimator's cost, which published speedups exclude — **ANSWERED, and it is the study's conclusion**
+### Gap 3 — The estimator's cost, which published speedups exclude — **ANSWERED for the oracle (~35×); the deployable estimator's cost is unmeasured**
 
 Priced as a first-class result (§1) rather than a limitation. The oracle turns
 out to do more than set a ceiling:
@@ -684,9 +693,8 @@ verifies nothing.
 
 - **`docs/claims.md`** — the ledger this document is drafted from. If a
   sentence is not in a Supported row there, it is not licensed.
-- **`docs/limitations.md`** — 1,047 lines of what the measurements cannot
-  answer, including the two permanently unreachable comparisons and the
+- **`docs/limitations.md`** — what the measurements cannot answer, including the two permanently unreachable comparisons and the
   variance calculation proving it.
-- **`docs/silent_failure_patterns.md`** — 32 confirmed incidents, each a
+- **`docs/silent_failure_patterns.md`** — 56 confirmed incidents, each a
   plausible number produced by machinery that looked like it was working.
   Several changed a published figure. Each entry records the detection method.

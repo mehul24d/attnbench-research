@@ -46,16 +46,30 @@ flipped.
 > **What is supported:** block-sparse prefill is faster than dense **on an
 > NVIDIA L4 (sm_89)**, up to 1.373× at 32768/0.75.
 >
-> **What is NOT supported:** that it is faster anywhere else. On an
-> A100-SXM4-80GB (sm_80) the same configuration is **0.475×** — sparse is
-> slower than dense at every band and every sparsity measured.
+> **What is NOT supported:** that it is faster anywhere else **with the
+> harness's reference mask builder**. On an A100-SXM4-80GB (sm_80) the same
+> configuration is **0.475×** — sparse is slower than dense at every band and
+> every sparsity measured with that builder.
 
-The cause is the dense baseline. Moving L4 → A100 at 32768, flash attention
-gets **3.63×** faster while the block-sparse kernel gets **1.26×** at 0.75 and
-**1.01×** at 0.5. Block-sparse wins on the L4 by beating a dense baseline that
-is weak there; where dense attention is well optimised, there is nothing left
-to take. Full numbers and the not-a-missing-kernel check are in `claims.md`,
-"The speedup does not survive a change of card."
+**The cause is per-call host work outside the attention kernel — the
+harness's own reference mask builder — not the card and not the dense
+baseline.** *This paragraph read "The cause is the dense baseline … where dense
+attention is well optimised, there is nothing left to take" until 2026-10-01;
+the builder swap below had already refuted it.* At the model's `(12,2)`
+geometry the kernel is faster than flash on the A100 from 8192 up, and
+replacing `importance_block_mask` — attnbench's own per-query-block Python
+loop, not an upstream implementation — with a vectorised builder, changing
+nothing else, turns the A100 16384 cells into wins with bitwise-identical
+outputs. See "The A100 reversal is CPU mask construction" below.
+
+**Why the L4 did not pay the same cost is open.** Both cards' hosts are the
+same CPU SKU and ran identical builder code on an identical software stack
+("Host CPU provenance", below), yet the L4's own Stage 5 rows bound its
+construction cost at 8192/0.50 below half what the A100 host's forward paid.
+The L4/A100 contrast is therefore not a CPU-generation contrast. The leading
+candidate is host–device overlap: the slower GPU hides more of the same CPU
+work behind kernels already queued. That is a card effect, but through the
+host–device balance rather than the attention kernel, and it is untested.
 
 **Why this was not visible earlier.** Stages 0, 1 and 2 span three
 architectures, and Stage 2's *kernel* microbenchmarks on A100 contain no
@@ -91,7 +105,10 @@ observed gap; with the instance's own CPU — a strictly more accurate input,
 measured on the machine the numbers came from — it overshoots by 2.1–2.7×.
 Replacing one measured term with a better measured term made the prediction
 worse, which is the signature of an error in the model rather than in its
-terms.
+terms. *(2026-10-01: the diagnosis stands, and the missing piece of the model
+is now identified — construction partly overlaps GPU work already queued, so
+its standalone time is not what the forward pays. With the in-situ cost at
+matching sparsity the composition closes; see "CORRECTED 2026-10-01" below.)*
 
 So this composition is **not evidence for the mechanism**, and it is kept here
 as a record of an approach that failed rather than as support. What the
@@ -121,10 +138,99 @@ originally recorded. At 8192 the L4's kernel saves
 tax did not move. **The net sign is set by how fast the GPU is relative to a
 fixed CPU term**, which predicts the reversal is *worse* on H100.
 
+**CORRECTED 2026-10-01 — construction depends on sparsity, and the forward
+pays less of it than a standalone timing says.** The builder assigns one
+Python-level `active[qb, kv] = True` per *kept* block, so its cost scales with
+(1 − sparsity). The builder swap measures what the forward actually pays
+(reference minus vectorised end-to-end prefill, same process, same scores):
+**153.3 / 67.8 / 15.8 ms** at 8192 and **676.9 / 325.5 / 115.9 ms** at 16384,
+for sparsity 0.50 / 0.75 / 0.90. Composed at the *matching* sparsity, kernel
+saving minus that cost predicts the Stage 5 A100 gap to within 30 ms in all
+six cells — at 0.75, −58.3 against −68.8 ms observed at 8192 and −264.8
+against −274.3 ms at 16384. Derived from the parquets in
+`tests/test_construction_cost_by_sparsity.py`.
+
+The table above records no sparsity and no parquet banks it. A 2026-10-01
+laptop re-run of both builders (`scripts/host_cpu_probe.py builders`)
+reproduces its laptop column at **0.75** to within 4% (1.889 / 6.224 / 22.181
+ms per call against 1.890 / 6.418 / 23.092), so the instance column was most
+likely timed at 0.75 too. If so, the forward pays about a third of the
+standalone cost at 8192 and half at 16384 (67.8 against 196.2 ms; 325.5
+against 628.3 ms). The likely reason is overlap: kernel launches are
+asynchronous, so the CPU builds the next layer's mask while the GPU is still
+executing work already queued, and only the part that outlasts that work is
+exposed. That is the "error in the model" the paragraph above diagnosed — the
+composition treated construction as fully serial. The overlap reading is an
+inference; the L4 session in "Host CPU provenance" is designed to test it.
+
+Two further corrections to the paragraph above. The 159.9 ms L4 saving at 8192
+is the 32-head sweep geometry, not the model's `(12,2)`. And "the tax did not
+move" set the L4 kernel against a *laptop* construction figure; the L4 host's
+own construction cost is bounded in "Host CPU provenance" below, and it is not
+the A100 host's.
+
 **It does not parallelise.** 1→8 torch threads gives 1.01× / 0.97× / 1.05× at
 8192 / 16384 / 32768. So instance vCPU count does not confound the card
 comparison (g2-standard-8 has 8, a2-ultragpu-1g has 12); only single-core
-clock differs, a much smaller effect.
+clock differs, a much smaller effect. *(2026-10-01: nominally not even that —
+both are the same SKU. See "Host CPU provenance", next.)*
+
+### Host CPU provenance
+
+Added 2026-10-01. No run in this study recorded the host CPU:
+`provenance.py` stamps the GPU, driver and software stack, not `lscpu`. What
+survives, recovered after the fact:
+
+| role | instance(s) | machine type, zone | CPU, and how it is known |
+|---|---|---|---|
+| L4 validation, Stage 2 segments, Stage 5b | 15 sessions, 2026-09-02..07 | g2-standard-8, asia-south1-a/b/c | **observed** (15 serial logs): `Intel Xeon CPU @ 2.20GHz`, family 6 model 0x55 stepping 7, 8 vCPU, TSC 2200 MHz |
+| A100 Stage 0–2 | `attnbench-a100-20260905-1111` | a2-ultragpu-1g, asia-southeast1-c | **observed**: the same string, 12 vCPU, TSC 2200 MHz |
+| L4 Stage 5, 8192 | `attnbench-stage5-8192` (09-07) | g2-standard-8, asia-south1-c | inferred from machine type |
+| L4 Stage 5, 16384 / 32768 | `attnbench-band16384` / `-band32768` (09-08) | g2-standard-8, asia-south1-c / -b | inferred |
+| L4 Stage 5 replicate | `attnbench-l4-20260916-1319` | g2-standard-8, us-central1-a | inferred |
+| A100 Stage 5 | `attnbench-a100-20260916-1926` | a2-ultragpu-1g, asia-southeast1-c | inferred |
+| A100 builder swap; `(12,2)` sweep | `attnbench-a100-20260917-item4` / `-1248` | a2-ultragpu-1g, asia-southeast1-c | inferred |
+| H100 Stage 0–2 | `attnbench-h100-20260916-*` | a3-highgpu-1g, us-central1-b/c | inferred |
+
+"Inferred" rests on two sources: the GCP admin-activity audit log
+(`compute.instances.insert` records the machine type and zone of every session
+since 2026-09-01), and GCP's CPU-platform documentation, which lists G2 and A2
+as the same processor — Intel Xeon Platinum 8273CL (Cascade Lake; 2.2 GHz
+base, 2.9 GHz all-core turbo, 3.7 GHz single-core max) — and A3 High as Xeon
+Platinum 8481C (Sapphire Rapids). The observed strings are consistent with
+that. **Not recoverable for any session:** the clock the builder actually ran
+at, turbo residency, and CPU steal time. One stamp caveat: rows from several
+2026-09-03..08 L4 sessions carry `host = attnbench-l4-compile-20260903-1020`,
+the hostname baked into the disk image they booted from, so `host` does not
+identify the session for those rows.
+
+**What this rules out, and what it leaves open.** The L4/A100 construction
+difference is not a CPU generation or SKU difference, and (above) not a vCPU
+count difference. Yet at 8192/0.50 the L4's own Stage 5 rows bound its
+construction cost at **≤ 79.3 ms** — the loosest bound: L4 net prefill plus 28
+layers of the kernel saving at the 32-head sweep geometry, which overstates
+the saving at the model's 12 heads — against **153.3 ms** on the A100 host.
+With the saving scaled to 12 heads (a factor of 0.375–0.53, the latter the
+A100's measured flash ratio between the two geometries) the L4 figure is
+19–34 ms, 4.5–8× cheaper. At 0.75 and 0.90 the bounds do not separate the
+hosts. Derived in `tests/test_construction_cost_by_sparsity.py`.
+
+The builder code, torch 2.9.1, Python 3.10.12 and kernel 6.8.0-1066-gcp are
+identical across these runs. **Leading candidate: no host difference at all,
+but host–device overlap.** The forward pays only the part of construction that
+outlasts the GPU work queued ahead of it (see "CORRECTED 2026-10-01" above),
+and the L4 queues far more of it: dense prefill at 8192 is ~24.8 ms of GPU time
+per layer on the L4 against ~6.8 ms on the A100. The same few milliseconds of
+CPU work per layer can be almost wholly hidden on the slower card and only
+partly on the faster one. That is the host–device balance TaxBreak formalises,
+and it predicts the reversal worsens on an H100. Other candidates, none
+recorded: turbo behaviour or steal time on the particular host, co-tenant
+contention. The test is the builder timed standalone and in situ on the same
+L4 host: overlap predicts similar standalone cost to the A100 host and a much
+smaller in-situ one. TaxBreak (Vellaisamy et al., ISPASS 2026)
+measured orchestration overhead 10–29% lower on a faster server CPU
+generation; a ≥1.9× difference on one SKU is outside that range, which is why
+it is recorded as unexplained rather than absorbed as host-CPU variance.
 
 **"As implemented" is load-bearing — this is an engineering cost, not a
 property of sparse attention.** Profiling `importance_block_mask` at 32768:
@@ -568,8 +674,8 @@ This means the batch=1 architectural limit in `compute_importance_scores`
 costs nothing in throughput -- a batch-aware rewrite would buy nothing. See
 `attnbench/accuracy/batch_scaling.py`.
 
-**The prefill result is batch-invariant by Sparse Frontier's own model, and
-this is the stronger argument.** The measurement above is empirical and
+**The prefill result is batch-invariant by Sparse Frontier's own model — for
+the device-side cost components that model covers.** The measurement above is empirical and
 L4-specific; their Appendix B.3 makes the general case. For *prefilling*, all
 cost components scale linearly with batch size, so the attention-to-total
 ratio stays constant and a prefill sparsity result does not depend on the
@@ -578,11 +684,19 @@ specific: weights load once per forward pass regardless of batch, so the
 attention share grows with batch, which is why a large-batch regime can make
 sparse decode pay when sparse prefill would not.
 
-**Consequence for this study.** There is no batch hole in the prefill result.
-The large-batch regime in which sparse attention becomes favourable is a
-**decode** phenomenon, and decode is out of scope (see the scope banner at the
-top of this file). Those are one limitation, not two, and conflating them
-overstates the gap.
+**Consequence for this study — argued, not measured.** *This paragraph read
+"There is no batch hole in the prefill result" until 2026-10-01.* Sparse
+Frontier's model covers device-side cost; it does not cover this harness's
+host-side mask construction, which is per example, per layer, serial (it does
+not parallelise — see "The A100 reversal is CPU mask construction") and, with
+the reference builder, the larger part of the A100 sparse arm's prefill. The
+sparse arm has never run at batch > 1 (`compute_importance_scores` is
+batch = 1), and the probe above measured `sdpa_flash` and GLA only. So batch is
+an **untested axis for the sparse arm** — the weakest of the four predictions
+in `writeup_input.md`, not a closed one. What does stand: the large-batch
+regime in which sparse attention becomes favourable is a **decode**
+phenomenon, and decode is out of scope (see the scope banner at the top of
+this file).
 
 **A warning about how nearly this was reported backwards.** The first version
 of this probe had no warmup pass, so each backend's first measured call also
