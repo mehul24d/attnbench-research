@@ -188,6 +188,22 @@ class _ModeState:
     # (n_heads_kv, n_blocks_finest, n_blocks_finest) fp32.
     scores: dict = field(default_factory=dict)
 
+    # ---- inline estimator (audit C1, 2026-10-01) ---------------------
+    # None: block_sparse masks come from `scores`, built by a separate
+    # scoring pass (the oracle, or the two-pass cheap arm). Set to
+    # "minference_meanpool": every layer of the MEASURED forward scores itself
+    # from its own q and k, on the device, builds its mask with
+    # masks.importance_block_mask_device, and runs the kernel -- one pass, as a
+    # deployed method would, and with the estimator's cost inside the timed
+    # forward. Layer L's q and k then come from the sparse outputs of layers
+    # < L, which the two-pass arm never sees. Set per call by run_measured so
+    # one arm's setting cannot leak into the next.
+    inline_estimator: Optional[str] = None
+    # Diagnostics only: when True, each layer's inline scores are kept here
+    # (device tensors). Off in measurement, so it costs nothing there.
+    record_inline_scores: bool = False
+    inline_scores: dict = field(default_factory=dict)
+
     # ---- decode ------------------------------------------------------
     # The backend generation runs through, which is NOT always the backend
     # being measured. Sparsity is applied during prefill only (decision C,
@@ -271,6 +287,14 @@ def _scoring_forward_chunked(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
 
 def minference_meanpool_scores(q: torch.Tensor, k: torch.Tensor, *,
                                 n_heads_kv: int, block_size: int) -> torch.Tensor:
+    """CPU copy of `minference_meanpool_scores_on_device`, for the score cache
+    and the two-pass cheap arm. See that function for the estimator itself."""
+    return minference_meanpool_scores_on_device(
+        q, k, n_heads_kv=n_heads_kv, block_size=block_size).cpu()
+
+
+def minference_meanpool_scores_on_device(q: torch.Tensor, k: torch.Tensor, *,
+                                         n_heads_kv: int, block_size: int) -> torch.Tensor:
     """The CHEAP estimator: MInference's Block-Sparse index estimation.
 
     Specified in MInference 1.0 (arXiv:2407.02490), Algorithm 3:
@@ -305,7 +329,11 @@ def minference_meanpool_scores(q: torch.Tensor, k: torch.Tensor, *,
     per-head adaptive (uniform budget, independent selection); this study is
     head-uniform, and that divergence is recorded in limitations.md.
 
-    Returns (n_heads_kv, n_blocks, n_blocks) on CPU, matching the oracle.
+    Returns (n_heads_kv, n_blocks, n_blocks) fp32 on q's device. The inline
+    arm uses it there; `minference_meanpool_scores` copies it to CPU, where
+    the oracle's scores live. (Split 2026-10-01; until then this returned CPU
+    only, which would have put a device sync on every layer of an inline
+    forward.)
     """
     batch, n_heads_q, seq_len, head_dim = q.shape
     if batch != 1:
@@ -336,7 +364,7 @@ def minference_meanpool_scores(q: torch.Tensor, k: torch.Tensor, *,
     a_hat = torch.softmax(logits, dim=-1)
     # Mean over the query heads within each KV group, as the oracle does.
     a_hat = a_hat.view(batch, n_heads_kv, group_size, n_blocks, n_blocks).mean(dim=2)
-    return a_hat[0].cpu()
+    return a_hat[0]
 
 
 def pool_scores_to_block_size(scores_finest: torch.Tensor, *,
@@ -453,7 +481,25 @@ class SwappedAttention(nn.Module):
             state.scores[self.layer_idx] = layer_scores
         else:
             mask = None
-            if cfg.mask == "block_sparse":
+            if cfg.mask == "block_sparse" and state.inline_estimator is not None:
+                if state.inline_estimator != "minference_meanpool":
+                    raise ValueError(f"unknown inline_estimator {state.inline_estimator!r}")
+                if cfg.mask_source != "importance":
+                    raise ValueError(
+                        f"the inline estimator builds importance masks (sink rule); "
+                        f"cfg.mask_source={cfg.mask_source!r}")
+                layer_scores = minference_meanpool_scores_on_device(
+                    q, k, n_heads_kv=cfg.n_heads_kv, block_size=cfg.block_size)
+                if state.record_inline_scores:
+                    state.inline_scores[self.layer_idx] = layer_scores
+                # Same reduction and the same identity seed as the two-pass
+                # path below (pooled.mean(dim=0); mask_for's identity key), so
+                # given the same scores the two paths build the same mask.
+                mask = masks.importance_block_mask_device(
+                    cfg.seq_len, cfg.block_size, cfg.sparsity,
+                    layer_scores.mean(dim=0), causal=True,
+                    identity_seed=masks._mask_identity_key(cfg))
+            elif cfg.mask == "block_sparse":
                 finest = state.scores[self.layer_idx]
                 pooled = pool_scores_to_block_size(
                     finest, finest_block_size=state.finest_block_size,
@@ -596,7 +642,8 @@ class SwappableAttentionModel:
     def run_measured(self, input_ids: torch.Tensor, backend: AttentionBackend,
                       *, cfg: AttnConfig, layer_scores: Optional[dict] = None,
                       logits_to_keep: int = 0,
-                      decode_backend: Optional[AttentionBackend] = None):
+                      decode_backend: Optional[AttentionBackend] = None,
+                      inline_estimator: Optional[str] = None):
         """Run the model with every layer's attention going through
         `backend`, using `cfg` (mask/sparsity/block_size/dtype) and, for
         block_sparse configs, the per-layer importance rankings from
@@ -620,6 +667,8 @@ class SwappableAttentionModel:
         self._state.decode_backend = decode_backend
         self._state.capture_decode_state = decode_backend is not None
         self._state.decode_states = {}
+        self._state.inline_estimator = inline_estimator
+        self._state.inline_scores = {}
         if layer_scores is not None:
             self._state.scores = layer_scores
         try:
@@ -636,6 +685,7 @@ class SwappableAttentionModel:
                  whitespace_token_ids: frozenset = frozenset(),
                  layer_scores: Optional[dict] = None,
                  decode_backend: Optional[AttentionBackend] = None,
+                 inline_estimator: Optional[str] = None,
                  ) -> "GenerationResult":
         """Greedy decode from a prefilled prompt.
 
@@ -676,7 +726,8 @@ class SwappableAttentionModel:
         prefill_len = int(input_ids.shape[-1])
         out = self.run_measured(input_ids, backend, cfg=cfg,
                                 layer_scores=layer_scores, logits_to_keep=1,
-                                decode_backend=decode_backend)
+                                decode_backend=decode_backend,
+                                inline_estimator=inline_estimator)
         next_id = int(out.logits[0, -1].argmax())
 
         generated: list[int] = []

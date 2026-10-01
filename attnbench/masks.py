@@ -38,7 +38,7 @@ class BlockSparseMask:
 
     seq_len: int
     block_size: int
-    active: torch.Tensor          # bool, shape (n_blocks, n_blocks), CPU. True = attend.
+    active: torch.Tensor          # bool, shape (n_blocks, n_blocks). True = attend.
     seed: int
     source: Literal["random", "importance"]
     causal: bool                  # every backend consuming this mask reads causal-ness
@@ -55,11 +55,15 @@ class BlockSparseMask:
             )
         if self.active.dtype != torch.bool:
             raise ValueError("active must be a bool tensor")
-        if self.active.device.type != "cpu":
-            raise ValueError(
-                "BlockSparseMask stores its pattern on CPU; backends move it "
-                "to device in their own to_*() conversion"
-            )
+        # Device: CPU for every mask the reference builder makes, and the
+        # accelerator for `importance_block_mask_device`'s. Until 2026-10-01
+        # this refused anything but CPU. The rule kept the reference path
+        # simple, and it is also why the inline (deployable) estimator arm
+        # could not exist: a mask that must come back to the host costs a
+        # device sync per layer, which is the host-side cost the A100
+        # reversal was made of. Every consumer reads `active` through a
+        # to_*() view that calls `.to(device)`, a no-op when it is already
+        # there.
 
     # ---- backend-specific views --------------------------------------
 
@@ -392,6 +396,104 @@ def importance_block_mask(seq_len: int, block_size: int, sparsity: float,
                             source=("importance" if free_block == "sink"
                                     else "importance_randfree"),
                             causal=causal)
+
+
+# ---------------------------------------------------------------------------
+# Device-side builder: the reference, bit for bit, without the Python loop
+# ---------------------------------------------------------------------------
+
+_JITTER_CACHE: dict = {}
+
+
+def _reference_jitter(n: int, causal: bool, seed_int: int) -> torch.Tensor:
+    """The exact tie-break jitter `importance_block_mask` draws, as an (n, n)
+    matrix: zero off-candidate, the reference's draw at each candidate.
+
+    The reference draws `torch.rand(len(kvs))` row by row from ONE CPU
+    generator, rows in order, skipping only rows with no candidates. A single
+    `torch.rand(total)` from the same seed yields the same stream (checked on
+    every run by `tests/test_device_mask_builder.py`, since it is a property
+    of torch's CPU generator, not a documented contract). Candidates fill
+    the matrix in row-major order, which is also the reference's
+    row-then-ascending-kv order, so `masked_scatter` places each value where
+    the reference adds it.
+
+    Cached per (n, causal, seed): the seed is fixed per config, so every
+    layer of a forward and every repeat of it reuses one CPU draw. Without
+    the cache this builder would put a CPU draw back on the per-layer path,
+    the cost it exists to remove.
+    """
+    key = (n, causal, seed_int)
+    hit = _JITTER_CACHE.get(key)
+    if hit is not None:
+        return hit
+    cand = _candidate_matrix(n, causal)
+    g = torch.Generator().manual_seed(seed_int)
+    draws = torch.rand(int(cand.sum()), generator=g) * 1e-9
+    jitter = torch.zeros(n, n).masked_scatter(cand, draws)
+    if len(_JITTER_CACHE) > 64:
+        _JITTER_CACHE.clear()
+    _JITTER_CACHE[key] = jitter
+    return jitter
+
+
+def _candidate_matrix(n: int, causal: bool, device=None) -> torch.Tensor:
+    """`_candidate_rows(n, causal)` as an (n, n) bool matrix."""
+    ar = torch.arange(n, device=device)
+    qb, kv = ar.unsqueeze(1), ar.unsqueeze(0)
+    if causal:
+        return (kv < qb) & (kv != 0)
+    return (kv != qb) & (kv != 0)
+
+
+def importance_block_mask_device(seq_len: int, block_size: int, sparsity: float,
+                                 importance_scores: torch.Tensor, *, causal: bool,
+                                 identity_seed: str) -> BlockSparseMask:
+    """`importance_block_mask` (sink rule) computed where the scores live.
+
+    Same candidates, same `round((1 - sparsity) * len(candidates))` budget
+    per row, same 1e-9 tie-break jitter from the same seeded stream, same
+    fp32 addition, so the same top-k: `tests/test_device_mask_builder.py`
+    asserts bitwise equality with the reference, including on densely tied
+    fp16 scores. That is the difference from
+    `scripts/_vec_mask_for_measurement.py`, which drops the jitter, picks
+    different members of tied groups, and is therefore valid for latency
+    only. This one is valid for accuracy.
+
+    It exists for the inline-estimator arm (audit C1, 2026-10-01): a
+    deployable method scores and masks each layer on the device, inside the
+    forward. The reference builder's per-block Python loop is the host cost
+    that made the A100 reversal. The fine-block arms need it too: at block 16
+    the loop does about 64x the assignments.
+
+    Sink rule only. The arbitrary-free-block control is a CPU-path experiment
+    and refuses here rather than silently building a sink mask.
+    """
+    n = _n_blocks(seq_len, block_size)
+    if tuple(importance_scores.shape) != (n, n):
+        raise ValueError(
+            f"importance_scores shape {tuple(importance_scores.shape)} != "
+            f"({n}, {n}) for seq_len={seq_len}, block_size={block_size}")
+    device = importance_scores.device
+    seed_int = _int_seed(identity_seed)
+    cand = _candidate_matrix(n, causal, device)
+    n_cand = cand.sum(dim=1).double()
+    budgets = torch.round((1.0 - sparsity) * n_cand).long()   # half-to-even, as Python round()
+
+    # The reference adds an fp32 jitter to the scores' own dtype, so the sum
+    # is computed in torch's promotion of the two (fp16 -> fp32, fp64 stays).
+    dtype = torch.promote_types(importance_scores.dtype, torch.float32)
+    jitter = _reference_jitter(n, causal, seed_int).to(device)
+    s = (importance_scores.to(dtype) + jitter.to(dtype)).masked_fill(~cand, float("-inf"))
+    order = s.argsort(dim=1, descending=True, stable=True)
+    ranks = torch.empty_like(order)
+    ranks.scatter_(1, order, torch.arange(n, device=device).expand(n, n).contiguous())
+
+    active = cand & (ranks < budgets.unsqueeze(1))
+    active.fill_diagonal_(True)
+    active[:, 0] = True
+    return BlockSparseMask(seq_len=seq_len, block_size=block_size, active=active,
+                           seed=seed_int, source="importance", causal=causal)
 
 
 def mask_for(cfg: AttnConfig, *,

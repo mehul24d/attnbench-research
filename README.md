@@ -147,7 +147,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1183 passed, 56 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1202 passed, 57 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -160,7 +160,7 @@ The suite runs on CPU and needs no GPU, no model download, and no
 credentials. Verified from a clean clone into a fresh virtualenv on
 2026-09-12, resolving dependencies from scratch.
 
-The 56 skips are the honest part, and they split four ways: **3** need CUDA,
+The 57 skips are the honest part, and they split four ways: **4** need CUDA,
 **45** read banked result files that `results/` correctly keeps out of git,
 **4** are scripts `test_script_call_sites.py` has nothing to check because
 they import nothing from `attnbench`, and **4** are the same scripts skipped
@@ -188,8 +188,8 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1228 passed, 11 skipped**, because the 45 banked-file tests run instead of
-skipping. Both totals are 1239, which is what `pytest --collect-only` reports —
+1247 passed, 12 skipped**, because the 45 banked-file tests run instead of
+skipping. Both totals are 1259, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 
