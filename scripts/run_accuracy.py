@@ -190,6 +190,97 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
     return generate_fn
 
 
+T4_PILOT_BANDS = (16384, 32768)
+T4_PROBE_N, T4_SELECTED_PILOT_N = 5, 50
+
+
+def select_seq_lens(*, grid_seq_lens: dict, seq_lens, n_per_length,
+                    t4_dense_pilot: bool, t4_pilot_tasks) -> dict:
+    """{band: examples per (task, band)} for this run.
+
+    Bands: --seq-lens, else the T4 pilot's two, else the whole grid; never a
+    band the grid did not plan. n: --n-per-length, else the T4 pilot's
+    pre-registered size (5 for the probe, 50 for the selected subset), else
+    the grid's.
+
+    A smaller n is the prefix of the grid's set -- examples are seeded per
+    (seed, task, budget, index) and the filler fit is solved from index 0,
+    so example k is identical whether n is 100 or 300 (asserted in
+    tests/test_ruler_integration.py). That is what keeps a reduced re-run
+    PAIRED with the banked rows. A LARGER n would add examples no banked
+    row has a partner for, so it is refused rather than silently allowed.
+
+    Until 2026-10-01 the pilot's n was set twice, and the second write (5)
+    always won: --t4-pilot-tasks alone planned 5, not 50.
+    """
+    if seq_lens:
+        requested = [int(x) for x in seq_lens.split(",") if x.strip()]
+        unknown = [s for s in requested if s not in grid_seq_lens]
+        if unknown:
+            raise SystemExit(
+                f"--seq-lens {unknown} are not in the pinned grid "
+                f"({sorted(grid_seq_lens)}). A band this study did not plan "
+                f"is not a band it can report.")
+        bands = sorted(requested)
+    elif t4_dense_pilot:
+        bands = list(T4_PILOT_BANDS)
+    else:
+        bands = sorted(grid_seq_lens)
+
+    if n_per_length is not None:
+        if n_per_length < 1:
+            raise SystemExit("--n-per-length must be at least 1")
+        too_big = {s: grid_seq_lens[s] for s in bands if n_per_length > grid_seq_lens[s]}
+        if too_big:
+            raise SystemExit(
+                f"--n-per-length {n_per_length} exceeds the pinned grid "
+                f"at {too_big}. A larger n is not a prefix of anything "
+                f"already measured, so those rows would be unpaired.")
+        if t4_dense_pilot and not t4_pilot_tasks and n_per_length > T4_PROBE_N:
+            raise SystemExit(
+                f"--n-per-length {n_per_length} on all five T4 candidates: "
+                f"the pre-registered probe is {T4_PROBE_N} per task and band, "
+                f"and larger runs are for the selected subset "
+                f"(--t4-pilot-tasks) only")
+        return {s: n_per_length for s in bands}
+    if t4_dense_pilot:
+        n = T4_SELECTED_PILOT_N if t4_pilot_tasks else T4_PROBE_N
+        return {s: n for s in bands}
+    return {s: grid_seq_lens[s] for s in bands}
+
+
+def select_tasks(*, grid_tasks: tuple, tasks, t4_dense_pilot: bool,
+                 t4_pilot_tasks) -> tuple:
+    """The tasks a run plans: one chain, so each flag decides exactly once.
+
+    Until 2026-10-01 the --t4-pilot-tasks branch was a second `if` whose
+    `else` reset the selection to the whole grid. --tasks and a bare
+    --t4-dense-pilot were overwritten without a word: `--tasks vt` planned
+    19500 cells instead of 6500, and the documented probe command planned
+    the Stage 3 tasks instead of the five candidates.
+    """
+    if t4_pilot_tasks:
+        requested = tuple(t.strip() for t in t4_pilot_tasks.split(",") if t.strip())
+        unknown = [t for t in requested if t not in T4_DENSE_PILOT_TASKS]
+        if not requested or unknown:
+            raise SystemExit(
+                f"--t4-pilot-tasks names {unknown or '(nothing)'}; the "
+                f"preregistered candidates are {list(T4_DENSE_PILOT_TASKS)}")
+        return requested
+    if t4_dense_pilot:
+        return T4_DENSE_PILOT_TASKS
+    if tasks:
+        requested = tuple(t.strip() for t in tasks.split(",") if t.strip())
+        unknown = [t for t in requested if t not in grid_tasks]
+        if unknown:
+            raise SystemExit(
+                f"--tasks {unknown} are not in the pinned grid "
+                f"({list(grid_tasks)}). A task this study did not plan is "
+                f"not a task it can report.")
+        return requested
+    return tuple(grid_tasks)
+
+
 def main():
     # Pin fp32 matmuls before anything measures or scores: TF32 is a
     # global whose default has moved between torch versions, and this
@@ -367,67 +458,17 @@ def main():
     # it -- asserted in tests/test_grid_configs.py rather than assumed, since
     # a segment that silently re-randomised its own band would produce rows
     # that resume-skip against nothing.
-    if args.seq_lens:
-        requested = [int(x) for x in args.seq_lens.split(",") if x.strip()]
-        unknown = [s for s in requested if s not in grid.seq_lens]
-        if unknown:
-            raise SystemExit(
-                f"--seq-lens {unknown} are not in the pinned grid "
-                f"({sorted(grid.seq_lens)}). A band this study did not plan "
-                f"is not a band it can report.")
-        selected_seq_lens = {s: grid.seq_lens[s] for s in sorted(requested)}
-    elif args.t4_dense_pilot:
-        pilot_n = 50 if args.t4_pilot_tasks else 5
-        selected_seq_lens = {16384: pilot_n, 32768: pilot_n}
-    else:
-        selected_seq_lens = dict(grid.seq_lens)
+    selected_seq_lens = select_seq_lens(
+        grid_seq_lens=dict(grid.seq_lens), seq_lens=args.seq_lens,
+        n_per_length=args.n_per_length, t4_dense_pilot=args.t4_dense_pilot,
+        t4_pilot_tasks=args.t4_pilot_tasks)
 
     # Same reasoning as --seq-lens: a task this study did not plan is not a
     # task it can report, and the subset must be expressed here rather than
     # in the pinned grid.
-    if args.t4_dense_pilot:
-        selected_tasks = T4_DENSE_PILOT_TASKS
-    elif args.tasks:
-        requested_tasks = tuple(t.strip() for t in args.tasks.split(",") if t.strip())
-        unknown = [t for t in requested_tasks if t not in grid.tasks]
-        if unknown:
-            raise SystemExit(
-                f"--tasks {unknown} are not in the pinned grid "
-                f"({list(grid.tasks)}). A task this study did not plan is "
-                f"not a task it can report.")
-        selected_tasks = requested_tasks
-    if args.t4_pilot_tasks:
-        requested_pilot_tasks = tuple(
-            t.strip() for t in args.t4_pilot_tasks.split(",") if t.strip())
-        unknown = [t for t in requested_pilot_tasks
-                   if t not in T4_DENSE_PILOT_TASKS]
-        if not requested_pilot_tasks or unknown:
-            raise SystemExit(
-                f"--t4-pilot-tasks names {unknown or '(nothing)'}; the "
-                f"preregistered candidates are {list(T4_DENSE_PILOT_TASKS)}")
-        selected_tasks = requested_pilot_tasks
-    else:
-        selected_tasks = tuple(grid.tasks)
-
-    # A smaller n is the prefix of the grid's set -- examples are seeded per
-    # (seed, task, budget, index) and the filler fit is solved from index 0,
-    # so example k is identical whether n is 100 or 300 (asserted in
-    # tests/test_ruler_integration.py). That is what keeps a reduced re-run
-    # PAIRED with the banked rows. A LARGER n would add examples no banked
-    # row has a partner for, so it is refused rather than silently allowed.
-    if args.n_per_length is not None:
-        if args.n_per_length < 1:
-            raise SystemExit("--n-per-length must be at least 1")
-        too_big = {s: n for s, n in selected_seq_lens.items()
-                   if args.n_per_length > n}
-        if too_big:
-            raise SystemExit(
-                f"--n-per-length {args.n_per_length} exceeds the pinned grid "
-                f"at {too_big}. A larger n is not a prefix of anything "
-                f"already measured, so those rows would be unpaired.")
-        selected_seq_lens = {s: args.n_per_length for s in selected_seq_lens}
-    elif args.t4_dense_pilot:
-        selected_seq_lens = {s: 5 for s in selected_seq_lens}
+    selected_tasks = select_tasks(
+        grid_tasks=tuple(grid.tasks), tasks=args.tasks,
+        t4_dense_pilot=args.t4_dense_pilot, t4_pilot_tasks=args.t4_pilot_tasks)
 
     # Clocks: attempt, then stamp what HAPPENED, never what was asked for.
     # Every row in this project so far carries clocks_locked=False because
