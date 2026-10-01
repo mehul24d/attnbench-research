@@ -88,6 +88,7 @@ a comment block is read on its own — which is why the
 **Markers are a closed list**, and adding to it is deliberate:
 
 `WITHDRAWN` · `DOES NOT SURVIVE` · `superseded` · `until 2026-09-…` ·
+`until 2026-10-…` (the same dated marker after the month rolled over) ·
 `the sentence read` · `this paragraph read` · `the paragraph that stood here` ·
 `this subsection originally read` · `this line previously said` ·
 `this paragraph named` · `had said`
@@ -377,6 +378,34 @@ replacement, and nothing here will say so.
       "was": "the claim that batch invariance is established for the prefill result and needs no caveat",
       "replacement": "",
       "note": "Withdrawn 2026-10-01 (audit Part A item 6). Sparse Frontier's App. B.3 model covers device-side cost only; the sparse arm never ran at batch > 1. Now stated as an argued, untested axis."
+    },
+    {
+      "id": "block-size-axis-two-sizes",
+      "pattern": "two block sizes|64 and 128 only|flex's 64 is\\s+shared-memory-capped",
+      "was": "the block-size axis stated as two sizes (64 and 128), and the sm_89 limit as flex's 64 being shared-memory-capped",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (audit Part A item 2). Every accuracy and end-to-end result is at 128 (configs/accuracy/stage3_grid.yaml, block_sizes: [128]); 64 appears only in kernel-level flex rows at 1024 and the naive reference. Above 1024 flex block-sparse is unavailable on sm_89 at either size: the default tile cannot lower 64 and needs 114688 B of shared memory at 128."
+    },
+    {
+      "id": "vt-verbatim-retrieval-helps",
+      "pattern": "verbatim-retrieval",
+      "was": "'Sparsity helps verbatim-retrieval at both scales -- +12.0 at 1.5B and +6.0 at 7B'",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (audit Part A item 8). vt is variable tracking, and the 'helps' reading was withdrawn on 2026-09-20; the raw margins stand as raw margins."
+    },
+    {
+      "id": "cheap-estimator-7b-untested",
+      "pattern": "re-measures the\\s+cheap\\s+estimator at 7B|cheap\\s+estimator\\s+was\\s+not\\s+re-measured\\s+at\\s+7B",
+      "was": "the statement that nothing re-measures the cheap estimator at 7B",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (audit Part A item 7). results/s9_7b_cheap_16384 measures it, and claims.md reports it 40 lines above: the gap widens, +39 / +67 / +76 at 7B."
+    },
+    {
+      "id": "headline-1.321-replicated-to-0.19",
+      "pattern": "1\\.321×\\s+re-measured|1\\.321×\\s+(figure|headline)[^|]{0,160}?0\\.19%",
+      "was": "'the 1.321x headline was replicated on a second L4 to within 0.19%'",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (audit Part A item 4). 1.321x is the Stage 3 end-to-end figure and was never re-measured; the replicate re-measured Stage 5 prefill (1.3728x -> 1.3726x at 32768) and end-to-end at 16 tokens (1.310x -> 1.312x). 0.19% is the 16384 prefill drift."
     }
   ]
 }

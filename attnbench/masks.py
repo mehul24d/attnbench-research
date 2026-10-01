@@ -237,7 +237,7 @@ def _candidate_rows(n: int, causal: bool) -> list[list[int]]:
     The sink was previously an ordinary candidate, surviving only if it won a
     top-k. Measured across 1,107 cached oracle score tensors it did not: at
     0.9 sparsity the oracle kept it for 65.0% of query blocks and a random
-    mask for 7.5%, against the reference implementation's 100%. 212 of 217
+    mask for 7.5%, against Sparse Frontier's reference implementation's 100%. 212 of 217
     drops on one example were genuine rank-outs with budget remaining, not
     budget exhaustion.
 
@@ -249,7 +249,7 @@ def _candidate_rows(n: int, causal: bool) -> list[list[int]]:
 
     Note the consequence for realised sparsity: two blocks per row are now
     free rather than one, so the achieved density is very slightly above the
-    nominal `1 - sparsity`. The reference implementation binary-searches k to
+    nominal `1 - sparsity`. Sparse Frontier's implementation binary-searches k to
     hit a target exactly; this study does not, and `BlockSparseMask` records
     the realised density so the difference is visible rather than assumed.
 

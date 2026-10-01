@@ -316,7 +316,7 @@ vectorisation of `importance_block_mask` — one masked `argsort`, one
 `scatter_` to get ranks, one comparison against a per-row budget, replacing
 the per-query-block loop and its inner scalar-assignment loop — was written
 solely to answer "would the reversal survive?". It is **not a contribution and
-not proposed as a replacement**; the reference implementation's numbers stand
+not proposed as a replacement**; the reference builder's numbers stand
 exactly as measured. It produces **bit-identical `active` matrices** across 36 synthetic
 configurations (4 seq_lens × 3 sparsities × 3 seeds, zero mismatches) —
 **but not on real scores, and that check was misleading.** Against the model's
@@ -858,6 +858,14 @@ to the block grid.
 **Every flex row in `results/stage2/segment_20260903_seg1/` predates the fix
 and is not comparable to later flex rows.** They are kept as evidence, not as
 measurements.
+
+**Scope of this section: Stage 2's static masks only.** A fixed mask can be
+built once per config. The importance masks behind every accuracy and
+end-to-end result cannot: they differ per layer and per prompt, and
+`SwappedAttention.forward` builds one for every layer on every forward, so
+their cost is inside every Stage 3/5 prefill — see "Measured 2026-10-01".
+`phase_timing.py`'s docstring borrowed this section's "once per config" for
+the model runs until 2026-10-01 (audit Part A item 11).
 
 ### cuDNN fused attention faults the device above 8192 -- on sm_89 AND sm_80
 
@@ -2065,7 +2073,9 @@ masks at 2048):
 ### Why this makes the block-size limitation causal, not incidental
 
 Elsewhere this file records that block size 16 is unreachable here — the
-kernel hardcodes 128 and flex's 64 is shared-memory-capped — and treats that
+kernel hardcodes 128, and flex block-sparse, the only backend that takes
+another size, is unavailable above 1024 tokens on sm_89 at either size (see
+"flex-sparse is length-capped on sm_89") — and treats that
 as a precision loss. The sink finding shows it is more specific than that.
 
 Sparse Frontier's ablation selects **16x16** blocks because smaller blocks
@@ -2124,7 +2134,7 @@ defect survived every previous green run.
 
 **Realised density is now above nominal**, because two blocks per row are free
 instead of one: measured **0.508 / 0.262 / 0.114** at 32768 against nominal
-0.50 / 0.25 / 0.10. The reference implementation binary-searches k to hit a
+0.50 / 0.25 / 0.10. Sparse Frontier's reference implementation binary-searches k to hit a
 target exactly; this study does not. *(Added 2026-09-19: those three figures
 are the long-band case. The excess grows as context shrinks — 0.610 / 0.419 /
 0.294 at 2048 — see the table under "What it does not affect" above, which is

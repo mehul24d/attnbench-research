@@ -603,8 +603,8 @@ worth at most one example in 900 (`limitations.md`, "Changing the sparse
 arms' decode kernel"), which is why the comparison is quoted directly.*
 
 **What the convergence claim becomes.** Sparsity's *speed* benefit rises with
-length. Its accuracy cost at 0.9, once the mask is built the way the
-reference implementation builds it, is small at every band measured — 3
+length. Its accuracy cost at 0.9, once the mask is built the way
+Sparse Frontier's reference implementation builds it, is small at every band measured — 3
 points at 2048 and none by 8192. Those are two facts about length, not one
 mechanism showing up twice, and the second is much weaker evidence of a
 length dependence than a climb from 62 would have been.
@@ -703,9 +703,9 @@ saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
 
 | | |
 |---|---|
-| **Supported** | *Block-sparse prefill attention is faster than dense on an **A100 at 16384** — **1.090× / 1.201× / 1.282× at 0.5 / 0.75 / 0.9** — **but only with a vectorised mask builder, which the reference implementation does not have.** With the reference builder the same configurations are 0.405× / 0.633× / 0.956×. At 8192 the vectorised builder reaches parity, not a win (0.968× / 1.023× / 1.058×). **At 32768** — measured 2026-10-01, one session, builders interleaved per rep — it wins at every sparsity: **1.250× / 1.481× / 1.666×**, against 0.283× / 0.480× / 0.836× with the reference builder. The difference between builders is one function: ~91% of the reference builder's cost is Python interpreter overhead in an unvectorised per-query-block loop.* See "The A100 reversal is CPU mask construction". |
+| **Supported** | *Block-sparse prefill attention is faster than dense on an **A100 at 16384** — **1.090× / 1.201× / 1.282× at 0.5 / 0.75 / 0.9** — **but only with a vectorised mask builder in place of this harness's own reference builder (`masks.importance_block_mask`, attnbench code — not an upstream implementation).** With the reference builder the same configurations are 0.405× / 0.633× / 0.956×. At 8192 the vectorised builder reaches parity, not a win (0.968× / 1.023× / 1.058×). **At 32768** — measured 2026-10-01, one session, builders interleaved per rep — it wins at every sparsity: **1.250× / 1.481× / 1.666×**, against 0.283× / 0.480× / 0.836× with the reference builder. The difference between builders is one function: ~91% of the reference builder's cost is Python interpreter overhead in an unvectorised per-query-block loop.* See "The A100 reversal is CPU mask construction". |
 | **Not supported** | *…at 8192 and above.* This row said so until 2026-09-19. At 8192 the 0.5 cell is a loss and 0.75's +2.3% is inside the 1.8–5.8% session-to-session spread measured on the reference arm at that band. 32768 had no vectorised measurement until 2026-10-01 and now clears the floor at every sparsity (one session); 8192 still does not. |
-| **Supported** | *On an **NVIDIA L4 (sm_89)**, block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* **The card is not a detail of this sentence.** On an A100 the same configuration is 0.475× with the reference builder — and the cause is the builder, not the card. |
+| **Supported** | *On an **NVIDIA L4 (sm_89)**, block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* **The card is not a detail of this sentence.** On an A100 the comparable figure is prefill-only — 1.373× on the L4 — and it is 0.475× with the reference builder; 1.321× includes decode, so the two are not the same quantity. The cause is the builder, not the card. *(This row set 1.321× beside 0.475× as "the same configuration" until 2026-10-01.)* |
 | **Not supported** | *Block-sparse attention is slower than dense on an A100.* This was the published claim on 2026-09-16 and it is wrong as a statement about the method. It is true only of the reference mask builder, and it inverts when that builder is replaced — measured end-to-end, same process, same scores, only the builder changed, with bitwise-identical model outputs. |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192. The speedup is an upper bound no measured estimator approaches.* |
 | **Supported; both arms are era-2 and the magnitudes move** | *The oracle requirement is **not** a small-model artifact. Against MInference's mean-pool estimator on `niah_multikey` at 16384, the oracle's advantage **widens** with scale — +32/+40/+19 points at 1.5B against **+39/+67/+76** at 7B — because better representations help the dense-softmax oracle far more than the estimator. At 0.9 sparsity the oracle retains 95% of dense at 7B while the estimator retains 16%.* |
@@ -967,16 +967,25 @@ fixed along with everything else that travels with it. What can be said is
 that the 1.5B collapse is not reproduced at 7B, which is enough to stop the
 collapse being reported as a general property.
 
-**`vt` moves the other way and is worth stating separately.** Sparsity *helps*
-verbatim-retrieval at both scales — +12.0 at 1.5B and +6.0 at 7B at 0.9 — so
-the two tasks do not merely differ in magnitude, they differ in sign. A
-summary that averages across tasks would report a small net effect and hide
-both.
+**`vt` moves the other way, and the raw margins overstate it.** On `vt`
+(variable tracking) the sparse arms score above their dense controls at both
+scales — +12.0 at 1.5B and +6.0 at 7B at 0.9, raw — so the two tasks differ in
+sign as well as magnitude, and a summary that averaged across tasks would hide
+both. Read these as raw margins, not as sparsity helping: among pairs that
+stopped the same way the 1.5B margin at 0.9 falls to +8.1, and *"sparse
+attention improves accuracy on variable tracking"* is **Not supported** — see
+"What is left of it, and it is narrow". *(This paragraph said "Sparsity *helps*
+verbatim-retrieval" until 2026-10-01: `vt` is variable tracking, and the
+"helps" reading was withdrawn on 2026-09-20.)*
 
 **What this does not establish.** Nothing here measures 32768, where the
-1.5B's own headline speedup was largest, and nothing here re-measures the
-cheap estimator at 7B — at 1.5B the oracle beat the cheap arm by 32–40 points
-on `niah_multikey`, and whether that gap is also scale-dependent is untested.
+1.5B's own headline speedup was largest. The cheap estimator at 7B *is*
+measured, in the section above ("The oracle requirement DOES survive a change
+of model scale"): the oracle's advantage on `niah_multikey` widens from
++32 / +40 / +19 at 1.5B to +39 / +67 / +76 at 7B, both arms era 2. *(This
+paragraph said the cheap estimator was not re-measured at 7B and the scale
+question untested until 2026-10-01; the 2026-09-17 measurement above
+answers it.)*
 
 ---
 
@@ -1258,9 +1267,15 @@ weak one. The large-batch regime where sparse attention pays is decode, which
 is out of scope.
 
 **Their block size is unreachable here, and the bias is in the safe
-direction.** Block-Sparse-Attention hardcodes 128 and flex's 64 is
-shared-memory-capped on sm_89, so this study cannot measure the block size
-their sweep finds optimal. Accuracy at a given sparsity is therefore
+direction.** Every accuracy and end-to-end result here is at block size 128,
+which Block-Sparse-Attention hardcodes. Flex is the only backend that takes
+another size, and on sm_89 its block-sparse kernel is unavailable above 1024
+tokens at *either* size — inductor's default tile cannot lower 64 and needs
+114688 B of shared memory at 128 against 101376 B (`limitations.md`,
+"flex-sparse is length-capped on sm_89"). So this study cannot measure the
+block size their sweep finds optimal. *(This paragraph said "flex's 64 is
+shared-memory-capped" until 2026-10-01; the cap is on the default tile, and
+binds at both sizes.)* Accuracy at a given sparsity is therefore
 **conservative** relative to their optimum, which biases the matched budgets
 toward understating sparse attention rather than overstating it.
 
@@ -1365,8 +1380,8 @@ which is the ledger both of those point at.*
 non-inferiority from accuracy now known to be wrong by up to 44 points.
 Certifying fewer budgets from correct data at lower power is the better
 position: a budget that fails to certify says *"we could not show this is
-free"*, where the old ones say *"we showed this is free"* using a mask the
-reference implementation would not build.
+free"*, where the old ones say *"we showed this is free"* using a mask
+Sparse Frontier's reference implementation would not build.
 
 **Matched budgets move up, not down.** The forced-sink arms tolerate more
 sparsity, and that outweighs the wider CIs in most cells:

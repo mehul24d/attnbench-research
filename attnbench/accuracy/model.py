@@ -301,7 +301,7 @@ def minference_meanpool_scores(q: torch.Tensor, k: torch.Tensor, *,
 
     **Head convention** follows the oracle and `masks.py`: scores are meaned
     over the query heads within a KV group, giving one ranking per KV head
-    and none per query head. Note that the reference implementation is
+    and none per query head. Note that Sparse Frontier's implementation is
     per-head adaptive (uniform budget, independent selection); this study is
     head-uniform, and that divergence is recorded in limitations.md.
 

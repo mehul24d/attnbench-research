@@ -26,14 +26,27 @@ FOUR PHASES, AND WHY MASK BUILD IS ONE OF THEM
               NEVER folded into a latency figure.
 
   mask_build  converting importance scores into the backend's mask
-              representation. Its own phase because tests/test_timed_region_
-              setup.py shows block_sparse rebuilding this inside the timed
-              region: charging it to every prefill would overstate a cost a
-              real deployment pays once and reuses across calls and layers.
-              Attributing it to prefill is how flex once read 4.22 TFLOPS
-              against a true 40.72.
+              representation. Named here and in PHASES, but NEVER measured
+              as its own phase -- see `measure_phases` -- and no banked
+              phases.parquet carries it. It is not paid once per config:
+              importance masks differ per layer and per prompt, and
+              `SwappedAttention.forward` (model.py) calls `masks.mask_for`
+              for every layer on every forward. So it is inside `prefill`.
 
-  prefill     the forward over the prompt, mask already built.
+  prefill     the forward over the prompt. For block_sparse this INCLUDES
+              building all 28 layers' masks on the CPU -- or rather the part
+              of that work the GPU does not hide: launches are asynchronous,
+              so the next layer's mask is built while queued GPU work runs.
+              On an A100 the forward pays 13-88% of the builder's standalone
+              cost, on an L4 about none (docs/limitations.md, "Measured
+              2026-10-01").
+
+  (This block said mask_build was "its own phase", paid "once and reuse[d]
+  across calls and layers", and that prefill was timed "mask already built"
+  until 2026-10-01 -- a timing scope the code never implemented.
+  `tests/test_timed_region_setup.py` is about per-call conversion inside
+  the kernel-level timed region, which is a different cost; attributing
+  that to prefill is how flex once read 4.22 TFLOPS against a true 40.72.)
 
   decode_step one generation step against a populated cache. Bandwidth-bound
               (a batch-1 step reads all 3.09 GB of weights), so it must never
@@ -41,9 +54,8 @@ FOUR PHASES, AND WHY MASK BUILD IS ONE OF THEM
 
 The composition a reader wants is then explicit rather than assumed:
 
-    end_to_end ~= prefill + (n_generated - 1) * decode_step  (+ mask_build,
-                  once per config, not per call)             (+ scoring, if
-                                                              you are honest
+    end_to_end ~= prefill + (n_generated - 1) * decode_step  (+ scoring, if
+                  -- mask build is already inside prefill     you are honest
                                                               about the
                                                               estimator)
 
@@ -70,7 +82,8 @@ PHASES = ("scoring", "mask_build", "prefill", "decode_step")
 
 # Phases that are real per-call costs of producing a token. `scoring` and
 # `mask_build` are deliberately absent: one is the excluded estimator, the
-# other is paid once per config. Keeping the set explicit stops a future
+# other is already inside every `prefill` timing, so summing it would count
+# it twice. Keeping the set explicit stops a future
 # caller summing every phase into an "end to end" number that double-counts.
 PER_CALL_PHASES = ("prefill", "decode_step")
 
@@ -451,9 +464,9 @@ def reconcile(*, prefill_ms: float, decode_step_ms: float, n_generated: float,
     intercept check -- a different question asked of the same data -- is
     what found it.
 
-    `mask_build` and `scoring` are deliberately NOT in the sum. Neither is
-    paid per generated token: mask build is per config, and the scoring pass
-    is excluded from every latency number in the study. Including either
+    `mask_build` and `scoring` are deliberately NOT in the sum. Mask build
+    is already inside every prefill timing (built per layer, per forward),
+    and the scoring pass is excluded from every latency number in the study. Including either
     would make the identity close for the wrong reason.
 
     A residual outside `tolerance` is not something to reconcile by adjusting

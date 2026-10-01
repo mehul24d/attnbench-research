@@ -13,9 +13,10 @@ the thing every such speedup leaves out.
 
 > **On an NVIDIA A100, training-free block-sparse prefill beats `sdpa_flash`
 > at 16384 context — 1.201× at 0.75 sparsity, 1.282× at 0.9 — but only with a
-> vectorised mask builder, which the reference implementation does not
-> have.** At 8192 the vectorised builder reaches parity; 32768 was not
-> measured with it. With the reference builder the same
+> vectorised mask builder in place of this harness's own reference builder**
+> (`masks.importance_block_mask` — attnbench code, not an upstream
+> implementation). At 8192 the vectorised builder reaches parity; at 32768,
+> measured 2026-10-01 in one session, it wins by 1.250–1.666×. With the reference builder the same
 > configurations run at 0.633× and 0.956×. The model's outputs are bitwise
 > identical under both builders; the difference is one function, ~91% of whose
 > cost is Python interpreter overhead.
@@ -137,7 +138,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1138 passed, 56 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1139 passed, 56 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -178,8 +179,8 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1183 passed, 11 skipped**, because the 45 banked-file tests run instead of
-skipping. Both totals are 1194, which is what `pytest --collect-only` reports —
+1184 passed, 11 skipped**, because the 45 banked-file tests run instead of
+skipping. Both totals are 1195, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 
@@ -262,10 +263,13 @@ Also: [`docs/hardware_constraints.md`](docs/hardware_constraints.md),
 - Speedups are recomputed against a baseline **remeasured on the same
   machine**. Ratios are never carried across hosts.
 - **Replication on the same architecture confirms a measurement and says
-  nothing about its scope.** The 1.321× headline was replicated on a second L4
-  to within 0.19% — and that replication was *structurally incapable* of
-  detecting that the claim was L4-specific, which Stage 5 on an A100 later
-  showed it was (0.475× at the same configuration). Two measurements agreeing
+  nothing about its scope.** The headline configuration (32768/0.75) was
+  replicated on a second L4 — prefill 1.373× to within 0.01% — and that
+  replication was *structurally incapable* of detecting that the claim was
+  L4-specific, which Stage 5 on an A100 later showed it was (0.475×
+  prefill-only at the same configuration). *(This said "The 1.321× headline
+  was replicated … to within 0.19%" until 2026-10-01; 1.321× is end-to-end and
+  was not the replicated quantity.)* Two measurements agreeing
   is evidence about precision, not generality, and the tighter the agreement
   the more confident the wrong conclusion looks. A result is scoped by the
   axes it was **varied** across, never by the number of times it was repeated

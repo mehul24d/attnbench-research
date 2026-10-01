@@ -78,6 +78,10 @@ MARKERS = (
     "DOES NOT SURVIVE",
     "SUPERSEDED",
     "UNTIL 2026-09-",
+    # The same marker after a month rollover, not a new kind: a dated
+    # "until <date>" note was ignored for every withdrawal written in
+    # October until this was added, 2026-10-01.
+    "UNTIL 2026-10-",
     "THE SENTENCE READ",
     "THIS PARAGRAPH READ",
     "PARAGRAPH THAT STOOD HERE",
@@ -372,7 +376,8 @@ def test_the_detector_catches_a_reintroduced_stale_figure():
 
 
 @pytest.mark.parametrize("marker", ["WITHDRAWN", "superseded",
-                                    "until 2026-09-20", "the sentence read"])
+                                    "until 2026-09-20", "until 2026-10-01",
+                                    "the sentence read"])
 def test_a_marked_occurrence_is_permitted(marker):
     doc = f"Some prose.\n\nIt read 17 of 41 ({marker}).\n"
     assert scan(_FIXTURE, [("fake.md", doc)]) == []

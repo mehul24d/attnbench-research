@@ -315,13 +315,14 @@ second point on an axis that had only one:
 | version | claim | what forced the next revision |
 |---|---|---|
 | 1 | block-sparse attention delivers **1.321×** at 32768 | a second card |
-| 2 | …**on an L4**; on an A100 it is 0.475× | a kernel sweep at the real geometry |
+| 2 | …**on an L4**; on an A100 the prefill-only ratio is 0.475× (L4: 1.373×) | a kernel sweep at the real geometry |
 | 3 | …and the A100 kernel is slower, which explains it | the kernel is **1.96× faster**; the cost is CPU-side |
 | 4 | …the penalty is CPU mask construction; the speedup needs **either** a weak dense baseline **or** a vectorised builder | an end-to-end run with the builder swapped |
-| **5** | **block-sparse prefill beats dense on an A100 at 16384 — 1.282× at 16384/0.9 — but only with a vectorised mask builder, which the reference implementation lacks** | *not overturned; narrowed 2026-09-19 — it said "8192+", but 8192 is parity inside the session spread and 32768 was never measured; measured 2026-10-01 in one session: 1.250× / 1.481× / 1.666× at 32768* |
+| **5** | **block-sparse prefill beats dense on an A100 at 16384 — 1.282× at 16384/0.9 — but only with a vectorised mask builder in place of the harness's own reference builder** | *not overturned; narrowed 2026-09-19 — it said "8192+", but 8192 is parity inside the session spread and 32768 was never measured; measured 2026-10-01 in one session: 1.250× / 1.481× / 1.666× at 32768* |
 
 Every version was measured correctly. Versions 1 and 2 were also *replicated*
-— 1.321× re-measured on a second L4, agreeing to 0.19%. Version 3 was a
+— the L4 prefill ratios re-measured on a second L4, agreeing to within 0.19%
+(0.01% at 32768). Version 3 was a
 mechanism inferred from a correct measurement and refuted by a two-minute
 experiment. Version 4's disjunction dissolved the moment the disjunct was
 tested instead of reasoned about: against the strongest dense baseline in the
@@ -336,7 +337,8 @@ That is a better reason to trust it than 1.282×.
 
 **It is also the version most useful to a practitioner**, which is worth
 separating from whether it is correct. The speedup is *available* on the
-hardware people have; the reference implementation forfeits it; and the fix is
+hardware people have; this harness's own reference builder (not an upstream
+implementation) forfeits it; and the fix is
 a batched top-k and a scatter in place of a per-query-block Python loop. That
 is an actionable finding in a way that "sparse attention is 1.321× on an L4"
 never was.
@@ -352,29 +354,33 @@ existing conclusion, and refuted it instead.**
 
 | axis | single-point conclusion | second point | outcome |
 |---|---|---|---|
-| **hardware** | block-sparse prefill reaches **1.321×** end-to-end at 32768 | A100 instead of L4 | **0.475×** — the speedup inverts |
+| **hardware** | block-sparse prefill reaches **1.373×** at 32768/0.75 (1.321× end-to-end, with decode) | A100 instead of L4 | **0.475×** prefill-only — the speedup inverts |
 | **model scale** | 90% sparsity costs **46 points** on `niah_multikey` at 16384 | Qwen2.5-7B instead of 1.5B | **5 points** — the collapse mostly disappears |
 | **mask construction** | the A100 kernel is slower, so the kernel explains the reversal | a 2-minute kernel sweep, then a 2-minute end-to-end run | the kernel is **faster** (1.96× at 16384); the cost is **CPU-side**, and swapping the builder turns 0.633× into **1.201×** |
 | **scorer × scale** | the oracle-versus-estimator gap is a 1.5B artifact that scale should dissolve | Qwen2.5-7B | **refuted** — the gap *widens*, +40 → **+67** at 0.75 and +19 → **+76** at 0.9 |
 
 Each original conclusion was measured correctly. Each was replicated — the
-1.321× figure was re-measured on a *second* L4 in a separate session and
-agreed to **0.19%**. None of that replication helped, because in every case
+L4 prefill ratios were re-measured on a *second* L4 in a separate session and
+agreed to within **0.19%** (0.01% at 32768). None of that replication helped, because in every case
 the repetition was along an axis already held fixed.
 
 **Replication along a fixed axis confirms precision and establishes nothing
 about scope**, and the tighter the agreement the more authoritative the
-over-broad claim sounds. 0.19% agreement across two L4s is exactly the number
-that makes "1.321× end-to-end speedup" read as settled, and it was 2.8× wrong
-about the A100.
+over-broad claim sounds. Agreement to within 0.19% across two L4s is exactly
+the number that makes the L4 speedup read as settled, and the prefill ratio
+was 2.9× wrong about the A100 (1.373× against 0.475×). *(This said
+"'1.321× end-to-end speedup' … 2.8× wrong" until 2026-10-01, setting an
+end-to-end figure against a prefill-only one.)*
 
 **The two failures are not independent, which is what makes this a
 methodology finding rather than three anecdotes.** The mechanism is the same
 each time: a benchmark fixes every axis but one, varies that one thoroughly,
 and reports the result in language scoped to the method rather than to the
-configuration. The sparsity axis here was swept at five context lengths, three
-sparsities and two block sizes — hundreds of cells — on one card, at one model
-scale, with one mask builder. Cell count is not scope. **A result is scoped by
+configuration. The sparsity axis here was swept at five context lengths and
+three sparsities — hundreds of cells — at one block size, on one card, at one
+model scale, with one mask builder. *(This sentence said "two block sizes"
+until 2026-10-01; 64 occurs only in kernel-level rows of flex at 1024 and the
+naive reference, never in a result.)* Cell count is not scope. **A result is scoped by
 the axes it was varied across, never by the number of cells measured along the
 ones it was not.**
 
@@ -383,7 +389,7 @@ real, the axes held at one point should behave the same way:
 
 | axis | the one point sampled | why a second point is predicted to differ |
 |---|---|---|
-| `block_size` | 64 and 128 only | a 16-block arm has two independent reasons: pooling dilution, and fp16 tie density rising ~6× per halving (`limitations.md`) |
+| `block_size` | 128 for every accuracy and end-to-end result (64 only in kernel-level flex rows at 1024 and the naive reference) | a 16-block arm has two independent reasons: pooling dilution, and fp16 tie density rising ~6× per halving (`limitations.md`) |
 | model family | Qwen2.5 only | both scales share an architecture and everything that travels with it |
 | batch size | batch 1 only | prefill cost is batch-linear by Sparse Frontier's own model, so this is the weakest prediction of the four |
 | **attention pattern** | **causal self-attention only** | CAB's taxonomy (arXiv:2210.07661) has four patterns — noncausal self, causal self, noncausal cross, causal cross — and this study has measured exactly one |
@@ -404,10 +410,14 @@ hardware, model scale and mask-construction implementation, and the size of
 that contingency is larger than the effect being reported.*
 
 **The methodological point this study would offer a reader independent of its
-results.** Every headline here was replicated. The 1.321× figure was measured
-on one L4, then re-measured on a *second* L4 in a separate session, agreeing
-to **0.19%** — the kind of number that reads as a settled result. Stage 5 on an
-A100 then returned **0.475×** for the same configuration.
+results.** Every headline here was replicated. The L4's 32768/0.75 result was
+measured on one L4, then re-measured on a *second* L4 in a separate session:
+prefill **1.373×** both times (−0.01%), and end-to-end at 16 generated tokens
+1.310× → 1.312× — the kind of agreement that reads as a settled result. Stage 5
+on an A100 then returned **0.475×**, prefill-only, for the same configuration.
+*(This paragraph said "The 1.321× figure … agreeing to 0.19%"
+until 2026-10-01. 1.321× is the Stage 3 end-to-end figure, which was not itself
+re-measured; 0.19% is the 16384 prefill drift.)*
 
 Nothing was wrong with either L4 measurement. What was wrong was treating
 repetition as generalisation. **Replication along an axis you have already
