@@ -50,6 +50,7 @@ registry, so it contains every pattern by construction.
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 from dataclasses import dataclass
@@ -77,11 +78,10 @@ MARKERS = (
     "WITHDRAWN",
     "DOES NOT SURVIVE",
     "SUPERSEDED",
-    "UNTIL 2026-09-",
-    # The same marker after a month rollover, not a new kind: a dated
-    # "until <date>" note was ignored for every withdrawal written in
-    # October until this was added, 2026-10-01.
-    "UNTIL 2026-10-",
+    # "until <date>" is NOT here as a literal. It was, as "UNTIL 2026-09-",
+    # and on 2026-10-01 every withdrawal note dated in October was invisible
+    # to this guard; a second literal for October would have failed the same
+    # way on 2026-11-01. It is DATED_MARKER below instead.
     "THE SENTENCE READ",
     "THIS PARAGRAPH READ",
     "PARAGRAPH THAT STOOD HERE",
@@ -90,6 +90,26 @@ MARKERS = (
     "THIS PARAGRAPH NAMED",
     "HAD SAID",
 )
+
+# "until <ISO date>" disclaims currency only when the date is not in the
+# future: "this read X until 2026-09-20" is history, "valid until 2099-01-01"
+# is a live claim. So the date is parsed and compared with today rather than
+# matched as a string, and `\s+` lets the note wrap between "until" and the
+# date -- a wrapped note was also missed on 2026-10-01.
+DATED_MARKER = re.compile(r"\bUNTIL\s+(\d{4})-(\d{2})(?:-(\d{2}))?", re.I)
+
+
+def _dated_marker(text: str, today: datetime.date | None = None) -> bool:
+    today = today or datetime.date.today()
+    for m in DATED_MARKER.finditer(text):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3) or 1)
+        try:
+            if datetime.date(y, mo, d) <= today:
+                return True
+        except ValueError:      # 2026-13-40 is not a date, so not a marker
+            continue
+    return False
+
 
 # A pattern matching more than this many places across the whole repository is
 # too general to be a figure -- it is matching prose. See the module docstring.
@@ -228,9 +248,9 @@ def _replacement_in_same_column(block: str, row: str, at: int, repl) -> bool:
     return False
 
 
-def _marked(block_text: str) -> bool:
+def _marked(block_text: str, today: datetime.date | None = None) -> bool:
     upper = block_text.upper()
-    return any(m in upper for m in MARKERS)
+    return any(m in upper for m in MARKERS) or _dated_marker(block_text, today)
 
 
 def marked_headings(text: str) -> list[int]:
@@ -377,10 +397,31 @@ def test_the_detector_catches_a_reintroduced_stale_figure():
 
 @pytest.mark.parametrize("marker", ["WITHDRAWN", "superseded",
                                     "until 2026-09-20", "until 2026-10-01",
-                                    "the sentence read"])
+                                    "until\n2026-10-01", "the sentence read"])
 def test_a_marked_occurrence_is_permitted(marker):
     doc = f"Some prose.\n\nIt read 17 of 41 ({marker}).\n"
     assert scan(_FIXTURE, [("fake.md", doc)]) == []
+
+
+@pytest.mark.parametrize("note,today", [
+    ("until 2026-11-03", datetime.date(2026, 11, 5)),
+    ("until 2027-02-14", datetime.date(2027, 3, 1)),
+    ("until 2026-12", datetime.date(2026, 12, 9)),
+])
+def test_a_dated_marker_needs_no_patch_when_the_month_turns(note, today):
+    """The failure this replaced: a literal per month, which went blind on
+    the first of every new one."""
+    assert _marked(f"It read 17 of 41 ({note}).", today=today)
+
+
+@pytest.mark.parametrize("not_a_note", ["valid until 2099-01-01",
+                                        "until 2026-13-40",
+                                        "until the 2026-09-19 audit"])
+def test_a_future_or_malformed_until_is_not_a_marker(not_a_note):
+    """A date still ahead is a live claim, not a withdrawal note. The last
+    case was never a marker and must not quietly become one."""
+    assert not _marked(f"It reads 17 of 41 ({not_a_note}).",
+                       today=datetime.date(2026, 10, 1))
 
 
 @pytest.mark.parametrize("not_a_marker", ["pre-fix", "era 2", "post-fix",

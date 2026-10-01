@@ -87,11 +87,17 @@ a comment block is read on its own — which is why the
 
 **Markers are a closed list**, and adding to it is deliberate:
 
-`WITHDRAWN` · `DOES NOT SURVIVE` · `superseded` · `until 2026-09-…` ·
-`until 2026-10-…` (the same dated marker after the month rolled over) ·
+`WITHDRAWN` · `DOES NOT SURVIVE` · `superseded` · `until <ISO date>` ·
 `the sentence read` · `this paragraph read` · `the paragraph that stood here` ·
 `this subsection originally read` · `this line previously said` ·
 `this paragraph named` · `had said`
+
+`until <ISO date>` is a rule, not a string: any "until 2026-09-20" or
+"until 2026-11" whose date is not in the future, including one wrapped across
+a line. It was a literal — `until 2026-09-` — until 2026-10-01, when every
+note dated in October turned out to be invisible to the guard; a second
+literal would have gone blind again on the first of November. A future date
+("valid until 2099-01-01") is a live claim and does not count.
 
 **A marker's only function must be to disclaim currency.** The first draft of
 this list also carried `pre-fix`, `pre-sink-fix`, `era 2` and `era-2`. Those
