@@ -213,3 +213,58 @@ or 7–10 L4-hours. At the ledger's L4 rate that is roughly INR 600–800, in
 one or two sessions. The canary is about 50 minutes, roughly INR 70. The
 cap, hard-delete limit and artifact paths for each session are stated with
 the command before it launches.
+
+## Canary result (2026-10-01): passed
+
+The canary ran on an NVIDIA L4 in `asia-northeast1-a` (instance
+`attnbench-l4-t4canary-20261002-0214`) at commit `e7eabaa`, with torch
+2.9.1+cu129 and transformers 4.46.0. Every phase was synced to GCS, and the
+instance was then torn down through `scripts/gcp_teardown_session.sh`. The
+rows are under `results/t4_sparse_canary_session_20261002/` locally and under
+`gs://attnbench-results-research-507316/attnbench-l4-t4canary-20261002-0214/`.
+They are never pooled with the pilot.
+
+| # | criterion | result |
+|---|---|---|
+| 1 | CUDA tests | 27 passed, 0 skipped, including `test_bitwise_equal_on_cuda` and `test_warm_device_build_does_not_synchronise` |
+| 2 | provenance and arm labels | 48 + 36 rows, `git_dirty=False`, one commit; 12 dense rows with no scorer, 36 `dense_softmax_fp32`, 36 `minference_meanpool_inline` |
+| 3 | oracle scoring at 32768 | completed, no OOM |
+| 4 | estimator cost run | `sync_free=True` at both bands and all three sparsities; every non-XAttention component available (XAttention recorded as not installed) |
+| 5 | dense vs banked dense pilot | 12 of 12 predictions identical |
+
+**Estimator cost, per layer** (median of 30, CUDA events, random inputs, the
+model's geometry):
+
+| band | dense | meanpool | mask build | block-sparse 0.5 / 0.75 / 0.9 | estimator / saving |
+|---:|---:|---:|---:|---:|---:|
+| 16384 | 14.39 ms | 1.28 ms | 0.50 ms | 8.67 / 5.19 / 2.96 ms | 0.31 / 0.19 / 0.16 |
+| 32768 | 58.13 ms | 2.55 ms | 0.50 ms | 31.94 / 17.66 / 8.98 ms | 0.12 / 0.08 / 0.06 |
+
+At both bands, kernel against kernel, the deployable estimator costs less
+than the saving it buys at every sparsity. None of the script's stated
+falsifiers fired. These are per-layer kernel numbers on one session's canary,
+not an end-to-end speedup, and nothing here enters `docs/claims.md` until the
+pilot's own estimator-cost run is banked.
+
+**Timings used for the pilot's cost.** These are the median `latency_ms` per
+row at 16384 / 32768:
+
+- dense: 3.35 / 5.70 s;
+- oracle block-sparse: 2.90 / 4.91 s;
+- inline block-sparse: 2.21 / 4.90 s.
+
+The oracle phase took 581 s for 48 rows and the inline phase 172 s for 36,
+so the 12 scoring passes cost 342 s, an average of 28.5 s. Split
+quadratically, that is about 11 s at 16384, which matches the published
+11.8 s, and about 46 s at 32768. The 32768 figure is now measured on average
+rather than assumed.
+
+**Projected pilot:**
+
+- 16384: about 1.7 compute-hours.
+- 32768: about 4.5 compute-hours, of which the oracle's scoring passes are
+  about 2.5.
+
+The pilot is split by band into two sessions, as the canary's projection
+allows. Both sessions deploy the same commit, so the analysis's single-commit
+rule holds across them.
