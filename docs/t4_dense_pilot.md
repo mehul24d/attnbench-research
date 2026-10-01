@@ -26,6 +26,30 @@ with no compute resources left. The result parquet is kept under
 `results/t4_dense_probe_20261001/` locally, while the session diagnostics and
 cost record are under `results/t4_dense_probe_session_20261001/`.
 
+## Selected pilot result (2026-10-01)
+
+The selected dense-only pilot ran 50 examples per task and band, for 300
+rows total, on an NVIDIA L4 at commit `40118f7`. Exact 95% Clopper--Pearson
+intervals for the dense baseline were:
+
+| task | 16384 | 32768 |
+|---|---:|---:|
+| `niah_multivalue` | 16/50 = 32.0% [19.5, 46.7] | 17/50 = 34.0% [21.2, 48.8] |
+| `niah_multiquery` | 13/50 = 26.0% [14.6, 40.3] | 3/50 = 6.0% [1.3, 16.5] |
+| `qa_1` | 30/50 = 60.0% [45.2, 73.6] | 20/50 = 40.0% [26.4, 54.8] |
+
+The intervals confirm that the selected tasks are non-ceiling under the fixed
+dense baseline. This closes the dense-task-selection gate for T4, but does
+not establish sparse non-inferiority: the oracle and deployable estimator
+arms, exact non-inferiority analysis, and any measured accuracy loss remain
+the next experiment.
+
+The selected-pilot result parquet is under
+`results/t4_selected_dense_pilot_20261001/`; the session diagnostics and cost
+record are under `results/t4_selected_pilot_session_20261001/`. The session
+ran for 43 minutes at the ledger rate, estimated at `INR 57`, and left no
+compute resources running.
+
 The pilot tests whether the five newly wired RULER candidate tasks are useful
 for the T4 accuracy study before any sparse arm is run. It measures the dense
 `sdpa_flash` reference only, on Qwen2.5-1.5B-Instruct, at 16384 and 32768
