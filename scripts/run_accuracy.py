@@ -60,6 +60,7 @@ from attnbench.accuracy.sizing import approximate_token_count  # noqa: E402
 from attnbench.accuracy.runner import (build_cells, check_decode_pin_continuity,  # noqa: E402
                                        run_accuracy)
 from attnbench.accuracy import stopping                                # noqa: E402
+from attnbench.accuracy.ruler import T4_DENSE_PILOT_TASKS               # noqa: E402
 from attnbench import provenance                                       # noqa: E402
 from attnbench import numerics                                    # noqa: E402
 from attnbench.config import AttnConfig                                # noqa: E402
@@ -251,6 +252,17 @@ def main():
                          "Like --seq-lens, a subset is expressed here rather "
                          "than by editing the grid, which would change what "
                          "every other segment measured.")
+    ap.add_argument("--t4-dense-pilot", action="store_true",
+                    help="run the pre-registered T4 dense-only pilot on its "
+                        "five candidate tasks. Defaults to 16384,32768 and "
+                        "five examples per task and band; use --seq-lens "
+                        "and --n-per-length to choose a pre-registered "
+                        "probe or pilot size. Cannot be combined with "
+                        "--tasks or --only-backends.")
+    ap.add_argument("--t4-pilot-tasks", default=None,
+                    help="comma-separated subset of the fixed T4 candidate "
+                        "tasks. May only be used with --t4-dense-pilot; "
+                        "the subset must come from the preregistered set.")
     ap.add_argument("--n-per-length", type=int, default=None,
                     help="cap examples per (task, band). Must not exceed the "
                          "grid's own n: examples are seeded per index, so a "
@@ -308,6 +320,19 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
+    if args.t4_dense_pilot and (args.tasks or args.only_backends):
+        raise SystemExit(
+            "--t4-dense-pilot fixes the task list and dense-only backend; "
+            "do not combine it with --tasks or --only-backends")
+    if args.t4_pilot_tasks and not args.t4_dense_pilot:
+        raise SystemExit("--t4-pilot-tasks requires --t4-dense-pilot")
+    if args.t4_dense_pilot and (args.include_sage or args.gla_gate_source):
+        raise SystemExit(
+            "--t4-dense-pilot is dense-only; omit --include-sage and "
+            "--gla-gate-source")
+    if args.t4_dense_pilot:
+        args.no_gla = True
+
     # The gla arm is decided by docs/gla_arm_decision.md, and this is where
     # either verdict becomes an action. First thing after parsing, before the
     # grid, the tokenizer or the model: the failure it prevents is a 4-hour
@@ -351,13 +376,18 @@ def main():
                 f"({sorted(grid.seq_lens)}). A band this study did not plan "
                 f"is not a band it can report.")
         selected_seq_lens = {s: grid.seq_lens[s] for s in sorted(requested)}
+    elif args.t4_dense_pilot:
+        pilot_n = 50 if args.t4_pilot_tasks else 5
+        selected_seq_lens = {16384: pilot_n, 32768: pilot_n}
     else:
         selected_seq_lens = dict(grid.seq_lens)
 
     # Same reasoning as --seq-lens: a task this study did not plan is not a
     # task it can report, and the subset must be expressed here rather than
     # in the pinned grid.
-    if args.tasks:
+    if args.t4_dense_pilot:
+        selected_tasks = T4_DENSE_PILOT_TASKS
+    elif args.tasks:
         requested_tasks = tuple(t.strip() for t in args.tasks.split(",") if t.strip())
         unknown = [t for t in requested_tasks if t not in grid.tasks]
         if unknown:
@@ -366,6 +396,16 @@ def main():
                 f"({list(grid.tasks)}). A task this study did not plan is "
                 f"not a task it can report.")
         selected_tasks = requested_tasks
+    if args.t4_pilot_tasks:
+        requested_pilot_tasks = tuple(
+            t.strip() for t in args.t4_pilot_tasks.split(",") if t.strip())
+        unknown = [t for t in requested_pilot_tasks
+                   if t not in T4_DENSE_PILOT_TASKS]
+        if not requested_pilot_tasks or unknown:
+            raise SystemExit(
+                f"--t4-pilot-tasks names {unknown or '(nothing)'}; the "
+                f"preregistered candidates are {list(T4_DENSE_PILOT_TASKS)}")
+        selected_tasks = requested_pilot_tasks
     else:
         selected_tasks = tuple(grid.tasks)
 
@@ -386,6 +426,8 @@ def main():
                 f"at {too_big}. A larger n is not a prefix of anything "
                 f"already measured, so those rows would be unpaired.")
         selected_seq_lens = {s: args.n_per_length for s in selected_seq_lens}
+    elif args.t4_dense_pilot:
+        selected_seq_lens = {s: 5 for s in selected_seq_lens}
 
     # Clocks: attempt, then stamp what HAPPENED, never what was asked for.
     # Every row in this project so far carries clocks_locked=False because
@@ -467,6 +509,8 @@ def main():
         include_gla=not args.no_gla,
         sparsities=selected_sparsities,
         mask_source=args.mask_source)
+    if args.t4_dense_pilot:
+        configs_by_backend = {grid.dense_backend: configs_by_backend[grid.dense_backend]}
     if args.only_backends is not None:
         want = [b.strip() for b in args.only_backends.split(",") if b.strip()]
         unknown = [b for b in want if b not in configs_by_backend]

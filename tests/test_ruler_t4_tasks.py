@@ -34,6 +34,14 @@ T4_TASKS = ("niah_multikey_1", "niah_multivalue", "niah_multiquery", "qa_1", "qa
 EXISTING_DIGEST = "2fa1568b4e7745abecb7bae0b43335c043ba4e4e29de97ee274efa7a916b4582"
 
 
+def test_t4_pilot_task_set_is_fixed():
+    assert ruler.T4_DENSE_PILOT_TASKS == T4_TASKS
+
+
+def test_t4_pilot_selection_is_a_subset_of_the_fixed_set():
+    assert set(("niah_multivalue", "niah_multiquery", "qa_1")) <= set(T4_TASKS)
+
+
 def _split(text):
     return [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
 
