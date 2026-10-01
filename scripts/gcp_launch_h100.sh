@@ -44,11 +44,13 @@ PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 ZONE="${GCP_ZONE:-us-central1-a}"
 MACHINE_TYPE="a3-highgpu-1g"
 ACCELERATOR="type=nvidia-h100-80gb,count=1"
-IMAGE="attnbench-env-v5-20260905"
+IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
-MAX_RUN="5h"
-HALT_MINUTES="210"   # 3h30m. DELETE is at 5h; the gap is the recovery window.
+# Overridable, like the A100 and L4 launchers, so a short job is not launched
+# under a ceiling sized for a full session (silent_failure_patterns #40).
+MAX_RUN="${GCP_MAX_RUN:-5h}"
+HALT_MINUTES="${GCP_HALT_MINUTES:-210}"   # DELETE at MAX_RUN; the gap is the recovery window.
 INSTANCE_NAME="${1:-attnbench-h100-$(date +%Y%m%d-%H%M)}"
 
 if [[ -z "$PROJECT" ]]; then
@@ -83,9 +85,8 @@ case "$ZONE" in
   *)                 RATE_LINE="rate NOT PRICED for $ZONE -- confirm before proceeding" ;;
 esac
 echo "  provisioning : FLEX_START (DWS)  -- $RATE_LINE"
-echo "  in-guest halt: +${HALT_MINUTES} min (3h30m) -- GPU billing stops, disk survives"
-echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 2,125 ceiling)"
-echo "  recovery win : ~1h30m between halt and DELETE"
+echo "  in-guest halt: +${HALT_MINUTES} min -- GPU billing stops, disk survives"
+echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 425/h up to the cap)"
 echo
 
 gcloud compute instances create "$INSTANCE_NAME" \
