@@ -78,6 +78,7 @@ authority is the billing console.
 | 2026-10-01 | `attnbench-l4-hostcpu-1001-1123` — host CPU identity + builder standalone vs in-model, 8192/16384/32768 (first model run died on `free_block`, re-deployed `cdbca2e`) | **20** | **26** | `gcp_session_elapsed.sh` |
 | 2026-10-01 | `attnbench-a100-hostcpu-1001-1150` — same, paired, builders interleaved per rep (`746abd1`), **Flex Start** | **10** | **45** | `gcp_session_elapsed.sh` |
 | 2026-10-01 | `attnbench-l4-rerun16k-1001-1201` — 16384 rerun, interleaved, per-rep samples | **7** | **9** | `gcp_session_elapsed.sh` |
+| 2026-10-01 | `attnbench-h100-hostcpu-1001-1317` — pre-registered H100 overlap test (`597a7a9`), **Flex Start**, Sapphire Rapids host | **7** | **50** | `gcp_session_elapsed.sh` |
 
 ### The 2026-09-20 S7 session: 83 minutes of work, 132 minutes billed
 

@@ -78,3 +78,29 @@ ceiling Rs 425.
 | 32768 | 0.50 | 3.87 | 0.88 |
 | 32768 | 0.75 | 2.66 | 0.79 |
 | 32768 | 0.90 | 1.65 | 0.60 |
+
+## Results — added 2026-10-01, after the run (nothing above was edited)
+
+Session `attnbench-h100-hostcpu-1001-1317`: a3-highgpu-1g, us-central1-a, Flex
+Start, image v5, commit `597a7a9` (this file's own commit), clocks locked,
+builders interleaved per rep. Live `cpuPlatform` Intel Sapphire Rapids,
+`Xeon Platinum 8481C @ 2.70GHz`, 26 vCPU; guest clock flat, steal 0. Dense
+control drift under 0.1 ms. 7 minutes, Rs 50. Scored in
+`tests/test_h100_overlap_preregistered.py`.
+
+- **P1 — PASSED, 9 of 9** (needed 7). Every H100 cell's exposed share lies in
+  the band predicted from the H100's own r.
+- **P2 — FAILED, 7 of 9** (needed every cell). The misses: **8192/0.90**
+  (r 0.61 against the A100's 0.63, yet the H100 exposes 0.36 against 0.13)
+  and **32768/0.75** (r 2.84 against 2.66, yet 0.73 against 0.79). There the
+  two cards' r differ by 2.6% and 6.8%, and the prediction allowed no
+  tolerance for r's own measurement error. That is an observation made after
+  the data, not a rescue: as written, P2 failed.
+- **P3 — PASSED, 9 of 9.** Sapphire Rapids builds 2.1–2.4× faster standalone.
+
+**What it means.** The H100 is 2.2–2.4× faster per layer than the A100 and its
+host CPU 2.1–2.4× faster, so r barely moves (−2.6% to +11.3%), and
+the exposed share follows r as P1 predicted. The old sentence "worse on an
+H100" holds in 7 of 9 cells (reference-builder speedups below the A100's),
+but only because the GPU outpaced the CPU by a little; on a host whose CPU
+kept pace it would not.

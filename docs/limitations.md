@@ -272,7 +272,10 @@ host difference, not a CPU-generation difference, and not the attention
 kernel. It is the phenomenon TaxBreak's Host-Device Balance Index summarises,
 in the direction Framework Tax (Fernandez et al., EMNLP 2023) predicts: a
 faster accelerator exposes a fixed host cost the slower one absorbed. It
-predicts the reversal is worse on an H100, which is untested. The builder is
+predicted the reversal would be worse on an H100; that was tested on
+2026-10-01 under a pre-registration, and the answer is conditional — see "The
+H100 test" below. *(This sentence ended "which is untested" until
+2026-10-01.)* The builder is
 this harness's own code, so the result is a validated account of *this
 harness's* behaviour, not a property of block-sparse attention.
 
@@ -299,6 +302,45 @@ the reference builder.
 All of the above is derived from the banked, force-committed parquets in
 `tests/test_overlap_paired.py`; `results/s12_*`, and on GCS under each
 instance's name.
+
+### The H100 test (pre-registered)
+
+Run 2026-10-01 against `docs/h100_overlap_preregistration.md`, committed
+before the session (`597a7a9`). The H100 host is a newer CPU generation —
+Sapphire Rapids, `Xeon Platinum 8481C`, live `cpuPlatform` confirmed — so the
+card alone could not set the direction; the prediction was stated through r,
+build time per layer over GPU time per layer, with the exposed share
+`max(0, 1 − α/r)` and α ∈ [0.45, 0.85] fitted on the A100 and L4 cells above.
+
+| band | sparsity | H100 standalone | **H100 in model** | r (H100 / A100) | exposed share (H100 / A100) |
+|---|---|---|---|---|---|
+| 8192 | 0.50 | 117.7 | **73.3** | 1.37 / 1.30 | 0.62 / 0.62 |
+| 8192 | 0.75 | 76.6 | **38.7** | 0.96 / 0.91 | 0.51 / 0.42 |
+| 8192 | 0.90 | 47.1 | **16.8** | 0.61 / 0.63 | 0.36 / 0.13 |
+| 16384 | 0.50 | 408.4 | **331.4** | 2.32 / 2.25 | 0.81 / 0.77 |
+| 16384 | 0.75 | 247.5 | **176.4** | 1.59 / 1.51 | 0.71 / 0.60 |
+| 16384 | 0.90 | 153.9 | **88.5** | 1.08 / 0.97 | 0.57 / 0.34 |
+| 32768 | 0.50 | 1571.5 | **1313.7** | 3.86 / 3.87 | 0.84 / 0.88 |
+| 32768 | 0.75 | 935.2 | **685.0** | 2.84 / 2.66 | 0.73 / 0.79 |
+| 32768 | 0.90 | 502.7 | **329.8** | 1.78 / 1.65 | 0.66 / 0.60 |
+
+**P1, the mechanism transfers to a third card: PASSED, 9 of 9** (needed 7).
+**P2, the direction is set by r: FAILED, 7 of 9** (needed every cell) — at
+8192/0.90 and 32768/0.75, where the cards' r differ by 2.6% and 6.8%; the
+prediction carried no tolerance for r's own error. **P3, Sapphire Rapids
+builds faster: PASSED, 9 of 9**, by 2.1–2.4×.
+
+**So "worse on an H100" is conditional, and the condition is r.** The faster
+CPU (2.1–2.4×) and the faster GPU (2.2–2.4× per layer) nearly cancel: r moves
+by −2.6% to +11.3% against the A100's. The reference builder's speedup over flash is lower on the H100 than on
+the A100 in 7 of 9 cells — 0.499 / 0.668 / 0.850 at 8192, 0.373 / 0.571 /
+0.819 at 16384, 0.294 / 0.499 / 0.826 at 32768 — and higher at 32768/0.50 and
+0.75. With the vectorised builder block-sparse wins by more on the H100 than on
+the A100: **1.245× / 1.537× / 1.790×** at 32768 (0.923 / 0.990 / 1.036 at
+8192, 1.076 / 1.219 / 1.327 at 16384). Model outputs are argmax-identical in
+every cell and bitwise-identical except at 16384 and 32768 for 0.50 and 0.75,
+the tie-break differences seen on the other cards. Derived in
+`tests/test_h100_overlap_preregistered.py`; banked in `results/s12_h100_*`.
 
 **"As implemented" is load-bearing — this is an engineering cost, not a
 property of sparse attention.** Profiling `importance_block_mask` at 32768:
