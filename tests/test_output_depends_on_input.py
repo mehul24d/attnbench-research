@@ -41,6 +41,7 @@ NOT_EXERCISED_ON_CPU = {
     "block_sparse": "needs CUDA + block-sparse-attn",
     "sage": "needs CUDA + sageattention",
     "xformers": "needs CUDA + xformers",
+    "xattention": "needs CUDA + x-attention + block-sparse-attn (tests/test_xattention_backend.py, CUDA case)",
 }
 
 

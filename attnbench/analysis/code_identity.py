@@ -67,12 +67,16 @@ BACKEND_SOURCES: dict[str, tuple[str, str]] = {
     "gla":          ("attnbench/backends/linear.py", "GatedLinearAttention"),
     "sage":         ("attnbench/backends/sage_attention.py", "SageAttention"),
     "xformers":     ("attnbench/backends/xformers_backend.py", "XFormersAttention"),
+    "xattention":   ("attnbench/backends/xattention.py", "XAttentionBackend"),
 }
 
 # Methods that execute per timed call, or that build what the timed call
 # consumes. `make_inputs` is included because a change to the inputs is a
 # change to the measurement even when the kernel is untouched.
-TIMED_REGION_METHODS = ("forward", "timed_call", "make_inputs")
+TIMED_REGION_METHODS = ("forward", "timed_call", "make_inputs", "estimate")
+# `estimate` added 2026-10-01 with the xattention backend, whose forward calls
+# it inside the timed region. Classes without one are unaffected: methods are
+# matched by name and absent ones are skipped, so no existing fingerprint moves.
 
 # The measurement loop itself, shared by every backend.
 SHARED_FUNCTIONS: tuple[tuple[str, str], ...] = (("attnbench/timing.py", "_do_bench"),)

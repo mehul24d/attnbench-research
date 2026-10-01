@@ -7,6 +7,7 @@ from . import xformers_backend  # noqa: F401
 from . import sage_attention  # noqa: F401
 from . import block_sparse  # noqa: F401
 from . import linear  # noqa: F401
+from . import xattention  # noqa: F401
 
 __all__ = ["AttentionBackend", "Capability", "KVCacheState", "UnsupportedConfig",
            "register", "get", "all_backends"]
