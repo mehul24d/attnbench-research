@@ -62,6 +62,12 @@ by the same policy:
 | 32768 | L4 | 1.014 | **1.373** | 1.475 |
 | 32768 | **A100** | **0.281** | **0.475** | **0.817** |
 
+*Different mask rules: the L4 row is era 1 (pre-sink), the A100 row era 2
+(forced sink). In one era (3), same script and prompt, measured 2026-10-01:
+L4 1.003 / **1.344** / 1.433, A100 **0.283 / 0.480 / 0.836**. Every cell
+moves under 3%; the reversal does not depend on the mask rule (`claims.md`,
+"The same comparison in one mask era").*
+
 Sparse is slower than dense at every band and sparsity on the A100 **with the
 harness's reference mask builder**. The cause is per-call host work outside
 the attention kernel: attnbench's own `importance_block_mask`, a
@@ -123,8 +129,10 @@ unaffordable precondition, which reads as an artifact standing between the
 reader and a usable result. It is now a **characterised trade**: the accuracy
 is real and requires an oracle; the affordable substitute does not preserve it;
 and the gap widens with sparsity (+32 / +40 on `niah_multikey`, +3.2 / +5.4 /
-+8.6 on `vt`) exactly as pooling dilution predicts. The 35× is not a
-measurement artifact — it is the price of the only version that works.
++8.6 on `vt`) exactly as pooling dilution predicts. The 35× is what the only
+version that works costs *in this harness*; its level is set by the scoring
+implementation (below), not by sparse attention. *(This sentence read "The 35×
+is not a measurement artifact" until 2026-10-01.)*
 
 `niah_single` saturates at 100.0 in every cell of both arms. That makes it a
 negative control rather than a wasted arm: it is informative about the task's
@@ -140,8 +148,20 @@ of it. This was written down as a threat before the arm was built.
 **The ratio's trend is the discouraging part.** 249× → 49× → 36× → 35× at
 4096 / 8192 / 16384 / 32768. It improved fivefold from 4096 to 8192 and 4%
 since 16384. Scoring and the saving grow at similar rates, so the ratio
-flattens near 35 rather than heading toward 1. **The gap is structural, not a
-small-scale artifact.**
+flattens near 35 rather than heading toward 1.
+
+**What the flattening shows is narrower than it looks** (audit T2). Scoring
+and the saving both grow quadratically with context, so a ratio that levels
+off is what any dense-pass oracle produces; and an oracle that computes dense
+attention costs more than the attention it lets the kernel skip, so the ratio
+exceeds 1 by construction. Neither is a finding about block-sparse attention.
+The *level*, about 35, is this harness's: the scoring pass runs fp32
+attention with a materialised softmax, four query blocks at a time
+(`accuracy/model.py`, `_scoring_forward_chunked`), and takes 44.6 s at 32768
+on the L4 — 11× the 4018 ms dense prefill. An oracle that cost one dense
+prefill would sit near 3× the saving (4018 / 1286), by arithmetic, not
+measurement. *(This paragraph ended "The gap is structural, not a
+small-scale artifact" until 2026-10-01.)*
 
 | | |
 |---|---|
@@ -368,7 +388,8 @@ the repetition was along an axis already held fixed.
 about scope**, and the tighter the agreement the more authoritative the
 over-broad claim sounds. Agreement to within 0.19% across two L4s is exactly
 the number that makes the L4 speedup read as settled, and the prefill ratio
-was 2.9× wrong about the A100 (1.373× against 0.475×). *(This said
+was 2.9× wrong about the A100 (1.373× against 0.475×; 2.8×, 1.344× against
+0.480×, with both cards in one mask era). *(This said
 "'1.321× end-to-end speedup' … 2.8× wrong" until 2026-10-01, setting an
 end-to-end figure against a prefill-only one.)*
 
@@ -444,9 +465,12 @@ break-it verification on every guard.
 The study was scoped against five gaps between what the sparse-attention
 literature reports and what a deployed system would experience.
 
-### Gap 1 — Kernel speedup vs end-to-end speedup — **ANSWERED**
+### Gap 1 — Kernel speedup vs end-to-end speedup — **ANSWERED for prefill vs end-to-end**
 
-Both ends measured on the same hardware in the same repository.
+Prefill and end-to-end measured on the same card (L4) in the same repository.
+The kernel end at the model's geometry was measured on the A100 only.
+*(This line read "Both ends measured on the same hardware" until
+2026-10-01.)*
 
 | | |
 |---|---|
@@ -455,10 +479,23 @@ Both ends measured on the same hardware in the same repository.
 | **Not supported** | *Block-sparse attention is slower than dense.* |
 
 **Why the 1.24× claim is a different claim, and this is the study's thesis.**
-1.24× is a **kernel** number, at 90% sparsity, from Stage 2. End-to-end, at
-the operating points that actually preserve accuracy, it becomes **≤1.06× and
-usually <1.0×** below 8192. A kernel speedup is not an end-to-end speedup, and
-the distance between them is the gap this study exists to measure.
+1.24× is a **whole-model prefill** ratio, not a kernel number: one prefill
+forward of Qwen2.5-1.5B (12 query / 2 KV heads) at 16384 tokens and 0.9
+sparsity on an L4, oracle mask, reference builder inside the forward, one
+timed call after one warmup — the session-4 sizing probe
+(`scripts/time_one_accuracy_example.py` at `b6ed63b`, era 1; its log,
+`results/gpu_session_20260903_s4/anchor16k_bsa.log`, is not under version
+control). The banked Stage 5 prefill ratio at the same cell reproduces it:
+1.258× (era 1, n=10), 1.271× on the 2026-09-16 replicate, 1.241× in the
+2026-10-01 era-3 run. End-to-end at that same cell, with 14 generated tokens,
+it is 1.186×; at the accuracy-preserving operating points at 8192 and below
+it is **≤1.06× and usually <1.0×**. The L4 has no kernel measurement at the
+model's geometry; at `(12,2)` the kernel was timed only on the A100 (2.47× at
+16384/0.9, `claims.md`, "The same comparison at the model's real head
+geometry"). *(This
+paragraph called 1.24× "a kernel number, at 90% sparsity, from Stage 2"
+until 2026-10-01. It was never a Stage 2 figure — audit T3.)* A prefill speedup is not an end-to-end speedup, and the
+distance between them is the gap this study exists to measure.
 
 **The regime is doing work and must travel with the number.** Sparsity is
 applied during prefill only; decode runs dense over the cache in both arms. At

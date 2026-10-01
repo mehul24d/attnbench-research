@@ -412,6 +412,34 @@ replacement, and nothing here will say so.
       "was": "'the 1.321x headline was replicated on a second L4 to within 0.19%'",
       "replacement": "",
       "note": "Withdrawn 2026-10-01 (audit Part A item 4). 1.321x is the Stage 3 end-to-end figure and was never re-measured; the replicate re-measured Stage 5 prefill (1.3728x -> 1.3726x at 32768) and end-to-end at 16 tokens (1.310x -> 1.312x). 0.19% is the 16384 prefill drift."
+    },
+    {
+      "id": "oracle-gap-structural",
+      "pattern": "gap\\s+is\\s+structural,\\s+not\\s+a",
+      "was": "'the gap is structural, not a small-scale artifact' -- said of the oracle cost ratio flattening near 35x",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (audit T2). A flat ratio is what any dense-pass oracle produces (both terms quadratic in context), and ratio > 1 holds by construction; the level, ~35, is set by this harness's fp32 chunked scoring pass (11x a dense prefill at 32768). Pinned in tests/test_t6_one_era.py."
+    },
+    {
+      "id": "oracle-35x-not-an-artifact",
+      "pattern": "35×\\s+is\\s+not\\s+a\\s+measurement\\s+artifact",
+      "was": "'The 35x is not a measurement artifact -- it is the price of the only version that works'",
+      "replacement": "",
+      "note": "Withdrawn 2026-10-01 (audit T2): the 35x's level is the scoring implementation's."
+    },
+    {
+      "id": "oracle-35x-as-estimator-cost",
+      "pattern": "estimator\\s+cost\\s+of\\s+35",
+      "was": "'an estimator cost of 35x the saving'",
+      "replacement": "oracle cost",
+      "note": "Corrected 2026-10-01: 35x is the dense-softmax oracle's cost. The deployable estimator's cost is unmeasured (claims.md, 'Cost: never measured')."
+    },
+    {
+      "id": "speedup-1.24-as-kernel",
+      "pattern": "1\\.24×\\s+is\\s+a\\s+\\*\\*kernel|kernel\\s+speedup\\s+of\\s+1\\.24|1\\.24×\\s+at\\s+90%\\s+sparsity\\s+as\\s+a\\s+kernel|kernel\\s+numbers\\s+\\(1\\.24|called\\s+1\\.24×\\s+\"a\\s+kernel\\s+number",
+      "was": "'1.24x is a kernel number, at 90% sparsity, from Stage 2'",
+      "replacement": "whole-model prefill",
+      "note": "Corrected 2026-10-01 (audit T3). 1.24x = 1.566 / 1.259 s from the session-4 sizing probe (scripts/time_one_accuracy_example.py at b6ed63b, era 1): one whole-model prefill forward of Qwen2.5-1.5B at L4 16384/0.9. Never a Stage 2 kernel figure. Banked equivalents 1.258x / 1.271x / 1.241x (tests/test_t6_one_era.py)."
     }
   ]
 }

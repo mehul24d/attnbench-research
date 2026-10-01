@@ -57,9 +57,13 @@ end-to-end at 32K context at zero accuracy cost** (100.0 vs 100.0):
 | 16384 | 1.186× | **36×** |
 | 32768 | **1.321×** | **35×** |
 
-The oracle ratio flattens near 35 rather than heading toward 1 — scoring and
-the saving grow at similar rates, so the gap is structural, not a small-scale
-artefact.
+The oracle ratio flattens near 35 rather than heading toward 1. That shape is
+expected: scoring and the saving are both quadratic in context, and an oracle
+that computes dense attention costs more than the attention it saves by
+construction. The level, ~35, is set by this harness's fp32 chunked scoring
+pass (11× a dense prefill at 32768); a one-dense-prefill oracle would sit near
+3×. *(This paragraph ended "the gap is structural, not a small-scale artefact"
+until 2026-10-01.)*
 
 *The 2048 row read "0.993× (sparsity loses)" until 2026-09-21. That is the 0.75-sparsity cell,
 which scores 99.0 — so it is the best speedup at a SMALL accuracy cost, in a
@@ -70,9 +74,12 @@ correction makes the row worse and the column's own rule is what requires it.*
 
 ## The five gaps this targets
 
-1. **Kernel speedup vs end-to-end speedup.** 1.24× at 90% sparsity as a
-   kernel; ≤1.06× and usually <1.0× end-to-end at accuracy-matched points
-   below 8K. Both ends measured, on the same hardware, in the same repo.
+1. **Kernel speedup vs end-to-end speedup.** On the L4: 1.24–1.26× as a
+   whole-model prefill ratio at 16384/0.9, 1.186× end-to-end at the same
+   cell, and ≤1.06× and usually <1.0× end-to-end at accuracy-matched points
+   at 8K and below. The kernel at the model's `(12,2)` geometry was measured
+   on the A100 only. *(This item called 1.24× a kernel figure, with "both ends
+   measured, on the same hardware", until 2026-10-01; it is a prefill ratio.)*
 2. **Random masks vs importance-derived masks.** Timing under a random mask
    says nothing about accuracy. Stage 2 uses random masks to isolate the
    kernel; Stage 3 uses real importance-derived ones. Every row records which.
@@ -138,7 +145,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1152 passed, 56 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1159 passed, 56 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -179,8 +186,8 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1197 passed, 11 skipped**, because the 45 banked-file tests run instead of
-skipping. Both totals are 1208, which is what `pytest --collect-only` reports —
+1204 passed, 11 skipped**, because the 45 banked-file tests run instead of
+skipping. Both totals are 1215, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 

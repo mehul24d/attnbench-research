@@ -44,7 +44,8 @@ Added 2026-09-16, after Stage 5 ran on a second architecture and the sign
 flipped.
 
 > **What is supported:** block-sparse prefill is faster than dense **on an
-> NVIDIA L4 (sm_89)**, up to 1.373× at 32768/0.75.
+> NVIDIA L4 (sm_89)**, up to 1.373× at 32768/0.75 (era 1; 1.344× with the
+> current mask rule, 2026-10-01).
 >
 > **What is NOT supported:** that it is faster anywhere else **with the
 > harness's reference mask builder**. On an A100-SXM4-80GB (sm_80) the same

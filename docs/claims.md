@@ -282,12 +282,25 @@ interactive deployment runs in, which is why it is worth measuring, but a
 batched or long-generation regime is a different measurement this study has
 not made.
 
-**Why the third is a different claim, and this is the study's thesis.** 1.24×
-is a **kernel** number, at 90% sparsity, from Stage 2. End-to-end, at the
-operating points that actually preserve accuracy, it becomes **≤1.06× and
-usually <1.0×**. A kernel speedup is not an end-to-end speedup, and the
+**Why the third is a different claim, and this is the study's thesis.**
+1.24× is a **whole-model prefill** ratio, not a kernel number: one prefill
+forward of Qwen2.5-1.5B (12 query / 2 KV heads) at 16384 tokens and 0.9
+sparsity on an L4, oracle mask, reference builder inside the forward, one
+timed call after one warmup — the session-4 sizing probe
+(`scripts/time_one_accuracy_example.py` at `b6ed63b`, era 1; its log,
+`results/gpu_session_20260903_s4/anchor16k_bsa.log`, is not under version
+control). The banked Stage 5 prefill ratio at the same cell reproduces it:
+1.258× (era 1, n=10), 1.271× on the 2026-09-16 replicate, 1.241× in the
+2026-10-01 era-3 run. End-to-end at that same cell, with 14 generated tokens,
+it is 1.186×; at the accuracy-preserving operating points at 8192 and below
+it is **≤1.06× and usually <1.0×**. The L4 has no kernel measurement at the
+model's geometry; at `(12,2)` the kernel was timed only on the A100 (2.47× at
+16384/0.9, `claims.md`, "The same comparison at the model's real head
+geometry"). *(This
+paragraph called 1.24× "a kernel number, at 90% sparsity, from Stage 2"
+until 2026-10-01. It was never a Stage 2 figure — audit T3.)* A prefill speedup is not an end-to-end speedup, and the
 distance between them is the gap this study exists to measure. Reporting the
-kernel figure as a system result is the same regime-vs-unit error that has
+prefill figure as a system result is the same regime-vs-unit error that has
 already appeared three times in this project's own analysis.
 
 **15 of 34 accuracy-matched sparse operating points are dominated by the dense
@@ -396,7 +409,7 @@ hides. The right-hand column is the current answer.
 | *16 of 31 matched sparse points are dominated by dense* | **DOES NOT SURVIVE.** Normalized: **12 of 31**. | Moves again: **15 of 34** normalized, 28 of 34 measured. |
 | *All 15 `niah_single` points are dominated* | **DOES NOT SURVIVE.** Normalized: **9 of 15**. The six that leave are all at 8192. | Moves again: there are now **19** `niah_single` points, 9 of them dominated normalized. |
 | *The survivors are all `vt`* | **DOES NOT SURVIVE.** Six `niah_single` points at 8192 survive normalization. | Still does not, and more strongly — two of the three points that clear their resolution floor are `niah_single`. |
-| *A 1.24× kernel speedup becomes ≤1.06× end-to-end* | **SURVIVES**, and is strengthened — the gap is now measured against a matched-kernel baseline rather than one carrying a handicap. | **SURVIVES.** |
+| *A 1.24× kernel speedup becomes ≤1.06× end-to-end* (1.24× was called a kernel figure until 2026-10-01; it is a whole-model prefill ratio at L4 16384/0.9) | **SURVIVES**, and is strengthened — the gap is now measured against a matched-kernel baseline rather than one carrying a handicap. | **SURVIVES.** |
 | *`vt`'s matched budgets are `oracle_sensitive`* | **UNTOUCHED.** Nothing in the decode correction bears on the oracle. | **DOES NOT SURVIVE as stated.** The rebuild clears the flag on `vt` at 2048 at all three epsilons — with the sink forced, no sparsity level there exceeds dense beyond noise. Six of nine `vt` cells still carry it. |
 
 *The right-hand column was added 2026-09-21. Until then this table judged one
@@ -769,15 +782,31 @@ exists it enters as a new value" — the mechanism worked exactly as designed on
 4096 / 8192 / 16384 / 32768. It improved fivefold from 4096 to 8192 and 4%
 since 16384. Longer context does not rescue it: scoring and the saving grow
 at similar rates, so the ratio flattens near 35 rather than heading toward 1.
-The gap is structural, not a small-scale artifact.
 
-**Why this is the useful form of the result.** The literature's kernel
-numbers (1.24× at 90% sparsity here, Stage 2) and this study's end-to-end
-numbers differ by regime, and that gap is what the study set out to measure.
-The measurement now has both ends: **a kernel speedup of 1.24×, an
-oracle-masked end-to-end speedup of up to 1.32× at 32K, and an estimator cost
-of 35× the saving standing between that and any deployment.** Reporting the
-first without the third is the error this study exists to document.
+**What the flattening shows is narrower than it looks** (audit T2). Scoring
+and the saving both grow quadratically with context, so a ratio that levels
+off is what any dense-pass oracle produces; and an oracle that computes dense
+attention costs more than the attention it lets the kernel skip, so the ratio
+exceeds 1 by construction. Neither is a finding about block-sparse attention.
+The *level*, about 35, is this harness's: the scoring pass runs fp32
+attention with a materialised softmax, four query blocks at a time
+(`accuracy/model.py`, `_scoring_forward_chunked`), and takes 44.6 s at 32768
+on the L4 — 11× the 4018 ms dense prefill. An oracle that cost one dense
+prefill would sit near 3× the saving (4018 / 1286), by arithmetic, not
+measurement. *(This paragraph ended "The gap is structural, not a
+small-scale artifact" until 2026-10-01.)*
+
+**Why this is the useful form of the result.** Kernel, prefill and
+end-to-end numbers differ by regime, and that gap is what the study set out to
+measure. On one card, the L4, it has three measured ends: **a whole-model
+prefill speedup of 1.24–1.26× at 16384/0.9, an oracle-masked end-to-end
+speedup of up to 1.32× at 32K, and an oracle cost of 35× the saving standing
+between that and any deployment.** A deployable estimator's cost is
+unmeasured (above). Reporting the first without the third is the error this
+study exists to document. *(This paragraph read "a kernel speedup of 1.24×"
+from "Stage 2", and called the 35× "an estimator cost of 35× the saving",
+until 2026-10-01: 1.24× is a session-4 prefill ratio, and 35× is the oracle's
+cost.)*
 
 #### What the study's central finding becomes
 
@@ -1006,6 +1035,8 @@ the same fraction of each card's ceiling.
 | 32768 | L4 | pre-fix | 1.014 | **1.373** | 1.475 |
 | 32768 | **A100** | post-fix, **+0.8 / +2.3 / +6.6% blocks** | **0.281** | **0.475** | **0.817** |
 
+*L4 rows: era 1. A100 rows: era 2. The same comparison in one era is below.*
+
 *The two cards' rows are not like-for-like at the block level: every A100
 mask is denser than the L4 mask beside it, by the amount in the mask-rule
 column. The bias runs **against the A100's sparse arm** — read each A100
@@ -1019,6 +1050,29 @@ sparse arm is carrying a denser mask than the L4's. That biases against the
 A100 and cannot account for a 0.615× against 1.194×, but the table is not
 like-for-like at the block level, and the kernel cross-card ratios below
 inherit the same one-directional bias.
+
+**The same comparison in one mask era** (added 2026-10-01, audit T6). The rows
+above are not one experiment: the L4 rows are era 1 (`3421f89`, pre-sink,
+`results/stage5_32768`, `results/stage5_ols`) and the A100 rows era 2
+(`56c5fff`, forced sink, `results/a100_stage5`). The 2026-10-01 sessions timed
+the same reference builder on both cards in era 3, from one script
+(`scripts/run_vectorised_endtoend.py`) and one prompt, clocks locked, n=10:
+
+| band | card | era | 0.50 | 0.75 | 0.90 |
+|---|---|---|---|---|---|
+| 16384 | L4 | 3 (`746abd1`) | 1.097 | 1.182 | 1.241 |
+| 16384 | **A100** | 3 (`746abd1`) | **0.403** | **0.633** | **0.972** |
+| 32768 | L4 | 3 (`cdbca2e`) | 1.003 | **1.344** | 1.433 |
+| 32768 | **A100** | 3 (`746abd1`) | **0.283** | **0.480** | **0.836** |
+
+Every cell is within 3% of its cross-era counterpart above (largest: L4
+32768/0.90, 1.475 → 1.433), and the contrast is unchanged: **1.344× against
+0.480× at 32768/0.75 in one era**, against 1.373× / 0.475× across two. So the
+mask-rule difference does not carry the reversal, and the original figures
+stand with their era stated. Two residual differences: the era-3 L4 32768
+cells come from the builder-major run whose dense control drifted +38 ms at
+that band (about 1% of a 4043 ms prefill), and the prompt differs from Stage
+5's. Pinned by `tests/test_t6_one_era.py`.
 
 **CORRECTED 2026-09-16, same day, by a kernel-level sweep.** The first version
 of this section said "the block-sparse kernel does not exploit the A100" and
@@ -1148,7 +1202,7 @@ is CPU mask construction" in `limitations.md`.
 
 | | |
 |---|---|
-| **Supported** | *The end-to-end block-sparse prefill speedup is **hardware-conditional**. On an L4 it reaches 1.373× at 32768/0.75; on an A100 the same configuration is 0.475×, and sparse is slower than dense at every band and sparsity measured.* **"Hardware" here is the whole host + card + builder setup, not the GPU** (qualified 2026-10-01): the two hosts are the same CPU SKU running identical code, yet the L4's rows bound its mask-construction cost at 8192/0.50 below half what the A100's forward paid. **Measured 2026-10-01:** the builder costs the same on both hosts standalone (within 3%); the A100's forward pays 13–88% of it and the L4's about none, because the slower card gives the CPU enough queued GPU work to hide it. A host–device balance effect — not the attention kernel and not the host. see `limitations.md`, "Measured 2026-10-01". |
+| **Supported** | *The end-to-end block-sparse prefill speedup is **hardware-conditional**. On an L4 it reaches 1.373× at 32768/0.75 (era 1); on an A100 0.475× (era 2), and sparse is slower than dense at every band and sparsity measured. In one mask era (3), same script, 2026-10-01: 1.344× against 0.480×.* *(This row called the A100 figure "the same configuration" until 2026-10-01; the two were built with different mask rules.)* **"Hardware" here is the whole host + card + builder setup, not the GPU** (qualified 2026-10-01): the two hosts are the same CPU SKU running identical code, yet the L4's rows bound its mask-construction cost at 8192/0.50 below half what the A100's forward paid. **Measured 2026-10-01:** the builder costs the same on both hosts standalone (within 3%); the A100's forward pays 13–88% of it and the L4's about none, because the slower card gives the CPU enough queued GPU work to hide it. A host–device balance effect — not the attention kernel and not the host. see `limitations.md`, "Measured 2026-10-01". |
 | **Supported** | *At the kernel level the block-sparse kernel is FASTER than flash on A100 at long context — **at the model's own `(12,2)` head geometry, 1.28× at 8192 and 1.96× at 16384 (sparsity 0.75), rising to 2.47× at 16384/0.9**. The end-to-end reversal is therefore caused by per-call work outside the attention kernel, not by the kernel. Earlier figures of 1.50× / 2.11× came from a 32-head sweep and **overstated** the advantage at the geometry that runs.* |
 | **Supported** | *At 4096 the same kernel is **slower** than flash at every sparsity measured (0.48–0.57×) at the model's real geometry, with no mask construction involved. The kernel's usefulness on this card has a short-context floor.* |
 | **Supported, 2026-10-01** | *Taken at matching sparsity, the kernel saving and the mask-construction cost compose into the observed A100 end-to-end gap to within 30 ms in all six cells at 8192 and 16384* (at 0.75: −58.3 vs −68.8 ms, −264.8 vs −274.3 ms). Construction cost scales with (1 − sparsity); it is measured per sparsity by the builder swap. Derived in `tests/test_construction_cost_by_sparsity.py`. |
