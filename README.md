@@ -83,8 +83,10 @@ correction makes the row worse and the column's own rule is what requires it.*
 2. **Random masks vs importance-derived masks.** Timing under a random mask
    says nothing about accuracy. Stage 2 uses random masks to isolate the
    kernel; Stage 3 uses real importance-derived ones. Every row records which.
-3. **The estimator's cost, which published speedups exclude.** Priced here as
-   a first-class result rather than a limitation.
+3. **The estimator's cost, which kernel benchmarks exclude.** Priced here as
+   a first-class result rather than a limitation. Training-free prefill
+   methods such as MInference and XAttention already count theirs. *(This
+   item said "which published speedups exclude" until 2026-10-01.)*
 4. **Accuracy and latency measured apart vs at matched accuracy.** A speedup
    at an operating point that loses accuracy is not a speedup — and on two of
    three tasks the honest comparison turns out to be unreachable at any
@@ -145,7 +147,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1159 passed, 56 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1183 passed, 56 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -186,8 +188,8 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1204 passed, 11 skipped**, because the 45 banked-file tests run instead of
-skipping. Both totals are 1215, which is what `pytest --collect-only` reports —
+1228 passed, 11 skipped**, because the 45 banked-file tests run instead of
+skipping. Both totals are 1239, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 

@@ -99,6 +99,27 @@ def test_the_readme_spend_total_matches_the_ledger():
         f"README says {m.group(1)} priced sessions; the ledger has {priced}.")
 
 
+def test_the_writeup_spend_total_matches_the_ledger():
+    """writeup_input.md carried the README's withdrawn "~6,000 / 2,413
+    itemised" for twelve days after the README dropped it (found
+    2026-10-01): a figure restated in two places needs a check in both."""
+    rows = ledger_rows()
+    total = sum(v for _, v in rows if v is not None)
+    priced = sum(1 for _, v in rows if v is not None)
+    m = re.search(r"\| \*\*Cost\*\* \| ₹([\d,]+) itemised across (\d+) priced sessions",
+                  WRITEUP.read_text())
+    assert m, "writeup_input.md's Cost row no longer states a total in the expected form"
+    assert (int(m.group(1).replace(",", "")), int(m.group(2))) == (total, priced), (
+        f"writeup says ₹{m.group(1)} / {m.group(2)} sessions; ledger sums to "
+        f"₹{total:,} / {priced}")
+
+
+def test_the_writeup_states_the_input_tolerance_rule():
+    """The P2 lesson (h100_overlap_preregistration.md) as a stated rule."""
+    text = " ".join(WRITEUP.read_text().split())
+    assert "how far apart that input has to be for a case to count" in text
+
+
 def test_the_day_total_for_20260917_matches_its_own_rows():
     """The ledger's own arithmetic, which drifted by ₹1 at the audit: the
     'four sessions' total excluded the boot-test the same sentence includes."""

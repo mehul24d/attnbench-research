@@ -1224,9 +1224,11 @@ session never passed it. Writing a mechanism without it was the error; the
 
 ## Where this study sits: between a known discrepancy and a known ceiling
 
-All four citations below were checked against arXiv on 2026-09-19 (title,
-first author, date), and the NSA figures against the paper's own Figure 1 and
-§ Efficiency Analysis, not a secondary source.
+The first four citations below were checked against arXiv on 2026-09-19
+(title, first author, date), and the NSA figures against the paper's own
+Figure 1 and § Efficiency Analysis, not a secondary source. The rest were
+added 2026-10-01 (audit C5), each checked that day against its arXiv record
+or proceedings page, with every quotation taken from the abstract verbatim.
 
 **The discrepancy was established in 2022.** Dehghani et al., *The Efficiency
 Misnomer* (arXiv:2110.12894, ICLR 2022), showed that the common cost
@@ -1258,6 +1260,52 @@ one function, with the model's outputs bitwise unchanged, turns the same
 configurations into 1.090–1.282× wins at 16384. At 8192 it reaches parity
 (0.968–1.058×); at 32768, measured 2026-10-01 in one session, it wins by
 1.250–1.666×.
+
+**The mechanism has prior art; the location and size are what is new.**
+Fernandez et al., *The Framework Tax* (arXiv:2302.06117, EMNLP 2023), showed
+that throughput and FLOP gains fail to become wall-clock latency because of
+framework (host-side) overhead, and that "the disparity is growing as hardware
+speed increases over time". Vellaisamy et al., *TaxBreak* (arXiv:2603.12465,
+IEEE ISPASS 2026), decompose host-visible orchestration overhead and report
+that a faster host CPU "reduces orchestration overhead by 10-29% and improves
+end-to-end latency by up to 14%". The A100 reversal here is an instance of
+that class: a host-side cost, the mask builder, which a slower card hides
+behind queued GPU work and a faster one exposes. Measured 2026-10-01 on
+identical host CPUs, the A100's forward pays 13–88% of the builder's cost and
+the L4's about none (`limitations.md`, "Measured 2026-10-01"). This study does
+not discover that phenomenon; it locates it in one training-free family's
+pipeline and sizes it.
+
+**Kernel and end-to-end numbers side by side are routine in 2025–26.**
+*Block Sparse Flash Attention* (Ohayon et al., arXiv:2512.07011; accepted to
+NeurIPS 2026 per its arXiv record) reports a kernel speedup of up to 1.38× and
+up to 1.13× end-to-end on LongBench; *FSA* (Yan et al., arXiv:2508.18224,
+ICLR 2026) reports up to 3.5× at the kernel and up to 1.36× (1.11× on
+average) for prefill. That a kernel speedup shrinks end-to-end is standard
+reporting, not this study's finding. FSA's target — NSA kernels that are
+inefficient with few query heads per GQA group — is also the regime of this
+study's `(12,2)` observation that the kernel trails flash at 4096.
+
+**Training-free prefill methods already price their estimators.** MInference
+(Jiang et al., arXiv:2407.02490, NeurIPS 2024) "dynamically build[s] sparse
+indices … during inference" with GPU kernels and reports end-to-end
+pre-filling latency; XAttention (Xu et al., arXiv:2503.16428, ICML 2025, PMLR
+267) is built around cheaper block-importance measurement, on the same
+Block-Sparse-Attention kernel family as this study's sparse arm. The gap
+"published speedups exclude the estimator's cost" holds for kernel
+benchmarks, not for these methods. And the oracle as a non-deployable
+diagnostic is a premise elsewhere: Wang et al. (arXiv:2606.07703, technical
+report, June 2026) state that their attention-mass oracle "is a diagnostic
+reference, not a deployable accelerator". This study's oracle-cost figure
+quantifies that conceded point for one harness (see the 35×, and why its
+level is the implementation's, above).
+
+**The methodological point has prior art too.** Mytkowicz, Diwan, Hauswirth
+and Sweeney, *Producing Wrong Data Without Doing Anything Obviously Wrong!*
+(ASPLOS '09, pp. 265–276), showed that innocuous, fixed setup choices bias
+systems measurements enough to reverse conclusions, and proposed setup
+randomisation. "Replication along a fixed axis confirms precision, not
+scope" is that result met again, not a new one.
 
 **That reframes the work from discovering a negative to explaining a known
 one**, which is both the more accurate description and the more defensible
@@ -1293,6 +1341,7 @@ any one modality.
 | **Supported** | *For training-free block-sparse prefill on an A100, the gap between the kernel's speedup and the end-to-end result is located in CPU-side mask construction, not in the attention kernel, and closing it with a vectorised builder turns 0.633× into 1.201× at 16384/0.75 with bitwise-identical outputs.* |
 | **Not supported** | *Sparse attention doesn't pay.* NSA reports 9.0× forward and 6.0× backward against FlashAttention-2 at 64k on the same card family. This study bounds one training-free family below that ceiling; it says nothing about natively trained sparsity. |
 | **Not supported** | *This study discovered that efficiency claims can fail to materialise.* That is *The Efficiency Misnomer* (2022), and in vision Nauen et al. (2023). What is new here is the location of the gap for one family, and its size. |
+| **Not supported** | *This study discovered that host-side overhead can cancel a kernel speedup, worse on faster hardware.* That is *The Framework Tax* (EMNLP 2023), and TaxBreak (ISPASS 2026) for the host CPU's share. The A100 reversal is an instance, located and sized. |
 
 ## Positioning against Sparse Frontier
 
@@ -1395,6 +1444,22 @@ correcting them. The supported row above stands on their own sentence.
 **Pin the revision.** v1 (April 2025) and v2 (January 2026) differ
 substantially; cite v2 or the quotation may not be there. Any claim in this
 file about what Sparse Frontier says refers to **v2** unless it names v1.
+
+**The published version, and what v3 now says** (added 2026-10-01, audit C5).
+The paper is published as Nawrot et al., *Findings of the Association for
+Computational Linguistics: ACL 2026*, pp. 38667–38701
+(doi:10.18653/v1/2026.findings-acl.1926), and arXiv carries a v3 (22 Jun 2026).
+Checked against v3 that day: the Limitations quotation above is still there
+verbatim (third paragraph), and Appendices A.1.1, B.3 and D.4 carry the same
+titles, so the v2 references in these files still resolve. The v3 abstract
+adds a sentence the paper should cite rather than paraphrase: *"for the
+training-free methods we study, fine-grained per-query importance estimation
+during prefilling remains impractical-due to both the cost of estimation and
+the lack of sparse kernels that translate fine-grained sparsity into
+wall-clock gains"*. That is this study's estimator-cost conclusion stated
+qualitatively; what this study adds is a wall-clock magnitude at one
+configuration. (The second author is "Robert Li" on arXiv and "Jianing Li" in
+the Anthology; cite as Nawrot et al.)
 
 ---
 

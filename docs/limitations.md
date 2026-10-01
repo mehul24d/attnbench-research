@@ -182,9 +182,13 @@ both are the same SKU. See "Host CPU provenance", next.)*
 
 ### Host CPU provenance
 
-Added 2026-10-01. No run in this study recorded the host CPU:
-`provenance.py` stamps the GPU, driver and software stack, not `lscpu`. What
-survives, recovered after the fact:
+Added 2026-10-01. No run in this study's GPU sessions recorded the host CPU
+in its stamp: `provenance.py` stamped the GPU, driver and software stack, not
+`lscpu` (the 2026-10-01 sessions record it separately, in
+`results/s12_*_hostcpu`). From the commit after those sessions, every stamp
+carries `cpu_model` and `cpu_count`
+(`provenance._cpu_model`; `tests/test_provenance_cpu.py`). For every earlier
+row, what survives, recovered after the fact:
 
 | role | instance(s) | machine type, zone | CPU, and how it is known |
 |---|---|---|---|

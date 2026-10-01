@@ -176,7 +176,8 @@ small-scale artifact" until 2026-10-01.)*
 ### Where the finding sits
 
 Copied from `docs/claims.md` § "Where this study sits"; every citation there
-was checked against arXiv on 2026-09-19.
+was checked against arXiv on 2026-09-19, and those added for audit C5 on
+2026-10-01.
 
 *The Efficiency Misnomer* (Dehghani et al., arXiv:2110.12894, 2022)
 established that FLOPs, parameter count and throughput can contradict one
@@ -194,6 +195,60 @@ interpreter overhead. Replacing that one function turns 0.633× into 1.201× at
 rather than discovering one**, which is the more accurate framing and the more
 defensible.
 
+**The mechanism has prior art; the location and size are what is new.**
+Fernandez et al., *The Framework Tax* (arXiv:2302.06117, EMNLP 2023), showed
+that throughput and FLOP gains fail to become wall-clock latency because of
+framework (host-side) overhead, and that "the disparity is growing as hardware
+speed increases over time". Vellaisamy et al., *TaxBreak* (arXiv:2603.12465,
+IEEE ISPASS 2026), decompose host-visible orchestration overhead and report
+that a faster host CPU "reduces orchestration overhead by 10-29% and improves
+end-to-end latency by up to 14%". The A100 reversal here is an instance of
+that class: a host-side cost, the mask builder, which a slower card hides
+behind queued GPU work and a faster one exposes. Measured 2026-10-01 on
+identical host CPUs, the A100's forward pays 13–88% of the builder's cost and
+the L4's about none (`limitations.md`, "Measured 2026-10-01"). This study does
+not discover that phenomenon; it locates it in one training-free family's
+pipeline and sizes it.
+
+**Kernel and end-to-end numbers side by side are routine in 2025–26.**
+*Block Sparse Flash Attention* (Ohayon et al., arXiv:2512.07011; accepted to
+NeurIPS 2026 per its arXiv record) reports a kernel speedup of up to 1.38× and
+up to 1.13× end-to-end on LongBench; *FSA* (Yan et al., arXiv:2508.18224,
+ICLR 2026) reports up to 3.5× at the kernel and up to 1.36× (1.11× on
+average) for prefill. That a kernel speedup shrinks end-to-end is standard
+reporting, not this study's finding. FSA's target — NSA kernels that are
+inefficient with few query heads per GQA group — is also the regime of this
+study's `(12,2)` observation that the kernel trails flash at 4096.
+
+**Training-free prefill methods already price their estimators.** MInference
+(Jiang et al., arXiv:2407.02490, NeurIPS 2024) "dynamically build[s] sparse
+indices … during inference" with GPU kernels and reports end-to-end
+pre-filling latency; XAttention (Xu et al., arXiv:2503.16428, ICML 2025, PMLR
+267) is built around cheaper block-importance measurement, on the same
+Block-Sparse-Attention kernel family as this study's sparse arm. The gap
+"published speedups exclude the estimator's cost" holds for kernel
+benchmarks, not for these methods. And the oracle as a non-deployable
+diagnostic is a premise elsewhere: Wang et al. (arXiv:2606.07703, technical
+report, June 2026) state that their attention-mass oracle "is a diagnostic
+reference, not a deployable accelerator". This study's oracle-cost figure
+quantifies that conceded point for one harness (see the 35×, and why its
+level is the implementation's, above).
+
+**The methodological point has prior art too.** Mytkowicz, Diwan, Hauswirth
+and Sweeney, *Producing Wrong Data Without Doing Anything Obviously Wrong!*
+(ASPLOS '09, pp. 265–276), showed that innocuous, fixed setup choices bias
+systems measurements enough to reverse conclusions, and proposed setup
+randomisation. "Replication along a fixed axis confirms precision, not
+scope" is that result met again, not a new one.
+
+**Sparse Frontier** is published (Nawrot et al., Findings of ACL 2026,
+doi:10.18653/v1/2026.findings-acl.1926). Its v3 abstract (22 Jun 2026) states
+that fine-grained per-query importance estimation during prefilling "remains
+impractical-due to both the cost of estimation and the lack of sparse kernels
+that translate fine-grained sparsity into wall-clock gains". This study's
+estimator-cost result is a wall-clock magnitude for that qualitative
+statement, at one configuration.
+
 Prior art for the method: CAB (Zhang et al., arXiv:2210.07661) for recording
 what an implementation *claims* separately from what it *does*, which Stage 0's
 capability matrix instantiates at the backend level; and Nauen et al.
@@ -206,7 +261,7 @@ Pareto-optimal against 45+ models claiming greater efficiency.
 
 | | |
 |---|---|
-| **Hardware** | Rented **NVIDIA L4 (24 GB, sm_89)** and **A100-SXM4 (80 GB, sm_80)**. Two architectures. |
+| **Hardware** | Rented **NVIDIA L4 (24 GB, sm_89)** and **A100-SXM4 (80 GB, sm_80)**: two architectures for every result. An **H100 (80 GB, sm_90)** for the pre-registered host–device overlap test only (2026-10-01). Host CPUs: Xeon Platinum 8273CL on the L4 and A100 hosts, 8481C on the H100's (`limitations.md`, "Host CPU provenance"). |
 | **Model** | Qwen2.5-1.5B-Instruct (28 layers, 2 KV heads), one model |
 | **Tasks** | `niah_single`, `niah_multikey`, `vt` — RULER's task-construction *algorithm*, not RULER's benchmark distribution |
 | **Context** | 2048 / 4096 / 8192 / 16384 / 32768, exact token counts |
@@ -214,7 +269,7 @@ Pareto-optimal against 45+ models claiming greater efficiency.
 | **Regime** | **batch 1**, inference only, no backward pass |
 | **n** | 300 per arm per (band, task) on the three-task grid at 2048–8192; 100 for `niah_single` at 2048–16384; 50 at 32768 |
 | **Masks** | Oracle: importance derived from a full dense attention pass (`score_source=dense_softmax_fp32` on every row) |
-| **Cost** | ≈₹6,000 (~US$70) of rented GPU time; ₹2,413 itemised per session in `docs/spend_ledger.md` |
+| **Cost** | ₹8,409 itemised across 38 priced sessions in `docs/spend_ledger.md` (≈ US$96), summed from the ledger's table. *(This row read "≈₹6,000 (~US$70) … ₹2,413 itemised" until 2026-10-01, a figure the README had withdrawn on 2026-09-19.)* |
 
 Eight stages. Stages 0–1 gate capability and correctness against a float64
 reference; Stage 2 is kernel microbenchmarks on synthetic tensors with
@@ -452,6 +507,23 @@ The practical form of this: before quoting a number, ask which axes were held
 constant while it was being confirmed. Here that was the card, and the card
 turned out to carry the sign of the result.
 
+**A second methodological point, from a prediction that failed.** Before any
+H100 data existed, the host–device overlap account was turned into three
+written predictions and committed (`docs/h100_overlap_preregistration.md`,
+`597a7a9`). One of them, P2, said the H100 would expose more of the mask
+builder's cost than the A100 wherever its ratio r (build time ÷ GPU time per
+layer) was larger, and less wherever it was smaller. It failed in 2 of 9
+cells, and in both the two cards' r differed by only 2.6% and 6.8% — close to
+the measurement error of r itself. The prediction fixed its outcome and its
+pass threshold, but no tolerance on the input it conditioned on, so a cell
+where r barely differed still counted as a test of direction. Seeing that
+after the data does not rescue P2; the failure stands as reported. The rule it
+leaves is general: **a pre-registered prediction that conditions on a measured
+input must state, before the run, how far apart that input has to be for a
+case to count, and therefore which cases are excluded — not only the predicted
+outcome and its pass threshold.** Without that, part of the verdict is decided
+by noise in the prediction's own premise.
+
 **The relevant claim is not that this study made no mistakes.** It is that the
 mistakes were found by mechanisms that run on every result, and the reader can
 check which mechanism covers which claim: provenance stamps on every row, a
@@ -541,9 +613,12 @@ baseline falling. The across-lengths leg is weaker than it was: at 0.75 the
 forced-sink deltas are −15 / −18 / −21, a drift rather than the 73.0 → 72.3 →
 41.7 collapse the unforced masks produced.
 
-### Gap 3 — The estimator's cost, which published speedups exclude — **ANSWERED for the oracle (~35×); the deployable estimator's cost is unmeasured**
+### Gap 3 — The estimator's cost, which kernel benchmarks exclude — **ANSWERED for the oracle (~35×); the deployable estimator's cost is unmeasured**
 
-Priced as a first-class result (§1) rather than a limitation. The oracle turns
+Priced as a first-class result (§1) rather than a limitation. *(This heading
+said "which published speedups exclude" until 2026-10-01; MInference and
+XAttention count their estimators' cost — see "Where the finding sits".)* The
+oracle turns
 out to do more than set a ceiling:
 
 | | |

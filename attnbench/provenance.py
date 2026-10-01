@@ -99,6 +99,32 @@ def _sh_result(cmd: list[str]) -> tuple[bool, str]:
         return False, ""
 
 
+def _cpu_model(cpuinfo: str = "/proc/cpuinfo") -> Optional[str]:
+    """The host CPU's model string, or None.
+
+    Added 2026-10-01 because of audit T1. The L4-vs-A100 sign reversal was
+    first read as a host-CPU difference, and nothing in any stamp could say
+    which CPU a row ran on: the answer (the same Xeon Platinum 8273CL on both
+    hosts) had to be rebuilt after the fact from instance metadata, and the
+    reversal turned out to be host-device overlap on identical CPUs. The CPU
+    is a variable this harness's numbers depend on -- the reference mask
+    builder runs on it -- so it belongs in the stamp, not in a postmortem.
+
+    Linux reads /proc/cpuinfo's first `model name`; macOS has no such file and
+    falls back to sysctl, so a laptop row still says what it ran on. Never
+    raises: provenance capture must not take down a measurement run.
+    """
+    try:
+        with open(cpuinfo) as f:
+            for line in f:
+                if line.startswith("model name") and ":" in line:
+                    return line.split(":", 1)[1].strip() or None
+    except OSError:
+        pass
+    return (_sh(["sysctl", "-n", "machdep.cpu.brand_string"])
+            or platform.processor() or None)
+
+
 def _pkg(name: str) -> Optional[str]:
     try:
         import importlib.metadata as md
@@ -115,6 +141,13 @@ class Provenance:
     host: str
     python: str
     platform: str
+    # The host CPU, from 2026-10-01 (see `_cpu_model`). Rows banked before
+    # then do not carry it; `docs/limitations.md`, "Host CPU provenance",
+    # records the CPU of every earlier session by instance, so the gap is
+    # stated rather than silent. Readers should treat a missing column as
+    # "see that table", not as "unknown".
+    cpu_model: Optional[str]
+    cpu_count: Optional[int]
 
     torch: Optional[str]
     torch_cuda: Optional[str]
@@ -184,6 +217,8 @@ def capture(clocks_locked: bool = False) -> Provenance:
         host=platform.node(),
         python=sys.version.split()[0],
         platform=platform.platform(),
+        cpu_model=_cpu_model(),
+        cpu_count=os.cpu_count(),
         torch=torch.__version__,
         torch_cuda=torch.version.cuda,
         cudnn=torch.backends.cudnn.version() if torch.cuda.is_available() else None,
@@ -253,8 +288,13 @@ GATED_FIELDS = frozenset({
 # (cross_arch.Speedup) and every drift line (canary.CanaryDrift), where the
 # harm actually lands. The raw clock readings stay decorative: they are useful
 # for reading a result later, and nothing can act on 1710 vs 1695 MHz.
+#
+# `cpu_model` / `cpu_count` (2026-10-01) are RECORDED, not gated, on purpose:
+# T1 showed two hosts with the same CPU giving opposite signs, so refusing a
+# comparison on a CPU mismatch would gate on the wrong variable. They are
+# evidence for reading a result, which is what was missing during T1.
 RECORDED_FIELDS = frozenset({
-    "timestamp", "python", "platform",
+    "timestamp", "python", "platform", "cpu_model", "cpu_count",
     "torch", "torch_cuda", "cudnn", "triton",
     "flash_attn", "flashinfer", "xformers", "fla",
     "driver", "compute_capability", "gpu_memory_gb", "gpu_count",

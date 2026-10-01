@@ -440,6 +440,13 @@ replacement, and nothing here will say so.
       "was": "'1.24x is a kernel number, at 90% sparsity, from Stage 2'",
       "replacement": "whole-model prefill",
       "note": "Corrected 2026-10-01 (audit T3). 1.24x = 1.566 / 1.259 s from the session-4 sizing probe (scripts/time_one_accuracy_example.py at b6ed63b, era 1): one whole-model prefill forward of Qwen2.5-1.5B at L4 16384/0.9. Never a Stage 2 kernel figure. Banked equivalents 1.258x / 1.271x / 1.241x (tests/test_t6_one_era.py)."
+    },
+    {
+      "id": "estimator-cost-published-speedups-exclude",
+      "pattern": "which\\s+published\\s+speedups\\s+exclude",
+      "was": "Gap 3 as 'the estimator's cost, which published speedups exclude'",
+      "replacement": "kernel benchmarks",
+      "note": "Narrowed 2026-10-01 (audit C5 / Part 18). MInference (arXiv:2407.02490) and XAttention (arXiv:2503.16428) build their indices on GPU during inference and report latency with them; the exclusion holds for kernel benchmarks, not for training-free prefill methods."
     }
   ]
 }
