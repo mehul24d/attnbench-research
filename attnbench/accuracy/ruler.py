@@ -15,14 +15,22 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from . import sizing
-from .._vendor.ruler import niah, scoring, variable_tracking
+from . import ruler_data, sizing
+from .._vendor.ruler import niah, qa, scoring, variable_tracking
 
 # Task -> RULER scoring category (attnbench._vendor.ruler.scoring.TASKS key).
 _TASK_CATEGORY = {
     "niah_single": "niah",
     "niah_multikey": "niah",
     "vt": "variable_tracking",
+    # Audit T4 (2026-10-01): RULER presets under RULER's own names, with
+    # RULER's own parameters and no deviation -- candidates for a task the
+    # dense model does not ace. Their resources come from ruler_data.py.
+    "niah_multikey_1": "niah",
+    "niah_multivalue": "niah",
+    "niah_multiquery": "niah",
+    "qa_1": "qa",
+    "qa_2": "qa",
 }
 
 # Task -> generator params. Each entry notes exactly which axis (if any)
@@ -53,9 +61,34 @@ _NIAH_PARAMS = {
                            type_needle_v="uuids", num_needle_k=4,
                            num_needle_v=1, num_needle_q=1),
 }
+# RULER's synthetic.yaml presets at the vendored commit, verbatim: essay
+# haystack, word keys, number values.
+_NIAH_PARAMS.update({
+    "niah_multikey_1": dict(haystack_mode="essay", type_needle_k="words",
+                            type_needle_v="numbers", num_needle_k=4,
+                            num_needle_v=1, num_needle_q=1),
+    "niah_multivalue": dict(haystack_mode="essay", type_needle_k="words",
+                            type_needle_v="numbers", num_needle_k=1,
+                            num_needle_v=4, num_needle_q=1),
+    "niah_multiquery": dict(haystack_mode="essay", type_needle_k="words",
+                            type_needle_v="numbers", num_needle_k=1,
+                            num_needle_v=1, num_needle_q=4),
+})
 _VT_PARAMS = {
     "vt": dict(num_chains=1, num_hops=4),
 }
+# RULER qa_1 / qa_2. Filler units are DOCUMENTS here, not sentences.
+_QA_PARAMS = {"qa_1": "squad", "qa_2": "hotpotqa"}
+
+# Tasks whose filler differs per example (QA: each question draws its own
+# documents) or whose resources make per-example token counts vary (essay,
+# word needles). They are sized per example, so every example lands at or
+# under its budget by construction rather than by assuming the first
+# example's fit holds for the rest -- which is all the existing tasks rely
+# on, and is safe only because their filler is uniform.
+_PER_EXAMPLE_FIT = frozenset(_QA_PARAMS) | frozenset(
+    t for t, p in _NIAH_PARAMS.items()
+    if p["haystack_mode"] == "essay" or "words" in (p["type_needle_k"], p["type_needle_v"]))
 
 
 @dataclass(frozen=True)
@@ -132,6 +165,9 @@ def _min_haystack_units(task: str) -> int:
         params = _VT_PARAMS[task]
         statements_per_chain = params["num_hops"] + 1
         return params["num_chains"] * statements_per_chain
+    if task in _QA_PARAMS:
+        qas, _ = ruler_data.qa_dataset(_QA_PARAMS[task])
+        return max(qa.min_docs(qas, i) for i in range(min(len(qas), 1000)))
     if task in _NIAH_PARAMS:
         params = _NIAH_PARAMS[task]
         # The builder's own `num_needle_k = max(num_needle_k, num_needle_q)`,
@@ -143,11 +179,33 @@ def _min_haystack_units(task: str) -> int:
     raise ValueError(f"unknown task {task!r}")
 
 
-def _render(task: str, example_seed: int, num_haystack: int) -> tuple[str, list[str]]:
-    """One example's (prompt, answers) at a given filler-unit count."""
+def _niah_resources(params: dict) -> dict:
+    """The injected resources a NIAH preset needs, and only those: the
+    existing noise/needle presets get none, so their examples are built
+    exactly as before (pinned by tests/test_ruler_t4_tasks.py)."""
+    out = {}
+    if params["haystack_mode"] == "essay":
+        out["essay_words"] = ruler_data.essay_words()
+        out["sent_tokenize"] = ruler_data.sent_tokenizer()
+    if "words" in (params["type_needle_k"], params["type_needle_v"]):
+        out["word_pool"] = ruler_data.word_pool()
+    return out
+
+
+def _render(task: str, example_seed: int, num_haystack: int,
+            index: int = 0) -> tuple[str, list[str]]:
+    """One example's (prompt, answers) at a given filler-unit count.
+    `index` selects the question for QA (the same questions at every band,
+    as upstream); the generated tasks ignore it."""
+    if task in _QA_PARAMS:
+        qas, docs = ruler_data.qa_dataset(_QA_PARAMS[task])
+        return qa.generate_qa_example(qas, docs, index=index,
+                                      num_docs=num_haystack, seed=example_seed)
     if task in _NIAH_PARAMS:
+        params = _NIAH_PARAMS[task]
         return niah.generate_niah_example(
-            num_haystack=num_haystack, seed=example_seed, **_NIAH_PARAMS[task])
+            num_haystack=num_haystack, seed=example_seed, **params,
+            **_niah_resources(params))
     if task in _VT_PARAMS:
         return variable_tracking.generate_vt_example(
             num_noise=num_haystack, seed=example_seed, **_VT_PARAMS[task])
@@ -205,11 +263,16 @@ def generate_examples(task: str, token_budgets: list[int], n_per_length: int,
         for i in range(n_per_length):
             example_seed = _example_seed(seed, task, budget, i)
             example_id = f"{task}_{budget}_{i}"
-            text, answer = _render(task, example_seed, fit.units)
+            units = fit.units
+            if task in _PER_EXAMPLE_FIT:
+                units = sizing.fit_units_to_budget(
+                    lambda u, s=example_seed, i=i: _render(task, s, u, index=i)[0],
+                    count_tokens, budget, min_units=_min_haystack_units(task)).units
+            text, answer = _render(task, example_seed, units, index=i)
             examples.append(RulerExample(
                 task=task, example_id=example_id, context=text, question="",
                 answer=answer, context_length=count_tokens(text),
-                token_budget=budget, haystack_units=fit.units,
+                token_budget=budget, haystack_units=units,
                 sizing=("approximate" if sizing.is_approximate(count_tokens)
                         else "exact")))
     return examples
@@ -226,6 +289,8 @@ def haystack_mode_for(task: str) -> str:
         return _NIAH_PARAMS[task]["haystack_mode"]
     if task in _VT_PARAMS:
         return "noise"
+    if task in _QA_PARAMS:
+        return "documents"
     raise ValueError(f"unknown task {task!r}")
 
 

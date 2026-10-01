@@ -32,6 +32,8 @@ from attnbench.config import AttnConfig
 CPU_BACKENDS = {
     "naive": NaiveAttention,
     "sdpa_math": lambda: SDPABackend("math"),
+    "block_masked_sdpa": lambda: __import__(
+        "attnbench.backends.block_masked", fromlist=["BlockMaskedSDPA"]).BlockMaskedSDPA(),
 }
 
 NOT_EXERCISED_ON_CPU = {

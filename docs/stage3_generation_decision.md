@@ -37,6 +37,24 @@ Proposed: **2× the observed maximum**, per task.
 | `niah_multikey` | 36 | **72** |
 | `vt` | 20 | **40** |
 
+**Added 2026-10-01 (audit T4): the RULER essay and QA presets.** Measured by
+`scripts/measure_answer_lengths.py`, which was first required to reproduce
+the three maxima above exactly (7 / 36 / 20, all REPRODUCED) before its other
+numbers were used. The original measuring script was not kept; of seven
+answer-text conventions tried, only "answers joined by one space, no leading
+space" reproduces all three, so that is the convention. New tasks: 200
+examples at 4096 (answers do not depend on the band: NIAH answers are needle
+payloads, QA asks the same questions at every band; `qa_2` cannot be built at
+2048). QA uses the longest gold alternative, since any one may be written.
+
+| task | n | min | median | p95 | max | cap |
+|---|---|---|---|---|---|---|
+| `niah_multikey_1` | 200 | 7 | 7 | 7 | 7 | **14** |
+| `niah_multivalue` | 200 | 31 | 31 | 31 | 31 | **62** |
+| `niah_multiquery` | 200 | 31 | 31 | 31 | 31 | **62** |
+| `qa_1` | 200 | 1 | 3.5 | 10 | 21 | **42** |
+| `qa_2` | 200 | 1 | 4 | 9 | 27 | **54** |
+
 Two adjustments to the caps sketched in conversation (16 / 66 / 32), which came
 off the single-sample figures: `niah_multikey`'s real max is 36, not 33, so 2×
 is 72; and `vt`'s max is 20, so 32 is only 1.6× — 40 keeps the rule uniform.

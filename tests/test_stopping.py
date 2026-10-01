@@ -29,7 +29,14 @@ def test_caps_are_per_task_and_cover_the_grid():
     from attnbench.accuracy.config import load_grid
     grid = load_grid("configs/accuracy/stage3_grid.yaml")
     assert set(grid.tasks) <= set(TASK_TOKEN_CAPS)
-    assert len(set(TASK_TOKEN_CAPS.values())) == len(TASK_TOKEN_CAPS)
+    # Not one flat budget. This asserted every cap DISTINCT until 2026-10-01,
+    # a proxy that fails on legitimately equal measurements: niah_multikey_1
+    # answers one 7-digit number exactly as niah_single does (cap 14 both),
+    # and niah_multivalue / niah_multiquery both answer four (62 both). That
+    # each cap is 2x a measured max is pinned per task from the documented
+    # table by tests/test_ruler_t4_tasks.py.
+    assert len(set(TASK_TOKEN_CAPS.values())) > 1
+    assert max(TASK_TOKEN_CAPS.values()) >= 4 * min(TASK_TOKEN_CAPS.values())
 
 
 def test_an_unmeasured_task_raises_rather_than_borrowing_a_cap():

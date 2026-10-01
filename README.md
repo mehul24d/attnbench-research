@@ -147,7 +147,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1211 passed, 63 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1271 passed, 64 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -160,12 +160,14 @@ The suite runs on CPU and needs no GPU, no model download, and no
 credentials. Verified from a clean clone into a fresh virtualenv on
 2026-09-12, resolving dependencies from scratch.
 
-The 63 skips are the honest part, and they split four ways: **10** need CUDA,
+The 64 skips are the honest part, and they split five ways: **10** need CUDA,
 **45** read banked result files that `results/` correctly keeps out of git,
 **4** are scripts `test_script_call_sites.py` has nothing to check because
 they import nothing from `attnbench`, and **4** are the same scripts skipped
 again by `test_import_resolution.py`, which only has something to say about a
-script that imports the package. The 45 validate real measured data —
+script that imports the package, and **1** needs the pinned RULER data
+directory (`scripts/fetch_ruler_data.py`; the essays and QA sets are not
+committed). The 45 validate real measured data —
 including the check that the cross-arm decode guard actually fires on the
 confounded Stage 3 rows, and the check that the two comparison scripts refuse
 the banked era-2/era-3 pair, and the check that segment 1's 2026-09-03 probe
@@ -188,8 +190,9 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1256 passed, 18 skipped**, because the 45 banked-file tests run instead of
-skipping. Both totals are 1274, which is what `pytest --collect-only` reports —
+1317 passed, 18 skipped**, because the 45 banked-file tests run instead of
+skipping (and, on a workstation with the RULER data directory, the data
+test runs too). Both totals are 1335, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 

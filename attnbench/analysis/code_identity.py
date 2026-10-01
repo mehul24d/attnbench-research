@@ -68,6 +68,7 @@ BACKEND_SOURCES: dict[str, tuple[str, str]] = {
     "sage":         ("attnbench/backends/sage_attention.py", "SageAttention"),
     "xformers":     ("attnbench/backends/xformers_backend.py", "XFormersAttention"),
     "xattention":   ("attnbench/backends/xattention.py", "XAttentionBackend"),
+    "block_masked_sdpa": ("attnbench/backends/block_masked.py", "BlockMaskedSDPA"),
 }
 
 # Methods that execute per timed call, or that build what the timed call

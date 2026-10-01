@@ -211,6 +211,8 @@ def test_a_backend_without_decode_refuses_to_pick_one_silently():
 CPU_BACKENDS = {
     "naive": NaiveAttention,
     "sdpa_math": lambda: SDPABackend("math"),
+    "block_masked_sdpa": lambda: __import__(
+        "attnbench.backends.block_masked", fromlist=["BlockMaskedSDPA"]).BlockMaskedSDPA(),
 }
 
 # Backends that cannot be exercised here, and why. Named rather than skipped:

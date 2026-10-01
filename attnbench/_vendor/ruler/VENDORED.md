@@ -22,6 +22,23 @@ Namespace and seed the global `random`/`numpy.random` state once at import
 time, rather than taking parameters. None of that survives becoming a
 library call.
 
+## Extended 2026-10-01 (audit T4)
+
+| File | Source file | Status |
+|---|---|---|
+| `niah.py` | same | **`haystack_mode="essay"` and `type_needle="words"` now implemented**, with the corpus, the sentence splitter and the word lists INJECTED by the caller (`attnbench/accuracy/ruler_data.py`), so this module still imports nothing beyond the stdlib and numpy. The essay branch is upstream's line for line, local RNG. Existing noise/needle examples are byte-identical (pinned digest in `tests/test_ruler_t4_tasks.py`). |
+| `qa.py` | `scripts/data/synthetic/qa.py` | **Adapted**: `read_squad`, `read_hotpotqa`, `generate_input_output` kept in what they compute; data passed in, local RNG for distractors and shuffle (upstream: global RNG, and a shuffle seed fixed across examples), question chosen by index so every band asks the same questions. |
+
+Data (`PaulGrahamEssays.json`, SQuAD 2.0 dev, HotpotQA dev distractor) and
+NLTK's `punkt_tab` are fetched by `scripts/fetch_ruler_data.py` as RULER's
+own scripts do, SHA-256 pinned in `ruler_data.PINNED_SHA256`, and NOT
+committed. Common-words extraction (CWE) remains unimplemented: it also needs
+RULER's `english_words.json` and few-shot construction, and the T4 probe has
+five candidates without it.
+
+The section below is the original 2026-09-02 record; its first two bullets
+are superseded by the table above.
+
 ## What's deliberately not implemented (and why)
 
 - **`haystack_mode="essay"`** (niah.py, variable_tracking.py): RULER's

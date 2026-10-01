@@ -33,6 +33,13 @@ TASK_TOKEN_CAPS: dict[str, int] = {
     "niah_single": 14,
     "niah_multikey": 72,
     "vt": 40,
+    # Audit T4 (2026-10-01), same rule, measured by
+    # scripts/measure_answer_lengths.py after it reproduced the three above.
+    "niah_multikey_1": 14,
+    "niah_multivalue": 62,
+    "niah_multiquery": 62,
+    "qa_1": 42,
+    "qa_2": 54,
 }
 
 

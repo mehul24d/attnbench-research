@@ -46,6 +46,15 @@ eval = [
   "lm-eval>=0.4",
   "datasets>=2.20",
   "accelerate>=0.33",
+  # Exact pins: the word lists and the sentence splitter are part of what a
+  # RULER essay/word-needle example IS (accuracy/ruler_data.PINNED_VERSIONS).
+  "wonderwords==2.2.0",
+  "nltk==3.9.1",
+]
+# Building the RULER data directory only (scripts/fetch_ruler_data.py).
+ruler-data = [
+  "html2text==2024.2.26",
+  "beautifulsoup4==4.12.3",
 ]
 dev = [
   "pytest>=8",

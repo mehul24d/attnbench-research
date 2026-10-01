@@ -22,8 +22,11 @@ ScoreSource = Literal["dense_softmax_fp32", "minference_meanpool"]
 # haystack -- a real methodological difference that makes absolute
 # accuracy numbers here not comparable to published RULER results, even
 # though they remain valid for comparing backends against each other on
-# identical inputs. "essay" is reserved for when that path is wired up.
-HaystackMode = Literal["noise", "needle", "essay"]
+# identical inputs. "essay" is RULER's own prose haystack, wired 2026-10-01
+# (audit T4) for the niah_multikey_1 / multivalue / multiquery presets.
+# "documents" is the QA tasks' filler: real distractor documents from SQuAD
+# or HotpotQA, as RULER's qa_1 / qa_2 build it.
+HaystackMode = Literal["noise", "needle", "essay", "documents"]
 
 # Why a generation stopped. Recorded per row rather than reconstructed
 # afterwards from `len(predicted)`, which cannot distinguish "the model
