@@ -130,3 +130,44 @@ def test_bitwise_equal_on_cuda():
                                                          causal=True, identity_seed="cfg")
                 assert dev.active.is_cuda
                 assert torch.equal(ref.active, dev.active.cpu()), (kind, n, s)
+
+
+def test_jitter_is_drawn_and_copied_once_per_config_not_once_per_layer(monkeypatch):
+    """The inline arm builds a mask on every layer. A per-call
+    `_reference_jitter(...).to(device)` is a blocking H2D copy, i.e. a stream
+    sync per layer inside the timed forward. 28 layers of one config must
+    reach the CPU draw once."""
+    calls = []
+    real = masks._reference_jitter
+    monkeypatch.setattr(masks, "_DEVICE_JITTER_CACHE", {})
+    monkeypatch.setattr(masks, "_reference_jitter",
+                        lambda *a: calls.append(a) or real(*a))
+    n = 65
+    sc = _scores(n, "fp32")
+    first = masks.importance_block_mask_device(n * 16, 16, 0.75, sc, causal=True,
+                                               identity_seed="cfg")
+    for _ in range(27):
+        again = masks.importance_block_mask_device(n * 16, 16, 0.75, sc, causal=True,
+                                                   identity_seed="cfg")
+        assert torch.equal(first.active, again.active)
+    assert len(calls) == 1
+    masks.importance_block_mask_device(n * 16, 16, 0.75, sc, causal=True,
+                                       identity_seed="other")
+    assert len(calls) == 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA (runs in the Phase A gate)")
+def test_warm_device_build_does_not_synchronise():
+    """The property the inline arm is for: after the first layer of a config,
+    building a mask performs no device-host synchronisation."""
+    n = 256                                       # 32768 / block 128
+    sc = _scores(n, "fp32").cuda()
+    masks.importance_block_mask_device(n * 128, 128, 0.75, sc, causal=True,
+                                       identity_seed="cfg")
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        masks.importance_block_mask_device(n * 128, 128, 0.75, sc, causal=True,
+                                           identity_seed="cfg")
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
