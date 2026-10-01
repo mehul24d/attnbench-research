@@ -577,6 +577,13 @@ class SwappableAttentionModel:
         self._wrapped = False
         self._wrap()
 
+    @property
+    def score_source(self) -> str:
+        """The scorer behind this wrapper's block_sparse masks. Read by
+        generation.generate_one to decide between the scoring pass and the
+        inline estimator, so the two cannot be configured apart."""
+        return self._state.score_source
+
     def _wrap(self) -> None:
         from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
         for i, layer in enumerate(self._layers):
@@ -608,6 +615,13 @@ class SwappableAttentionModel:
         # that decides it is a global whose default has moved between torch
         # versions this project's pin permits.
         numerics.assert_fp32_matmul(self._state.score_source)
+        # The scoring pass implements these two. Anything else (the inline
+        # source above all, which has no scoring pass) would fall through to
+        # the dense oracle branch and be cached under the wrong name.
+        if self._state.score_source not in ("dense_softmax_fp32", "minference_meanpool"):
+            raise ValueError(
+                f"score_source={self._state.score_source!r} has no scoring "
+                f"pass; inline sources rank inside run_measured")
 
         seq_len = input_ids.shape[-1]
         key = score_cache.cache_key(self.model_id, task, example_id, seq_len,

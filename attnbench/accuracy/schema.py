@@ -13,7 +13,15 @@ from typing import Literal, Optional
 # compute_importance_scores docstring for why this must never be silently
 # assumed constant. `None` for dense (non-block-sparse) rows: no scoring
 # pass ran at all for those.
-ScoreSource = Literal["dense_softmax_fp32", "minference_meanpool"]
+#
+# "minference_meanpool_inline" (2026-10-01, audit C1) is the same estimator
+# run inside the measured forward: each layer ranks its own q and k, which
+# come from sparse earlier layers, and its cost is inside latency_ms. The
+# two-pass "minference_meanpool" ranks every layer from a dense pass first,
+# outside the timer. Same formula, different inputs and accounting, so
+# different values.
+ScoreSource = Literal["dense_softmax_fp32", "minference_meanpool",
+                      "minference_meanpool_inline"]
 
 # Same reasoning as ScoreSource: a real, first-class field rather than a
 # docstring footnote. "noise"/"needle" mean the example used attnbench's

@@ -43,6 +43,7 @@ dense baseline. This closes the dense-task-selection gate for T4, but does
 not establish sparse non-inferiority: the oracle and deployable estimator
 arms, exact non-inferiority analysis, and any measured accuracy loss remain
 the next experiment.
+That experiment is pre-registered in `docs/t4_sparse_pilot.md`.
 
 The selected-pilot result parquet is under
 `results/t4_selected_dense_pilot_20261001/`; the session diagnostics and cost
@@ -88,3 +89,20 @@ python scripts/run_accuracy.py --t4-dense-pilot \
 	--t4-pilot-tasks niah_multivalue,niah_multiquery,qa_1 \
 	--n-per-length 50
 ```
+## Planning regression in `40118f7` (found and fixed 2026-10-01)
+
+`40118f7` added `--t4-pilot-tasks` as a second `if` whose `else` reset the
+task list to the whole grid. From that commit until the fix, `--tasks` and a
+bare `--t4-dense-pilot` were silently overwritten: `--tasks vt` planned 19500
+cells instead of 6500, and the probe command above planned the Stage 3 tasks
+(`niah_single`, `niah_multikey`, `vt`) rather than the five candidates. The
+pilot's n was also written twice, the second write (5) always winning, so
+`--t4-pilot-tasks` without `--n-per-length` planned 5, not 50.
+
+Neither banked result is affected. The probe ran at `822a4dd`, before the
+change, and its 50 rows name the five candidates. The selected pilot passed
+`--t4-pilot-tasks` and `--n-per-length 50` explicitly, which planned the
+intended 300 cells. Selection now lives in `select_tasks` and
+`select_seq_lens` in `scripts/run_accuracy.py`, and
+`tests/test_run_accuracy_selection.py` pins both banked commands to the row
+counts they produced.

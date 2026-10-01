@@ -60,7 +60,9 @@ from attnbench.accuracy.sizing import approximate_token_count  # noqa: E402
 from attnbench.accuracy.runner import (build_cells, check_decode_pin_continuity,  # noqa: E402
                                        run_accuracy)
 from attnbench.accuracy import stopping                                # noqa: E402
-from attnbench.accuracy.ruler import T4_DENSE_PILOT_TASKS               # noqa: E402
+from attnbench.accuracy.t4_pilot import (                              # noqa: E402
+    PILOT_BANDS, PROBE_N, SELECTED_PILOT_N, SPARSE_PILOT_N,
+    SPARSE_PILOT_SCORE_SOURCES, SPARSE_PILOT_TASKS, T4_DENSE_PILOT_TASKS)
 from attnbench import provenance                                       # noqa: E402
 from attnbench import numerics                                    # noqa: E402
 from attnbench.config import AttnConfig                                # noqa: E402
@@ -190,6 +192,114 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
     return generate_fn
 
 
+def select_seq_lens(*, grid_seq_lens: dict, seq_lens, n_per_length,
+                    t4_dense_pilot: bool, t4_pilot_tasks,
+                    t4_sparse_pilot: bool = False) -> dict:
+    """{band: examples per (task, band)} for this run.
+
+    Bands: --seq-lens, else the T4 pilots' two, else the whole grid; never a
+    band the grid did not plan, and never a band outside the pilots' for a
+    pilot. n: --n-per-length, else the T4 pilot's pre-registered size (5 for
+    the probe, 50 for the selected subset, the largest per-task n for the
+    sparse pilot, trimmed per task by `sparse_pilot_n`), else the grid's.
+
+    A smaller n is the prefix of the grid's set -- examples are seeded per
+    (seed, task, budget, index) and the filler fit is solved from index 0,
+    so example k is identical whether n is 100 or 300 (asserted in
+    tests/test_ruler_integration.py). That is what keeps a reduced re-run
+    PAIRED with the banked rows. A LARGER n would add examples no banked
+    row has a partner for, so it is refused rather than silently allowed.
+
+    Until 2026-10-01 the pilot's n was set twice, and the second write (5)
+    always won: --t4-pilot-tasks alone planned 5, not 50.
+    """
+    if seq_lens:
+        requested = [int(x) for x in seq_lens.split(",") if x.strip()]
+        unknown = [s for s in requested if s not in grid_seq_lens]
+        if unknown:
+            raise SystemExit(
+                f"--seq-lens {unknown} are not in the pinned grid "
+                f"({sorted(grid_seq_lens)}). A band this study did not plan "
+                f"is not a band it can report.")
+        bands = sorted(requested)
+        outside = [b for b in bands if b not in PILOT_BANDS]
+        if (t4_dense_pilot or t4_sparse_pilot) and outside:
+            raise SystemExit(f"--seq-lens {outside}: the T4 pilots run at "
+                             f"{list(PILOT_BANDS)} only")
+    elif t4_dense_pilot or t4_sparse_pilot:
+        bands = list(PILOT_BANDS)
+    else:
+        bands = sorted(grid_seq_lens)
+
+    if n_per_length is not None:
+        if n_per_length < 1:
+            raise SystemExit("--n-per-length must be at least 1")
+        too_big = {s: grid_seq_lens[s] for s in bands if n_per_length > grid_seq_lens[s]}
+        if too_big:
+            raise SystemExit(
+                f"--n-per-length {n_per_length} exceeds the pinned grid "
+                f"at {too_big}. A larger n is not a prefix of anything "
+                f"already measured, so those rows would be unpaired.")
+        if t4_dense_pilot and not t4_pilot_tasks and n_per_length > PROBE_N:
+            raise SystemExit(
+                f"--n-per-length {n_per_length} on all five T4 candidates: "
+                f"the pre-registered probe is {PROBE_N} per task and band, "
+                f"and larger runs are for the selected subset "
+                f"(--t4-pilot-tasks) only")
+        if t4_sparse_pilot and n_per_length > max(SPARSE_PILOT_N.values()):
+            raise SystemExit(
+                f"--n-per-length {n_per_length}: the sparse pilot's largest "
+                f"pre-registered n is {max(SPARSE_PILOT_N.values())}")
+        return {s: n_per_length for s in bands}
+    if t4_sparse_pilot:
+        return {s: max(SPARSE_PILOT_N.values()) for s in bands}
+    if t4_dense_pilot:
+        n = SELECTED_PILOT_N if t4_pilot_tasks else PROBE_N
+        return {s: n for s in bands}
+    return {s: grid_seq_lens[s] for s in bands}
+
+
+def sparse_pilot_n(task: str, n_per_length) -> int:
+    """Examples per band for `task` in the sparse pilot: its pre-registered
+    n, or fewer under --n-per-length (the canary). Never more."""
+    n = SPARSE_PILOT_N[task]
+    return n if n_per_length is None else min(n, n_per_length)
+
+
+def select_tasks(*, grid_tasks: tuple, tasks, t4_dense_pilot: bool,
+                 t4_pilot_tasks, t4_sparse_pilot: bool = False) -> tuple:
+    """The tasks a run plans: one chain, so each flag decides exactly once.
+
+    Until 2026-10-01 the --t4-pilot-tasks branch was a second `if` whose
+    `else` reset the selection to the whole grid. --tasks and a bare
+    --t4-dense-pilot were overwritten without a word: `--tasks vt` planned
+    19500 cells instead of 6500, and the documented probe command planned
+    the Stage 3 tasks instead of the five candidates.
+    """
+    if t4_sparse_pilot:
+        return SPARSE_PILOT_TASKS
+    if t4_pilot_tasks:
+        requested = tuple(t.strip() for t in t4_pilot_tasks.split(",") if t.strip())
+        unknown = [t for t in requested if t not in T4_DENSE_PILOT_TASKS]
+        if not requested or unknown:
+            raise SystemExit(
+                f"--t4-pilot-tasks names {unknown or '(nothing)'}; the "
+                f"preregistered candidates are {list(T4_DENSE_PILOT_TASKS)}")
+        return requested
+    if t4_dense_pilot:
+        return T4_DENSE_PILOT_TASKS
+    if tasks:
+        requested = tuple(t.strip() for t in tasks.split(",") if t.strip())
+        unknown = [t for t in requested if t not in grid_tasks]
+        if unknown:
+            raise SystemExit(
+                f"--tasks {unknown} are not in the pinned grid "
+                f"({list(grid_tasks)}). A task this study did not plan is "
+                f"not a task it can report.")
+        return requested
+    return tuple(grid_tasks)
+
+
 def main():
     # Pin fp32 matmuls before anything measures or scores: TF32 is a
     # global whose default has moved between torch versions, and this
@@ -205,7 +315,8 @@ def main():
                          "quant_scheme confirmed and a matching gates.TOL "
                          "entry before this produces trustworthy rows).")
     ap.add_argument("--score-source", default="dense_softmax_fp32",
-                    choices=["dense_softmax_fp32", "minference_meanpool"],
+                    choices=["dense_softmax_fp32", "minference_meanpool",
+                             "minference_meanpool_inline"],
                     help="which importance scorer produces the ranking behind "
                          "every block_sparse mask in this run. "
                          "dense_softmax_fp32 is the oracle: a full dense "
@@ -214,7 +325,12 @@ def main():
                          "minference_meanpool is the deployable estimator "
                          "(MInference 1.0, arXiv:2407.02490, Algorithm 3), "
                          "which pools Q and K before scoring and never forms "
-                         "an S x S matrix. The value is stamped on every row "
+                         "an S x S matrix, ranking every layer in a dense "
+                         "pass first. minference_meanpool_inline runs the "
+                         "same estimator inside the measured forward, each "
+                         "layer ranking its own (sparse-fed) q and k, with "
+                         "its cost inside latency_ms: the deployable arm "
+                         "(audit C1). The value is stamped on every row "
                          "and hashed into the score-cache key.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda")
@@ -263,6 +379,16 @@ def main():
                     help="comma-separated subset of the fixed T4 candidate "
                         "tasks. May only be used with --t4-dense-pilot; "
                         "the subset must come from the preregistered set.")
+    ap.add_argument("--t4-sparse-pilot", action="store_true",
+                    help="run the pre-registered T4 sparse pilot "
+                         "(docs/t4_sparse_pilot.md): qa_1, niah_multivalue "
+                         "and niah_multiquery at 16384,32768, n per task from "
+                         "attnbench/accuracy/t4_pilot.py, the dense reference "
+                         "and block_sparse at the grid's sparsities. One arm "
+                         "per run, chosen by --score-source "
+                         "(dense_softmax_fp32 or minference_meanpool_inline), "
+                         "each into its own --out. --n-per-length lowers n "
+                         "for the canary; --seq-lens picks one band.")
     ap.add_argument("--n-per-length", type=int, default=None,
                     help="cap examples per (task, band). Must not exceed the "
                          "grid's own n: examples are seeded per index, so a "
@@ -332,6 +458,22 @@ def main():
             "--gla-gate-source")
     if args.t4_dense_pilot:
         args.no_gla = True
+    if args.t4_sparse_pilot:
+        if args.t4_dense_pilot or args.t4_pilot_tasks or args.tasks:
+            raise SystemExit(
+                "--t4-sparse-pilot fixes its own tasks; do not combine it with "
+                "--t4-dense-pilot, --t4-pilot-tasks or --tasks")
+        if args.include_sage or args.gla_gate_source:
+            raise SystemExit("--t4-sparse-pilot runs dense and block_sparse "
+                             "only; omit --include-sage and --gla-gate-source")
+        if args.score_source not in SPARSE_PILOT_SCORE_SOURCES:
+            raise SystemExit(
+                f"--score-source {args.score_source!r} is not a sparse-pilot "
+                f"arm; the plan's arms are {list(SPARSE_PILOT_SCORE_SOURCES)}")
+        if args.mask_source != "importance":
+            raise SystemExit("--t4-sparse-pilot uses the sink-rule importance "
+                             "masks the inline builder makes; omit --mask-source")
+        args.no_gla = True
 
     # The gla arm is decided by docs/gla_arm_decision.md, and this is where
     # either verdict becomes an action. First thing after parsing, before the
@@ -367,67 +509,18 @@ def main():
     # it -- asserted in tests/test_grid_configs.py rather than assumed, since
     # a segment that silently re-randomised its own band would produce rows
     # that resume-skip against nothing.
-    if args.seq_lens:
-        requested = [int(x) for x in args.seq_lens.split(",") if x.strip()]
-        unknown = [s for s in requested if s not in grid.seq_lens]
-        if unknown:
-            raise SystemExit(
-                f"--seq-lens {unknown} are not in the pinned grid "
-                f"({sorted(grid.seq_lens)}). A band this study did not plan "
-                f"is not a band it can report.")
-        selected_seq_lens = {s: grid.seq_lens[s] for s in sorted(requested)}
-    elif args.t4_dense_pilot:
-        pilot_n = 50 if args.t4_pilot_tasks else 5
-        selected_seq_lens = {16384: pilot_n, 32768: pilot_n}
-    else:
-        selected_seq_lens = dict(grid.seq_lens)
+    selected_seq_lens = select_seq_lens(
+        grid_seq_lens=dict(grid.seq_lens), seq_lens=args.seq_lens,
+        n_per_length=args.n_per_length, t4_dense_pilot=args.t4_dense_pilot,
+        t4_pilot_tasks=args.t4_pilot_tasks, t4_sparse_pilot=args.t4_sparse_pilot)
 
     # Same reasoning as --seq-lens: a task this study did not plan is not a
     # task it can report, and the subset must be expressed here rather than
     # in the pinned grid.
-    if args.t4_dense_pilot:
-        selected_tasks = T4_DENSE_PILOT_TASKS
-    elif args.tasks:
-        requested_tasks = tuple(t.strip() for t in args.tasks.split(",") if t.strip())
-        unknown = [t for t in requested_tasks if t not in grid.tasks]
-        if unknown:
-            raise SystemExit(
-                f"--tasks {unknown} are not in the pinned grid "
-                f"({list(grid.tasks)}). A task this study did not plan is "
-                f"not a task it can report.")
-        selected_tasks = requested_tasks
-    if args.t4_pilot_tasks:
-        requested_pilot_tasks = tuple(
-            t.strip() for t in args.t4_pilot_tasks.split(",") if t.strip())
-        unknown = [t for t in requested_pilot_tasks
-                   if t not in T4_DENSE_PILOT_TASKS]
-        if not requested_pilot_tasks or unknown:
-            raise SystemExit(
-                f"--t4-pilot-tasks names {unknown or '(nothing)'}; the "
-                f"preregistered candidates are {list(T4_DENSE_PILOT_TASKS)}")
-        selected_tasks = requested_pilot_tasks
-    else:
-        selected_tasks = tuple(grid.tasks)
-
-    # A smaller n is the prefix of the grid's set -- examples are seeded per
-    # (seed, task, budget, index) and the filler fit is solved from index 0,
-    # so example k is identical whether n is 100 or 300 (asserted in
-    # tests/test_ruler_integration.py). That is what keeps a reduced re-run
-    # PAIRED with the banked rows. A LARGER n would add examples no banked
-    # row has a partner for, so it is refused rather than silently allowed.
-    if args.n_per_length is not None:
-        if args.n_per_length < 1:
-            raise SystemExit("--n-per-length must be at least 1")
-        too_big = {s: n for s, n in selected_seq_lens.items()
-                   if args.n_per_length > n}
-        if too_big:
-            raise SystemExit(
-                f"--n-per-length {args.n_per_length} exceeds the pinned grid "
-                f"at {too_big}. A larger n is not a prefix of anything "
-                f"already measured, so those rows would be unpaired.")
-        selected_seq_lens = {s: args.n_per_length for s in selected_seq_lens}
-    elif args.t4_dense_pilot:
-        selected_seq_lens = {s: 5 for s in selected_seq_lens}
+    selected_tasks = select_tasks(
+        grid_tasks=tuple(grid.tasks), tasks=args.tasks,
+        t4_dense_pilot=args.t4_dense_pilot, t4_pilot_tasks=args.t4_pilot_tasks,
+        t4_sparse_pilot=args.t4_sparse_pilot)
 
     # Clocks: attempt, then stamp what HAPPENED, never what was asked for.
     # Every row in this project so far carries clocks_locked=False because
@@ -488,6 +581,15 @@ def main():
     examples_by_task_length = build_examples_by_task_length(
         grid, seed=args.seed, count_tokens=count_tokens,
         tasks=selected_tasks, seq_lens=selected_seq_lens)
+    if args.t4_sparse_pilot:
+        # Built at the largest n, then cut to each task's own: examples are a
+        # seeded prefix, so the cut leaves exactly the first n of each.
+        examples_by_task_length = {
+            (task, band): exs[:sparse_pilot_n(task, args.n_per_length)]
+            for (task, band), exs in examples_by_task_length.items()}
+        print("pilot n       : " + ", ".join(
+            f"{t}={sparse_pilot_n(t, args.n_per_length)}" for t in selected_tasks)
+              + "  per band")
     examples_by_id = {
         (task, ex.example_id): ex
         for (task, _seq_len), exs in examples_by_task_length.items()
@@ -511,6 +613,9 @@ def main():
         mask_source=args.mask_source)
     if args.t4_dense_pilot:
         configs_by_backend = {grid.dense_backend: configs_by_backend[grid.dense_backend]}
+    if args.t4_sparse_pilot:
+        configs_by_backend = {b: configs_by_backend[b]
+                              for b in (grid.dense_backend, "block_sparse")}
     if args.only_backends is not None:
         want = [b.strip() for b in args.only_backends.split(",") if b.strip()]
         unknown = [b for b in want if b not in configs_by_backend]

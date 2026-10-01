@@ -437,6 +437,31 @@ def _reference_jitter(n: int, causal: bool, seed_int: int) -> torch.Tensor:
     return jitter
 
 
+_DEVICE_JITTER_CACHE: dict = {}
+
+
+def _device_jitter(n: int, causal: bool, seed_int: int, device) -> torch.Tensor:
+    """`_reference_jitter`, resident on `device`, copied there once per
+    (n, causal, seed, device).
+
+    Until 2026-10-01 the device builder called `_reference_jitter(...).to(device)`
+    on every layer. The CPU draw was cached; the copy was not. A blocking
+    host-to-device copy of a pageable tensor synchronises the stream, so the
+    inline arm still paid one device sync per layer -- the per-layer host
+    cost the arm exists to remove, sitting inside the timed forward. Callers
+    only read the result (`+` allocates), so sharing one tensor is safe.
+    """
+    key = (n, causal, seed_int, str(torch.device(device)))
+    hit = _DEVICE_JITTER_CACHE.get(key)
+    if hit is not None:
+        return hit
+    jitter = _reference_jitter(n, causal, seed_int).to(device)
+    if len(_DEVICE_JITTER_CACHE) > 64:
+        _DEVICE_JITTER_CACHE.clear()
+    _DEVICE_JITTER_CACHE[key] = jitter
+    return jitter
+
+
 def _candidate_matrix(n: int, causal: bool, device=None) -> torch.Tensor:
     """`_candidate_rows(n, causal)` as an (n, n) bool matrix."""
     ar = torch.arange(n, device=device)
@@ -483,8 +508,8 @@ def importance_block_mask_device(seq_len: int, block_size: int, sparsity: float,
     # The reference adds an fp32 jitter to the scores' own dtype, so the sum
     # is computed in torch's promotion of the two (fp16 -> fp32, fp64 stays).
     dtype = torch.promote_types(importance_scores.dtype, torch.float32)
-    jitter = _reference_jitter(n, causal, seed_int).to(device)
-    s = (importance_scores.to(dtype) + jitter.to(dtype)).masked_fill(~cand, float("-inf"))
+    jitter = _device_jitter(n, causal, seed_int, device)
+    s =(importance_scores.to(dtype) + jitter.to(dtype)).masked_fill(~cand, float("-inf"))
     order = s.argsort(dim=1, descending=True, stable=True)
     ranks = torch.empty_like(order)
     ranks.scatter_(1, order, torch.arange(n, device=device).expand(n, n).contiguous())
