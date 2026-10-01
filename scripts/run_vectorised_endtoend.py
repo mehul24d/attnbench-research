@@ -53,7 +53,7 @@ JITTER_REACH = 1e-9
 
 
 def _vectorised_builder(seq_len, block_size, sparsity, importance_scores, *,
-                        causal, identity_seed):
+                        causal, identity_seed, free_block="sink"):
     """Same signature as masks.importance_block_mask, same return type.
 
     `identity_seed` is accepted and unused: it feeds only the 1e-9 tie-break
@@ -61,6 +61,14 @@ def _vectorised_builder(seq_len, block_size, sparsity, importance_scores, *,
     still threaded into the returned mask's `seed` field so the two builders'
     masks compare equal on every field, not just `active`.
     """
+    # `free_block` arrived in the reference's signature after this script was
+    # written (the arbitrary-free-block control), and `mask_for` now always
+    # passes it -- the first L4 run of this script died on it, 2026-10-01. The
+    # vectorised builder implements the sink rule only, so anything else must
+    # refuse rather than silently build a sink mask for a "random" arm.
+    if free_block != "sink":
+        raise ValueError(f"vectorised builder implements free_block='sink' only, "
+                         f"got {free_block!r}")
     n = masks._n_blocks(seq_len, block_size)
     if tuple(importance_scores.shape) != (n, n):
         raise ValueError(
