@@ -69,9 +69,12 @@ per-query-block Python loop, not an upstream implementation. Swapping in a
 vectorised builder and changing nothing else turns the A100 16384 cells into
 wins (1.090× / 1.201× / 1.282×) with bitwise-identical outputs. *This paragraph
 read "the cause is the dense baseline, not the sparse kernel" until
-2026-10-01; the ledger had already refuted that.* Why the L4 host did not pay
-the same construction cost — same CPU SKU, same code — is open
-(`limitations.md`, "Host CPU provenance"). Stage 0 records `block_sparse` supported on A100 and Stage 1
+2026-10-01; the ledger had already refuted that.* Why the L4 did not pay the
+same cost was measured on 2026-10-01: the builder costs the same on both
+hosts standalone (within 3%), and the slower L4 hides it behind queued GPU
+work while the A100's forward pays 13–88% of it — a host–device balance
+effect, not a host or kernel difference (`limitations.md`, "Measured
+2026-10-01"). Stage 0 records `block_sparse` supported on A100 and Stage 1
 passes 90/90 correctness cells, and the kernel tracks sparsity more steeply on
 A100 (65.7% spread) than on L4 (31.2%), so this is not a missing-kernel
 artifact — see `claims.md`, "The speedup does not survive a change of card."
@@ -315,7 +318,7 @@ second point on an axis that had only one:
 | 2 | …**on an L4**; on an A100 it is 0.475× | a kernel sweep at the real geometry |
 | 3 | …and the A100 kernel is slower, which explains it | the kernel is **1.96× faster**; the cost is CPU-side |
 | 4 | …the penalty is CPU mask construction; the speedup needs **either** a weak dense baseline **or** a vectorised builder | an end-to-end run with the builder swapped |
-| **5** | **block-sparse prefill beats dense on an A100 at 16384 — 1.282× at 16384/0.9 — but only with a vectorised mask builder, which the reference implementation lacks** | *not overturned; narrowed 2026-09-19 — it said "8192+", but 8192 is parity inside the session spread and 32768 was never measured* |
+| **5** | **block-sparse prefill beats dense on an A100 at 16384 — 1.282× at 16384/0.9 — but only with a vectorised mask builder, which the reference implementation lacks** | *not overturned; narrowed 2026-09-19 — it said "8192+", but 8192 is parity inside the session spread and 32768 was never measured; measured 2026-10-01 in one session: 1.250× / 1.481× / 1.666× at 32768* |
 
 Every version was measured correctly. Versions 1 and 2 were also *replicated*
 — 1.321× re-measured on a second L4, agreeing to 0.19%. Version 3 was a

@@ -62,14 +62,15 @@ loop, not an upstream implementation — with a vectorised builder, changing
 nothing else, turns the A100 16384 cells into wins with bitwise-identical
 outputs. See "The A100 reversal is CPU mask construction" below.
 
-**Why the L4 did not pay the same cost is open.** Both cards' hosts are the
-same CPU SKU and ran identical builder code on an identical software stack
-("Host CPU provenance", below), yet the L4's own Stage 5 rows bound its
-construction cost at 8192/0.50 below half what the A100 host's forward paid.
-The L4/A100 contrast is therefore not a CPU-generation contrast. The leading
-candidate is host–device overlap: the slower GPU hides more of the same CPU
-work behind kernels already queued. That is a card effect, but through the
-host–device balance rather than the attention kernel, and it is untested.
+**Why the L4 did not pay the same cost: measured 2026-10-01.** Both cards'
+hosts are the same CPU SKU, and timed standalone on each host the builder costs
+the same within 3%. In the model the A100's forward pays 13–88% of that cost
+and the L4's about none of it: kernel launches are asynchronous, and the
+slower L4 gives the CPU enough queued GPU work to hide the build behind. The
+L4/A100 contrast is a host–device balance effect — not a host difference and
+not the attention kernel. See "Measured 2026-10-01" under "Host CPU
+provenance", below. *(This paragraph said the question was open and the
+overlap account untested until 2026-10-01.)*
 
 **Why this was not visible earlier.** Stages 0, 1 and 2 span three
 architectures, and Stage 2's *kernel* microbenchmarks on A100 contain no
@@ -160,8 +161,11 @@ against 628.3 ms). The likely reason is overlap: kernel launches are
 asynchronous, so the CPU builds the next layer's mask while the GPU is still
 executing work already queued, and only the part that outlasts that work is
 exposed. That is the "error in the model" the paragraph above diagnosed — the
-composition treated construction as fully serial. The overlap reading is an
-inference; the L4 session in "Host CPU provenance" is designed to test it.
+composition treated construction as fully serial. *(This paragraph read
+"The overlap reading is an inference" until 2026-10-01.)* It is now measured
+on both cards' own hosts — see "Measured 2026-10-01" under "Host CPU
+provenance": at 8192/0.75 the A100 forward pays 70.5 of a 167.8 ms standalone
+cost, the L4's about none of it.
 
 Two further corrections to the paragraph above. The 159.9 ms L4 saving at 8192
 is the 32-head sweep geometry, not the model's `(12,2)`. And "the tax did not
@@ -191,6 +195,7 @@ survives, recovered after the fact:
 | A100 Stage 5 | `attnbench-a100-20260916-1926` | a2-ultragpu-1g, asia-southeast1-c | inferred |
 | A100 builder swap; `(12,2)` sweep | `attnbench-a100-20260917-item4` / `-1248` | a2-ultragpu-1g, asia-southeast1-c | inferred |
 | H100 Stage 0–2 | `attnbench-h100-20260916-*` | a3-highgpu-1g, us-central1-b/c | inferred |
+| Paired builder measurement (below) | `attnbench-l4-hostcpu-1001-1123`, `attnbench-a100-hostcpu-1001-1150`, `attnbench-l4-rerun16k-1001-1201` (2026-10-01) | g2-standard-8 us-central1-a; a2-ultragpu-1g asia-southeast1-c | **observed live**: `cpuPlatform` = Intel Cascade Lake on all three, plus `lscpu` and the same family/model/stepping, recorded by `scripts/host_cpu_probe.py` |
 
 "Inferred" rests on two sources: the GCP admin-activity audit log
 (`compute.instances.insert` records the machine type and zone of every session
@@ -198,15 +203,18 @@ since 2026-09-01), and GCP's CPU-platform documentation, which lists G2 and A2
 as the same processor — Intel Xeon Platinum 8273CL (Cascade Lake; 2.2 GHz
 base, 2.9 GHz all-core turbo, 3.7 GHz single-core max) — and A3 High as Xeon
 Platinum 8481C (Sapphire Rapids). The observed strings are consistent with
-that. **Not recoverable for any session:** the clock the builder actually ran
-at, turbo residency, and CPU steal time. One stamp caveat: rows from several
+that. **Not recoverable for any session before 2026-10-01:** the clock the
+builder actually ran at, turbo residency, and CPU steal time. The 2026-10-01
+sessions record steal (0.000 throughout) and the guest-visible clock, which is
+flat at 2200.2 MHz — KVM reports the nominal frequency, so turbo residency is
+not observable from inside the guest on this platform at all. One stamp caveat: rows from several
 2026-09-03..08 L4 sessions carry `host = attnbench-l4-compile-20260903-1020`,
 the hostname baked into the disk image they booted from, so `host` does not
 identify the session for those rows.
 
-**What this rules out, and what it leaves open.** The L4/A100 construction
-difference is not a CPU generation or SKU difference, and (above) not a vCPU
-count difference. Yet at 8192/0.50 the L4's own Stage 5 rows bound its
+**What the banked rows implied before anything was re-measured.** The L4/A100
+construction difference is not a CPU generation or SKU difference, and
+(above) not a vCPU count difference. Yet at 8192/0.50 the L4's own Stage 5 rows bound its
 construction cost at **≤ 79.3 ms** — the loosest bound: L4 net prefill plus 28
 layers of the kernel saving at the 32-head sweep geometry, which overstates
 the saving at the model's 12 heads — against **153.3 ms** on the A100 host.
@@ -216,21 +224,81 @@ A100's measured flash ratio between the two geometries) the L4 figure is
 hosts. Derived in `tests/test_construction_cost_by_sparsity.py`.
 
 The builder code, torch 2.9.1, Python 3.10.12 and kernel 6.8.0-1066-gcp are
-identical across these runs. **Leading candidate: no host difference at all,
-but host–device overlap.** The forward pays only the part of construction that
-outlasts the GPU work queued ahead of it (see "CORRECTED 2026-10-01" above),
-and the L4 queues far more of it: dense prefill at 8192 is ~24.8 ms of GPU time
-per layer on the L4 against ~6.8 ms on the A100. The same few milliseconds of
-CPU work per layer can be almost wholly hidden on the slower card and only
-partly on the faster one. That is the host–device balance TaxBreak formalises,
-and it predicts the reversal worsens on an H100. Other candidates, none
-recorded: turbo behaviour or steal time on the particular host, co-tenant
-contention. The test is the builder timed standalone and in situ on the same
-L4 host: overlap predicts similar standalone cost to the A100 host and a much
-smaller in-situ one. TaxBreak (Vellaisamy et al., ISPASS 2026)
+identical across these runs. TaxBreak (Vellaisamy et al., ISPASS 2026)
 measured orchestration overhead 10–29% lower on a faster server CPU
-generation; a ≥1.9× difference on one SKU is outside that range, which is why
-it is recorded as unexplained rather than absorbed as host-CPU variance.
+generation; a ≥1.9× difference on one SKU is outside that range, so it could
+not be absorbed as host-CPU variance. *This paragraph read "Leading candidate
+… host–device overlap … The test is the builder timed standalone and in situ
+on the same L4 host" until 2026-10-01, when that test was run; the result
+follows.*
+
+### Measured 2026-10-01: the same cost on both hosts, hidden on one
+
+The builder was timed two ways on each card's own host. **Standalone**
+(`scripts/host_cpu_probe.py builders`): alone on the host CPU, reference minus
+vectorised, ×28 layers. **In the model** (`scripts/run_vectorised_endtoend.py`):
+reference minus vectorised end-to-end prefill, same process, same scores — what
+the forward actually pays. Milliseconds per forward:
+
+| band | sparsity | A100 standalone | L4 standalone | **A100 in model** | **L4 in model** |
+|---|---|---|---|---|---|
+| 8192 | 0.50 | 254.4 | 254.9 | **156.9** | −24.5 |
+| 8192 | 0.75 | 167.8 | 168.5 | **70.5** | −11.1 |
+| 8192 | 0.90 | 113.1 | 114.5 | **15.1** | 10.7 |
+| 16384 | 0.50 | 893.2 | 895.3 | **684.3** | 17.5 |
+| 16384 | 0.75 | 544.4 | 542.3 | **328.6** | 8.3 |
+| 16384 | 0.90 | 328.0 | 330.6 | **110.4** | 1.6 |
+| 32768 | 0.50 | 3414.7 | 3384.0 | **3012.0** | **655.7** |
+| 32768 | 0.75 | 1977.9 | 1961.0 | **1553.6** | 49.5 |
+| 32768 | 0.90 | 1093.8 | 1100.4 | **656.6** | 22.5 |
+
+**Standalone, the hosts are the same machine.** Three hosts (two L4, one A100;
+live `cpuPlatform` Cascade Lake on all three, guest clock flat, steal 0.000)
+agree within 3% in every cell, worst 2.7% at 8192/0.90. Nothing about the host
+explains the in-model difference.
+
+**In the model, the A100 pays 13–88% of that cost and the L4 about none of
+it.** The exception is 32768/0.50, where the L4 pays 19%: there building one
+layer's mask (~122 ms) takes as long as the L4's entire GPU work per layer
+(~121 ms), so there is no longer enough queued work to hide it behind. Kernel
+launches are asynchronous, so the CPU builds layer L+1's mask while the GPU is
+still executing what was queued before it; only the part that outlasts that
+work reaches the wall clock. The L4 does 3.6–4.2× more GPU work per layer
+than the A100 at every cell here, so the same CPU work is hidden on one card
+and exposed on the other.
+
+**So the L4/A100 sign difference is a host–device balance effect** — not a
+host difference, not a CPU-generation difference, and not the attention
+kernel. It is the phenomenon TaxBreak's Host-Device Balance Index summarises,
+in the direction Framework Tax (Fernandez et al., EMNLP 2023) predicts: a
+faster accelerator exposes a fixed host cost the slower one absorbed. It
+predicts the reversal is worse on an H100, which is untested. The builder is
+this harness's own code, so the result is a validated account of *this
+harness's* behaviour, not a property of block-sparse attention.
+
+**Where each figure comes from, and how good it is.** The A100 row and the
+L4 16384 row are interleaved per rep with the order alternating (commit
+`746abd1`); their dense controls moved by under 0.3 ms between builders. The L4
+8192 and 32768 rows come from the first L4 run (`cdbca2e`), which timed every
+reference arm before every vectorised one; its dense control drifted +44 ms
+at 8192 and +38 ms at 32768, so those L4 cells are good to about that, and
+8192/0.90 — where the A100 pays only 15.1 ms — separates nothing. That run's
+16384 cells produced builder pairs agreeing to 0.001 standard errors (dense
+and 0.75), against 4–213 SE for every other pair in the run; the interleaved
+rerun on a second L4 does not reproduce it (ordinary 0.5–7 SE), so the first
+run's 16384 cells are superseded and the coincidence is recorded as
+unexplained. The rerun also shows the dense arm's time climbing 1602 → 1648 ms
+across ten reps with clocks locked — the drift a builder-major loop folds into
+the comparison and interleaving cancels.
+
+**One new A100 measurement.** These sessions are the first to run 32768 on the
+A100 with the vectorised builder: block-sparse beats flash by **1.250× /
+1.481× / 1.666×** at 0.50 / 0.75 / 0.90, against 0.28× / 0.48× / 0.84× with
+the reference builder.
+
+All of the above is derived from the banked, force-committed parquets in
+`tests/test_overlap_paired.py`; `results/s12_*`, and on GCS under each
+instance's name.
 
 **"As implemented" is load-bearing — this is an engineering cost, not a
 property of sparse attention.** Profiling `importance_block_mask` at 32768:
@@ -315,7 +383,8 @@ builder it wins clearly at all three 16384 cells, reaching **1.282× at
 arm shows at 8192 between the 2026-09-16 and 2026-09-17 hosts. *(This read
 "wins at five of six" until the 2026-09-19 audit; the sentence counted cells,
 not cells that clear the floor.)* 32768 was not measured with the vectorised
-builder. The dense
+builder until 2026-10-01, when one interleaved session gave **1.250× / 1.481×
+/ 1.666×** (see "Measured 2026-10-01"). The dense
 control — which builds no mask, so the builder cannot touch it — moved −0.1%
 at 8192 and +0.0% at 16384 between the two settings, so nothing else changed.
 

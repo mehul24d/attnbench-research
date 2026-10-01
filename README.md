@@ -95,8 +95,8 @@ task family** (RULER-style NIAH and variable tracking), **batch 1**,
 **prefill-only sparsity**, **inference only**. Context tops out at **32768
 tokens**, which is a hardware ceiling, not a design choice.
 
-Total rented GPU time: **₹8,279 itemised** (≈ US$94 at the ₹88/$ the ledger
-prices its own audit-log rows at), across 34 priced sessions in
+Total rented GPU time: **₹8,359 itemised** (≈ US$95 at the ₹88/$ the ledger
+prices its own audit-log rows at), across 37 priced sessions in
 [`docs/spend_ledger.md`](docs/spend_ledger.md), plus one early validation
 session recorded only in prose. The figure is summed from the ledger's table,
 not restated here — this line previously said "roughly ₹6,000, of which ₹2,413
@@ -137,7 +137,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1131 passed, 56 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1138 passed, 56 skipped, ~60s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -178,8 +178,8 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1176 passed, 11 skipped**, because the 45 banked-file tests run instead of
-skipping. Both totals are 1187, which is what `pytest --collect-only` reports —
+1183 passed, 11 skipped**, because the 45 banked-file tests run instead of
+skipping. Both totals are 1194, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 

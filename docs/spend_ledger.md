@@ -75,6 +75,9 @@ authority is the billing console.
 | 2026-09-20 | `attnbench-l4-s1a2-20260920-0437` — audit S1a, bands 4096 + 8192; asia-south1-c stocked out, ran in `-b` | **108** | **143** | `gcp_session_elapsed.sh` |
 | 2026-09-20 | `attnbench-l4-ctrl-20260920-1020` — arbitrary-free-block control, 2048/0.9 (canary 300/300) | **25** | **33** | `gcp_session_elapsed.sh` |
 | 2026-09-20 | `attnbench-l4-s7-20260920-2158` — audit S7 (jitter fix, 16384) + S8 + S9; **49 min idle** | **132** | **172** | operations log |
+| 2026-10-01 | `attnbench-l4-hostcpu-1001-1123` — host CPU identity + builder standalone vs in-model, 8192/16384/32768 (first model run died on `free_block`, re-deployed `cdbca2e`) | **20** | **26** | `gcp_session_elapsed.sh` |
+| 2026-10-01 | `attnbench-a100-hostcpu-1001-1150` — same, paired, builders interleaved per rep (`746abd1`), **Flex Start** | **10** | **45** | `gcp_session_elapsed.sh` |
+| 2026-10-01 | `attnbench-l4-rerun16k-1001-1201` — 16384 rerun, interleaved, per-rep samples | **7** | **9** | `gcp_session_elapsed.sh` |
 
 ### The 2026-09-20 S7 session: 83 minutes of work, 132 minutes billed
 
