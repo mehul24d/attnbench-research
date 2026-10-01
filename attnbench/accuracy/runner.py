@@ -137,6 +137,34 @@ def check_decode_pin_continuity(checkpoint_path: Path, *, pinned: bool) -> None:
             f"regime. Use a separate --out.")
 
 
+class ScoreSourceMismatch(RuntimeError):
+    """A run would resume into block_sparse rows ranked by another scorer."""
+
+
+def check_score_source_continuity(checkpoint_path: Path, *, score_source: str) -> None:
+    """Refuse to add block_sparse rows from one scorer to a checkpoint that
+    holds another's.
+
+    The resume key is (config_key, backend, task, example_id). The oracle,
+    the two-pass cheap arm and the inline arm share all four, so a second
+    arm pointed at the first arm's --out would find every sparse cell
+    "done", write nothing, and report success. Dense rows carry
+    score_source=None and do not count.
+    """
+    if not Path(checkpoint_path).exists():
+        return
+    df = pd.read_parquet(checkpoint_path)
+    if df.empty or "score_source" not in df.columns:
+        return
+    have = set(df["score_source"].dropna())
+    if have - {score_source}:
+        raise ScoreSourceMismatch(
+            f"{checkpoint_path} holds block_sparse rows scored by "
+            f"{sorted(have)}; this run's score_source is {score_source!r}. "
+            f"Resume keys carry no scorer, so its sparse cells would all be "
+            f"skipped as done. Use a separate --out.")
+
+
 def load_done_keys(checkpoint_path: Path) -> set[tuple[str, str, str, str]]:
     """(config_key, backend, task, example_id) quadruples already written.
 
@@ -328,6 +356,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
     check_code_continuity(checkpoint_path, current=provenance_fn(),
                           allow_mixed_commits=allow_mixed_commits,
                           allow_dirty=allow_dirty)
+    check_score_source_continuity(checkpoint_path, score_source=score_source)
     done_keys = load_done_keys(checkpoint_path)
     decisions = plan(cells, done_keys=done_keys)
     report = AccuracyReport.from_decisions(decisions)

@@ -27,6 +27,14 @@ from ..backends.base import AttentionBackend
 from ..config import AttnConfig
 
 
+# Score sources whose ranking is computed INSIDE the measured forward, and
+# the estimator each one runs (SwappedAttention's `inline_estimator`). Every
+# other score source ranks in a separate scoring pass before the timer.
+INLINE_ESTIMATOR_BY_SCORE_SOURCE = {
+    "minference_meanpool_inline": "minference_meanpool",
+}
+
+
 @dataclass(frozen=True)
 class StopTokens:
     """The three vocabulary-derived id sets the stopping rule needs.
@@ -102,7 +110,9 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     run_cfg = geometry.onto(cfg, seq_len=int(input_ids.shape[-1]))
 
     layer_scores: Optional[dict] = None
-    if run_cfg.mask == "block_sparse":
+    inline_estimator = (INLINE_ESTIMATOR_BY_SCORE_SOURCE.get(wrapped.score_source)
+                        if run_cfg.mask == "block_sparse" else None)
+    if run_cfg.mask == "block_sparse" and inline_estimator is None:
         # Cache-checked inside; the dense scoring pass runs once per
         # (model, task, example, seq_len) and is shared across every
         # sparsity level at that cell.
@@ -121,7 +131,8 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
         eos_token_ids=stop_tokens.eos,
         newline_token_ids=stop_tokens.newline,
         whitespace_token_ids=stop_tokens.whitespace,
-        layer_scores=layer_scores, decode_backend=decode_backend)
+        layer_scores=layer_scores, decode_backend=decode_backend,
+        inline_estimator=inline_estimator)
     synchronize()
     latency_ms = (time.perf_counter() - t0) * 1000.0
 

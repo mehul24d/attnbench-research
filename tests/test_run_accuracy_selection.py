@@ -95,3 +95,71 @@ def test_the_banked_selected_pilot_command_plans_what_it_ran():
     l = lens(n=50, pilot=True, subset=SELECTED)
     assert len(t) * sum(l.values()) == 300
     assert l == lens(pilot=True, subset=SELECTED)     # the default agrees
+
+
+# --- the sparse pilot -----------------------------------------------------
+
+def test_sparse_pilot_tasks_bands_and_n():
+    assert ra.select_tasks(grid_tasks=GRID_TASKS, tasks=None, t4_dense_pilot=False,
+                           t4_pilot_tasks=None, t4_sparse_pilot=True) == (
+        "qa_1", "niah_multivalue", "niah_multiquery")
+    assert ra.select_seq_lens(grid_seq_lens=GRID_LENS, seq_lens=None, n_per_length=None,
+                              t4_dense_pilot=False, t4_pilot_tasks=None,
+                              t4_sparse_pilot=True) == {16384: 100, 32768: 100}
+    assert ra.sparse_pilot_n("qa_1", None) == 100
+    assert ra.sparse_pilot_n("niah_multiquery", None) == 50
+    assert ra.sparse_pilot_n("qa_1", 2) == ra.sparse_pilot_n("niah_multivalue", 2) == 2
+    assert ra.sparse_pilot_n("niah_multivalue", 80) == 50       # never more
+    with pytest.raises(SystemExit):
+        ra.select_seq_lens(grid_seq_lens=GRID_LENS, seq_lens="8192", n_per_length=None,
+                           t4_dense_pilot=False, t4_pilot_tasks=None, t4_sparse_pilot=True)
+    with pytest.raises(SystemExit):
+        ra.select_seq_lens(grid_seq_lens=GRID_LENS, seq_lens=None, n_per_length=101,
+                           t4_dense_pilot=False, t4_pilot_tasks=None, t4_sparse_pilot=True)
+
+
+def _dry_run(monkeypatch, capsys, tmp_path, *argv):
+    """main() on the real grid with only the RULER example builder stubbed
+    (its data is not committed), so the printed plan is the real one."""
+    import sys
+    from attnbench.accuracy.ruler import RulerExample
+
+    def fake_build(grid, seed, *, count_tokens, tasks, seq_lens):
+        return {(t, b): [RulerExample(task=t, example_id=f"{t}_{b}_{i}", context="c",
+                                      question="", answer=["a"], context_length=b,
+                                      sizing="approximate")
+                         for i in range(n)]
+                for t in tasks for b, n in seq_lens.items()}
+
+    monkeypatch.setattr(ra, "build_examples_by_task_length", fake_build)
+    monkeypatch.setattr(sys, "argv", ["run_accuracy.py", "--dry-run",
+                                      "--out", str(tmp_path), *argv])
+    ra.main()
+    out = capsys.readouterr().out
+    total = int(next(l for l in out.splitlines() if l.startswith("total cells")).split(":")[1])
+    backends = next(l for l in out.splitlines() if l.startswith("backends")).split(":")[1]
+    return total, [b.strip() for b in backends.split(",")]
+
+
+def test_sparse_pilot_oracle_run_plans_dense_plus_three_sparsities(monkeypatch, capsys, tmp_path):
+    # examples per band: qa_1 100 + 50 + 50 = 200, two bands = 400
+    total, backends = _dry_run(monkeypatch, capsys, tmp_path, "--t4-sparse-pilot")
+    assert backends == ["sdpa_flash", "block_sparse"]
+    assert total == 400 * (1 + 3)
+
+
+def test_sparse_pilot_inline_run_and_canary(monkeypatch, capsys, tmp_path):
+    total, backends = _dry_run(monkeypatch, capsys, tmp_path, "--t4-sparse-pilot",
+                               "--score-source", "minference_meanpool_inline",
+                               "--only-backends", "block_sparse")
+    assert (total, backends) == (400 * 3, ["block_sparse"])
+    total, _ = _dry_run(monkeypatch, capsys, tmp_path / "c", "--t4-sparse-pilot",
+                        "--n-per-length", "2")
+    assert total == 3 * 2 * 2 * 4                 # tasks x bands x n x arms
+
+
+def test_sparse_pilot_refuses_what_the_plan_does_not_contain(monkeypatch, capsys, tmp_path):
+    for extra in (["--score-source", "minference_meanpool"], ["--tasks", "vt"],
+                  ["--t4-dense-pilot"], ["--mask-source", "importance_randfree"]):
+        with pytest.raises(SystemExit):
+            _dry_run(monkeypatch, capsys, tmp_path, "--t4-sparse-pilot", *extra)

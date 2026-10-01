@@ -43,6 +43,7 @@ dense baseline. This closes the dense-task-selection gate for T4, but does
 not establish sparse non-inferiority: the oracle and deployable estimator
 arms, exact non-inferiority analysis, and any measured accuracy loss remain
 the next experiment.
+That experiment is pre-registered in `docs/t4_sparse_pilot.md`.
 
 The selected-pilot result parquet is under
 `results/t4_selected_dense_pilot_20261001/`; the session diagnostics and cost
