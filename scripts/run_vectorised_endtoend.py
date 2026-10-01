@@ -12,8 +12,10 @@ thing between the two runs: which function `masks.mask_for` calls to turn
 importance scores into a BlockSparseMask.
 
 Both builders run in the SAME process, same model instance, same scores,
-interleaved per arm, so host state, allocator warmth and clock drift hit
-both equally. The reference arm is re-measured here rather than read from
+interleaved per REP with the order alternating, so host state, allocator
+warmth and clock drift hit both equally. (Until 2026-10-01 this said
+"interleaved per arm" over a loop that ran every reference arm before every
+vectorised one.) Per-rep samples are banked in `prefill_ms_samples`. The reference arm is re-measured here rather than read from
 an earlier parquet for the same reason.
 
 Equivalence is asserted on the real masks at the real shapes BEFORE any
@@ -368,26 +370,49 @@ def main():
                       f"argmax same {same_argmax}", flush=True)
             out_rows.extend(logit_rows)
 
-            for builder_name, fn in (("reference", _REFERENCE_BUILDER),
-                                     ("vectorised", _vectorised_builder)):
-                masks.importance_block_mask = fn
-                for name, sparsity in arms:
-                    be = backend_instance(name)
-                    cfg = cfg_for(band,
-                                  "causal" if sparsity is None else "block_sparse",
-                                  sparsity)
-                    layer_scores = None if sparsity is None else scores
-                    pf = time_repeated(
-                        lambda: wrapped.run_measured(
-                            ids, be, cfg=cfg, layer_scores=layer_scores,
-                            logits_to_keep=1),
-                        warmup=args.warmup, reps=args.reps, synchronize=sync)
+            # INTERLEAVED PER REP, order alternating. Until 2026-10-01 this
+            # loop was builder-major -- every reference arm, then every
+            # vectorised arm -- while the module docstring said "interleaved
+            # per arm". On the first L4 run the dense control, which builds no
+            # mask, drifted +44 ms between the two blocks at 8192: the same
+            # size as the effect being measured there. Alternating which
+            # builder goes first each rep puts both under the same drift.
+            builders = (("reference", _REFERENCE_BUILDER),
+                        ("vectorised", _vectorised_builder))
+            for name, sparsity in arms:
+                be = backend_instance(name)
+                cfg = cfg_for(band,
+                              "causal" if sparsity is None else "block_sparse",
+                              sparsity)
+                layer_scores = None if sparsity is None else scores
+
+                def call():
+                    return wrapped.run_measured(
+                        ids, be, cfg=cfg, layer_scores=layer_scores,
+                        logits_to_keep=1)
+
+                for _, fn in builders:
+                    masks.importance_block_mask = fn
+                    time_repeated(call, warmup=args.warmup, reps=1,
+                                  synchronize=sync)
+                samples = {bn: [] for bn, _ in builders}
+                for rep in range(args.reps):
+                    order = builders if rep % 2 == 0 else builders[::-1]
+                    for bn, fn in order:
+                        masks.importance_block_mask = fn
+                        samples[bn] += time_repeated(call, warmup=0, reps=1,
+                                                     synchronize=sync)
+                masks.importance_block_mask = _REFERENCE_BUILDER
+                for builder_name, _ in builders:
+                    pf = samples[builder_name]
                     ms = sum(pf) / len(pf)
                     rows.append(dict(
                         band=band, builder=builder_name, backend=name,
                         sparsity=sparsity, prefill_ms_mean=ms,
                         prefill_ms_min=min(pf), prefill_ms_max=max(pf),
+                        prefill_ms_samples=list(pf),
                         n_reps=len(pf), n_warmup=args.warmup,
+                        interleave="per_rep_alternating",
                         n_layers=n_layers,
                         tiebreak_cells_differing=tie_cells,
                         score_zero_fraction=zero_frac,
@@ -396,7 +421,6 @@ def main():
                     print(f"  [{builder_name:<10}] {name:<13}"
                           f"{'dense' if sparsity is None else sparsity:>6}  "
                           f"prefill {ms:9.2f} ms", flush=True)
-                masks.importance_block_mask = _REFERENCE_BUILDER
         finally:
             masks.importance_block_mask = _REFERENCE_BUILDER
             wrapped.unwrap()
