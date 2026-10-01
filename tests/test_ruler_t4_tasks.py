@@ -38,6 +38,10 @@ def test_t4_pilot_task_set_is_fixed():
     assert ruler.T4_DENSE_PILOT_TASKS == T4_TASKS
 
 
+def test_t4_pilot_selection_is_a_subset_of_the_fixed_set():
+    assert set(("niah_multivalue", "niah_multiquery", "qa_1")) <= set(T4_TASKS)
+
+
 def _split(text):
     return [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
 

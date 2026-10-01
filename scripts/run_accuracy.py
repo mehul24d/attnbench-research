@@ -259,6 +259,10 @@ def main():
                         "and --n-per-length to choose a pre-registered "
                         "probe or pilot size. Cannot be combined with "
                         "--tasks or --only-backends.")
+    ap.add_argument("--t4-pilot-tasks", default=None,
+                    help="comma-separated subset of the fixed T4 candidate "
+                        "tasks. May only be used with --t4-dense-pilot; "
+                        "the subset must come from the preregistered set.")
     ap.add_argument("--n-per-length", type=int, default=None,
                     help="cap examples per (task, band). Must not exceed the "
                          "grid's own n: examples are seeded per index, so a "
@@ -320,6 +324,8 @@ def main():
         raise SystemExit(
             "--t4-dense-pilot fixes the task list and dense-only backend; "
             "do not combine it with --tasks or --only-backends")
+    if args.t4_pilot_tasks and not args.t4_dense_pilot:
+        raise SystemExit("--t4-pilot-tasks requires --t4-dense-pilot")
     if args.t4_dense_pilot and (args.include_sage or args.gla_gate_source):
         raise SystemExit(
             "--t4-dense-pilot is dense-only; omit --include-sage and "
@@ -371,7 +377,8 @@ def main():
                 f"is not a band it can report.")
         selected_seq_lens = {s: grid.seq_lens[s] for s in sorted(requested)}
     elif args.t4_dense_pilot:
-        selected_seq_lens = {16384: 5, 32768: 5}
+        pilot_n = 50 if args.t4_pilot_tasks else 5
+        selected_seq_lens = {16384: pilot_n, 32768: pilot_n}
     else:
         selected_seq_lens = dict(grid.seq_lens)
 
@@ -389,6 +396,16 @@ def main():
                 f"({list(grid.tasks)}). A task this study did not plan is "
                 f"not a task it can report.")
         selected_tasks = requested_tasks
+    if args.t4_pilot_tasks:
+        requested_pilot_tasks = tuple(
+            t.strip() for t in args.t4_pilot_tasks.split(",") if t.strip())
+        unknown = [t for t in requested_pilot_tasks
+                   if t not in T4_DENSE_PILOT_TASKS]
+        if not requested_pilot_tasks or unknown:
+            raise SystemExit(
+                f"--t4-pilot-tasks names {unknown or '(nothing)'}; the "
+                f"preregistered candidates are {list(T4_DENSE_PILOT_TASKS)}")
+        selected_tasks = requested_pilot_tasks
     else:
         selected_tasks = tuple(grid.tasks)
 
