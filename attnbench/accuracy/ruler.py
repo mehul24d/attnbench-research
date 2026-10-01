@@ -80,6 +80,11 @@ _VT_PARAMS = {
 # RULER qa_1 / qa_2. Filler units are DOCUMENTS here, not sentences.
 _QA_PARAMS = {"qa_1": "squad", "qa_2": "hotpotqa"}
 
+# Fixed before the T4 dense-only pilot; sparse results cannot change this set.
+T4_DENSE_PILOT_TASKS = (
+    "niah_multikey_1", "niah_multivalue", "niah_multiquery", "qa_1", "qa_2"
+)
+
 # Tasks whose filler differs per example (QA: each question draws its own
 # documents) or whose resources make per-example token counts vary (essay,
 # word needles). They are sized per example, so every example lands at or
