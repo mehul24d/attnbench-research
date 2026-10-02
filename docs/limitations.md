@@ -2754,6 +2754,10 @@ licenses. These are its limits:
   CUDA bitwise test, schema fields and thresholds exist. Until then, "the
   deployable estimator fails" means the mean-pool estimator fails, not every
   estimator.
+  *Update 2026-10-03: XAttention has now run as pre-registered and certifies
+  nothing either (`docs/t4_xattention_pilot.md`). The sentence now covers
+  two estimators. It still does not cover every estimator, nor XAttention
+  with per-layer thresholds calibrated for this model.*
 
 
 ---
@@ -2776,3 +2780,12 @@ results can say about XAttention as published.
   fallback. This does not change the selected blocks, so accuracy is
   unaffected. It does change the cost: an L4 estimator timing is the
   fallback's cost, not the method's. Every timing row records `xattn_triton`.
+
+**What the phase showed about the first deviation (2026-10-03).** At a
+fixed tau, the density the scalar threshold produced varied more with the
+prompt than with tau. At 32768 and tau 0.95 it kept 33% of blocks on
+`qa_1`'s documents and 11% on the NIAH essays, where `niah_multivalue`
+collapsed to 0 of 50. A threshold that keeps a different fraction on each
+haystack is exactly what per-layer calibration exists to correct. So the
+phase's negative result is bounded by this deviation, not independent of
+it.

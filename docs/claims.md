@@ -1630,5 +1630,60 @@ What is still open:
 
 - Whether a better estimator closes the gap. XAttention is the pre-planned
   next arm.
+  *Update 2026-10-03: XAttention has run and certifies nothing either; see
+  the next section.*
 - Whether a larger model changes the picture. On `niah_multikey` it widened
   the two-pass gap.
+
+---
+
+## XAttention, run inline (T4 XAttention phase, 2026-10-02)
+
+The pre-registered phase is `docs/t4_xattention_pilot.md`. It used the same
+tasks, bands, n, margin, alpha and tiers as the sparse pilot above, on an
+NVIDIA L4 at one commit (`7490ee4`), with every row `git_dirty=False`.
+
+- The arm is XAttention's official estimator (mit-han-lab/x-attention at
+  `e379887`), run inside the measured forward. It selects blocks per head
+  until their estimated mass reaches tau, on the Block-Sparse-Attention
+  kernel.
+- The thresholds were 0.95, 0.9 and 0.8, tested in that fixed order. One
+  scalar threshold was used per run, because no per-layer thresholds exist
+  for Qwen2.5.
+- The dense reference was re-run. It reproduced the sparse pilot's 400
+  dense predictions character for character.
+
+| | |
+|---|---|
+| **Supported** | *Run inline with a scalar threshold, XAttention is non-inferior to dense at no threshold (0.95, 0.9 or 0.8) on any of the pilot's tasks or bands. Its first test, at tau 0.95, fails in every primary and secondary cell, with bounds of −12.7 to −50.8 points, at mean realised densities of 0.11 to 0.39.* |
+| **Not supported** | *XAttention cannot preserve accuracy on these tasks.* The threshold is scalar, not profiled per layer for this model. On `qa_1` at 32768 the difference is −2.0 points and fails on its bound (−12.7), as the oracle at 0.5 does on the same cell. Two n=50 cells differ by +2.0 and −4.0 and cannot certify at that n. What is supported is narrower: this configuration does not certify. |
+| **Supported** | *Neither deployable estimator tested certifies non-inferiority at any setting on the T4 pilot's tasks: not MInference's mean-pool estimator and not XAttention, both run inline. Only the oracle does, at sparsity 0.5 on `qa_1` at 16384, given a ranking computed from the full attention scores.* |
+| **Supported** | *On an NVIDIA L4, XAttention's estimator, on the torch path its official code selects for that card, costs more per layer than dense attention: 19.5 vs 14.5 ms at 16384, and 60.6 vs 58.4 ms at 32768, at every threshold.* |
+| **Not supported** | *XAttention's estimator is slower than dense attention.* That is measured on the L4's torch fallback only. Its Triton path, which the official code uses on A100 and H100 cards, is unmeasured here. |
+
+**One cell is a collapse.** XAttention answers 0 of 50 on `niah_multivalue`
+at 32768 at tau 0.95, where dense answers 17. At that cell it kept 11% of
+blocks; on `qa_1` at the same band and tau it kept 33%. The scalar
+threshold's density depends on the prompt as much as on tau. That fits a
+threshold that is not calibrated for this model, which is the phase's one
+stated deviation from the method. Nothing here tests that reading.
+
+**Descriptively, against the same dense predictions:** XAttention at tau
+0.95 keeps fewer blocks than either 0.5 arm of the sparse pilot. Even so, it
+is closer to dense than the mean-pool estimator on four of five primary and
+secondary cells, and equal to the oracle on one (`qa_1`/32768). These
+comparisons cross commits and densities and are not tests.
+
+**What this changes upstream.** The break-even argument's accuracy half has
+now failed for two deployable estimators, run as deployed, on these tasks,
+at this model size. Its cost half passes for mean-pool and fails for
+XAttention on the L4's torch path.
+
+What remains open:
+
+- per-layer thresholds calibrated for this model;
+- XAttention's Triton path on an A100 or H100;
+- a larger model.
+
+None of these is measured here.
+

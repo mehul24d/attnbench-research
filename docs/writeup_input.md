@@ -145,7 +145,23 @@ estimator, run inline":
 
 So both halves of the break-even bar are now measured for one deployable
 estimator: it clears the cost half, kernel for kernel, and fails the accuracy
-half. XAttention, the next arm, has not run.
+half. XAttention, the next arm, has not run. *(Update 2026-10-03: it has.
+See the XAttention block below.)*
+
+**The T4 XAttention phase (2026-10-02)** ran XAttention's official
+estimator inline. It used a scalar threshold, tested in the fixed order
+0.95 → 0.9 → 0.8, with the same tasks, bands, test and tiers, at one
+commit, pre-registered in `docs/t4_xattention_pilot.md`. The dense reference
+reproduced the sparse pilot's 400 predictions exactly. Copied from
+`claims.md`, "XAttention, run inline":
+
+| | |
+|---|---|
+| **Supported** | *Run inline with a scalar threshold, XAttention is non-inferior to dense at no threshold (0.95, 0.9 or 0.8) on any of the pilot's tasks or bands. Its first test, at tau 0.95, fails in every primary and secondary cell, with bounds of −12.7 to −50.8 points, at mean realised densities of 0.11 to 0.39.* |
+| **Supported** | *Neither deployable estimator tested certifies non-inferiority at any setting on the T4 pilot's tasks: not MInference's mean-pool estimator and not XAttention, both run inline. Only the oracle does, at sparsity 0.5 on `qa_1` at 16384, given a ranking computed from the full attention scores.* |
+| **Supported** | *On an NVIDIA L4, XAttention's estimator, on the torch path its official code selects for that card, costs more per layer than dense attention: 19.5 vs 14.5 ms at 16384, and 60.6 vs 58.4 ms at 32768, at every threshold.* |
+| **Not supported** | *XAttention cannot preserve accuracy on these tasks.* |
+| **Not supported** | *XAttention's estimator is slower than dense attention.* |
 
 **This inverts the structure of the finding.** It was a speedup with an
 unaffordable precondition, which reads as an artifact standing between the

@@ -224,3 +224,83 @@ pre-registers is unaffected, because the fallback selects the same blocks.
 **Timing for the pilot.** Each 12-row phase took about 100 s, including the
 model load. At about 5 s per row, the pilot's 1600 rows come to roughly 3
 hours in one session covering both bands.
+
+## Pilot result (2026-10-02)
+
+One session ran on an NVIDIA L4 in `asia-northeast1-a` (instance
+`attnbench-l4-xattn-pilot-20261002-2059`) at commit `7490ee4`, with
+x-attention at `e379887`. Install and gate passed first (50 of 50). The
+phases ran from 15:40 to 18:49 UTC, all `rc=0`: dense 45 minutes, each
+threshold about 47 minutes. The session billed 201 minutes, about INR 268.
+
+There are four files of 400 rows each, all `git_dirty=False` and at the one
+commit, with the per-task counts the plan fixes. They are under
+`results/t4_xattn_pilot_session_20261003/` locally and under the instance's
+prefix in `gs://attnbench-results-research-507316/`.
+
+**The dense reference reproduced exactly.** All 400 dense predictions are
+identical, character for character, to the sparse pilot's dense rows for the
+same example ids, which ran at another commit in other sessions. So every
+arm in both pilots is compared against literally the same reference.
+
+The analysis is the pre-registered command, written to
+`results/t4_xattn_analysis_20261003/`. Each cell below is
+`correct of n: difference, lower bound (mean realised density)`, with
+differences and bounds in points. *Italics* mark a threshold after the
+sequence stopped. Nothing is bold: no cell certifies.
+
+| tier | task | band | dense | tau 0.95 | tau 0.9 | tau 0.8 |
+|---|---|---:|---:|---|---|---|
+| primary | `qa_1` | 16384 | 68/100 | 58: −10.0, −21.1 (0.39) | *55: −13.0, −25.5 (0.28)* | *50: −18.0, −34.0 (0.18)* |
+| primary | `qa_1` | 32768 | 46/100 | 44: −2.0, −12.7 (0.33) | *38: −8.0, −21.1 (0.23)* | *26: −20.0, −33.4 (0.13)* |
+| secondary | `niah_multivalue` | 16384 | 16/50 | 17: +2.0, −16.4 (0.37) | *11: −10.0, −30.1 (0.27)* | *17: +2.0, −21.1 (0.18)* |
+| secondary | `niah_multivalue` | 32768 | 17/50 | 0: −34.0, −50.8 (0.11) | *2: −30.0, −48.7 (0.08)* | *2: −30.0, −46.6 (0.06)* |
+| secondary | `niah_multiquery` | 16384 | 13/50 | 11: −4.0, −15.3 (0.37) | *11: −4.0, −15.3 (0.27)* | *10: −6.0, −23.3 (0.18)* |
+| observational | `niah_multiquery` | 32768 | 3/50 | 4 (0.11) | 3 (0.08) | 3 (0.06) |
+
+**What the pilot licenses, in the plan's wording:**
+
+- **XAttention certifies nothing.** With a scalar threshold, it is
+  non-inferior to dense at no threshold, on no task, at no band. Its first
+  test, at tau 0.95, fails in every primary and secondary cell, with bounds
+  from −12.7 to −50.8 points.
+- **Failing to certify is not evidence of loss.** On `qa_1` at 32768 the
+  difference is −2.0 points. That bound, −12.7, misses the margin by the
+  same amount as the oracle's at 0.5 on the same cell (44 vs 46 there too).
+  On the n=50 secondary cells at 16384, differences of +2.0 and −4.0 cannot
+  certify at all, because the bound is below −10 once dense wins even one
+  discordant pair.
+- **One cell is a collapse, not a near miss.** On `niah_multivalue` at
+  32768, XAttention answers 0 of 50 at tau 0.95, where dense answers 17. It
+  kept 11% of blocks there.
+- "No accuracy loss" is not claimed. Nothing at an italic threshold is
+  claimed, and the observational cell yields no statement.
+
+**Read descriptively, not as a test.** These comparisons cross commits and
+densities and carry no error control. They put XAttention's first threshold
+beside the sparse pilot's arms at their first sparsity, against the same
+dense predictions. The number in brackets is the fraction of blocks kept.
+
+| task | band | dense | oracle @0.5 (≈0.5) | mean-pool inline @0.5 (≈0.5) | XAttention @0.95 |
+|---|---:|---:|---:|---:|---:|
+| `qa_1` | 16384 | 68 | 70 | 44 | 58 (0.39) |
+| `qa_1` | 32768 | 46 | 44 | 39 | 44 (0.33) |
+| `niah_multivalue` | 16384 | 16 | 23 | 5 | 17 (0.37) |
+| `niah_multivalue` | 32768 | 17 | 17 | 8 | 0 (0.11) |
+| `niah_multiquery` | 16384 | 13 | 16 | 6 | 11 (0.37) |
+
+- XAttention keeps fewer blocks than either 0.5 arm. On four of the five
+  cells it is nonetheless closer to dense than the mean-pool estimator is,
+  and on one (`qa_1`/32768) it equals the oracle.
+- Where it fails hardest, its threshold kept the fewest blocks.
+- How many blocks the scalar threshold keeps depends on the prompt as much
+  as on tau. At 32768, tau 0.95 kept 33% of blocks on `qa_1`'s document
+  haystack and 11% on the NIAH essay haystack. That is consistent with a
+  threshold that is not calibrated for this model, which the plan states as
+  its one deviation. Nothing here tests it.
+
+**Estimator cost.** The pilot session re-ran the cost script, banked as
+`estimator_cost_xattn_pilot_20261002`. Its figures have not been compared
+here, so the canary's table above is the measurement of record: on the L4's
+torch path, `xattn_estimate` costs more than the dense attention it prunes,
+at both bands and every threshold.
