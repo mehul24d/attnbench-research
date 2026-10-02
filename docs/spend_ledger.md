@@ -492,3 +492,19 @@ teardown: 2026-10-02T13:18:16Z
 minutes: 342
 rate_inr_hr: 80
 est_inr: 456
+
+instance: attnbench-l4-xattn-canary-20261002-2016
+zone: asia-northeast1-a
+boot: 2026-10-02 14:46:49
+teardown: 2026-10-02T15:21:10Z
+minutes: 35
+rate_inr_hr: 80
+est_inr: 47
+
+instance: attnbench-l4-xattn-pilot-20261002-2059
+zone: asia-northeast1-a
+boot: 2026-10-02 15:30:30
+teardown: 2026-10-02T18:51:25Z
+minutes: 201
+rate_inr_hr: 80
+est_inr: 268
