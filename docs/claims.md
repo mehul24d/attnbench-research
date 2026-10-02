@@ -655,7 +655,11 @@ is now explicit rather than implied.*
 
 | | |
 |---|---|
-| **Supported** | *The 1.186× is what block-sparse achieves **given** an oracle ranking whose own cost exceeds the saving by ~36×. No deployable estimator in this study reproduces that ranking, and none is measured.* |
+| **Supported** | *The 1.186× is what block-sparse achieves **given** an oracle ranking whose own cost exceeds the saving by ~36×. No deployable estimator in this study reproduces that ranking; the one measured inline costs less than the saving it buys and certifies non-inferiority at no sparsity on the T4 pilot.* |
+
+*This row ended "and none is measured" until 2026-10-02, when the T4 sparse
+pilot measured MInference's mean-pool estimator inline, cost and accuracy
+both ("The deployable estimator, run inline", below).*
 | **Not supported** | *Block-sparse attention delivers 1.186× at 16384.* Not as a system. It delivers that **given a mask nobody can afford to compute**, and the ratio does not obviously improve with length — it is 49× at 8192 and 36× at 16384. |
 
 The ratio narrowing from 49× to 36× is the only sign that scale might help,
@@ -764,6 +768,13 @@ accuracy at ceiling. This study measured the **second** bar and not the first.
 - **Cost: never measured.** No timing exists for either scorer's pass as a
   deployable component, so the ~3% bar is untested from the side the ratio is
   about.
+- **Update 2026-10-02: cost measured, inline, and the accuracy half fails
+  again.** Run inside the measured forward, each layer scoring its own q and
+  k, the mean-pool estimator plus its warm device mask build costs 0.06–0.31
+  of the attention time it saves, kernel for kernel, on an L4 at 16384 and
+  32768. On the T4 pilot it certifies non-inferiority at no sparsity on any
+  task. See "The deployable estimator, run inline", below. The bullet above
+  is kept as it stood, because the paragraph after it reasons from it.
 
 So the honest statement is narrower than "nobody has tried" and worse than it:
 one deployable estimator was tried, it failed the accuracy half decisively,
@@ -801,8 +812,10 @@ end-to-end numbers differ by regime, and that gap is what the study set out to
 measure. On one card, the L4, it has three measured ends: **a whole-model
 prefill speedup of 1.24–1.26× at 16384/0.9, an oracle-masked end-to-end
 speedup of up to 1.32× at 32K, and an oracle cost of 35× the saving standing
-between that and any deployment.** A deployable estimator's cost is
-unmeasured (above). Reporting the first without the third is the error this
+between that and any deployment.** One deployable estimator's cost has been
+measured inline since 2026-10-02 (above): it is below the saving, and its masks
+fail the accuracy half. *(This sentence read "A deployable estimator's cost is
+unmeasured" until then.)* Reporting the first without the third is the error this
 study exists to document. *(This paragraph read "a kernel speedup of 1.24×"
 from "Stage 2", and called the 35× "an estimator cost of 35× the saving",
 until 2026-10-01: 1.24× is a session-4 prefill ratio, and 35× is the oracle's
@@ -1575,3 +1588,47 @@ arithmetic of the old pair is self-consistent against a `vt` dense-normalized
 reference of ~1953.8 ms; the artifact's is 1985.9. The conclusion is
 unaffected — the re-evaluated value still clears 1.0 — and the margin it
 clears by is larger than was claimed, not smaller.*
+
+---
+
+## The deployable estimator, run inline (T4 sparse pilot, 2026-10-02)
+
+The pre-registered pilot is `docs/t4_sparse_pilot.md`. It ran on an NVIDIA
+L4, at one commit (`77b48e5`), with every row `git_dirty=False`, on
+Qwen2.5-1.5B-Instruct. The tasks are `qa_1`, `niah_multivalue` and
+`niah_multiquery`, at 16384 and 32768. The test is the exact paired bound
+with a 10-point margin, one-sided alpha 0.025, under a fixed sequence
+0.5 → 0.75 → 0.9. Two arms are compared with dense in the same session:
+
+- the oracle, `dense_softmax_fp32`;
+- MInference's mean-pool estimator run inline, `minference_meanpool_inline`,
+  with each layer ranking from its own q and k inside the measured forward.
+
+| | |
+|---|---|
+| **Supported** | *At sparsity 0.5, block-sparse attention with an oracle mask is non-inferior to dense within 10 points on `qa_1` at 16384 (exact one-sided 97.5% bound −9.0 points; 70 vs 68 of 100), given a ranking computed from the full attention scores.* |
+| **Not supported** | *Block-sparse attention at 0.5 loses no accuracy on `qa_1`.* The difference is +2.0 points with a bound of −9.0; "no loss" is never claimed. Nor does the oracle certify at 32768: on `qa_1` it stops at 0.5 with a bound of −12.7. |
+| **Supported** | *Run inline, MInference's mean-pool estimator is non-inferior to dense at no sparsity on any of the pilot's tasks or bands. Its first test, at 0.5, fails in every primary and secondary cell, with point differences of −7 to −24 and bounds of −22.2 to −42.0.* |
+| **Not supported** | *A deployable estimator recovers the oracle's accuracy.* At 0.5, the inline arm is below the oracle in every primary and secondary cell, by 5 to 36 points. This is a descriptive comparison, not a pre-registered test. |
+| **Supported** | *Inline and kernel for kernel, the mean-pool estimator plus its warm device mask build costs 0.06–0.31 of the attention time it saves, on an L4, at both bands and all three sparsities. It does not synchronise the device.* |
+| **Not supported** | *The deployable estimator makes block-sparse attention profitable.* The cost figure compares per-layer kernels, not end-to-end runs. The accuracy half fails. The latency at matched accuracy is unmeasured, and with nothing certified there is no matched operating point at which to measure it. |
+
+The secondary tier adds one cell, which is no headline: the oracle at 0.5 on
+`niah_multivalue` at 16384 (bound −7.7). The observational cell
+(`niah_multiquery`/32768, dense 3 of 50) yields no statement.
+
+**What this changes upstream.** Before this pilot, the break-even argument
+above had a measured accuracy half (two-pass, `niah_multikey`) and an
+unmeasured cost half. Both halves are now measured for the estimator as a
+deployed method would run it:
+
+- **Cost:** the estimator is cheap enough, kernel for kernel.
+- **Accuracy:** its masks do not preserve accuracy at any of the grid's
+  sparsities on these tasks, at this model size.
+
+What is still open:
+
+- Whether a better estimator closes the gap. XAttention is the pre-planned
+  next arm.
+- Whether a larger model changes the picture. On `niah_multikey` it widened
+  the two-pass gap.

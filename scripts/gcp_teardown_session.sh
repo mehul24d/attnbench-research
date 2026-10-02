@@ -30,15 +30,39 @@ set -uo pipefail
 NAME="${1:?usage: gcp_teardown_session.sh INSTANCE_NAME ZONE [RESULTS_DIR]}"
 ZONE="${2:?zone required}"
 S="${3:-results/gpu_session_$(date +%Y%m%d)}"
+
+# The zone is checked before anything else runs. On 2026-10-02 the launcher
+# placed the 32768 pilot in asia-northeast1-c while the operator passed -a:
+# every step "failed, continuing", the delete reported "not found", and only
+# step 5's listing showed the instance still RUNNING. A wrong zone is not a
+# dead instance, so it stops here, names the right zone, and touches nothing.
+if ! gcloud compute instances describe "$NAME" --zone="$ZONE" --format='value(name)' \
+     >/dev/null 2>&1; then
+  ACTUAL="$(gcloud compute instances list --filter="name=($NAME)" \
+            --format='value(zone.basename())' 2>/dev/null | head -1)"
+  if [[ -n "$ACTUAL" ]]; then
+    echo "REFUSING: $NAME is not in $ZONE; it is in $ACTUAL. Nothing was copied or deleted." >&2
+    echo "Re-run: bash $0 $NAME $ACTUAL $S" >&2
+    exit 2
+  fi
+  echo "   NOTE: $NAME was not found in any zone -- nothing to copy or delete"
+fi
 mkdir -p "$S"
 
 echo "== 1/5 serial console log -> $S/serial_console.log (before anything can destroy it)"
+# Fetched to a temporary file and moved into place only on success: a
+# redirect straight onto the log truncates it first, so a failed fetch on a
+# second run (instance already gone) would empty the log the first run had
+# saved. Found on 2026-10-01, when a re-run over the canary's directory was
+# proposed.
 if gcloud compute instances get-serial-port-output "$NAME" --zone="$ZONE" \
-     > "$S/serial_console.log" 2>/dev/null; then
+     > "$S/serial_console.log.partial" 2>/dev/null; then
+  mv "$S/serial_console.log.partial" "$S/serial_console.log"
   echo "   saved $(wc -l < "$S/serial_console.log") lines"
   echo -n "   OOM kills recorded: "
   grep -ciE "oom-kill|Killed process" "$S/serial_console.log" || true
 else
+  rm -f "$S/serial_console.log.partial"
   echo "   WARNING: could not fetch serial output -- continuing to deletion anyway"
 fi
 

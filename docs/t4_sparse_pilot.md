@@ -213,3 +213,172 @@ or 7–10 L4-hours. At the ledger's L4 rate that is roughly INR 600–800, in
 one or two sessions. The canary is about 50 minutes, roughly INR 70. The
 cap, hard-delete limit and artifact paths for each session are stated with
 the command before it launches.
+
+## Canary result (2026-10-01): passed
+
+The canary ran on an NVIDIA L4 in `asia-northeast1-a` (instance
+`attnbench-l4-t4canary-20261002-0214`) at commit `e7eabaa`, with torch
+2.9.1+cu129 and transformers 4.46.0. Every phase was synced to GCS, and the
+instance was then torn down through `scripts/gcp_teardown_session.sh`. The
+rows are under `results/t4_sparse_canary_session_20261002/` locally and under
+`gs://attnbench-results-research-507316/attnbench-l4-t4canary-20261002-0214/`.
+They are never pooled with the pilot.
+
+| # | criterion | result |
+|---|---|---|
+| 1 | CUDA tests | 27 passed, 0 skipped, including `test_bitwise_equal_on_cuda` and `test_warm_device_build_does_not_synchronise` |
+| 2 | provenance and arm labels | 48 + 36 rows, `git_dirty=False`, one commit; 12 dense rows with no scorer, 36 `dense_softmax_fp32`, 36 `minference_meanpool_inline` |
+| 3 | oracle scoring at 32768 | completed, no OOM |
+| 4 | estimator cost run | `sync_free=True` at both bands and all three sparsities; every non-XAttention component available (XAttention recorded as not installed) |
+| 5 | dense vs banked dense pilot | 12 of 12 predictions identical |
+
+**Estimator cost, per layer** (median of 30, CUDA events, random inputs, the
+model's geometry):
+
+| band | dense | meanpool | mask build | block-sparse 0.5 / 0.75 / 0.9 | estimator / saving |
+|---:|---:|---:|---:|---:|---:|
+| 16384 | 14.39 ms | 1.28 ms | 0.50 ms | 8.67 / 5.19 / 2.96 ms | 0.31 / 0.19 / 0.16 |
+| 32768 | 58.13 ms | 2.55 ms | 0.50 ms | 31.94 / 17.66 / 8.98 ms | 0.12 / 0.08 / 0.06 |
+
+At both bands, kernel against kernel, the deployable estimator costs less
+than the saving it buys at every sparsity. None of the script's stated
+falsifiers fired. These are per-layer kernel numbers on one session's canary,
+not an end-to-end speedup, and nothing here enters `docs/claims.md` until the
+pilot's own estimator-cost run is banked.
+
+**Timings used for the pilot's cost.** These are the median `latency_ms` per
+row at 16384 / 32768:
+
+- dense: 3.35 / 5.70 s;
+- oracle block-sparse: 2.90 / 4.91 s;
+- inline block-sparse: 2.21 / 4.90 s.
+
+The oracle phase took 581 s for 48 rows and the inline phase 172 s for 36,
+so the 12 scoring passes cost 342 s, an average of 28.5 s. Split
+quadratically, that is about 11 s at 16384, which matches the published
+11.8 s, and about 46 s at 32768. The 32768 figure is now measured on average
+rather than assumed.
+
+**Projected pilot:**
+
+- 16384: about 1.7 compute-hours.
+- 32768: about 4.5 compute-hours, of which the oracle's scoring passes are
+  about 2.5.
+
+The pilot is split by band into two sessions, as the canary's projection
+allows. Both sessions deploy the same commit, so the analysis's single-commit
+rule holds across them.
+
+## Pilot result (2026-10-02)
+
+Both sessions ran on an NVIDIA L4 at commit `77b48e5`, with torch
+2.9.1+cu129 and transformers 4.46.0, on Qwen2.5-1.5B-Instruct. The CUDA gate
+passed 27 of 27 in each session before any row was written.
+
+| band | instance | zone | oracle rows | inline rows |
+|---:|---|---|---:|---:|
+| 16384 | `attnbench-l4-t4pilot-16384-20261002-0312` | `asia-northeast1-a` | 800 | 600 |
+| 32768 | `attnbench-l4-t4pilot-32768-20261002-1305` | `asia-northeast1-c` | 800 | 600 |
+
+Every row has `git_dirty=False` and the one commit. The per-task counts are
+the plan's: 100/50/50 dense rows per band, and 300/150/150 for each scorer.
+The rows are under `results/t4_sparse_pilot_session_16384_20261002/` and
+`results/t4_sparse_pilot_session_32768_20261002/` locally, and under each
+instance's prefix in `gs://attnbench-results-research-507316/`. The 32768
+session's copy also holds `results/s7_7b_16384/accuracy.parquet` at commit
+`35ac080`. That is a force-committed file that the quarantine's
+`git checkout -- results` restores. It is not pilot data, and the analysis
+would refuse it on commit and task.
+
+The analysis is the pre-registered command over the four parquets, written
+to `results/t4_sparse_pilot_analysis_20261002/`. The margin is 10 points,
+one-sided alpha 0.025, under the fixed sequence. Each cell below is
+`correct of n: difference, lower bound`, in points. **Bold** marks a claim.
+*Italics* mark a sparsity after the sequence stopped, which carries no claim
+whatever its bound.
+
+**Oracle, `dense_softmax_fp32`:**
+
+| tier | task | band | dense | 0.5 | 0.75 | 0.9 |
+|---|---|---:|---:|---|---|---|
+| primary | `qa_1` | 16384 | 68/100 | **70: +2.0, −9.0** | 66: −2.0, −16.3 | *60: −8.0, −24.8* |
+| primary | `qa_1` | 32768 | 46/100 | 44: −2.0, −12.7 | *53: +7.0, −8.3* | *48: +2.0, −16.1* |
+| secondary | `niah_multivalue` | 16384 | 16/50 | **23: +14.0, −7.7** | 21: +10.0, −13.3 | *17: +2.0, −21.1* |
+| secondary | `niah_multivalue` | 32768 | 17/50 | 17: 0.0, −19.2 | *20: +6.0, −15.9* | *19: +4.0, −19.8* |
+| secondary | `niah_multiquery` | 16384 | 13/50 | 16: +6.0, −10.3 | *21: +16.0, −6.3* | *15: +4.0, −19.8* |
+| observational | `niah_multiquery` | 32768 | 3/50 | 8 | 27 | 18 |
+
+**Deployable estimator, inline, `minference_meanpool_inline`:**
+
+| tier | task | band | dense | 0.5 | 0.75 | 0.9 |
+|---|---|---:|---:|---|---|---|
+| primary | `qa_1` | 16384 | 68/100 | 44: −24.0, −39.5 | *35: −33.0, −48.8* | *24: −44.0, −59.6* |
+| primary | `qa_1` | 32768 | 46/100 | 39: −7.0, −22.2 | *24: −22.0, −37.4* | *16: −30.0, −44.7* |
+| secondary | `niah_multivalue` | 16384 | 16/50 | 5: −22.0, −42.0 | *3: −26.0, −46.3* | *0: −32.0, −48.7* |
+| secondary | `niah_multivalue` | 32768 | 17/50 | 8: −18.0, −39.2 | *1: −32.0, −48.7* | *0: −34.0, −50.8* |
+| secondary | `niah_multiquery` | 16384 | 13/50 | 6: −14.0, −34.7 | *4: −18.0, −35.7* | *2: −22.0, −37.9* |
+| observational | `niah_multiquery` | 32768 | 3/50 | 6 | 10 | 3 |
+
+The dense reference is the oracle run's own. The inline run is compared
+against it, pair by pair, on the same example ids.
+
+**What the pilot licenses**, in the plan's wording:
+
+- **Primary.** At sparsity 0.5, the oracle arm is non-inferior to dense
+  within 10 points on `qa_1` at 16384 (exact one-sided 97.5% bound −9.0
+  points; 70 vs 68 of 100), given a ranking computed from the full attention
+  scores. This is the pilot's only primary claim.
+- **Secondary, not a headline.** At sparsity 0.5, the oracle arm is
+  non-inferior on `niah_multivalue` at 16384 (bound −7.7).
+- **The deployable estimator certifies nothing.** No cell of the inline arm
+  is non-inferior, at any tier, band or sparsity. Its first test, at 0.5,
+  fails in every primary and secondary cell, with bounds from −22.2 to −42.0
+  points.
+
+**What it does not license:**
+
+- "No accuracy loss", for any arm. It is never claimed.
+- Non-inferiority at 32768 for either arm. Neither arm certifies there; the
+  oracle on `qa_1` stops at 0.5 with a bound of −12.7.
+- Anything at an italic sparsity. The oracle's bounds at `qa_1`/32768/0.75
+  (−8.3) and `niah_multiquery`/16384/0.75 (−6.3) clear the margin, but the
+  sequence stopped at 0.5 in both. Reordering the sequence after seeing them
+  is exactly what pre-registration rules out.
+- Anything from the observational cell. Dense is 3 of 50 there. The oracle's
+  27 of 50 at 0.75 is reported as a count; it is not interpreted.
+
+**Read descriptively, not as a test.** The comparisons below were not
+pre-registered and carry no error control:
+
+- The inline estimator's failures are not marginal. At 0.5, the discordant
+  pairs run toward dense in every primary and secondary cell: 30 dense-only
+  vs 6 sparse-only on `qa_1` at 16384, 16 vs 9 at 32768, and 13 vs 2, 12 vs 3
+  and 10 vs 3 on the secondary cells.
+- The inline arm is below the oracle at 0.5 in every primary and secondary
+  cell, by 26, 5, 36, 18 and 20 points.
+- The direction matches the 2026-09-16 two-pass comparison on
+  `niah_multikey` (`claims.md`, "The oracle requirement DOES survive a change
+  of model scale").
+- `tests/test_inline_estimator.py` pins the inline arm's layer-0 mask to the
+  two-pass estimator's exactly. Its later layers differ by construction,
+  because they see sparse inputs.
+
+**Estimator cost.** The pilot session's own run,
+`estimator_cost_l4_pilot_20261001`, reproduced the canary's per-layer table
+above to within about 2% at both bands; for example, mean-pool was 1.284 ms
+at 16384 in both. `sync_free=True` held at every sparsity. Kernel for kernel,
+the inline estimator plus its warm mask build costs 0.06–0.31 of the
+attention time it saves. So the cost half of the deployability bar is met at
+the kernel level. The accuracy half is not met at any sparsity.
+
+**Operations, for the next session:**
+
+- The 32768 teardown was first invoked with the launch zone `-a` while the
+  instance was in `-c`. Every step failed and the delete reported "not
+  found". Nothing was lost, and the re-run with `-c` deleted the instance.
+  `scripts/gcp_teardown_session.sh` now refuses a wrong zone before any step
+  and names the right one.
+- It also no longer truncates a saved serial log when a re-run's fetch
+  fails. Both are covered by `tests/test_teardown_guards.py`.
+- Session costs are recorded in each session's `session_cost.txt` and belong
+  in `docs/spend_ledger.md`.
