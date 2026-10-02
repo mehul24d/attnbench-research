@@ -20,8 +20,13 @@ from typing import Literal, Optional
 # two-pass "minference_meanpool" ranks every layer from a dense pass first,
 # outside the timer. Same formula, different inputs and accounting, so
 # different values.
+#
+# "xattention_inline" (2026-10-02) is XAttention's own antidiagonal estimator,
+# inside the measured forward like the inline arm above, but selecting blocks
+# per head by a mass threshold rather than to a fixed sparsity. Its rows carry
+# `xattn_threshold` and `realised_density` instead of `sparsity`.
 ScoreSource = Literal["dense_softmax_fp32", "minference_meanpool",
-                      "minference_meanpool_inline"]
+                      "minference_meanpool_inline", "xattention_inline"]
 
 # Same reasoning as ScoreSource: a real, first-class field rather than a
 # docstring footnote. "noise"/"needle" mean the example used attnbench's
@@ -89,6 +94,13 @@ GateSource = Literal["learned", "synthetic", "ungated"]
 # registered backend carrying a `gate_source` attribute is named here.
 GATED_BACKENDS = frozenset({"gla"})
 
+# Backends that choose their own blocks from a threshold, so that how sparse
+# a row was is an outcome rather than a setting. Their rows must carry the
+# threshold that ran and the density it produced; every other row must carry
+# neither. Same reasoning as GATED_BACKENDS: without the two columns an
+# XAttention row cannot be placed against the fixed-sparsity arms at all.
+SELF_SELECTING_BACKENDS = frozenset({"xattention"})
+
 
 @dataclass(frozen=True)
 class Generated:
@@ -119,6 +131,12 @@ class Generated:
     # with the gate the recurrence used, and the disagreement is invisible
     # in the output, which is precisely how #17 happened.
     gate_source: Optional[GateSource] = None
+    # Read off the backend instance, like gate_source: the threshold it ran
+    # at, and after the prefill the mean over layers of the fraction of
+    # causally valid blocks it kept.
+    # None for every backend that does not select its own blocks.
+    xattn_threshold: Optional[float] = None
+    realised_density: Optional[float] = None
 
 
 @dataclass
@@ -177,6 +195,11 @@ class AccuracyResult:
     # whole point of the column is that a linear row is uninterpretable
     # without it.
     gate_source: Optional[GateSource] = None
+    # Required for SELF_SELECTING_BACKENDS and None otherwise (enforced
+    # below): the threshold the estimator ran at, and the mean realised
+    # density over layers it produced on this example.
+    xattn_threshold: Optional[float] = None
+    realised_density: Optional[float] = None
     latency_ms: Optional[float] = None
     detail: str = ""
 
@@ -214,6 +237,18 @@ class AccuracyResult:
                 f"backend {self.backend!r} has no forget gate, so "
                 f"gate_source={self.gate_source!r} on its row claims a "
                 f"mechanism that did not run. Leave it None.")
+        selecting = self.backend in SELF_SELECTING_BACKENDS
+        have = (self.xattn_threshold is not None, self.realised_density is not None)
+        if selecting and have != (True, True):
+            raise ValueError(
+                f"backend {self.backend!r} selects its own blocks, so its row "
+                f"must record the threshold that ran and the density it "
+                f"produced (xattn_threshold={self.xattn_threshold!r}, "
+                f"realised_density={self.realised_density!r}).")
+        if not selecting and have != (False, False):
+            raise ValueError(
+                f"backend {self.backend!r} does not select its own blocks; "
+                f"xattn_threshold and realised_density must be None.")
 
     def to_dict(self) -> dict:
         return asdict(self)

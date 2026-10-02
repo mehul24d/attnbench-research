@@ -55,14 +55,15 @@ from attnbench.accuracy.generation import (                            # noqa: E
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
     DENSE_DECODE_BACKEND_HISTORY, backend_instance, build_configs_by_backend,
     build_examples_by_task_length)
-from attnbench.accuracy.schema import GATED_BACKENDS                   # noqa: E402
+from attnbench.accuracy.schema import GATED_BACKENDS, SELF_SELECTING_BACKENDS                   # noqa: E402
 from attnbench.accuracy.sizing import approximate_token_count  # noqa: E402
 from attnbench.accuracy.runner import (build_cells, check_decode_pin_continuity,  # noqa: E402
                                        run_accuracy)
 from attnbench.accuracy import stopping                                # noqa: E402
 from attnbench.accuracy.t4_pilot import (                              # noqa: E402
     PILOT_BANDS, PROBE_N, SELECTED_PILOT_N, SPARSE_PILOT_N,
-    SPARSE_PILOT_SCORE_SOURCES, SPARSE_PILOT_TASKS, T4_DENSE_PILOT_TASKS)
+    SPARSE_PILOT_SCORE_SOURCES, SPARSE_PILOT_TASKS, T4_DENSE_PILOT_TASKS,
+    XATTN_SCORE_SOURCE, XATTN_THRESHOLD_SEQUENCE)
 from attnbench import provenance                                       # noqa: E402
 from attnbench import numerics                                    # noqa: E402
 from attnbench.config import AttnConfig                                # noqa: E402
@@ -115,7 +116,8 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
                       dtype: str, score_cache_dir: str, verbose: bool = True,
                       gla_gate_source: str | None = None,
                       score_source: str = "dense_softmax_fp32",
-                      pinned_fallback_decode: str | None = None):
+                      pinned_fallback_decode: str | None = None,
+                      xattn_threshold: float | None = None):
     """The real execution path: load the model once, wrap it once, and
     return the per-cell closure `run_accuracy` calls.
 
@@ -180,6 +182,8 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
             # refuses it for the rest rather than ignoring it.
             kw = ({"gate_source": gla_gate_source}
                   if gla_gate_source and backend_name in GATED_BACKENDS else {})
+            if backend_name in SELF_SELECTING_BACKENDS:
+                kw["xattn_threshold"] = xattn_threshold
             backend = backends_by_name[backend_name] = backend_instance(
                 backend_name, **kw)
         return generate_one(wrapped, tokenizer, cfg=cfg, backend=backend,
@@ -389,6 +393,18 @@ def main():
                          "(dense_softmax_fp32 or minference_meanpool_inline), "
                          "each into its own --out. --n-per-length lowers n "
                          "for the canary; --seq-lens picks one band.")
+    ap.add_argument("--t4-xattn-pilot", action="store_true",
+                    help="run the pre-registered T4 XAttention phase "
+                         "(docs/t4_xattention_pilot.md): the sparse pilot's "
+                         "tasks, bands and n, with the dense reference and "
+                         "XAttention at one --xattn-threshold per run, each "
+                         "into its own --out. --only-backends sdpa_flash runs "
+                         "the dense reference alone.")
+    ap.add_argument("--xattn-threshold", type=float, default=None,
+                    choices=XATTN_THRESHOLD_SEQUENCE,
+                    help="XAttention's threshold tau for this run; one of the "
+                         "pre-registered values. Stamped on every XAttention "
+                         "row as xattn_threshold.")
     ap.add_argument("--n-per-length", type=int, default=None,
                     help="cap examples per (task, band). Must not exceed the "
                          "grid's own n: examples are seeded per index, so a "
@@ -458,6 +474,23 @@ def main():
             "--gla-gate-source")
     if args.t4_dense_pilot:
         args.no_gla = True
+    if args.t4_xattn_pilot:
+        if (args.t4_sparse_pilot or args.t4_dense_pilot or args.t4_pilot_tasks
+                or args.tasks):
+            raise SystemExit(
+                "--t4-xattn-pilot fixes its own tasks; do not combine it with "
+                "another pilot, --t4-pilot-tasks or --tasks")
+        if args.include_sage or args.gla_gate_source or args.sparsities:
+            raise SystemExit("--t4-xattn-pilot runs dense and xattention only; "
+                             "omit --include-sage, --gla-gate-source and "
+                             "--sparsities")
+        if args.score_source not in ("dense_softmax_fp32", XATTN_SCORE_SOURCE):
+            raise SystemExit(f"--t4-xattn-pilot stamps {XATTN_SCORE_SOURCE!r}; "
+                             f"omit --score-source")
+        args.score_source = XATTN_SCORE_SOURCE
+        args.no_gla = True
+    elif args.xattn_threshold is not None:
+        raise SystemExit("--xattn-threshold belongs to --t4-xattn-pilot")
     if args.t4_sparse_pilot:
         if args.t4_dense_pilot or args.t4_pilot_tasks or args.tasks:
             raise SystemExit(
@@ -499,6 +532,12 @@ def main():
             "See docs/gla_arm_decision.md.")
 
     grid = load_grid(args.grid)
+    if (args.t4_xattn_pilot and args.xattn_threshold is None
+            and (args.only_backends or "").replace(" ", "") != grid.dense_backend):
+        raise SystemExit(
+            f"--t4-xattn-pilot needs --xattn-threshold (one of "
+            f"{list(XATTN_THRESHOLD_SEQUENCE)}), unless the run is the dense "
+            f"reference alone (--only-backends {grid.dense_backend})")
 
     # Band restriction. Applied to the LOADED grid, never to the file: the
     # grid is pinned data and every segment must agree about what the whole
@@ -512,7 +551,8 @@ def main():
     selected_seq_lens = select_seq_lens(
         grid_seq_lens=dict(grid.seq_lens), seq_lens=args.seq_lens,
         n_per_length=args.n_per_length, t4_dense_pilot=args.t4_dense_pilot,
-        t4_pilot_tasks=args.t4_pilot_tasks, t4_sparse_pilot=args.t4_sparse_pilot)
+        t4_pilot_tasks=args.t4_pilot_tasks,
+        t4_sparse_pilot=args.t4_sparse_pilot or args.t4_xattn_pilot)
 
     # Same reasoning as --seq-lens: a task this study did not plan is not a
     # task it can report, and the subset must be expressed here rather than
@@ -520,7 +560,7 @@ def main():
     selected_tasks = select_tasks(
         grid_tasks=tuple(grid.tasks), tasks=args.tasks,
         t4_dense_pilot=args.t4_dense_pilot, t4_pilot_tasks=args.t4_pilot_tasks,
-        t4_sparse_pilot=args.t4_sparse_pilot)
+        t4_sparse_pilot=args.t4_sparse_pilot or args.t4_xattn_pilot)
 
     # Clocks: attempt, then stamp what HAPPENED, never what was asked for.
     # Every row in this project so far carries clocks_locked=False because
@@ -581,7 +621,7 @@ def main():
     examples_by_task_length = build_examples_by_task_length(
         grid, seed=args.seed, count_tokens=count_tokens,
         tasks=selected_tasks, seq_lens=selected_seq_lens)
-    if args.t4_sparse_pilot:
+    if args.t4_sparse_pilot or args.t4_xattn_pilot:
         # Built at the largest n, then cut to each task's own: examples are a
         # seeded prefix, so the cut leaves exactly the first n of each.
         examples_by_task_length = {
@@ -616,6 +656,11 @@ def main():
     if args.t4_sparse_pilot:
         configs_by_backend = {b: configs_by_backend[b]
                               for b in (grid.dense_backend, "block_sparse")}
+    if args.t4_xattn_pilot:
+        # XAttention runs the dense arm's own causal configs: it takes no
+        # mask, so its cells are the reference's cells on another backend.
+        dense = configs_by_backend[grid.dense_backend]
+        configs_by_backend = {grid.dense_backend: dense, "xattention": dense}
     if args.only_backends is not None:
         want = [b.strip() for b in args.only_backends.split(",") if b.strip()]
         unknown = [b for b in want if b not in configs_by_backend]
@@ -652,7 +697,8 @@ def main():
             score_cache_dir=grid.score_cache_dir,
             gla_gate_source=args.gla_gate_source,
             score_source=args.score_source,
-            pinned_fallback_decode=args.pin_fallback_decode_backend)
+            pinned_fallback_decode=args.pin_fallback_decode_backend,
+            xattn_threshold=args.xattn_threshold)
         teardown = generate_fn.unwrap
 
     try:
@@ -662,7 +708,8 @@ def main():
                               provenance_fn=provenance_fn,
                               allow_mixed_commits=args.allow_mixed_commits,
                               allow_dirty=args.allow_dirty,
-                              score_source=args.score_source)
+                              score_source=args.score_source,
+                              xattn_threshold=args.xattn_threshold)
     finally:
         if teardown is not None:
             teardown()

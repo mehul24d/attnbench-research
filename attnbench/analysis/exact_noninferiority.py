@@ -121,8 +121,21 @@ def paired_exact_ni(dense: np.ndarray, sparse: np.ndarray, *, margin_pts: float,
         sparse_ci_pts=_two_sided_cp(int(sparse.sum()), n, 2 * alpha))
 
 
+# Score sources whose rows choose their own blocks from a threshold, so the
+# arm is named by the threshold and the sparsity column is empty.
+THRESHOLD_ARMS = frozenset({"xattention_inline"})
+
+
 def arm_label(row: pd.Series) -> str:
-    """`<score_source>@<sparsity>` for a block_sparse row."""
+    """`<score_source>@<sparsity>` for a fixed-sparsity row, and
+    `<score_source>@<xattn_threshold>` for an arm that selects its own
+    blocks (XAttention), whose sparsity is an outcome, not a setting."""
+    if row["score_source"] in THRESHOLD_ARMS:
+        setting = row.get("xattn_threshold")
+        if setting is None or pd.isna(setting):
+            raise ValueError(f"a {row['score_source']} row has no xattn_threshold: "
+                             f"its arm is unknown")
+        return f"{row['score_source']}@{float(setting):g}"
     return f"{row['score_source']}@{row['sparsity']:g}"
 
 
@@ -156,9 +169,14 @@ def run_exact_ni(dense_rows: pd.DataFrame, sparse_rows: pd.DataFrame, *,
                 f"({len(set(d.index) ^ set(s.index))} unpaired). A paired test "
                 f"on the intersection would be a different population.")
         ids = sorted(s.index)
-        out.append(paired_exact_ni(d.loc[ids, "correct"].to_numpy(),
-                                   s.loc[ids, "correct"].to_numpy(),
-                                   margin_pts=margin_pts, alpha=alpha,
-                                   task=task, band=int(band), arm=arm).to_dict())
+        row = paired_exact_ni(d.loc[ids, "correct"].to_numpy(),
+                              s.loc[ids, "correct"].to_numpy(),
+                              margin_pts=margin_pts, alpha=alpha,
+                              task=task, band=int(band), arm=arm).to_dict()
+        # Descriptive only: how sparse a self-selecting arm actually was.
+        row["mean_realised_density"] = (
+            float(s["realised_density"].mean()) if "realised_density" in s.columns
+            and s["realised_density"].notna().all() else float("nan"))
+        out.append(row)
     return pd.DataFrame(out)
 

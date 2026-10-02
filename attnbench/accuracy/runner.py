@@ -29,6 +29,11 @@ _ROLE_BY_BACKEND: dict[str, "BackendRole"] = {
     "gla": "linear",
     "sage": "quantized",
     "block_sparse": "block_sparse",
+    # A causal config, but a sparse arm: it picks its own blocks per head
+    # and runs them on the same Block-Sparse-Attention kernel. Without this
+    # entry its rows would default to "dense_reference" and be paired as
+    # the baseline they are compared against.
+    "xattention": "block_sparse",
 }
 
 
@@ -163,6 +168,29 @@ def check_score_source_continuity(checkpoint_path: Path, *, score_source: str) -
             f"{sorted(have)}; this run's score_source is {score_source!r}. "
             f"Resume keys carry no scorer, so its sparse cells would all be "
             f"skipped as done. Use a separate --out.")
+
+
+class ThresholdMismatch(RuntimeError):
+    """A run would resume into XAttention rows measured at another threshold."""
+
+
+def check_xattn_threshold_continuity(checkpoint_path: Path, *,
+                                     xattn_threshold: "float | None") -> None:
+    """Refuse to add XAttention rows at one threshold to a checkpoint that
+    holds another's. Same hazard as the scorer: the resume key carries no
+    threshold, so a second threshold pointed at the first's --out would find
+    every cell done. Rows without a threshold (dense) do not count."""
+    if not Path(checkpoint_path).exists():
+        return
+    df = pd.read_parquet(checkpoint_path)
+    if df.empty or "xattn_threshold" not in df.columns:
+        return
+    have = {float(t) for t in df["xattn_threshold"].dropna()}
+    if have - ({float(xattn_threshold)} if xattn_threshold is not None else set()):
+        raise ThresholdMismatch(
+            f"{checkpoint_path} holds XAttention rows at threshold "
+            f"{sorted(have)}; this run's is {xattn_threshold!r}. Resume keys "
+            f"carry no threshold. Use a separate --out.")
 
 
 def load_done_keys(checkpoint_path: Path) -> set[tuple[str, str, str, str]]:
@@ -314,6 +342,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                   dry_run: bool = False, checkpoint_every: int = 1,
                   allow_mixed_commits: bool = False, allow_dirty: bool = False,
                   score_source: str = "dense_softmax_fp32",
+                  xattn_threshold: "float | None" = None,
                   ) -> AccuracyReport:
     """Stage 3 entry point.
 
@@ -357,6 +386,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                           allow_mixed_commits=allow_mixed_commits,
                           allow_dirty=allow_dirty)
     check_score_source_continuity(checkpoint_path, score_source=score_source)
+    check_xattn_threshold_continuity(checkpoint_path, xattn_threshold=xattn_threshold)
     done_keys = load_done_keys(checkpoint_path)
     decisions = plan(cells, done_keys=done_keys)
     report = AccuracyReport.from_decisions(decisions)
@@ -383,10 +413,11 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                 f"was replaced when generation started carrying a stopping "
                 f"reason, and unpacking one here would discard it silently.")
         example_score = ruler.score(cell.task, gen.text, example.answer)
+        role = backend_role(cell.backend_name, cell.cfg)
 
         result = AccuracyResult(
             backend=cell.backend_name,
-            backend_role=backend_role(cell.backend_name, cell.cfg),
+            backend_role=role,
             config_key=cell.cfg.key(),
             task=cell.task,
             example_id=cell.example_id,
@@ -400,7 +431,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             # oracle, and the comparison between them would have compared a
             # table against itself. The field exists to travel with the data;
             # a constant does not travel, it just looks like it does.
-            score_source=(score_source if cell.cfg.mask == "block_sparse" else None),
+            score_source=(score_source if role == "block_sparse" else None),
             haystack_mode=ruler.haystack_mode_for(cell.task),
             predicted=gen.text,
             expected="; ".join(example.answer),
@@ -415,6 +446,8 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             # thing that knows which gate ran. AccuracyResult.__post_init__
             # refuses the row if a gated backend arrives without one.
             gate_source=gen.gate_source,
+            xattn_threshold=gen.xattn_threshold,
+            realised_density=gen.realised_density,
             latency_ms=gen.latency_ms,
         )
         row = {**result.to_dict(), **prov.to_dict()}

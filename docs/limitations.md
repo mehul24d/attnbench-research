@@ -2755,3 +2755,24 @@ licenses. These are its limits:
   deployable estimator fails" means the mean-pool estimator fails, not every
   estimator.
 
+
+---
+
+## XAttention runs with a scalar threshold, and on an L4 without Triton (2026-10-02)
+
+The XAttention phase (`docs/t4_xattention_pilot.md`) departs from the
+method's own evaluation in two pre-stated ways. Both bear on what its
+results can say about XAttention as published.
+
+- **One scalar threshold per run.** XAttention's LongBench evaluation uses
+  per-layer thresholds profiled for Llama-3.1-8B
+  (`xattn/threshold/llama_threshold.py` at the pinned commit). None exist
+  for Qwen2.5, and profiling them here would tune the arm on the data it is
+  tested on. So each run uses one tau from a pre-registered grid. A failure
+  to certify is a result about XAttention with a scalar threshold, not about
+  XAttention with thresholds profiled for this model.
+- **The torch path on an L4.** `xattn_estimate` keeps Triton only on a
+  device whose name contains "100", so on an L4 its estimator runs the torch
+  fallback. This does not change the selected blocks, so accuracy is
+  unaffected. It does change the cost: an L4 estimator timing is the
+  fallback's cost, not the method's. Every timing row records `xattn_triton`.

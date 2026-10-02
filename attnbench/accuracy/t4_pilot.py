@@ -13,7 +13,8 @@ from .ruler import T4_DENSE_PILOT_TASKS
 
 __all__ = ["T4_DENSE_PILOT_TASKS", "PILOT_BANDS", "PROBE_N", "SELECTED_PILOT_N",
            "SPARSE_PILOT_TASKS", "SPARSE_PILOT_N", "SPARSE_PILOT_SCORE_SOURCES",
-           "SPARSITY_SEQUENCE", "MARGIN_PTS", "ALPHA", "TIERS"]
+           "SPARSITY_SEQUENCE", "MARGIN_PTS", "ALPHA", "TIERS",
+           "XATTN_SCORE_SOURCE", "XATTN_THRESHOLD_SEQUENCE", "XATTN_STRIDE"]
 
 # ---- dense-only pilot (docs/t4_dense_pilot.md) ---------------------------
 PILOT_BANDS = (16384, 32768)
@@ -52,3 +53,19 @@ TIERS = {
     ("niah_multiquery", 16384): "secondary",
     ("niah_multiquery", 32768): "observational",
 }
+
+# ---- XAttention phase (docs/t4_xattention_pilot.md) ------------------------
+# Same tasks, bands, n, margin, alpha and tiers as the sparse pilot above;
+# only the arm differs. XAttention selects blocks per head by cumulative
+# antidiagonal mass >= tau, so its "setting" is a threshold and the fraction
+# of blocks kept is an outcome, recorded per row as `realised_density`.
+XATTN_SCORE_SOURCE = "xattention_inline"
+
+# Fixed-sequence order: the least aggressive threshold first. A lower tau
+# keeps less mass and so fewer blocks; the sequence stops at the first tau
+# that is not non-inferior, exactly as SPARSITY_SEQUENCE does.
+XATTN_THRESHOLD_SEQUENCE = (0.95, 0.9, 0.8)
+
+# The method's own evaluation setting (eval/LongBench/pred.py at XATTN_COMMIT).
+XATTN_STRIDE = 8
+

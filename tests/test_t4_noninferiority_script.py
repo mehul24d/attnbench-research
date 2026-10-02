@@ -95,3 +95,44 @@ def test_printed_table_keeps_the_grid_sparsities(tmp_path, capsys):
     _run(tmp_path, _rows(losses))
     out = capsys.readouterr().out
     assert " 0.75 " in out and " 0.8 " not in out
+
+
+XATTN = t4_pilot.XATTN_SCORE_SOURCE
+
+
+def _xattn_rows(losses: dict):
+    """Dense always right; XAttention at threshold tau wrong on its first
+    `losses[tau]` examples of every (task, band), with density 1 - tau/2."""
+    rows = []
+    for task in t4_pilot.SPARSE_PILOT_TASKS:
+        for band in t4_pilot.PILOT_BANDS:
+            for i in range(t4_pilot.SPARSE_PILOT_N[task]):
+                base = dict(task=task, example_id=f"{task}_{band}_{i}",
+                            context_length=band - 5, git_commit="c" * 40, git_dirty=False)
+                rows.append({**base, "backend": "sdpa_flash", "backend_role": "dense_reference",
+                             "score_source": None, "sparsity": None, "xattn_threshold": None,
+                             "realised_density": None, "correct": True})
+                for tau, k in losses.items():
+                    rows.append({**base, "backend": "xattention", "backend_role": "block_sparse",
+                                 "score_source": XATTN, "sparsity": None,
+                                 "xattn_threshold": tau, "realised_density": 1 - tau / 2,
+                                 "correct": i >= k})
+    return pd.DataFrame(rows)
+
+
+def test_xattention_thresholds_run_least_aggressive_first(tmp_path):
+    # 0.95 passes, 0.9 fails, 0.8 would pass but is never reached
+    res = _run(tmp_path, _xattn_rows({0.95: 0, 0.9: 30, 0.8: 0}))
+    q = res[(res.task == "qa_1") & (res.band == 16384)].sort_values("seq_pos")
+    assert list(q.xattn_threshold) == [0.95, 0.9, 0.8]
+    assert q.sparsity.isna().all()
+    assert list(q.tested) == [True, True, False]
+    assert list(q.claim) == [True, False, False]
+    assert list(q.mean_realised_density.round(3)) == [0.525, 0.55, 0.6]
+
+
+def test_an_xattention_row_without_a_threshold_is_refused(tmp_path):
+    df = _xattn_rows({0.95: 0})
+    df.loc[df.backend == "xattention", "xattn_threshold"] = None
+    with pytest.raises(ValueError, match="no xattn_threshold"):
+        _run(tmp_path, df)

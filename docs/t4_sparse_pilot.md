@@ -382,3 +382,6 @@ the kernel level. The accuracy half is not met at any sparsity.
   fails. Both are covered by `tests/test_teardown_guards.py`.
 - Session costs are recorded in each session's `session_cost.txt` and belong
   in `docs/spend_ledger.md`.
+
+The XAttention phase that follows from this pilot is pre-registered
+separately, in `docs/t4_xattention_pilot.md`.

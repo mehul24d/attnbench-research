@@ -22,7 +22,7 @@ from typing import Optional
 
 from . import stopping
 from .grid_configs import decode_backend_for, gate_source_of
-from .schema import Generated
+from .schema import SELF_SELECTING_BACKENDS, Generated
 from ..backends.base import AttentionBackend
 from ..config import AttnConfig
 
@@ -123,6 +123,13 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     decode_backend = (decode_backend_for(backend) if pinned_fallback_decode is None
                       else decode_backend_for(backend, fallback=pinned_fallback_decode))
 
+    # A backend that selects its own blocks (XAttention) records the density
+    # each prefill layer produced; cleared here so the row reads this
+    # example's prefill and nothing else.
+    selecting = type(backend).capability.name in SELF_SELECTING_BACKENDS
+    if selecting:
+        backend.reset_density()
+
     synchronize()
     t0 = time.perf_counter()
     result = wrapped.generate(
@@ -136,9 +143,24 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     synchronize()
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
+    realised_density = xattn_threshold = None
+    if selecting:
+        # One entry per prefill layer: decode runs on the dense fallback and
+        # never reaches this backend. Any other count means the density is
+        # not this example's prefill, so it is refused rather than averaged.
+        per_layer = [float(d) for d in backend.last_layer_density]
+        if len(per_layer) != wrapped.n_layers:
+            raise RuntimeError(
+                f"{type(backend).capability.name} recorded {len(per_layer)} "
+                f"layer densities for a {wrapped.n_layers}-layer prefill")
+        realised_density = sum(per_layer) / len(per_layer)
+        xattn_threshold = backend.threshold
+
     return Generated(text=tokenizer.decode(result.token_ids, skip_special_tokens=True),
                      latency_ms=latency_ms, stop_reason=result.stop_reason,
                      n_generated=result.n_generated,
                      decode_backend=result.decode_backend,
                      decode_pinned=pinned_fallback_decode is not None,
-                     gate_source=gate_source_of(backend))
+                     gate_source=gate_source_of(backend),
+                     xattn_threshold=xattn_threshold,
+                     realised_density=realised_density)

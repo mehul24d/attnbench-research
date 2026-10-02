@@ -21,7 +21,10 @@ inputs, so the reproduction cannot drift from the original unnoticed.
 **Settings follow the method's own evaluation** (`eval/LongBench/pred.py` at
 the pinned commit): stride 8, `norm=1`, `keep_sink=True`, `keep_recent=True`,
 `use_triton=True` (the official code itself falls back to torch on devices
-whose name lacks "100", e.g. the L4, and prints that it did), KV heads
+whose name lacks "100", e.g. the L4, and prints that it did -- on every call,
+so once per layer per example; this backend makes the same decision once,
+from the same device-name test, and passes the result, which takes the same
+code path without the print), KV heads
 repeated to the query-head count (`repeat_kv`, which `xattn_estimate`
 asserts). One deliberate deviation: that evaluation uses per-layer thresholds
 profiled for Llama-3.1-8B (`xattn/threshold/llama_threshold.py`); none exist
@@ -38,6 +41,8 @@ it, not tau.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -57,16 +62,53 @@ def official_chunk_size(k_len: int) -> int:
     return int(max(min(max(2048, p), 128 * 1024 * 2048 // p), 2048))
 
 
+def triton_for_device(device_name: str, requested: bool = True) -> bool:
+    """Whether `xattn_estimate` would actually use Triton on this device: the
+    official test, verbatim -- the device name must contain "100". An L4
+    fails it and runs the torch path, so its estimator cost there is not the
+    method's official cost (docs/t4_xattention_pilot.md)."""
+    return bool(requested) and "100" in device_name
+
+
+def installed_checkout() -> tuple[Optional[str], Optional[bool]]:
+    """(HEAD commit, dirty) of the x-attention checkout `xattn` imports from.
+
+    The package is installed editable from a git checkout (its `xattn/src`
+    has no `__init__.py`, so a plain install omits the estimator), so the
+    commit is read from that checkout rather than trusted from the install
+    command. (None, None) when it is not a git checkout at all.
+    """
+    import xattn
+    root = Path(xattn.__file__).resolve().parent.parent
+
+    def git(*args):
+        r = subprocess.run(["git", "-C", str(root), *args],
+                           capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    head = git("rev-parse", "HEAD")
+    if head is None:
+        return None, None
+    status = git("status", "--porcelain", "--untracked-files=no")
+    return head, (status is None or status != "")
+
+
+def density_tensor(simple_mask: torch.Tensor, q_block_num: int,
+                   k_block_num: int) -> torch.Tensor:
+    """`realised_density` as a 0-dim tensor on the mask's device, so a
+    forward can record it without a host sync inside the timed region."""
+    m = simple_mask[0, :, :q_block_num, :k_block_num]
+    valid = torch.ones(q_block_num, k_block_num, dtype=torch.bool,
+                       device=m.device).tril(diagonal=k_block_num - q_block_num)
+    return (m & valid).sum() / (valid.sum() * m.shape[0])
+
+
 def realised_density(simple_mask: torch.Tensor, q_block_num: int, k_block_num: int) -> float:
     """Fraction of causally valid blocks kept, over heads. The mask's rows
     beyond the causal triangle are excluded: `keep_sink` sets query block 0's
     whole row, and those future blocks are masked again in-kernel by
     `is_causal`, so counting them would overstate the work done."""
-    m = simple_mask[0, :, :q_block_num, :k_block_num]
-    valid = torch.ones(q_block_num, k_block_num, dtype=torch.bool,
-                       device=m.device).tril(diagonal=k_block_num - q_block_num)
-    kept = (m & valid).sum().item()
-    return kept / (valid.sum().item() * m.shape[0])
+    return float(density_tensor(simple_mask, q_block_num, k_block_num))
 
 
 @register
@@ -98,7 +140,9 @@ class XAttentionBackend(AttentionBackend):
         self.keep_sink = keep_sink
         self.keep_recent = keep_recent
         self.use_triton = use_triton
-        self.last_layer_density: list[float] = []
+        # Decided once, on the first CUDA call, by the official device test.
+        self.triton_effective: Optional[bool] = None
+        self.last_layer_density: list[torch.Tensor] = []
 
     @staticmethod
     def _import_check():
@@ -112,10 +156,16 @@ class XAttentionBackend(AttentionBackend):
         """The official estimator, with the arguments `Xattention_prefill`
         passes it. Returns the (1, H, q_blocks_padded, k_blocks_padded) mask."""
         from xattn.src.Xattention import xattn_estimate
+        use_triton = self.use_triton
+        if q.device.type == "cuda":
+            if self.triton_effective is None:
+                self.triton_effective = triton_for_device(
+                    torch.cuda.get_device_properties(q.device).name, self.use_triton)
+            use_triton = self.triton_effective
         _, simple_mask = xattn_estimate(
             q, k_rep, block_size=XATTN_BLOCK_SIZE, stride=self.stride, norm=1,
             threshold=self.threshold, select_mode="inverse",
-            use_triton=self.use_triton, causal=True,
+            use_triton=use_triton, causal=True,
             chunk_size=official_chunk_size(k_rep.shape[2]), kdb=1,
             keep_sink=self.keep_sink, keep_recent=self.keep_recent)
         return simple_mask
@@ -135,7 +185,10 @@ class XAttentionBackend(AttentionBackend):
 
         _, h, s, d = q.shape
         nb = -(-s // XATTN_BLOCK_SIZE)
-        self.last_layer_density.append(realised_density(simple_mask, nb, nb))
+        # Kept on the device: a .item() here would sync the stream once per
+        # layer inside the timed prefill. Read after the timer stops
+        # (generation.generate_one).
+        self.last_layer_density.append(density_tensor(simple_mask, nb, nb))
 
         # From here to the return: Xattention_prefill's own kernel call, same
         # arguments, same order. Bitwise equality with it is a CUDA test.
