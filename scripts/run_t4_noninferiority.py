@@ -104,8 +104,10 @@ def main():
             "sparse_correct", "b_sparse_only", "c_dense_only", "diff_pts",
             "lower_pts", "tested", "claim"]
     with pd.option_context("display.width", 200, "display.max_rows", 200):
+        # Round the point columns only: a blanket round(1) printed sparsity
+        # 0.75 as 0.8, a grid value that does not exist.
         print(res.sort_values(["tier", "task", "band", "score_source", "sparsity"])[cols]
-              .round(1).to_string(index=False))
+              .round({"diff_pts": 1, "lower_pts": 1}).to_string(index=False))
     print(f"\nmargin {t4_pilot.MARGIN_PTS} pts, one-sided alpha {t4_pilot.ALPHA}; "
           f"written to {out}/")
 

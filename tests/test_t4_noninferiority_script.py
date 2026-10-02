@@ -87,3 +87,11 @@ def test_refusals(tmp_path, bad):
         df.loc[df.backend == "block_sparse", "score_source"] = "minference_meanpool"
     with pytest.raises(SystemExit):
         _run(tmp_path, df)
+
+
+def test_printed_table_keeps_the_grid_sparsities(tmp_path, capsys):
+    """A blanket round(1) printed 0.75 as 0.8 on the 2026-10-02 pilot table."""
+    losses = {(ORACLE, s): 0 for s in t4_pilot.SPARSITY_SEQUENCE}
+    _run(tmp_path, _rows(losses))
+    out = capsys.readouterr().out
+    assert " 0.75 " in out and " 0.8 " not in out
