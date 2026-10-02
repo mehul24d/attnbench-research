@@ -172,3 +172,55 @@ unmeasured. If an XAttention row costs about what a dense row does, the
 pilot is about 1600 rows and 2–3 L4-hours. The canary is about 40 minutes.
 The cap, hard-delete limit and artifact paths are stated with the command
 before each session launches.
+
+## Canary result (2026-10-02): passed
+
+The canary ran on an NVIDIA L4 in `asia-northeast1-a` (instance
+`attnbench-l4-xattn-canary-20261002-2016`) at commit `cc769b3`. That commit
+is `2c66de1` plus an edit to `docs/spend_ledger.md` and nothing else. The
+environment was torch 2.9.1+cu129 and transformers 4.46.0, with x-attention
+installed at `e379887`. Every phase was synced to GCS. The rows are under
+`results/t4_xattn_canary_session_20261002/` and are never pooled with the
+pilot.
+
+| # | criterion | result |
+|---|---|---|
+| 1 | install | `x-attention e379887 installed, clean, importable` |
+| 2 | CUDA gate | 50 passed, 0 skipped, including all six `test_bitwise_equal_to_xattention_prefill_on_cuda` cases and `test_the_installed_xattention_is_the_pinned_clean_checkout` |
+| 3 | rows | 12 dense and 12 per threshold. All have `git_dirty=False` and one commit. Every XAttention row is `block_sparse`, with its threshold (12 per value, none missing) and a realised density in (0, 1] |
+| 4 | 32768 at every threshold | completed, no OOM, every phase `rc=0` |
+| 5 | dense vs the sparse pilot's dense | 12 of 12 predictions identical |
+| 6 | estimator cost | `xattn_estimate` available at every threshold, `xattn_triton=False` on every row |
+
+**Realised density.** This is the fraction of causally valid blocks kept,
+averaged over layers, ranging across the canary's examples:
+
+| band | tau 0.95 | tau 0.9 | tau 0.8 |
+|---:|---|---|---|
+| 16384 | 0.37–0.40 | 0.27–0.29 | 0.18 |
+| 32768 | 0.10–0.34 | 0.08–0.23 | 0.06–0.14 |
+
+Even the least aggressive threshold keeps fewer blocks than the sparse
+pilot's 0.5 setting. As the plan requires, the thresholds are not changed.
+
+**Estimator cost, per layer, on the L4's torch path.** Medians of 30, at the
+model's geometry:
+
+| band | dense | `xattn_estimate` (any tau) | block-sparse 0.5 / 0.75 / 0.9 |
+|---:|---:|---:|---:|
+| 16384 | 14.54 ms | 19.4–19.6 ms | 8.66 / 5.18 / 2.94 ms |
+| 32768 | 58.41 ms | 60.6–60.7 ms | 31.83 / 17.63 / 8.79 ms |
+
+On this card, XAttention's estimator alone costs more than the dense
+attention it is meant to prune, at both bands and every threshold. Its
+estimator-to-saving ratio therefore exceeds 1 at any density, and the arm
+cannot be faster than dense on an L4.
+
+This is the torch fallback's cost. The official code takes that path on any
+device whose name lacks "100". It is not the method's official cost, and it
+enters no claim without that qualifier. The accuracy question the pilot
+pre-registers is unaffected, because the fallback selects the same blocks.
+
+**Timing for the pilot.** Each 12-row phase took about 100 s, including the
+model load. At about 5 s per row, the pilot's 1600 rows come to roughly 3
+hours in one session covering both bands.
