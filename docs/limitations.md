@@ -2754,4 +2754,45 @@ licenses. These are its limits:
   CUDA bitwise test, schema fields and thresholds exist. Until then, "the
   deployable estimator fails" means the mean-pool estimator fails, not every
   estimator.
+  *Update 2026-10-03: XAttention has now run as pre-registered and certifies
+  nothing either (`docs/t4_xattention_pilot.md`). The sentence now covers
+  two estimators. It still does not cover every estimator, nor XAttention
+  with per-layer thresholds calibrated for this model.*
 
+
+---
+
+## XAttention runs with a scalar threshold, and on an L4 without Triton (2026-10-02)
+
+The XAttention phase (`docs/t4_xattention_pilot.md`) departs from the
+method's own evaluation in two pre-stated ways. Both bear on what its
+results can say about XAttention as published.
+
+- **One scalar threshold per run.** XAttention's LongBench evaluation uses
+  per-layer thresholds profiled for Llama-3.1-8B
+  (`xattn/threshold/llama_threshold.py` at the pinned commit). None exist
+  for Qwen2.5, and profiling them here would tune the arm on the data it is
+  tested on. So each run uses one tau from a pre-registered grid. A failure
+  to certify is a result about XAttention with a scalar threshold, not about
+  XAttention with thresholds profiled for this model.
+- **The torch path on an L4.** `xattn_estimate` keeps Triton only on a
+  device whose name contains "100", so on an L4 its estimator runs the torch
+  fallback. This does not change the selected blocks, so accuracy is
+  unaffected. It does change the cost: an L4 estimator timing is the
+  fallback's cost, not the method's. Every timing row records `xattn_triton`.
+
+**What the phase showed about the first deviation (2026-10-03).** At a
+fixed tau, the density the scalar threshold produced varied more with the
+prompt than with tau. At 32768 and tau 0.95 it kept 33% of blocks on
+`qa_1`'s documents and 11% on the NIAH essays, where `niah_multivalue`
+collapsed to 0 of 50. A threshold that keeps a different fraction on each
+haystack is exactly what per-layer calibration exists to correct. So the
+phase's negative result is bounded by this deviation, not independent of
+it.
+
+*Update 2026-10-03: a calibrated phase that removes the first deviation is
+pre-registered in `docs/t4_xattention_calibrated.md`. It profiles
+per-(layer, head) thresholds with the method's own profiler, on the
+authors' profiling set (the arm that may claim) and on held-out RULER
+examples (descriptive only). It is declared the last XAttention
+configuration tested on this model.*

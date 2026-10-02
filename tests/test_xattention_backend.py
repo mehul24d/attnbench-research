@@ -23,7 +23,8 @@ import torch
 
 from attnbench.backends.base import UnsupportedConfig
 from attnbench.backends.xattention import (XATTN_COMMIT, XAttentionBackend,
-                                           official_chunk_size, realised_density)
+                                           installed_checkout, official_chunk_size,
+                                           realised_density, triton_for_device)
 from attnbench.config import AttnConfig
 
 S, HQ, HKV, D = 300, 4, 2, 16          # 300 tokens -> 3 blocks of 128
@@ -119,7 +120,7 @@ def test_realised_density_counts_only_causal_blocks(fakes):
     b.forward(*_qkv(), _cfg())
     # fake mask: full lower triangle (6 of 9 blocks valid) plus row 0's future
     # blocks from keep_sink, which must NOT count.
-    assert b.last_layer_density == [1.0]
+    assert [float(d) for d in b.last_layer_density] == [1.0]
     m = torch.zeros(1, 2, 3, 3, dtype=torch.bool)
     m[:, :, [0, 1, 2], [0, 1, 2]] = True                  # diagonal only
     assert realised_density(m, 3, 3) == pytest.approx(3 / 6)
@@ -140,6 +141,34 @@ def test_refusals(fakes):
 
 def test_the_pinned_commit_is_a_full_sha():
     assert len(XATTN_COMMIT) == 40 and int(XATTN_COMMIT, 16) >= 0
+
+
+def test_triton_follows_the_official_device_test():
+    """`xattn_estimate` keeps Triton only on a device whose name contains
+    "100"; the backend decides the same way, once, so the L4 takes the torch
+    path without the official per-call print."""
+    assert triton_for_device("NVIDIA A100-SXM4-40GB")
+    assert triton_for_device("NVIDIA H100 80GB HBM3")
+    assert not triton_for_device("NVIDIA L4")
+    assert not triton_for_device("NVIDIA A100-SXM4-40GB", requested=False)
+
+
+def test_installed_checkout_reads_the_importing_checkout(tmp_path, monkeypatch):
+    import subprocess as sp
+    repo = tmp_path / "x-attention"
+    (repo / "xattn").mkdir(parents=True)
+    (repo / "xattn" / "__init__.py").write_text("")
+    env = dict(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@t", PATH=__import__("os").environ["PATH"])
+    for cmd in (["init", "-q"], ["add", "."], ["commit", "-qm", "x"]):
+        sp.run(["git", "-C", str(repo), *cmd], check=True, env=env)
+    head = sp.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                  capture_output=True, text=True, check=True).stdout.strip()
+    fake = types.ModuleType("xattn"); fake.__file__ = str(repo / "xattn" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "xattn", fake)
+    assert installed_checkout() == (head, False)
+    (repo / "xattn" / "__init__.py").write_text("# edited")
+    assert installed_checkout() == (head, True)
 
 
 def _real_xattn():
@@ -169,3 +198,27 @@ def test_bitwise_equal_to_xattention_prefill_on_cuda(seq_len, threshold):
     theirs = Xattention_prefill(q, kr, vr, stride=8, norm=1, threshold=threshold,
                                 use_triton=True, keep_sink=True, keep_recent=True)
     assert torch.equal(ours, theirs)
+
+
+@pytest.mark.skipif(not _real_xattn(), reason="needs CUDA + x-attention + block-sparse-attn (Phase A gate)")
+def test_the_installed_xattention_is_the_pinned_clean_checkout():
+    """Nothing checked the installed estimator's version before 2026-10-02.
+    A different commit is a different method, and an edited checkout is no
+    commit at all."""
+    assert installed_checkout() == (XATTN_COMMIT, False)
+
+
+
+def test_the_install_script_refuses_a_checkout_inside_the_repository():
+    """A checkout in the working tree dirties it, and every row after would
+    be stamped git_dirty=True. Refused before anything is cloned."""
+    import os
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    target = root / "x-attention-should-not-exist"
+    p = subprocess.run(["bash", "scripts/install_xattention.sh"], cwd=root,
+                       env={**os.environ, "XATTN_DIR": str(target)},
+                       capture_output=True, text=True, timeout=120)
+    assert p.returncode == 1 and "inside the repository" in p.stderr
+    assert not target.exists()

@@ -63,6 +63,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from attnbench import masks, provenance                                  # noqa: E402
+from attnbench.accuracy.t4_pilot import XATTN_THRESHOLD_SEQUENCE         # noqa: E402
 from attnbench.accuracy.grid_configs import backend_instance             # noqa: E402
 from attnbench.accuracy.model import minference_meanpool_scores_on_device  # noqa: E402
 from attnbench.config import AttnConfig                                  # noqa: E402
@@ -202,9 +203,13 @@ def measure(*, seq_lens, sparsities, thresholds, block_size, geometry, device,
                 xb = XAttentionBackend(threshold=tau)
                 xb._import_check()
                 k_rep, _ = _expand_kv(k, v, cfg)
-                rows.append(_row("xattn_estimate", s, _samples(
-                    lambda: xb.estimate(q, k_rep), device=device,
-                    warmup=warmup, reps=reps), threshold=tau))
+                samples = _samples(lambda: xb.estimate(q, k_rep), device=device,
+                                   warmup=warmup, reps=reps)
+                # Whether the official device test kept Triton: False on an
+                # L4, whose name lacks "100", so the time there is the torch
+                # path's and not the method's official cost.
+                rows.append(_row("xattn_estimate", s, samples, threshold=tau,
+                                 xattn_triton=xb.triton_effective))
             except Exception as e:
                 rows.append(_unavailable("xattn_estimate", s,
                                          f"{type(e).__name__}: {e}", threshold=tau))
@@ -242,7 +247,8 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--seq-lens", default="16384,32768")
     ap.add_argument("--sparsities", default="0.5,0.75,0.9")
-    ap.add_argument("--xattn-thresholds", default="0.9,0.95",
+    ap.add_argument("--xattn-thresholds",
+                    default=",".join(f"{t:g}" for t in XATTN_THRESHOLD_SEQUENCE),
                     help="XAttention thresholds to time when installed; '' for none")
     ap.add_argument("--block-size", type=int, default=128)
     ap.add_argument("--device", default="cuda")

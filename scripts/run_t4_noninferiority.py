@@ -30,6 +30,20 @@ from attnbench.accuracy import t4_pilot                                  # noqa:
 from attnbench.analysis.exact_noninferiority import run_exact_ni         # noqa: E402
 
 
+# The sparse pilot's two arms and the XAttention phase's one
+# (docs/t4_sparse_pilot.md, docs/t4_xattention_pilot.md).
+PLANNED_SOURCES = (set(t4_pilot.SPARSE_PILOT_SCORE_SOURCES)
+                   | {t4_pilot.XATTN_SCORE_SOURCE})
+
+
+def _sequence(score_source: str) -> tuple:
+    """The pre-registered order of an arm's settings: sparsities for the
+    fixed-sparsity arms, thresholds (least aggressive first) for XAttention."""
+    if score_source == t4_pilot.XATTN_SCORE_SOURCE:
+        return t4_pilot.XATTN_THRESHOLD_SEQUENCE
+    return t4_pilot.SPARSITY_SEQUENCE
+
+
 def load(paths: list[str], *, allow_mixed_commits: bool) -> pd.DataFrame:
     df = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
     if df["git_dirty"].fillna(True).astype(bool).any():
@@ -43,30 +57,47 @@ def load(paths: list[str], *, allow_mixed_commits: bool) -> pd.DataFrame:
     if off_plan:
         raise SystemExit(f"REFUSING: tasks outside the plan: {off_plan}")
     sources = set(df.score_source.dropna())
-    if sources - set(t4_pilot.SPARSE_PILOT_SCORE_SOURCES):
+    if sources - PLANNED_SOURCES:
         raise SystemExit(f"REFUSING: arms outside the plan: "
-                         f"{sorted(sources - set(t4_pilot.SPARSE_PILOT_SCORE_SOURCES))}")
+                         f"{sorted(sources - PLANNED_SOURCES)}")
     return df
 
 
 def fixed_sequence(results: pd.DataFrame) -> pd.DataFrame:
     """Mark which sparsities the pre-registered sequence reached.
 
-    Within each (task, band, score_source), sparsities are tested in
-    t4_pilot.SPARSITY_SEQUENCE order and testing stops at the first that is
-    not non-inferior. A sparsity after the stop is reported with its bound
+    Within each (task, band, score_source), settings are tested in their
+    pre-registered order (`_sequence`: sparsities 0.5 -> 0.9 for the
+    fixed-sparsity arms, thresholds 0.95 -> 0.8 for XAttention) and testing
+    stops at the first that is not non-inferior. A sparsity after the stop is reported with its bound
     but `tested=False`, and no claim may be made from it.
     """
     results = results.copy()
     results["score_source"] = results.arm.str.split("@").str[0]
-    results["sparsity"] = results.arm.str.split("@").str[1].astype(float)
-    order = {s: i for i, s in enumerate(t4_pilot.SPARSITY_SEQUENCE)}
-    results["seq_pos"] = results.sparsity.map(order)
+    raw = results.arm.str.split("@").str[1]
+    is_cal = raw.str.startswith("cal=")
+    # A calibrated table is one setting, so each is its own one-test family:
+    # position 0, and the family key carries the calibration name so two
+    # calibrations never share a sequence.
+    results["xattn_calibration"] = raw.where(is_cal).str[len("cal="):]
+    setting = pd.to_numeric(raw.where(~is_cal), errors="coerce")
+    is_tau = results.score_source.eq(t4_pilot.XATTN_SCORE_SOURCE) & ~is_cal
+    results["sparsity"] = setting.where(~is_tau & ~is_cal)
+    results["xattn_threshold"] = setting.where(is_tau)
+    results["seq_pos"] = [
+        0 if c else {v: i for i, v in enumerate(_sequence(src))}.get(v)
+        for src, v, c in zip(results.score_source, setting, is_cal)]
+    results["seq_pos"] = results["seq_pos"].astype(float)
+    unknown = sorted(set(results.xattn_calibration.dropna())
+                     - set(t4_pilot.XATTN_CALIBRATIONS))
+    if unknown:
+        raise SystemExit(f"REFUSING: calibrations the plan does not register: {unknown}")
     if results.seq_pos.isna().any():
         raise SystemExit("REFUSING: a sparsity outside the pre-registered sequence")
     tested = []
-    for _, grp in results.sort_values("seq_pos").groupby(
-            ["task", "band", "score_source"], sort=False):
+    family = results.score_source + "|" + results.xattn_calibration.fillna("")
+    for _, grp in results.assign(_family=family).sort_values("seq_pos").groupby(
+            ["task", "band", "_family"], sort=False):
         still = True
         expected = 0
         for _, r in grp.iterrows():
@@ -76,8 +107,11 @@ def fixed_sequence(results: pd.DataFrame) -> pd.DataFrame:
             still = still and bool(r.non_inferior)
             expected += 1
     results["tested"] = pd.Series(dict(tested))
-    results["claim"] = results.tested & results.non_inferior
-    return results.drop(columns="seq_pos")
+    # A descriptive calibration is tested and reported, and never claims.
+    descriptive = results.xattn_calibration.map(
+        lambda c: t4_pilot.XATTN_CALIBRATIONS.get(c) == "descriptive")
+    results["claim"] = results.tested & results.non_inferior & ~descriptive.astype(bool)
+    return results
 
 
 def main():
@@ -100,14 +134,16 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     res.to_parquet(out / "t4_noninferiority.parquet")
     res.to_csv(out / "t4_noninferiority.csv", index=False)
-    cols = ["tier", "task", "band", "score_source", "sparsity", "n", "dense_correct",
-            "sparse_correct", "b_sparse_only", "c_dense_only", "diff_pts",
-            "lower_pts", "tested", "claim"]
+    cols = ["tier", "task", "band", "score_source", "sparsity", "xattn_threshold",
+            "xattn_calibration",
+            "n", "dense_correct", "sparse_correct", "b_sparse_only", "c_dense_only",
+            "diff_pts", "lower_pts", "mean_realised_density", "tested", "claim"]
     with pd.option_context("display.width", 200, "display.max_rows", 200):
         # Round the point columns only: a blanket round(1) printed sparsity
         # 0.75 as 0.8, a grid value that does not exist.
-        print(res.sort_values(["tier", "task", "band", "score_source", "sparsity"])[cols]
-              .round({"diff_pts": 1, "lower_pts": 1}).to_string(index=False))
+        print(res.sort_values(["tier", "task", "band", "score_source", "seq_pos"])[cols]
+              .round({"diff_pts": 1, "lower_pts": 1, "mean_realised_density": 3})
+              .to_string(index=False))
     print(f"\nmargin {t4_pilot.MARGIN_PTS} pts, one-sided alpha {t4_pilot.ALPHA}; "
           f"written to {out}/")
 

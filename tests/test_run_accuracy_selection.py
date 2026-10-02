@@ -163,3 +163,32 @@ def test_sparse_pilot_refuses_what_the_plan_does_not_contain(monkeypatch, capsys
                   ["--t4-dense-pilot"], ["--mask-source", "importance_randfree"]):
         with pytest.raises(SystemExit):
             _dry_run(monkeypatch, capsys, tmp_path, "--t4-sparse-pilot", *extra)
+
+
+# --- the XAttention phase ------------------------------------------------
+
+def test_xattn_pilot_plans_dense_and_one_threshold(monkeypatch, capsys, tmp_path):
+    total, backends = _dry_run(monkeypatch, capsys, tmp_path, "--t4-xattn-pilot",
+                               "--xattn-threshold", "0.95")
+    assert backends == ["sdpa_flash", "xattention"]
+    assert total == 400 * 2
+    total, backends = _dry_run(monkeypatch, capsys, tmp_path / "d", "--t4-xattn-pilot",
+                               "--only-backends", "sdpa_flash")
+    assert (total, backends) == (400, ["sdpa_flash"])
+    total, backends = _dry_run(monkeypatch, capsys, tmp_path / "x", "--t4-xattn-pilot",
+                               "--xattn-threshold", "0.8", "--only-backends", "xattention",
+                               "--n-per-length", "2")
+    assert (total, backends) == (3 * 2 * 2, ["xattention"])
+
+
+def test_xattn_pilot_refuses_what_the_plan_does_not_contain(monkeypatch, capsys, tmp_path):
+    for argv in (["--t4-xattn-pilot"],                               # no threshold
+                 ["--t4-xattn-pilot", "--xattn-threshold", "0.85"],  # off the grid
+                 ["--t4-xattn-pilot", "--xattn-threshold", "0.9", "--t4-sparse-pilot"],
+                 ["--t4-xattn-pilot", "--xattn-threshold", "0.9", "--tasks", "vt"],
+                 ["--t4-xattn-pilot", "--xattn-threshold", "0.9", "--sparsities", "0.5"],
+                 ["--t4-xattn-pilot", "--xattn-threshold", "0.9",
+                  "--score-source", "minference_meanpool_inline"],
+                 ["--xattn-threshold", "0.9"]):                       # without the pilot
+        with pytest.raises(SystemExit):
+            _dry_run(monkeypatch, capsys, tmp_path, *argv)

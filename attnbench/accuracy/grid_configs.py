@@ -11,7 +11,7 @@ grid" that could silently drift from the real one.
 from __future__ import annotations
 
 from .. import backends
-from .schema import GATED_BACKENDS
+from .schema import GATED_BACKENDS, SELF_SELECTING_BACKENDS
 from ..backends.base import AttentionBackend
 from .config import AccuracyGrid
 from .ruler import RulerExample, generate_examples
@@ -195,7 +195,8 @@ DENSE_DECODE_BACKEND_HISTORY = (
 )
 
 
-def backend_instance(name: str, *, gate_source: str | None = None) -> AttentionBackend:
+def backend_instance(name: str, *, gate_source: str | None = None,
+                     xattn_threshold: float | None = None) -> AttentionBackend:
     """A backend by the name a result row carries.
 
     SDPA is one registered class with a pinned kernel per instance, so a row
@@ -226,6 +227,18 @@ def backend_instance(name: str, *, gate_source: str | None = None) -> AttentionB
                 f"do nothing while reading as though the backend had been "
                 f"configured.")
         kwargs["gate_source"] = gate_source
+    # Same rule for the threshold of a backend that selects its own blocks:
+    # required there (an unstated threshold would fall back to the class
+    # default and the row would still record it as chosen), refused
+    # everywhere else.
+    if name in SELF_SELECTING_BACKENDS:
+        if xattn_threshold is None:
+            raise ValueError(f"backend {name!r} selects its own blocks; pass "
+                             f"its threshold explicitly")
+        kwargs["threshold"] = xattn_threshold
+    elif xattn_threshold is not None:
+        raise ValueError(f"xattn_threshold={xattn_threshold!r} passed for "
+                         f"backend {name!r}, which takes no threshold")
     return cls(**kwargs)
 
 
