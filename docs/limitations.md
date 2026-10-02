@@ -685,6 +685,15 @@ is recorded on every row as `score_source="dense_softmax_fp32"` rather than
 left in a docstring. A future cheap-estimator variant becomes a new
 `score_source` value, not a silent change in meaning.
 
+**Update 2026-10-02.** That future variant now exists and has been run as
+pre-registered: `score_source="minference_meanpool_inline"`, the T4 sparse
+pilot (`docs/t4_sparse_pilot.md`). Its ranking runs inside the measured
+forward, so its cost is *included* in `latency_ms`. It certifies
+non-inferiority at no sparsity on any task. So the "upper bound" reading
+above is now measured from the other side too: on these tasks, the
+deployable arm sits well below the bound. Every `dense_softmax_fp32` row keeps
+its qualifier.
+
 ### The oracle is not only a ceiling. It can put sparse ABOVE dense — mostly WITHDRAWN 2026-09-20
 
 Stated as "an upper bound" this reads as a bound on how good sparse can be
@@ -2709,3 +2718,40 @@ This also makes the study's own sink-forcing rule an evidenced choice rather
 than an imported convention: Sparse Frontier's Appendix A.1.1 forces the sink,
 this study now has its own measurement of what that is worth, and the two
 agree.
+
+---
+
+## The T4 sparse pilot answers a narrow question (2026-10-02)
+
+`docs/t4_sparse_pilot.md` gives the design and the full tables, and
+`claims.md`, "The deployable estimator, run inline", gives the sentences it
+licenses. These are its limits:
+
+- **One model, one card, three tasks, two bands.** The model is
+  Qwen2.5-1.5B-Instruct and the card is an L4. The tasks were chosen by the
+  dense pilot's 40–90 rule on an n=5 probe. The estimator's failure is shown
+  for this model; the 2026-09-17 two-pass result suggests a larger model
+  widens it rather than closing it, but that was measured on `niah_multikey`,
+  not here.
+- **The n=50 cells can barely certify.** One dense-only discordant pair at
+  n=50 already puts the bound at −12.1. That is why `qa_1` carries the
+  primary claim at n=100. A failure to certify on a secondary cell is
+  therefore weak evidence by itself. The inline arm's failures do not rest on
+  that: its point differences at 0.5 are −14 to −22 on those cells.
+- **The fixed sequence stops early by design.** The oracle on `qa_1` at
+  32768 stopped at 0.5 (bound −12.7). Its bound at 0.75 (−8.3) clears the
+  margin and carries no claim. A sequence chosen after seeing that would
+  have certified it, which is the reason the order was fixed first.
+- **The estimator cost is per layer and kernel for kernel.** It is measured
+  on random inputs at the model's geometry, with CUDA events, as a median of
+  30. It is not an end-to-end speedup. The `latency_ms` on accuracy rows is
+  one generate per example, with no warm-up or repeats, and it is reported
+  descriptively only.
+- **Latency at matched accuracy is unmeasured, and for the inline arm it
+  has nothing to measure yet.** With no certified sparsity, there is no
+  matched operating point.
+- **XAttention has not run.** The plan defers it until its installation,
+  CUDA bitwise test, schema fields and thresholds exist. Until then, "the
+  deployable estimator fails" means the mean-pool estimator fails, not every
+  estimator.
+

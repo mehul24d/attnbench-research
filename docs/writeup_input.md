@@ -97,6 +97,9 @@ good-enough ranking for **under ~3% of the scoring pass's cost** (1/35) while
 preserving enough of the oracle's ordering to keep accuracy at ceiling.
 
 **The accuracy half of that bar fails; the cost half was never measured.**
+*Update 2026-10-02: the cost half has now been measured, inline, and the
+accuracy half fails again; see the T4 pilot block directly after this
+table's note.*
 MInference's mean-pool estimator (arXiv:2407.02490, Algorithm 3) forms a
 (S/b)×(S/b) score matrix instead of the oracle's S×S — about 16,000× fewer
 score entries at 32768/128 — so it is cheap **by construction**. No timing of
@@ -123,6 +126,26 @@ to the decimal (66.0 / 100.0 / 78.8) as the control:
 > cross-era, which is a worse error than the staleness. The conclusion is
 > unaffected either way — the gap spans 30–76 points against a 6-point shift —
 > but do not mix the two tables. See `docs/audit_register.md`, item S12.
+
+**The T4 sparse pilot (2026-10-02) runs that estimator as deployed.** It ran
+inline, each layer ranking from its own q and k inside the measured forward,
+pre-registered in `docs/t4_sparse_pilot.md`. It used an L4, one commit,
+Qwen2.5-1.5B-Instruct, `qa_1` / `niah_multivalue` / `niah_multiquery` at 16384
+and 32768, and an exact paired bound with a 10-point margin under a fixed
+sequence. The supported sentences, copied from `claims.md`, "The deployable
+estimator, run inline":
+
+| | |
+|---|---|
+| **Supported** | *At sparsity 0.5, block-sparse attention with an oracle mask is non-inferior to dense within 10 points on `qa_1` at 16384 (exact one-sided 97.5% bound −9.0 points; 70 vs 68 of 100), given a ranking computed from the full attention scores.* |
+| **Supported** | *Run inline, MInference's mean-pool estimator is non-inferior to dense at no sparsity on any of the pilot's tasks or bands. Its first test, at 0.5, fails in every primary and secondary cell, with point differences of −7 to −24 and bounds of −22.2 to −42.0.* |
+| **Supported** | *Inline and kernel for kernel, the mean-pool estimator plus its warm device mask build costs 0.06–0.31 of the attention time it saves, on an L4, at both bands and all three sparsities. It does not synchronise the device.* |
+| **Not supported** | *Block-sparse attention at 0.5 loses no accuracy on `qa_1`.* |
+| **Not supported** | *The deployable estimator makes block-sparse attention profitable.* |
+
+So both halves of the break-even bar are now measured for one deployable
+estimator: it clears the cost half, kernel for kernel, and fails the accuracy
+half. XAttention, the next arm, has not run.
 
 **This inverts the structure of the finding.** It was a speedup with an
 unaffordable precondition, which reads as an artifact standing between the
@@ -167,7 +190,10 @@ small-scale artifact" until 2026-10-01.)*
 |---|---|
 | **Supported** | *Block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192.* |
-| **Supported** | *The affordable substitute does not recover the accuracy. MInference's mean-pool estimator — cheap by construction, its cost unmeasured — loses 32 to 40 points on the one task with headroom at 16384, the gap widening with sparsity. At block size 128; an upper bound on the gap at their 16.* |
+| **Supported** | *The affordable substitute does not recover the accuracy. MInference's mean-pool estimator — cheap by construction, and measured inline on 2026-10-02 at 0.06–0.31 of the kernel saving it buys — loses 32 to 40 points on the one task with headroom at 16384, the gap widening with sparsity. At block size 128; an upper bound on the gap at their 16.* |
+
+*The row above said "its cost unmeasured" until 2026-10-02 (`claims.md`,
+"The deployable estimator, run inline").*
 | **Not supported** | *Block-sparse attention delivers 1.321× at 32768.* Not as a system. It delivers that **given a mask nobody can afford to compute**, whose cost is 44.6 s per example against the 1286 ms saved — 35×, a ratio that has moved 4% since 16384. |
 | **Not supported** | *Higher sparsity is always better at long context.* 0.9 buys 1.404× against 0.75's 1.321×, for an accuracy difference of one example in 50 that the CI cannot separate from zero. At that margin 0.75 is the defensible pick — not because 0.9 is worse, but because nothing here shows it is not. |
 
@@ -613,7 +639,10 @@ baseline falling. The across-lengths leg is weaker than it was: at 0.75 the
 forced-sink deltas are −15 / −18 / −21, a drift rather than the 73.0 → 72.3 →
 41.7 collapse the unforced masks produced.
 
-### Gap 3 — The estimator's cost, which kernel benchmarks exclude — **ANSWERED for the oracle (~35×); the deployable estimator's cost is unmeasured**
+### Gap 3 — The estimator's cost, which kernel benchmarks exclude — **ANSWERED for the oracle (~35×) and, since 2026-10-02, for one deployable estimator run inline (cheap, and not accuracy-preserving)**
+
+*(This heading ended "the deployable estimator's cost is unmeasured" until
+2026-10-02.)*
 
 Priced as a first-class result (§1) rather than a limitation. *(This heading
 said "which published speedups exclude" until 2026-10-01; MInference and
