@@ -74,6 +74,15 @@ CLASSIFIED: dict[tuple[str, str, str], str] = {
         "block_sparse against plain causal configs, creating cells this "
         "study's design excludes.",
 
+    ("attnbench/backends/xattention.py", "forward", "forward"):
+        "UNGUARDED BY DESIGN. ThresholdProfiler.forward hands the official "
+        "profiler each layer's q and k, then returns dense causal SDPA as the "
+        "layer output so the next layer is profiled on the hidden states the "
+        "real model produces. The config is the model's own causal prefill, "
+        "and SDPA (flash on CUDA, math on CPU) is the dense reference every "
+        "accuracy arm already runs at that config; there is no declined cell "
+        "for a guard to catch.",
+
     # --- guarded -------------------------------------------------------------
     ("attnbench/gates.py", "check_correctness", "reference"):
         "GUARDED. The oracle is asked before it is run -- added 2026-09-04 "

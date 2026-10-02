@@ -136,7 +136,11 @@ class Generated:
     # causally valid blocks it kept.
     # None for every backend that does not select its own blocks.
     xattn_threshold: Optional[float] = None
+    # Set instead of xattn_threshold when the backend ran a calibrated
+    # per-(layer, head) table: "<name>:<sha256[:12]>" of its values.
+    xattn_calibration: Optional[str] = None
     realised_density: Optional[float] = None
+    realised_density_by_layer: Optional[list] = None
 
 
 @dataclass
@@ -199,7 +203,11 @@ class AccuracyResult:
     # below): the threshold the estimator ran at, and the mean realised
     # density over layers it produced on this example.
     xattn_threshold: Optional[float] = None
+    # Exactly one of xattn_threshold and xattn_calibration is set on a
+    # self-selecting row: a scalar tau, or a calibrated table's label.
+    xattn_calibration: Optional[str] = None
     realised_density: Optional[float] = None
+    realised_density_by_layer: Optional[list] = None
     latency_ms: Optional[float] = None
     detail: str = ""
 
@@ -238,17 +246,21 @@ class AccuracyResult:
                 f"gate_source={self.gate_source!r} on its row claims a "
                 f"mechanism that did not run. Leave it None.")
         selecting = self.backend in SELF_SELECTING_BACKENDS
-        have = (self.xattn_threshold is not None, self.realised_density is not None)
-        if selecting and have != (True, True):
+        setting = (self.xattn_threshold is not None) + (self.xattn_calibration is not None)
+        density = self.realised_density is not None
+        if selecting and (setting != 1 or not density):
             raise ValueError(
                 f"backend {self.backend!r} selects its own blocks, so its row "
-                f"must record the threshold that ran and the density it "
-                f"produced (xattn_threshold={self.xattn_threshold!r}, "
+                f"must record exactly one setting that ran -- a threshold or "
+                f"a calibration -- and the density it produced "
+                f"(xattn_threshold={self.xattn_threshold!r}, "
+                f"xattn_calibration={self.xattn_calibration!r}, "
                 f"realised_density={self.realised_density!r}).")
-        if not selecting and have != (False, False):
+        if not selecting and (setting or density
+                              or self.realised_density_by_layer is not None):
             raise ValueError(
                 f"backend {self.backend!r} does not select its own blocks; "
-                f"xattn_threshold and realised_density must be None.")
+                f"xattn_threshold, xattn_calibration and the densities must be None.")
 
     def to_dict(self) -> dict:
         return asdict(self)

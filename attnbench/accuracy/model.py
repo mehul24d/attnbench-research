@@ -510,6 +510,12 @@ class SwappedAttention(nn.Module):
                 # masks.py's own stated convention).
                 importance = pooled.mean(dim=0)
                 mask = masks.mask_for(cfg, importance_scores=importance)
+            # Backends whose setting differs per layer (XAttention with a
+            # calibrated per-(layer, head) threshold table, and the
+            # threshold profiler) are told which layer this is; the rest
+            # take no such call.
+            if hasattr(state.backend, "set_layer"):
+                state.backend.set_layer(self.layer_idx)
             out = state.backend.forward(q, k, v, cfg, mask=mask)
             if state.capture_decode_state:
                 # k/v here are un-expanded (B, n_heads_kv, S, D), which is

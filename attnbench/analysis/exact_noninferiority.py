@@ -131,6 +131,11 @@ def arm_label(row: pd.Series) -> str:
     `<score_source>@<xattn_threshold>` for an arm that selects its own
     blocks (XAttention), whose sparsity is an outcome, not a setting."""
     if row["score_source"] in THRESHOLD_ARMS:
+        cal = row.get("xattn_calibration")
+        if cal is not None and not pd.isna(cal):
+            # "<name>:<sha12>" -> the arm is the calibration, by name; the
+            # digest is checked for consistency in run_exact_ni.
+            return f"{row['score_source']}@cal={str(cal).split(':')[0]}"
         setting = row.get("xattn_threshold")
         if setting is None or pd.isna(setting):
             raise ValueError(f"a {row['score_source']} row has no xattn_threshold: "
@@ -156,6 +161,15 @@ def run_exact_ni(dense_rows: pd.DataFrame, sparse_rows: pd.DataFrame, *,
     sparse = sparse_rows.assign(
         band=[band_for(int(x), bands) for x in sparse_rows.context_length],
         arm=sparse_rows.apply(arm_label, axis=1))
+    if "xattn_calibration" in sparse.columns:
+        # One calibration name must mean one table: two digests under one
+        # name would pool two different arms.
+        cal = sparse.dropna(subset=["xattn_calibration"])
+        split = cal.xattn_calibration.astype(str).str.split(":").str[0]
+        many = cal.groupby(split).xattn_calibration.nunique()
+        if (many > 1).any():
+            raise ValueError(f"calibrations with more than one table: "
+                             f"{sorted(many[many > 1].index)}")
 
     out = []
     for (task, band, arm), grp in sparse.groupby(["task", "band", "arm"], sort=True):

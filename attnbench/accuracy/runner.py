@@ -174,23 +174,36 @@ class ThresholdMismatch(RuntimeError):
     """A run would resume into XAttention rows measured at another threshold."""
 
 
+def _xattn_setting(threshold, calibration) -> "str | None":
+    if calibration is not None and not pd.isna(calibration):
+        return f"cal={calibration}"
+    if threshold is not None and not pd.isna(threshold):
+        return f"tau={float(threshold):g}"
+    return None
+
+
 def check_xattn_threshold_continuity(checkpoint_path: Path, *,
-                                     xattn_threshold: "float | None") -> None:
-    """Refuse to add XAttention rows at one threshold to a checkpoint that
-    holds another's. Same hazard as the scorer: the resume key carries no
-    threshold, so a second threshold pointed at the first's --out would find
-    every cell done. Rows without a threshold (dense) do not count."""
+                                     xattn_threshold: "float | None",
+                                     xattn_calibration: "str | None" = None) -> None:
+    """Refuse to add XAttention rows at one setting -- a threshold or a
+    calibrated table -- to a checkpoint that holds another's. Same hazard as
+    the scorer: the resume key carries no setting, so a second one pointed
+    at the first's --out would find every cell done. Rows with neither
+    (dense) do not count."""
     if not Path(checkpoint_path).exists():
         return
     df = pd.read_parquet(checkpoint_path)
-    if df.empty or "xattn_threshold" not in df.columns:
+    if df.empty:
         return
-    have = {float(t) for t in df["xattn_threshold"].dropna()}
-    if have - ({float(xattn_threshold)} if xattn_threshold is not None else set()):
+    thr = df["xattn_threshold"] if "xattn_threshold" in df.columns else [None] * len(df)
+    cal = df["xattn_calibration"] if "xattn_calibration" in df.columns else [None] * len(df)
+    have = {s for s in map(_xattn_setting, thr, cal) if s is not None}
+    mine = _xattn_setting(xattn_threshold, xattn_calibration)
+    if have - ({mine} if mine else set()):
         raise ThresholdMismatch(
-            f"{checkpoint_path} holds XAttention rows at threshold "
-            f"{sorted(have)}; this run's is {xattn_threshold!r}. Resume keys "
-            f"carry no threshold. Use a separate --out.")
+            f"{checkpoint_path} holds XAttention rows at {sorted(have)}; this "
+            f"run's setting is {mine!r}. Resume keys carry no threshold or "
+            f"calibration. Use a separate --out.")
 
 
 def load_done_keys(checkpoint_path: Path) -> set[tuple[str, str, str, str]]:
@@ -343,6 +356,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                   allow_mixed_commits: bool = False, allow_dirty: bool = False,
                   score_source: str = "dense_softmax_fp32",
                   xattn_threshold: "float | None" = None,
+                  xattn_calibration: "str | None" = None,
                   ) -> AccuracyReport:
     """Stage 3 entry point.
 
@@ -386,7 +400,8 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                           allow_mixed_commits=allow_mixed_commits,
                           allow_dirty=allow_dirty)
     check_score_source_continuity(checkpoint_path, score_source=score_source)
-    check_xattn_threshold_continuity(checkpoint_path, xattn_threshold=xattn_threshold)
+    check_xattn_threshold_continuity(checkpoint_path, xattn_threshold=xattn_threshold,
+                                     xattn_calibration=xattn_calibration)
     done_keys = load_done_keys(checkpoint_path)
     decisions = plan(cells, done_keys=done_keys)
     report = AccuracyReport.from_decisions(decisions)
@@ -447,7 +462,9 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             # refuses the row if a gated backend arrives without one.
             gate_source=gen.gate_source,
             xattn_threshold=gen.xattn_threshold,
+            xattn_calibration=gen.xattn_calibration,
             realised_density=gen.realised_density,
+            realised_density_by_layer=gen.realised_density_by_layer,
             latency_ms=gen.latency_ms,
         )
         row = {**result.to_dict(), **prov.to_dict()}

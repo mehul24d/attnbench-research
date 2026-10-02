@@ -143,7 +143,7 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     synchronize()
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
-    realised_density = xattn_threshold = None
+    realised_density = xattn_threshold = xattn_calibration = by_layer = None
     if selecting:
         # One entry per prefill layer: decode runs on the dense fallback and
         # never reaches this backend. Any other count means the density is
@@ -154,7 +154,11 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
                 f"{type(backend).capability.name} recorded {len(per_layer)} "
                 f"layer densities for a {wrapped.n_layers}-layer prefill")
         realised_density = sum(per_layer) / len(per_layer)
-        xattn_threshold = backend.threshold
+        by_layer = [round(d, 6) for d in per_layer]
+        if isinstance(backend.threshold, float):
+            xattn_threshold = backend.threshold
+        else:
+            xattn_calibration = backend.threshold.label
 
     return Generated(text=tokenizer.decode(result.token_ids, skip_special_tokens=True),
                      latency_ms=latency_ms, stop_reason=result.stop_reason,
@@ -163,4 +167,6 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
                      decode_pinned=pinned_fallback_decode is not None,
                      gate_source=gate_source_of(backend),
                      xattn_threshold=xattn_threshold,
-                     realised_density=realised_density)
+                     xattn_calibration=xattn_calibration,
+                     realised_density=realised_density,
+                     realised_density_by_layer=by_layer)

@@ -74,19 +74,30 @@ def fixed_sequence(results: pd.DataFrame) -> pd.DataFrame:
     """
     results = results.copy()
     results["score_source"] = results.arm.str.split("@").str[0]
-    setting = results.arm.str.split("@").str[1].astype(float)
-    is_tau = results.score_source.eq(t4_pilot.XATTN_SCORE_SOURCE)
-    results["sparsity"] = setting.where(~is_tau)
+    raw = results.arm.str.split("@").str[1]
+    is_cal = raw.str.startswith("cal=")
+    # A calibrated table is one setting, so each is its own one-test family:
+    # position 0, and the family key carries the calibration name so two
+    # calibrations never share a sequence.
+    results["xattn_calibration"] = raw.where(is_cal).str[len("cal="):]
+    setting = pd.to_numeric(raw.where(~is_cal), errors="coerce")
+    is_tau = results.score_source.eq(t4_pilot.XATTN_SCORE_SOURCE) & ~is_cal
+    results["sparsity"] = setting.where(~is_tau & ~is_cal)
     results["xattn_threshold"] = setting.where(is_tau)
     results["seq_pos"] = [
-        {v: i for i, v in enumerate(_sequence(src))}.get(v)
-        for src, v in zip(results.score_source, setting)]
+        0 if c else {v: i for i, v in enumerate(_sequence(src))}.get(v)
+        for src, v, c in zip(results.score_source, setting, is_cal)]
     results["seq_pos"] = results["seq_pos"].astype(float)
+    unknown = sorted(set(results.xattn_calibration.dropna())
+                     - set(t4_pilot.XATTN_CALIBRATIONS))
+    if unknown:
+        raise SystemExit(f"REFUSING: calibrations the plan does not register: {unknown}")
     if results.seq_pos.isna().any():
         raise SystemExit("REFUSING: a sparsity outside the pre-registered sequence")
     tested = []
-    for _, grp in results.sort_values("seq_pos").groupby(
-            ["task", "band", "score_source"], sort=False):
+    family = results.score_source + "|" + results.xattn_calibration.fillna("")
+    for _, grp in results.assign(_family=family).sort_values("seq_pos").groupby(
+            ["task", "band", "_family"], sort=False):
         still = True
         expected = 0
         for _, r in grp.iterrows():
@@ -96,7 +107,10 @@ def fixed_sequence(results: pd.DataFrame) -> pd.DataFrame:
             still = still and bool(r.non_inferior)
             expected += 1
     results["tested"] = pd.Series(dict(tested))
-    results["claim"] = results.tested & results.non_inferior
+    # A descriptive calibration is tested and reported, and never claims.
+    descriptive = results.xattn_calibration.map(
+        lambda c: t4_pilot.XATTN_CALIBRATIONS.get(c) == "descriptive")
+    results["claim"] = results.tested & results.non_inferior & ~descriptive.astype(bool)
     return results
 
 
@@ -121,6 +135,7 @@ def main():
     res.to_parquet(out / "t4_noninferiority.parquet")
     res.to_csv(out / "t4_noninferiority.csv", index=False)
     cols = ["tier", "task", "band", "score_source", "sparsity", "xattn_threshold",
+            "xattn_calibration",
             "n", "dense_correct", "sparse_correct", "b_sparse_only", "c_dense_only",
             "diff_pts", "lower_pts", "mean_realised_density", "tested", "claim"]
     with pd.option_context("display.width", 200, "display.max_rows", 200):

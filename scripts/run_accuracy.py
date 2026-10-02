@@ -63,7 +63,7 @@ from attnbench.accuracy import stopping                                # noqa: E
 from attnbench.accuracy.t4_pilot import (                              # noqa: E402
     PILOT_BANDS, PROBE_N, SELECTED_PILOT_N, SPARSE_PILOT_N,
     SPARSE_PILOT_SCORE_SOURCES, SPARSE_PILOT_TASKS, T4_DENSE_PILOT_TASKS,
-    XATTN_SCORE_SOURCE, XATTN_THRESHOLD_SEQUENCE)
+    XATTN_CALIBRATIONS, XATTN_SCORE_SOURCE, XATTN_THRESHOLD_SEQUENCE)
 from attnbench import provenance                                       # noqa: E402
 from attnbench import numerics                                    # noqa: E402
 from attnbench.config import AttnConfig                                # noqa: E402
@@ -405,6 +405,13 @@ def main():
                     help="XAttention's threshold tau for this run; one of the "
                          "pre-registered values. Stamped on every XAttention "
                          "row as xattn_threshold.")
+    ap.add_argument("--xattn-calibration", default=None,
+                    help="a committed per-(layer, head) threshold table from "
+                         "scripts/calibrate_xattn_thresholds.py, instead of "
+                         "--xattn-threshold (docs/t4_xattention_calibrated.md). "
+                         "Its name must be one the plan registers; its label "
+                         "is stamped on every XAttention row as "
+                         "xattn_calibration.")
     ap.add_argument("--n-per-length", type=int, default=None,
                     help="cap examples per (task, band). Must not exceed the "
                          "grid's own n: examples are seeded per index, so a "
@@ -489,8 +496,20 @@ def main():
                              f"omit --score-source")
         args.score_source = XATTN_SCORE_SOURCE
         args.no_gla = True
-    elif args.xattn_threshold is not None:
-        raise SystemExit("--xattn-threshold belongs to --t4-xattn-pilot")
+    elif args.xattn_threshold is not None or args.xattn_calibration is not None:
+        raise SystemExit("--xattn-threshold and --xattn-calibration belong to "
+                         "--t4-xattn-pilot")
+    xattn_table = None
+    if args.xattn_calibration is not None:
+        if args.xattn_threshold is not None:
+            raise SystemExit("--xattn-threshold and --xattn-calibration are "
+                             "alternatives; pass one")
+        from attnbench.backends.xattention import ThresholdTable
+        xattn_table = ThresholdTable.load(args.xattn_calibration)
+        if xattn_table.name not in XATTN_CALIBRATIONS:
+            raise SystemExit(f"calibration {xattn_table.name!r} is not one the plan "
+                             f"registers ({list(XATTN_CALIBRATIONS)})")
+        print(f"calibration   : {xattn_table.label} from {args.xattn_calibration}")
     if args.t4_sparse_pilot:
         if args.t4_dense_pilot or args.t4_pilot_tasks or args.tasks:
             raise SystemExit(
@@ -532,12 +551,13 @@ def main():
             "See docs/gla_arm_decision.md.")
 
     grid = load_grid(args.grid)
-    if (args.t4_xattn_pilot and args.xattn_threshold is None
+    if (args.t4_xattn_pilot and args.xattn_threshold is None and xattn_table is None
             and (args.only_backends or "").replace(" ", "") != grid.dense_backend):
         raise SystemExit(
             f"--t4-xattn-pilot needs --xattn-threshold (one of "
-            f"{list(XATTN_THRESHOLD_SEQUENCE)}), unless the run is the dense "
-            f"reference alone (--only-backends {grid.dense_backend})")
+            f"{list(XATTN_THRESHOLD_SEQUENCE)}) or --xattn-calibration, unless "
+            f"the run is the dense reference alone (--only-backends "
+            f"{grid.dense_backend})")
 
     # Band restriction. Applied to the LOADED grid, never to the file: the
     # grid is pinned data and every segment must agree about what the whole
@@ -698,7 +718,8 @@ def main():
             gla_gate_source=args.gla_gate_source,
             score_source=args.score_source,
             pinned_fallback_decode=args.pin_fallback_decode_backend,
-            xattn_threshold=args.xattn_threshold)
+            xattn_threshold=(xattn_table if xattn_table is not None
+                             else args.xattn_threshold))
         teardown = generate_fn.unwrap
 
     try:
@@ -709,7 +730,9 @@ def main():
                               allow_mixed_commits=args.allow_mixed_commits,
                               allow_dirty=args.allow_dirty,
                               score_source=args.score_source,
-                              xattn_threshold=args.xattn_threshold)
+                              xattn_threshold=args.xattn_threshold,
+                              xattn_calibration=(xattn_table.label if xattn_table
+                                                 is not None else None))
     finally:
         if teardown is not None:
             teardown()

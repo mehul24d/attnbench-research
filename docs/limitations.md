@@ -2789,3 +2789,10 @@ collapsed to 0 of 50. A threshold that keeps a different fraction on each
 haystack is exactly what per-layer calibration exists to correct. So the
 phase's negative result is bounded by this deviation, not independent of
 it.
+
+*Update 2026-10-03: a calibrated phase that removes the first deviation is
+pre-registered in `docs/t4_xattention_calibrated.md`. It profiles
+per-(layer, head) thresholds with the method's own profiler, on the
+authors' profiling set (the arm that may claim) and on held-out RULER
+examples (descriptive only). It is declared the last XAttention
+configuration tested on this model.*
