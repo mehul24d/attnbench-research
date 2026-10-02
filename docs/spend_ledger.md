@@ -484,3 +484,11 @@ the two possible outcomes and the less convenient one.
 **Day total: ₹1,304 across four sessions** (10 → 11 → 12 plus the ~₹1
 boot-test), against ₹1,005 for session 10 alone. The three sessions after the
 idle-burn correction cost ₹299 combined and produced three results.
+
+instance: attnbench-l4-t4pilot-32768-20261002-1305
+zone: asia-northeast1-c
+boot: 2026-10-02 07:36:16
+teardown: 2026-10-02T13:18:16Z
+minutes: 342
+rate_inr_hr: 80
+est_inr: 456
