@@ -155,7 +155,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1427 passed, 92 skipped, ~70s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1512 passed, 93 skipped, ~75s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -174,12 +174,12 @@ from 2026-10-03, `HF_HOME`/`HF_HUB_CACHE` pointed at an empty directory with
 A clean clone is a *partial* tree: it carries the 38 force-committed files
 under `results/` and none of the rest.
 
-The 92 skips are the honest part, and they split six ways: **14** need CUDA,
+The 93 skips are the honest part, and they split six ways: **14** need CUDA,
 **63** read banked result files that `results/` correctly keeps out of git,
 **6** are scripts `test_script_call_sites.py` has nothing to check because
 they import nothing from `attnbench`, and **6** are the same scripts skipped
 again by `test_import_resolution.py`, which only has something to say about a
-script that imports the package, **1** needs the pinned RULER data
+script that imports the package, **2** need the pinned RULER data
 directory (`scripts/fetch_ruler_data.py`; the essays and QA sets are not
 committed), and **2** need the pinned Llama-3.1-8B tokenizer in the local
 HF cache (gated; a test never fetches it). The 63 validate real measured data —
@@ -206,15 +206,19 @@ when `scripts/derive_llama_oracle_cost.py` was; neither imports anything from
 `tests/test_h100_baseline_caveat.py` were added; two of their inputs are not
 tracked.*
 
+*The RULER-data number was 1 until 2026-10-03, when the T4 amendment A1
+break-test (`test_xattn_calibration.py`, a shared `qa_1` question under
+another seed) was added; it needs the SQuAD set.*
+
 *That third number was 6 until 2026-09-21. It became 4 then because
 `run_scale_comparison.py` and `run_scorer_comparison.py` acquired the mask-era
 check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1493 passed, 26 skipped**, because the 63 banked-file tests run instead of
+1579 passed, 26 skipped**, because the 63 banked-file tests run instead of
 skipping (and, on a workstation with the RULER data directory and the
-cached Llama tokenizer, those three tests run too). Both totals are 1519, which is what `pytest --collect-only` reports —
+cached Llama tokenizer, those four tests run too). Both totals are 1605, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 
