@@ -721,7 +721,8 @@ def check_calibration_texts_disjoint(texts: Sequence[str], probes: Sequence[str]
 # What a cut (sec. 8.4) does to a hypothesis, fixed before any result.
 CUT_NOT_RUN = {"9": ("H6b",), "11": ("H8",)}
 CUT_LABEL = {"1": ("H8", "without the 65536c band"),
-             "4": ("H7a", "1.5B only (cut 4)"), "7": ("H2a", "1.5B cells only")}
+             "4": ("H7a", "1.5B only (cut 4)")}
+# Cut 7 (I2b) labels nothing: H2's 84 cells are 1.5B only (sec. 3, H2).
 
 
 def apply_cuts(verdicts: Mapping[str, Verdict], cuts: Iterable[str]) -> dict:
@@ -755,6 +756,12 @@ class BracketInputs:
     ex: tuple = (1.0, 1.6)
     decode_s: tuple = (0.020, 0.035)
     block_mult: tuple = (1.1, 1.5)
+    # Upper-bound generated tokens per row: the task's hard cap
+    # (stopping.TASK_TOKEN_CAPS). Primary is qa_1 (42); secondary is
+    # niah_multivalue and niah_multiquery (62); the T4 replication's prompts
+    # are half of each (52). Used from the 2026-10-04 re-bracket.
+    cap_tokens: Mapping[str, float] = field(default_factory=lambda: {
+        "primary": 42, "secondary": 62, "rep": 52})
     n_gen: Mapping[int, float] = field(default_factory=lambda: {16384: 28, 32768: 36.5, 65536: 40})
     p7_lo: Mapping[int, float] = field(default_factory=lambda: {16384: 1.85, 32768: 4.19})
     decode_llama_s: tuple = (0.025, 0.045)
@@ -773,6 +780,9 @@ class BracketLine:
     minutes: tuple
     star: bool
     group: str
+    # Upper-bound minutes of the line's largest single phase, where the line
+    # is more than one phase. A rerun repeats one phase (sec. 7.3).
+    rerun_unit_min: Optional[float] = None
 
     @property
     def inr(self) -> tuple:
@@ -788,8 +798,9 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
     ext = lambda k: (3, 10)[k]  # noqa: E731
     lines: list[BracketLine] = []
 
-    def add(name, card, f, star, group):
-        lines.append(BracketLine(name, card, tuple(f(k) for k in K), star, group))
+    def add(name, card, f, star, group, rerun_unit_min=None):
+        lines.append(BracketLine(name, card, tuple(f(k) for k in K), star, group,
+                                 rerun_unit_min))
 
     add("FA3", "CPU", lambda k: (60, 150)[k], True, "intrinsic")
     add("C", "A100", lambda k: p7[16384][k] * inp.c_text_factor * inp.mu[k] / 60
@@ -820,21 +831,34 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
     add("R H100x2", "H100", lambda k: rep(ph)(k) * 2 / 3, True, "intrinsic")
     add("R H100#3", "H100", lambda k: rep(ph)(k) / 3, False, "intrinsic")
 
-    def row15(bd, k):
+    def row15(bd, k, kind):
+        """One 1.5B row on the A100, seconds. Lower: measured dense prefill
+        plus the mean answer length at the lower decode rate. Upper, from the
+        2026-10-04 re-bracket: measured dense prefill x the arm factor's
+        upper end, plus the task's token cap at the upper decode rate. (Until
+        then the upper was a proxy: the 7B A100 row at 16384 and the 1.5B L4
+        row at 32768.)"""
         return (pa[bd] + inp.n_gen[bd] * inp.decode_s[0],
-                {16384: inp.a7_row_16384, 32768: inp.l4_row_32768}[bd])[k]
+                pa[bd] * inp.ex[1] + inp.cap_tokens[kind] * inp.decode_s[1])[k]
 
-    def ext15(n, arms):
-        return lambda k: n * (1 + arms[k]) * (row15(16384, k) + row15(32768, k)) * inp.wall[k] / 60
-    add("X0", "A100", lambda k: 12 * (1 + (5, 8)[k]) * (row15(16384, k) + row15(32768, k)) / 2
-        * inp.wall[k] / 60 + inp.overhead_min[k] + ext(k), True, "extrinsic")
-    add("X primary", "A100", lambda k: ext15(300, (5, 8))(k) + 300 * (pa[16384] + pa[32768])
-        * inp.mu[k] / 60 + 2 * inp.overhead_min[k], True, "extrinsic")
-    add("X secondary", "A100", lambda k: ext15(100, (5, 8))(k) + 100 * (pa[16384] + pa[32768])
-        * inp.mu[k] / 60, True, "extrinsic")
+    def ext15(n, arms, kind, bands=(16384, 32768)):
+        return lambda k: n * (1 + arms[k]) * sum(row15(b, k, kind) for b in bands) * inp.wall[k] / 60
+
+    def x_primary(bands, k):
+        return (ext15(300, (5, 8), "primary", bands)(k)
+                + 300 * sum(pa[b] for b in bands) * inp.mu[k] / 60
+                + len(bands) * inp.overhead_min[k])
+    add("X0", "A100", lambda k: 12 * (1 + (5, 8)[k]) * (row15(16384, k, "secondary")
+        + row15(32768, k, "secondary")) / 2 * inp.wall[k] / 60 + inp.overhead_min[k] + ext(k),
+        True, "extrinsic")
+    # X primary is one session per band; a rerun repeats the larger band.
+    add("X primary", "A100", lambda k: x_primary((16384, 32768), k), True, "extrinsic",
+        rerun_unit_min=max(x_primary((b,), 1) for b in (16384, 32768)))
+    add("X secondary", "A100", lambda k: ext15(100, (5, 8), "secondary")(k)
+        + 100 * (pa[16384] + pa[32768]) * inp.mu[k] / 60, True, "extrinsic")
     # The T4 replication: dense + XA native on T4's own 200 ids per band, at
     # both bands (the evaluation split no longer shares T4's ids).
-    add("X-rep", "A100", ext15(200, (1, 1)), True, "extrinsic")
+    add("X-rep", "A100", ext15(200, (1, 1), "rep"), True, "extrinsic")
 
     pl_lo = {16384: 0.124 * 3.05 + 0.312 * 5.4, 32768: 0.496 * 3.05 + 0.606 * 5.4,
              65536: 1.984 * 3.05 + 1.212 * 5.4}
@@ -879,9 +903,11 @@ def reservation_check(*, spent: float, next_u: float, remaining_star_u: Sequence
 def worst_case(lines: Sequence[BracketLine], *, months: int = 2) -> dict:
     t = totals(lines)
     core_hi, core_h_hi = t["core"][1], t["core"][3]
-    x_primary = next(l for l in lines if l.name == "X primary").inr[1]
-    others = max(l.inr[1] for l in lines if l.star and l.name != "X primary")
-    rerun = max(x_primary / 2, others)
+    # One rerun of the costliest star phase: a line's largest phase where it
+    # has more than one, else the whole line. (Until 2026-10-04 X primary's
+    # phase was priced at half the line; the 32768 band is more than half.)
+    rerun = max(l.inr[1] if l.rerun_unit_min is None
+                else l.rerun_unit_min / 60 * RATE[l.card] for l in lines if l.star)
     i2cb = next(l for l in lines if l.name == "I2c-B").inr[1]
     sres = s_res(months, core_h_hi)
     total = core_hi + sres + rerun + i2cb

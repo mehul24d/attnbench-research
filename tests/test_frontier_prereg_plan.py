@@ -488,8 +488,62 @@ def test_the_bracket_in_the_document_is_what_the_code_computes():
     for name, row_label in (("C", "★ C: XA calibration"), ("I1", "★ I1:"),
                             ("I2a", "★ I2a:"), ("I2c", "★ I2c:"), ("I2d", "I2d:"),
                             ("I2e", "I2e:"), ("I4", "★ I4:"), ("X primary", "★ X: 1.5B primary"),
-                            ("X secondary", "★ X: 1.5B secondary"), ("X-rep", "★ X-rep:")):
+                            ("X secondary", "★ X: 1.5B secondary"), ("X-rep", "★ X-rep:"),
+                            ("X0", "★ X0:")):
         line = next(l for l in lines if l.name == name)
         cell = f"| {_inr(line.inr[0])}–{_inr(line.inr[1])} |"
         row = next(r for r in DOC.read_text().splitlines() if r.startswith(f"| {row_label}"))
         assert cell in row, (name, cell, row)
+
+
+# --- the 2026-10-04 re-bracket ---------------------------------------------
+
+def test_the_rerun_term_is_the_larger_band_of_x_primary_not_half_the_line():
+    lines = fp.bracket()
+    xp = next(l for l in lines if l.name == "X primary")
+    unit = xp.rerun_unit_min / 60 * fp.RATE["A100"]
+    assert unit > xp.inr[1] / 2                       # the 32768 band is more than half
+    w = fp.worst_case(lines)
+    assert w["rerun"] == pytest.approx(unit)
+    assert w["rerun"] >= max(l.inr[1] for l in lines if l.star and l.name != "X primary")
+    assert _has(f"| {_inr(w['rerun'])} (eighth draft 1,698, which should have been 2,251) |")
+    assert _has(f"| {_inr(w['core'])} (eighth draft 9,231")
+    assert _has(f"| {_inr(w['s_res'])} (₹424 storage")
+    assert _has(f"with ₹{_inr(w['spare'])} to spare")
+
+
+def test_a_costlier_single_phase_line_becomes_the_rerun_term():
+    lines = [l if l.name != "I1" else fp.BracketLine("I1", "A100", (0, 600), True, "intrinsic")
+             for l in fp.bracket()]
+    assert fp.worst_case(lines)["rerun"] == pytest.approx(600 / 60 * 284)
+
+
+def test_the_row_upper_bound_is_prefill_plus_capped_tokens():
+    from attnbench.accuracy import stopping
+    inp = fp.BracketInputs()
+    caps = stopping.TASK_TOKEN_CAPS
+    assert inp.cap_tokens["primary"] == caps["qa_1"]
+    assert inp.cap_tokens["secondary"] == max(caps["niah_multivalue"], caps["niah_multiquery"])
+    assert inp.cap_tokens["rep"] == (caps["qa_1"] + inp.cap_tokens["secondary"]) / 2
+    rows = [inp.pre_a100[b] * inp.ex[1] + 42 * inp.decode_s[1] for b in (16384, 32768)]
+    assert _has(f"{rows[0]:.2f} s and {rows[1]:.2f} s for `qa_1`")
+    xp = next(l for l in fp.bracket(inp) if l.name == "X primary")
+    want = (300 * 9 * sum(rows) * inp.wall[1] / 60
+            + 300 * sum(inp.pre_a100[b] for b in (16384, 32768)) * inp.mu[1] / 60
+            + 2 * inp.overhead_min[1])
+    assert xp.minutes[1] == pytest.approx(want)
+    # A longer cap or a slower decode must raise the worst case.
+    base = fp.worst_case(fp.bracket(inp))["total"]
+    import dataclasses
+    for change in ({"cap_tokens": {"primary": 62, "secondary": 62, "rep": 62}},
+                   {"decode_s": (0.020, 0.050)}, {"ex": (1.0, 2.0)}):
+        assert fp.worst_case(fp.bracket(dataclasses.replace(inp, **change)))["total"] > base
+
+
+def test_the_eighth_drafts_worst_case_was_over_the_cap_once_the_rerun_is_priced():
+    """Sec. 8.2 (d). The old row proxies (2.726 s and 5.398 s), the old core
+    and the larger band give 12,248."""
+    band = (300 * 9 * 5.398 * 1.69 / 60 + 300 * 1.10181 * 9.08 / 60 + 15) / 60 * 284
+    assert round(band) == 2251
+    assert round(9231.26 + 503.94 + band + 262.14) == 12248
+    assert _has("₹12,248, which is ₹248 over the cap")

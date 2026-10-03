@@ -1,6 +1,6 @@
 # Estimator cost/quality frontier — pre-registration (DRAFT)
 
-Status: **unlocked draft, amended 2026-10-03 (eighth draft, after an independent referee read). Not locked.** No GPU
+Status: **unlocked draft, amended 2026-10-03 (eighth draft, after an independent referee read) and re-bracketed 2026-10-04 (§8.2). Not locked.** No GPU
 session has run for this study, and no row exists. §13 lists what changed in
 each draft.
 
@@ -35,6 +35,11 @@ permitted:
 This summary is the only record of the scope in the project. Anything beyond
 it is not permitted (§0.2).
 
+**The researcher's note on scope, in their own words** (typed in the chat on
+2026-10-04): "Permission granted for fair use of the work". It is the
+researcher's wording, not a quote of the email. It widens nothing above, and
+nothing is read into "fair use": every act still goes through §0.2.
+
 **Superseded.** The professor's guidance ("researcher-reported institutional
 guidance, no written artifact yet") is superseded by this written permission.
 It was never the authors' permission.
@@ -48,8 +53,10 @@ It was never the authors' permission.
 The pinned commit is cloned at run time. The repository still has no
 licence (§4.1).
 
-**Request date: 2026-10-03.** Nothing else about the request is kept in the
-repository.
+**Request date: 2026-06-03.** *(Typed by the researcher on 2026-10-04 as
+"3/6/2026", read day-first, as the permission date was. Until then this
+line carried 2026-10-03, which was inferred and not theirs.)* Nothing else
+about the request is kept in the repository.
 
 **Two questions remain unanswered.** Both were asked in that request:
 
@@ -330,7 +337,7 @@ Profitable is never asserted from components.
 | **certified** | non-inferior to dense under §2.4: the exact one-sided 97.5% lower bound on the paired accuracy difference is above −10 points (`frontier_prereg.certified`). |
 | **claim / no-claim** (R4) | certified / not certified, under T4's own test at n = 100. |
 | **failed session** | a session that ends before every one of its phases has `rc=0` and is synced: preemption, stock-out, a crash, a halt, or a failed health check. |
-| **largest ★ session** | the ★ line with the highest upper-bound cost U in §8.2. Today that is X primary, whose rerun unit is one band. |
+| **largest ★ session** | the ★ line with the highest upper-bound cost U in §8.2. Today that is X primary, whose rerun unit is one band: the 32768 band, the costlier of the two (§8.3). |
 | **marginal** | a point-estimate rule whose 95% interval contains its threshold. The verdict stands, and the label is printed beside it (§7.5). |
 
 ### 2.3 Intrinsic quality: attention-mass recall
@@ -1908,6 +1915,10 @@ $1.5/h).
 | wall / Σ row latency | 1.25–1.69 | measured | phase logs |
 | session overhead | 8–15 min | measured range | ledger sessions |
 | decode per token | 1.5B on A100 20–35 ms (upper measured on L4); Llama 25–45 ms | partly **assumed** | |
+| decode per token, measured | 1.5B on the L4: 35.0 ms at 16384 and 35.5 ms at 32768. 7B on the A100 at 16384: about 34 ms (two tasks, 4.9 tokens apart, so weak) | measured: the slope of mean dense row latency on mean generated tokens across tasks | `results/t4_xattn_pilot_session_20261003/results/t4_xattn_dense_20261002`, `results/s7_7b_16384` |
+| a row is prefill + tokens × decode | on the L4 the dense rows' intercept is 1.63 s at 16384 and 4.05 s at 32768, against a measured dense prefill of 1.70 s and 4.04–4.08 s | measured, L4 only, 400 dense rows | the same T4 rows; `results/s12_l4_vec_endtoend/logs/s12_vec_e2e.log` |
+| generated tokens per row, upper | the task's cap: `qa_1` 42; `niah_multivalue` and `niah_multiquery` 62; T4's prompt mix 52 | a hard bound, enforced in code | `attnbench/accuracy/stopping.py` |
+| sparse prefill / dense prefill, A100 | 0.60–0.91 at 16384 and 32768 with the vectorised builder (sparsity 0.5–0.9). The XA Triton path and the era-4 selector are **unmeasured** on the A100, so the arm factor's upper end stays 1.6, **assumed** | measured for one builder | `results/s12_a100_vec_endtoend/vec_endtoend.parquet` |
 | 7B and Llama prefill, A100 | 7B 1.85–2.73 s (16K), 4.19–6.90 s (32K). Llama 16K 2.06 s, 32K 4.78 s and 65K 12.6 s at the lower end, upper = 1.6× lower | **assumed** from a FLOP split anchored to measured 1.5B times | |
 | `text.json` | 156 texts. Qwen: 3.92M tokens, max 91,574, 121 ≤ 32K. **Llama (one BOS): 3.63M tokens, max 65,314, 130 ≤ 32K** | measured | tokenised locally; Llama offline with the pinned tokenizer, 2026-10-03 |
 
@@ -1935,23 +1946,53 @@ oracle-pass line.** The fifth draft's figures are kept beside the new ones.
 | ★ R: A100 replicates ×3 (0 if no near-parity) | A100 | 0–140 | 0–140 | 0–664 | 0–664 | — |
 | ★ R: H100 replicates ×2 | H100 | 0–59 | 0–59 | 0–414 | 0–414 | — |
 | R: H100 replicate #3 | H100 | 0–29 | 0–29 | 0–207 | 0–207 | — |
-| ★ X0: 1.5B extrinsic canary | A100 | 13–37 | 13–37 | 62–177 | 62–177 | — |
-| ★ X: 1.5B primary `qa_1`, n = 300, dense + 5–8 arms | A100 | 137–735 | 170–718 | 650–3,478 | 803–3,397 | μ (a) |
-| ★ X: 1.5B secondary, 100 per band | A100 | 40–235 | 51–229 | 192–1,112 | 242–1,085 | μ (a) |
-| ★ X-rep: T4 replication on T4's own prompts at 16384 and 32768, dense + XA native, 200 ids per band (§4.9) | A100 | 15–61 | 24–92 | 72–288 | 112–433 | eighth draft: the 16384 band added, because the evaluation split no longer shares T4's ids |
+| ★ X0: 1.5B extrinsic canary | A100 | 13–37 | 13–35 | 62–177 | 62–167 | row bound (c) |
+| ★ X: 1.5B primary `qa_1`, n = 300, dense + 5–8 arms | A100 | 137–735 | 170–511 | 650–3,478 | 803–2,416 | μ (a); row bound (c) |
+| ★ X: 1.5B secondary, 100 per band | A100 | 40–235 | 51–196 | 192–1,112 | 242–926 | μ (a); row bound (c) |
+| ★ X-rep: T4 replication on T4's own prompts at 16384 and 32768, dense + XA native, 200 ids per band (§4.9) | A100 | 15–61 | 24–69 | 72–288 | 112–325 | eighth draft: the 16384 band added, because the evaluation split no longer shares T4's ids; row bound (c) |
 | XL0: Llama dense task probe | A100 | 22–50 | 22–50 | 106–238 | 106–238 | — |
 | XL: Llama primary `qa_1`, n = 300, 16K + 32K, dense + 4 | A100 | 272–601 | 272–601 | 1,289–2,843 | 1,289–2,843 | — |
 | XL: Llama secondary, 16K + 32K | A100 | 88–195 | 88–195 | 417–924 | 417–924 | — |
 | XL: Llama 65536 band | A100 | 574–1,252 | 574–1,252 | 2,719–5,925 | 2,719–5,925 | — |
-| **Never-cut core** | | **6.8–34.1 h** | **9.6–33.3 h** | **₹1,842–9,526** | **₹2,594–9,231** | seventh draft ₹2,539–9,053 |
-| **Full plan** | | **25.7–75.7 h** | **28.2–74.5 h** | **₹7,133–21,347** | **₹7,860–20,997** | seventh draft ₹7,820–20,852 |
+| **Never-cut core** | | **6.8–34.1 h** | **9.6–28.9 h** | **₹1,842–9,526** | **₹2,594–7,975** | eighth draft ₹2,594–9,231; seventh ₹2,539–9,053 |
+| **Full plan** | | **25.7–75.7 h** | **28.2–70.1 h** | **₹7,133–21,347** | **₹7,860–19,740** | eighth draft ₹7,860–20,997; seventh ₹7,820–20,852 |
 
 *The "now" columns are `attnbench/analysis/frontier_prereg.bracket()` at its
 default inputs, rounded. `tests/test_frontier_prereg_plan.py` fails if any of
 them, or the §8.3 arithmetic, differs from what the code computes (added with
 lock gate L1, 2026-10-03).*
 
-**Sources of the change.**
+**Re-bracketed 2026-10-04, before any session, from what is already
+banked.** The researcher asked for the worst case to be re-bracketed now
+and not left to DP1. Two things changed. Both touch upper ends only.
+
+- **(c) The upper bound on a 1.5B row on the A100.**
+  - *Before:* a proxy. The 7B A100 row at 16384 (2.73 s) and the 1.5B L4
+    row at 32768 (5.40 s) stood in for every 1.5B A100 row.
+  - *Now:* measured dense prefill on the A100 × the arm factor's upper end
+    (1.6) + the task's token cap × 35 ms. That is 2.17 s and 3.23 s for
+    `qa_1` at 16384 and 32768, 2.87 s and 3.93 s for the secondary tasks,
+    and 2.52 s and 3.58 s for T4's prompt mix.
+  - *Why it is still an upper bound:* a row is prefill plus tokens × decode
+    (checked on the L4, §8.1); the token cap is a hard limit; 35 ms is the
+    L4's measured decode, and the A100's 7B decode is no slower.
+  - *The old proxy was not an upper bound everywhere.* At 16384 it was
+    2.73 s, below the new 2.87 s for the secondary tasks, whose answers run
+    to 62 tokens.
+  - *What is still assumed:* the arm factor 1.6. Measured sparse prefill
+    with the vectorised builder is 0.60–0.91 of dense, but the XA Triton
+    path and the era-4 selector have never run on the A100.
+- **(d) The rerun term was too small.** §8.3 priced "one band of X primary"
+  at half the line. The 32768 band is 61% of it at the new inputs, and was
+  66% at the old ones. At the eighth draft's inputs the correct term is
+  ₹2,251, not ₹1,698, and the worst case was **₹12,248, which is ₹248 over
+  the cap**, not ₹304 under it. `worst_case` now prices the larger band.
+- **Checked and left alone:** wall / Σ row latency (1.61–1.67 in the T4 XA
+  pilot session, inside 1.25–1.69) and the session overhead. The T4
+  sparse pilot at 32768 took 342 minutes against a bracket of 293–348 by
+  the same formulas with the L4's μ.
+
+**Sources of the change (sixth draft).**
 
 - **(a) μ, measured.** μ = 6.19–9.08 replaces 2.0 (assumed) – 11.3 (L4) on
   every oracle-pass line: C, I1, I2a and both X lines. It is the minimum and
@@ -2012,8 +2053,8 @@ FLOP-split prefill model × the assumed μ.)*
 **Intrinsic-only and extrinsic, full plan** (X-rep excluded, as before):
 
 - intrinsic: ₹2,109–5,976 (7.9–21.6 h) with I2c-B, from ₹1,633–6,367 (6.2–23.0 h);
-- extrinsic: ₹5,640–14,588 (19.9–51.4 h), from ₹5,440–14,700, of which
-  Llama is ₹4,530–9,930 (unchanged).
+- extrinsic: ₹5,640–13,439 (19.9–47.3 h), from ₹5,640–14,588 in the eighth
+  draft, of which Llama is ₹4,530–9,930 (unchanged).
 
 **T4 calibrated, as amended,** is a separate pre-registration, not under this
 cap:
@@ -2031,18 +2072,18 @@ sessions.
 |---|---|---|
 | custom images `attnbench-env-v5-20260905`, `attnbench-env-v6-20260917` | 22.0 GiB archive each | about ₹194/month, billed whether or not a session runs |
 | results bucket `gs://attnbench-results-research-507316` | 5.19 GiB, about 10 GiB after the study | about ₹18/month |
-| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹23–80 over the core, ₹68–179 over the full plan |
+| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹23–69 over the core, ₹68–168 over the full plan |
 | FA3 wheel build | — | already a ★ line above (₹130–325) |
 
-**Share of the core that depends on XAttention arms.** About **31–32%**:
-₹802–2,955 of the ₹2,594–9,231 core. That includes the X-rep line, which
-is XA-only. *(Seventh draft: 30–31%, ₹761–2,811 of ₹2,539–9,053.)* *(Fifth draft: 30–33%, ₹612–2,876 of ₹1,842–9,526. Before that:
+**Share of the core that depends on XAttention arms.** About **31%**:
+₹802–2,503 of the ₹2,594–7,975 core. That includes the X-rep line, which
+is XA-only. *(Eighth draft: 31–32%, ₹802–2,955 of ₹2,594–9,231.)* *(Seventh draft: 30–31%, ₹761–2,811 of ₹2,539–9,053.)* *(Fifth draft: 30–33%, ₹612–2,876 of ₹1,842–9,526. Before that:
 31%, ₹560–3,000 of ₹1,790–9,650.)*
 
 | component | XA-dependent ₹ |
 |---|---:|
-| X0 + X, the XA share of the 1.5B extrinsic rows (2–3 of 5–8 arms) | 333–1,397 |
-| X-rep, the T4 replication at 16384 and 32768 (XA only) | 112–433 |
+| X0 + X, the XA share of the 1.5B extrinsic rows (2–3 of 5–8 arms) | 333–1,053 |
+| X-rep, the T4 replication at 16384 and 32768 (XA only) | 112–325 |
 | C, the 7B calibration (XA only) | 158–348 |
 | I2c, the Llama positive control (XA only) | 117–262 |
 | replicates, assuming a third of near-parity cells are XA | 0–359 |
@@ -2050,7 +2091,7 @@ is XA-only. *(Seventh draft: 30–31%, ₹761–2,811 of ₹2,539–9,053.)* *(F
 | I1's XA end-to-end arms and components | 35–62 |
 | the recall passes (dominated by the shared exact-mass pass) | ≈ 0 |
 
-So the non-XA core is about ₹1,793–6,276.
+So the non-XA core is about ₹1,793–5,472.
 
 **Running non-XA parts first is mostly possible, with two exceptions:**
 
@@ -2065,12 +2106,12 @@ So the non-XA core is about ₹1,793–6,276.
   reserve, T4 calibrated excluded.
   - **Confirmed by the researcher on 2026-10-03**, in conversation, after it
     was stated back. It cannot be raised after lock.
-  - It covers, at worst-case inputs, the never-cut core (₹9,231) plus the
-    storage reserve (₹504) plus one rerun of the largest ★ session
-    (₹1,698) plus the conditional arm I2c-B (₹262), which is ₹11,696,
-    leaving ₹304 (`frontier_prereg.worst_case`). *(Seventh draft: ₹11,516,
-    leaving ₹484. The eighth draft's fresh evaluation ids and never-cut I4
-    cost ₹180 of that margin.)*
+  - It covers, at worst-case inputs, the never-cut core (₹7,975) plus the
+    storage reserve (₹493) plus one rerun of the largest ★ session
+    (₹1,472) plus the conditional arm I2c-B (₹262), which is ₹10,202,
+    leaving ₹1,798 (`frontier_prereg.worst_case`). *(Re-bracketed
+    2026-10-04, §8.2 (c) and (d). The eighth draft said ₹11,696, leaving
+    ₹304; with its rerun term corrected that was ₹12,248, over the cap.)*
   - Anything cuttable is paid for only from what the measured μ (DP1) frees
     up.
 - **Ledger:** `results/frontier_spend.csv`. Each session's teardown appends
@@ -2130,19 +2171,25 @@ So the non-XA core is about ₹1,793–6,276.
 
 | | ₹ |
 |---|---:|
-| core, including the T4-replication line at both bands and I4 | 9,231 (seventh draft 9,053; fifth 9,526) |
-| S_res, two months | 504 (₹424 storage + ₹2.4/h × 33.3 h) |
-| one rerun of the largest ★ session (one band of X primary, half of ₹3,397) | 1,698 (fifth draft 1,740) |
+| core, including the T4-replication line at both bands and I4 | 7,975 (eighth draft 9,231; seventh 9,053; fifth 9,526) |
+| S_res, two months | 493 (₹424 storage + ₹2.4/h × 28.9 h) |
+| one rerun of the largest ★ session (the 32768 band of X primary: 311 of the line's 511 minutes) | 1,472 (eighth draft 1,698, which should have been 2,251) |
 | the conditional double-BOS arm I2c-B, if H6a misses (§4.9) | 262 |
-| **total** | **11,696** (11,434 without I2c-B; seventh draft 11,516; fifth about 11,780) |
+| **total** | **10,202** (9,940 without I2c-B; eighth draft 11,696, or 12,248 with its rerun term corrected) |
 
-That is **inside the ₹12,000 cap**, with ₹304 to spare (₹566 without
-I2c-B; seventh draft ₹484, fifth ₹220, fourth ₹100). Source of the change: the measured A100 μ (§8.2, (a))
-and the Llama token counts ((b)). So:
+That is **inside the ₹12,000 cap**, with ₹1,798 to spare (₹2,060 without
+I2c-B). Source of the change: the row bound and the rerun term (§8.2, (c)
+and (d)). So:
 
-- a single failed session at worst-case μ does not stop the study;
-- a second one does, unless DP1 measures μ below its upper bound;
+- a single failed session at worst-case inputs does not stop the study;
+- a second rerun of the same band (₹1,472) also fits, leaving ₹327;
+- a third does not, unless DP1 measures inputs below their upper ends;
 - the H100 cuDNN probe now runs last, so it needs no relaunch (§4.6).
+
+**What the margin rests on.** It is zero if the arm factor's upper end is
+about 2.6 and not 1.6, or if decode on the A100 is about 62 ms per token
+and not 35, or if wall / Σ row latency is about 2.4 and not 1.69. The arm
+factor is the one still assumed. DP1 and DP2 measure all three.
 
 **Re-bracketing decision points.** These are mechanical, committed before the
 next launch, and read timings only:
@@ -2529,7 +2576,7 @@ table's "now" column is labelled "second draft".)*
 | Llama oracle-pass cost | FLOP split × assumed μ (lower 2.0) and an assumed 1.6× | the measured 1.5B A100 oracle pass × config ratios 3.048–5.327 (`scripts/derive_llama_oracle_cost.py`); core ₹1,842–9,526; worst case about ₹11,780 |
 | Visibility | unstated | §3: H2c, H2d and H5a were written with the A100 crossover estimates visible, and are reported as anchored priors |
 | H100 baseline | not caveated | labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`); run D in I3 measures it |
-| Licence request | a draft in `docs/` (untracked) | moved out of the repository; only the request date (2026-10-03) is recorded (§0.1, §14) |
+| Licence request | a draft in `docs/` (untracked) | moved out of the repository; only the request date is recorded (§0.1, §14) |
 | Sizing wording | "token-exact", "never above" | corrected in `limitations.md`, `writeup_input.md`, `sizing.py`, `ruler.py` and `reestimate_stage3.py`; 182 distinct over-budget examples (655 file-example pairs) |
 | §4.6 | "Neither is corrected here"; "four machines" | stale: the docs were corrected in `3f8a884`, and three Xid 31 events are banked |
 | §13 | later drafts' tables nested inside earlier tables' separator rows | repaired, in draft order |
@@ -2638,6 +2685,18 @@ the first four blocking findings.
 | never-cut list omits G11; §11.2 lists `rebracket()` as to do | **fixed** |
 
 ---
+
+**2026-10-04, still the eighth draft: two entries the researcher typed, and a re-bracket.**
+
+| area | 2026-10-03 | 2026-10-04 |
+|---|---|---|
+| Push | `338bdf5` | `2c568ef` pushed (two commits), with the researcher's logged yes |
+| Request date (§0.1) | 2026-10-03, inferred | 2026-06-03, typed by the researcher as "3/6/2026" |
+| Scope note (§0.1) | none | the researcher's own words, recorded beside the summary; it widens nothing |
+| 1.5B A100 row, upper bound | a proxy: the 7B A100 row and the 1.5B L4 row | measured prefill × 1.6 + the task's token cap × 35 ms (§8.2 (c)) |
+| Rerun term | half of X primary, ₹1,698 | the 32768 band of X primary, ₹1,472; at the old inputs it should have been ₹2,251 (§8.2 (d)) |
+| Worst case | ₹11,696, ₹304 spare (₹12,248 and over the cap once the rerun term is corrected) | ₹10,202, ₹1,798 spare |
+| Core | ₹2,594–9,231 | ₹2,594–7,975 |
 
 ## 14. Licence and provenance request to the XAttention authors
 
