@@ -1,6 +1,6 @@
 # Estimator cost/quality frontier — pre-registration (DRAFT)
 
-Status: **unlocked draft, amended 2026-10-03 (fifth draft). Not locked.** No GPU
+Status: **unlocked draft, amended 2026-10-03 (sixth draft). Not locked.** No GPU
 session has run for this study, and no row exists. §13 lists what changed in
 each draft.
 
@@ -528,6 +528,19 @@ The A100 runs the Triton path. T4 Session B runs on the L4 torch fallback.
 - **R4, claim agreement:** on the 100 shared `qa_1` ids per band, under T4's
   test, the A100 claim/no-claim matches T4's in both primary cells.
 
+**Decoding in the replications (checked 2026-10-03).**
+
+- **The T4 replication** runs in this harness on both sides: T4's L4 rows
+  and the A100 rows use the same greedy argmax loop, stop rule and caps. So
+  decoding matches by construction.
+- **The XAttention authors' own RULER pipeline**, which H6 and H8 refer to,
+  is also **greedy**: `config_models.sh` sets `TEMPERATURE="0.0"`, and
+  `call_api.py` passes `do_sample=False`. It does not sample, so no
+  replication here needs a sampling treatment (no seeds, no repeated draws).
+- **Where it differs from this study:** chat-format prompts, a double BOS,
+  no newline stop, and its own `tokens_to_generate`. These are recorded in
+  §4.9 as confounds for the positive control and H8.
+
 ---
 
 ## 4. Estimators and implementation
@@ -614,7 +627,12 @@ run C on the A100.
 - stride 8, `norm=1`, `use_triton=True`;
 - `keep_sink=False`, `keep_recent=False`;
 - default chunk size;
-- every prefill layer.
+- every prefill layer;
+- decoding in their pipeline: greedy (`TEMPERATURE="0.0"` →
+  `do_sample=False`), no stop words, chat-format prompts with a double BOS
+  (§4.9). This study keeps greedy and the kernel settings above. It changes
+  the prompt format for accuracy and the BOS count everywhere, both stated as
+  confounds (§4.9).
 
 This is a deliberate difference from the Qwen arm, whose settings follow T4.
 Both are authors' configurations, one per benchmark.
@@ -622,7 +640,10 @@ Both are authors' configurations, one per benchmark.
 **The calibration rule (identical in T4 A2–A3, binding on every table).**
 
 1. **Source:** `text.json` (156 prompts), with the Llama-3 chat markers
-   stripped.
+   stripped, for the Qwen tables (C, T4). **For Llama** (H6a, H6b) the chat
+   format is kept and only the leading literal `<|begin_of_text|>` is
+   removed, so the input has one BOS (§4.9). Under the Llama limit (131,072)
+   all 156 are used: the maximum is 65,314 tokens.
 2. **Over-length texts are excluded, not truncated.**
    - A text is used if and only if its token count under the target model's
      tokenizer is ≤ that model's `max_position_embeddings`, read at run time
@@ -975,10 +996,17 @@ were done on CPU on 2026-10-03, or are still open.
 2. Assert `max_position_embeddings` ≥ every Llama band's budget +
    `stopping.token_cap(task, "meta-llama/Llama-3.1-8B-Instruct")`.
 3. Assert that `text.json`'s maximum Llama token count is within the limit,
-   for H6b. It is counted with the Llama tokenizer. The Qwen count is 91,574.
+   for H6b. **Done locally 2026-10-03** with the pinned tokenizer, offline:
+   maximum 65,314 with one BOS (65,315 as the authors encode it), against
+   131,072. The instance repeats the count. (The Qwen count is 91,574.)
 4. After loading the model, assert `model.model.rotary_emb.rope_type ==
    "llama3"` and that its `inv_freq` equals Meta's formula (the helper in
    `tests/test_llama3_rope_gate.py`). STOP otherwise.
+5. Assert the stop set is {128001, 128008, 128009} and the newline and
+   whitespace sets match the digests in the stop-rule block below. STOP
+   otherwise.
+6. Determinism: the dense arm decodes two selection-split prompts twice
+   each. Anything but byte-identical output is a STOP.
 
 If an assertion fails for one band, that band is **dropped for validity**
 (not under §8.4).
@@ -1005,23 +1033,139 @@ If an assertion fails for one band, that band is **dropped for validity**
   candidate tasks are already in `_PER_EXAMPLE_FIT`, so the flag changes none
   of their prompts. It closes the gap for any other task. G11 holds Llama to
   it as well.
-- **Llama stop rule (amended 2026-10-03).**
-  - **Caps.** Measured with the Llama tokenizer, by the same rule as Qwen's
-    (2× the longest answer over 200 examples):
-    `scripts/measure_answer_lengths.py --model meta-llama/Llama-3.1-8B-Instruct --revision 0e9e39f…`.
-    They are recorded in `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS`. **Qwen's
-    caps are not reused.** Until the table is filled, every Llama cap lookup
-    raises (`tests/test_stopping.py`, break-tested). `generation.py` passes
-    the model id, so this binds at the call site.
-  - **Stop tokens.** The newline stop applies, with the newline token set
-    derived from the Llama tokenizer. EOS ids come from the tokenizer and
-    from `generation_config.json`, **which the researcher will provide**.
-    `config.json` lists `eos_token_id` 128001, 128008 and 128009. Decoding is
-    greedy (`argmax` in `accuracy/model.py`), so `generation_config.json`'s
-    sampling fields are not used.
-  - **Order.** The caps fix the 32768c and 65536c budgets, so they are
-    measured, and committed with `generation_config.json`'s stop ids, before
-    the Llama probe XL0.
+- **Llama decoding, stop rule and prompt encoding (lock gate L7, amended
+  2026-10-03, sixth draft).**
+  - **`generation_config.json`** at the pinned revision, as reported by the
+    researcher and matching the copy in their local cache: `bos_token_id`
+    128000; `eos_token_id` [128001, 128008, 128009]; `do_sample` true,
+    `temperature` 0.6, `top_p` 0.9; `transformers_version` 4.42.3. The
+    researcher also confirmed locally that 128000 is `<|begin_of_text|>`,
+    128001 `<|end_of_text|>`, 128008 `<|eom_id|>` and 128009 `<|eot_id|>`;
+    that `tokenizer.eos_token_id` is 128009 alone; and that the tokenizer
+    prepends BOS by default ("hello" → [128000, 15339]).
+  - **Greedy, explicitly.** The decode loop is argmax and never reads
+    `generation_config`. Even so, `SwappableAttentionModel` **forces** greedy
+    for this model id when it wraps the model (`do_sample` False;
+    `temperature`, `top_p` and `top_k` None), and **asserts** it at every
+    `generate` call. Every Llama arm goes through that wrapper. `generate`
+    takes no sampling arguments.
+    `tests/test_llama_decoding_and_prompts.py` fails if `do_sample`,
+    `temperature` or `top_p` reaches a Llama arm. It also checks
+    determinism: the same prompt twice gives byte-identical ids, stop and
+    text. **On the instance:** before XL0, the dense arm decodes two
+    selection-split prompts twice each, and anything but byte-identical
+    output is a STOP.
+  - **Stop set: all three ids.** `StopTokens.from_tokenizer(..., model_id=)`
+    refuses any Llama stop set but {128001, 128008, 128009}. In particular it
+    refuses the tokenizer's 128009 alone. The newline stop keeps its
+    non-whitespace arming rule.
+  - **Firing id recorded.** Every row carries `stop_token_id`, the id that
+    ended an `eos` or `newline` stop, beside `stop_reason`. The category
+    column keeps its three values, so banked rows and analyses read the same.
+  - **Newline and whitespace sets** are rebuilt from the Llama vocab
+    (128,256 entries). 2,255 newline ids (sha256 of the sorted list, first 16
+    hex: `dc24e2c3056c70b4`) and 530 whitespace-only ids (`445dc415bf20b800`).
+    No special id is in the newline set. They are **identical on
+    transformers 4.46.0 and 5.18.0**. The instance asserts the same digests.
+  - **Decoded text differs by version.** On 4.46.0 the tokenizer's
+    `clean_up_tokenization_spaces=True` applies on decode ("x , y" → "x, y").
+    5.18.0 ignores it for BPE. Scoring is substring match on answers that
+    contain no space before punctuation, so the score is not expected to
+    move, but `predicted` text is version-dependent. Llama rows are
+    generated and decoded on the image's 4.46.0 only.
+  - **Caps, measured 2026-10-03** offline (`HF_HUB_OFFLINE=1`, the cached
+    pinned tokenizer, no token) by
+    `scripts/measure_answer_lengths.py --model meta-llama/Llama-3.1-8B-Instruct --revision 0e9e39f…`,
+    200 examples per task, same rule as Qwen (cap = 2 × max). Recorded in
+    `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS` and pinned to this table by
+    `tests/test_stopping.py`:
+
+    | task | n | min | median | p95 | max | cap | model |
+    |---|---:|---:|---:|---:|---:|---:|---|
+    | `niah_single` | 200 | 3 | 3.0 | 3 | 3 | **6** | Llama |
+    | `niah_multikey` | 200 | 18 | 23.0 | 26 | 28 | **56** | Llama |
+    | `vt` | 200 | 12 | 16.0 | 18 | 20 | **40** | Llama |
+    | `niah_multikey_1` | 200 | 3 | 3.0 | 3 | 3 | **6** | Llama |
+    | `niah_multivalue` | 200 | 15 | 15.0 | 15 | 15 | **30** | Llama |
+    | `niah_multiquery` | 200 | 15 | 15.0 | 15 | 15 | **30** | Llama |
+    | `qa_1` | 200 | 1 | 3.0 | 10 | 21 | **42** | Llama |
+    | `qa_2` | 200 | 1 | 3.0 | 8 | 23 | **46** | Llama |
+
+    Llama groups digits in threes, so a 7-digit answer is 3 tokens (Qwen: 7),
+    and the number tasks' caps are less than half of Qwen's. **Flag:** a cap
+    of 6 leaves 3 tokens for anything before or after a 3-token number.
+    XL0 reports the cap-hit rate per task, and a `niah_single` or
+    `niah_multikey_1` cap-hit rate above 5% on dense is reported as a
+    truncation confound. The cap is not changed after XL0.
+  - **Budgets.** 32768c and 65536c Llama budgets are band − the cap above:
+    `qa_1` 32,726 and 65,494; `niah_multivalue` and `niah_multiquery` 32,738
+    and 65,506.
+  - **Encoding: the sizer counts exactly what the model is fed.** Sizing
+    (`ruler.generate_examples`) and generation (`generation.generate_one`)
+    both encode through `accuracy/prompting.py`. It uses
+    `add_special_tokens=True`, stated rather than defaulted, which prepends
+    one BOS on Llama. `generate_one` refuses an example whose sized
+    `context_length` differs from the number of ids it feeds.
+    `tests/test_llama_decoding_and_prompts.py` checks the two are equal per
+    example, and that a sizer counting with `add_special_tokens=False` (one
+    short) is caught. Qwen's counts are unchanged, because its tokenizer
+    adds no BOS.
+  - **Double-BOS guard.** `prompting.prompt_ids` refuses ids that begin with
+    two BOS ids.
+  - **Block 0 holds the BOS on Llama.** Every Llama prompt's position 0 is
+    `<|begin_of_text|>` (128000), so key block 0, the sink every era-3 and
+    era-4 mask grants free (§2.1), contains it. On Qwen, position 0 is
+    ordinary text.
+
+**What the authors' pipeline does (checked from source at `e379887` and
+with the pinned tokenizer, 2026-10-03).**
+
+- **Decoding: greedy.** `eval/RULER/scripts/config_models.sh` sets
+  `TEMPERATURE="0.0"  # greedy`. `pred/call_api.py` passes
+  `do_sample=args.temperature > 0`, so False, with `repetition_penalty=1`,
+  `top_k` 32 and `top_p` 1.0, which greedy ignores. Generation is
+  `model.generate` with no stop words (`config_tasks.sh`). So it ends on
+  `generation_config`'s three EOS ids or on `max_new_tokens`, the task's
+  `tokens_to_generate`. **It does not sample, so the replication needs no
+  sampling treatment.** Our decoding is also greedy. Our stop rule adds the
+  newline stop and uses our own caps, and that difference is the confound
+  stated below.
+- **Prompt format: chat, hand-written.**
+  - **Calibration** (`profile_threshold.py` on `text.json`): every prompt is
+    `<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n…<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n Answer:`.
+  - **RULER evaluation** (`run_ruler.sh` → `config_models.sh`): template
+    `meta-llama3`, the same user/assistant wrapping (`data/template.py`).
+  - Neither is `tokenizer.apply_chat_template`, which would add a system
+    header. Neither has a system turn.
+- **Double BOS: yes, in both.** Both strings start with a literal
+  `<|begin_of_text|>` and are tokenized with the default
+  `add_special_tokens=True` (`profile_threshold.py:212`,
+  `model_wrappers.py`, `tokenizer(prompts, …)`). With the pinned tokenizer,
+  **156 of 156** `text.json` prompts and the RULER template encode to
+  `[128000, 128000, 128006, …]`. The shipped `llama_fuse_*` tables'
+  calibration pipeline is unreleased (§4.1). If it used the same pipeline,
+  they were calibrated on double-BOS inputs.
+
+**Pre-registered prompt format for this study, and the confounds it
+leaves.**
+
+- **H6a / H6b (positive control on `text.json`):** the authors' chat format
+  exactly, with the leading literal `<|begin_of_text|>` removed. That gives
+  **one BOS**, the tokenizer's. Only the BOS count differs from the authors'
+  input. **Confound, stated:** their double BOS shifts every position by one
+  and puts two BOS keys in block 0. H6a's recall and H6b's profiler
+  reproduction are both measured on single-BOS inputs, and the confound is
+  reported beside their verdicts. A double-BOS sensitivity arm (I2c on
+  double-BOS inputs, about ₹117–262) is **not** in the plan. It needs the
+  researcher's yes and a dated amendment before I2c runs.
+- **H8 and every Llama accuracy arm:** this study's completion-style RULER
+  prompts (no chat wrapping, as for Qwen), one BOS, greedy, the stop rule
+  above. **Confound, stated:** the authors evaluated in chat format with no
+  newline stop. So H8 tests XAttention's kernel configuration and shipped
+  table on this study's prompt format. It does not reproduce the authors'
+  RULER scores, and is never compared with them numerically.
+  `calibrate_xattn_thresholds.py`'s marker stripping is for Qwen only, and
+  is not applied to Llama.
 
 **Positions past Qwen's limit at 32768.**
 
@@ -1257,53 +1401,77 @@ $1.5/h).
 | dense prefill, 1.5B | A100 0.190 / 0.436 / 1.102 s; H100 0.079 / 0.189 / 0.506 s at 8K / 16K / 32K | measured | `results/s12_{a100,h100}_vec_endtoend` |
 | dense row, 1.5B, L4 | 2.59 / 5.40 s at 16K / 32K | measured | T4 pilot parquets |
 | dense row, 7B, A100, 16K | 2.73 s | measured | `results/s7_7b_16384` |
-| μ = exact-mass pass / dense prefill | 2–11.3 | upper measured (L4 CPU-resident oracle at 32K), **lower assumed** for the new GPU-side pass (§4.7) | `docs/t4_sparse_pilot.md`; the canary measures it |
-| μ of this harness's oracle pass, A100, 1.5B | 7.90 / 6.19 / 9.08 at 8K / 16K / 32K (1.5 / 2.7 / 10.0 s, one cold call each) | measured | `results/s12_a100_vec_endtoend/logs/s12_vec_e2e.log` |
-| Llama-8B oracle pass per text | 8.2–14.4 s at 16K, 30.5–53.3 s at 32K, 212–416 s at 91,574 tokens | **derived** from the measured 1.5B pass above, scaled by config geometry (§8.2 note) | `scripts/derive_llama_oracle_cost.py` |
+| μ = exact-mass pass / dense prefill, used in §8.2 | **6.19–9.08** (sixth draft; was 2–11.3) | **measured**: this harness's oracle pass on the A100, Qwen2.5-1.5B, min and max over the three bands below. The new GPU-side pass (§4.7) is measured at the canary. | `results/s12_a100_vec_endtoend/logs/s12_vec_e2e.log` |
+| μ of this harness's oracle pass, A100, 1.5B | 7.90 / 6.19 / 9.08 at 8K / 16K / 32K (1.5 / 2.7 / 10.0 s, one cold call each) | measured | same |
+| μ on the L4 | 7.2 at 16K, 11.1–11.3 at 32K | measured, L4 card only; no longer used for A100 lines | `docs/t4_sparse_pilot.md`, `writeup_input.md` |
+| Llama-8B oracle pass per text | 8.2–14.4 s at 16K, 30.5–53.3 s at 32K, 112–212 s at 65,314 tokens (the longest `text.json` text in Llama tokens) | **derived** from the measured 1.5B pass above, scaled by config geometry (§8.2 note) | `scripts/derive_llama_oracle_cost.py` |
 | block-size recall multiplier | 1.1–1.5 | **assumed** | the canary measures it |
 | wall / Σ row latency | 1.25–1.69 | measured | phase logs |
 | session overhead | 8–15 min | measured range | ledger sessions |
 | decode per token | 1.5B on A100 20–35 ms (upper measured on L4); Llama 25–45 ms | partly **assumed** | |
 | 7B and Llama prefill, A100 | 7B 1.85–2.73 s (16K), 4.19–6.90 s (32K). Llama 16K 2.06 s, 32K 4.78 s and 65K 12.6 s at the lower end, upper = 1.6× lower | **assumed** from a FLOP split anchored to measured 1.5B times | |
-| `text.json` | 156 texts, 3.92M Qwen tokens; 121 ≤ 32K | measured | tokenised locally |
+| `text.json` | 156 texts. Qwen: 3.92M tokens, max 91,574, 121 ≤ 32K. **Llama (one BOS): 3.63M tokens, max 65,314, 130 ≤ 32K** | measured | tokenised locally; Llama offline with the pinned tokenizer, 2026-10-03 |
 
 ### 8.2 Bracket
 
 The computation moves into `attnbench/analysis/frontier_prereg.py` before lock
 (§11). ★ = never cut (§8.4).
 
-| run | card | minutes | ₹ |
-|---|---|---:|---:|
-| ★ FA3 wheel build | CPU | 60–150 | 130–325 |
-| ★ C: XA calibration, Qwen 7B (121 texts) | A100 | 18–85 | 86–404 |
-| ★ I1: 1.5B components, end to end at 3 bands, recall (192 selection + 800 evaluation, b 16–128) | A100 | 59–259 | 281–1,228 |
-| ★ I2a: 7B recall, 60 per band, b 16–128 | A100 | 24–188 | 115–890 |
-| I2b: 7B end to end at 32K | A100 | 14–36 | 64–170 |
-| ★ I2c: Llama H6a, texts ≤ 32K | A100 | 22–49 | 103–233 |
-| I2d: Llama H6a, texts > 32K | A100 | 62–137 | 295–649 |
-| I2e: Llama H6b profiler reproduction | A100 | 81–176 | 384–834 |
-| ★ I3: H100 cuDNN probe, components, end to end at 3 bands | H100 | 22–44 | 155–313 |
-| I4: L4 components | L4 | 11–25 | 15–33 |
-| ★ R: A100 replicates ×3 (0 if no near-parity) | A100 | 0–140 | 0–664 |
-| ★ R: H100 replicates ×2 | H100 | 0–59 | 0–414 |
-| R: H100 replicate #3 | H100 | 0–29 | 0–207 |
-| ★ X0: 1.5B extrinsic canary | A100 | 13–37 | 62–177 |
-| ★ X: 1.5B primary `qa_1`, n = 300, dense + 5–8 arms | A100 | 137–735 | 650–3,478 |
-| ★ X: 1.5B secondary, 100 per band | A100 | 40–235 | 192–1,112 |
-| ★ X-rep: T4 replication on T4's 32768 prompts, dense + XA native, 200 ids (§4.9) | A100 | 15–61 | 72–288 |
-| XL0: Llama dense task probe | A100 | 22–50 | 106–238 |
-| XL: Llama primary `qa_1`, n = 300, 16K + 32K, dense + 4 | A100 | 272–601 | 1,289–2,843 |
-| XL: Llama secondary, 16K + 32K | A100 | 88–195 | 417–924 |
-| XL: Llama 65536 band | A100 | 574–1,252 | 2,719–5,925 |
-| **Never-cut core** | | **6.8–34.1 h** | **₹1,842–9,526** |
-| **Full plan** | | **25.7–75.7 h** | **₹7,133–21,347** |
+**Re-bracketed 2026-10-03 (sixth draft) with the measured μ on every
+oracle-pass line.** The fifth draft's figures are kept beside the new ones.
 
-**The Llama oracle-pass lines, re-derived 2026-10-03 from measured numbers.**
-I2c, I2d and I2e used to multiply a FLOP-split Llama prefill model by μ =
-2–11.3. The lower μ was assumed, and so was a 1.6× upper factor on the
-prefill. They now start from this harness's oracle pass on the A100,
-**measured** for Qwen2.5-1.5B at 1.5 / 2.7 / 10.0 s at 8K / 16K / 32K
-(μ = 7.90 / 6.19 / 9.08). Two ratios from the configs scale it to Llama:
+| run | card | min, fifth | min, now | ₹, fifth | ₹, now | what moved it |
+|---|---|---:|---:|---:|---:|---|
+| ★ FA3 wheel build | CPU | 60–150 | 60–150 | 130–325 | 130–325 | — |
+| ★ C: XA calibration, Qwen 7B (121 texts) | A100 | 18–85 | 33–74 | 86–404 | 158–348 | μ (a) |
+| ★ I1: 1.5B components, end to end at 3 bands, recall (192 selection + 800 evaluation, b 16–128) | A100 | 59–259 | 117–220 | 281–1,228 | 553–1,040 | μ (a) |
+| ★ I2a: 7B recall, 60 per band, b 16–128 | A100 | 24–188 | 52–156 | 115–890 | 247–738 | μ (a) |
+| I2b: 7B end to end at 32K | A100 | 14–36 | 14–36 | 64–170 | 64–170 | — |
+| ★ I2c: Llama H6a, texts ≤ 32K | A100 | 22–49 | 25–55 | 103–233 | 117–262 | Llama token counts (b) |
+| I2d: Llama H6a, texts > 32K | A100 | 62–137 | 47–104 | 295–649 | 224–491 | Llama token counts (b) |
+| I2e: Llama H6b profiler reproduction | A100 | 81–176 | 69–149 | 384–834 | 327–706 | Llama token counts (b) |
+| ★ I3: H100 cuDNN probe, components, end to end at 3 bands | H100 | 22–44 | 22–44 | 155–313 | 155–313 | — |
+| I4: L4 components | L4 | 11–25 | 11–25 | 15–33 | 15–33 | — |
+| ★ R: A100 replicates ×3 (0 if no near-parity) | A100 | 0–140 | 0–140 | 0–664 | 0–664 | — |
+| ★ R: H100 replicates ×2 | H100 | 0–59 | 0–59 | 0–414 | 0–414 | — |
+| R: H100 replicate #3 | H100 | 0–29 | 0–29 | 0–207 | 0–207 | — |
+| ★ X0: 1.5B extrinsic canary | A100 | 13–37 | 13–37 | 62–177 | 62–177 | — |
+| ★ X: 1.5B primary `qa_1`, n = 300, dense + 5–8 arms | A100 | 137–735 | 170–718 | 650–3,478 | 803–3,397 | μ (a) |
+| ★ X: 1.5B secondary, 100 per band | A100 | 40–235 | 51–229 | 192–1,112 | 242–1,085 | μ (a) |
+| ★ X-rep: T4 replication on T4's 32768 prompts, dense + XA native, 200 ids (§4.9) | A100 | 15–61 | 15–61 | 72–288 | 72–288 | — |
+| XL0: Llama dense task probe | A100 | 22–50 | 22–50 | 106–238 | 106–238 | — |
+| XL: Llama primary `qa_1`, n = 300, 16K + 32K, dense + 4 | A100 | 272–601 | 272–601 | 1,289–2,843 | 1,289–2,843 | — |
+| XL: Llama secondary, 16K + 32K | A100 | 88–195 | 88–195 | 417–924 | 417–924 | — |
+| XL: Llama 65536 band | A100 | 574–1,252 | 574–1,252 | 2,719–5,925 | 2,719–5,925 | — |
+| **Never-cut core** | | **6.8–34.1 h** | **9.4–32.4 h** | **₹1,842–9,526** | **₹2,540–9,053** | |
+| **Full plan** | | **25.7–75.7 h** | **27.7–73.0 h** | **₹7,133–21,347** | **₹7,704–20,589** | |
+
+**Sources of the change.**
+
+- **(a) μ, measured.** μ = 6.19–9.08 replaces 2.0 (assumed) – 11.3 (L4) on
+  every oracle-pass line: C, I1, I2a and both X lines. It is the minimum and
+  maximum over 8K / 16K / 32K of this harness's oracle scoring pass over
+  dense prefill, **measured on the A100 for Qwen2.5-1.5B**: 1.5 / 2.7 /
+  10.0 s against 0.190 / 0.436 / 1.102 s, giving 7.90 / 6.19 / 9.08
+  (`results/s12_a100_vec_endtoend/logs/s12_vec_e2e.log`; one cold call per
+  band). 11.3 was an L4 figure, from the L4's own pass, so it no longer bounds
+  an A100 line. Lower ends rise and upper ends fall.
+- **(b) Llama token counts, measured.** I2c–I2e now use `text.json` counted
+  with the pinned Llama tokenizer, offline, with one BOS as this study feeds
+  it: 3,628,025 tokens, maximum 65,314, and 130 of 156 texts ≤ 32,768. The
+  Qwen proxy was 3,921,756, maximum 91,574, 121 ≤ 32K. The Llama pass itself
+  is still the measured 1.5B pass scaled by config ratios (below).
+  `scripts/derive_llama_oracle_cost.py` reproduces the three lines.
+- **Still assumed:** the block-size recall multiplier (1.1–1.5), Llama
+  prefill and decode for the XL lines, and 7B prefill (§8.1).
+- **What μ still is not.** It is the **existing** oracle pass's cost. The
+  study's GPU-side exact-mass pass (§4.7) is new code. The canary measures
+  its μ (DP1), and `rebracket()` replaces these values with that
+  measurement.
+
+**The Llama oracle-pass lines, derivation (2026-10-03).** They start from
+this harness's oracle pass on the A100, **measured** for Qwen2.5-1.5B (source
+(a)). Two ratios from the configs scale it to Llama:
 
 - **attention:** layers × query heads × head_dim, 3.048;
 - **everything else:** non-embedding linear parameters, 6.979B against
@@ -1317,25 +1485,17 @@ pass at 3.048 and the upper at 5.327, and any split lies between them.
   linearly or quadratically.
 - **XA estimate pass:** up to one dense prefill more, which is at most
   1 / 6.19 of the oracle pass.
-- **Token counts:** Qwen's, because the Llama tokenizer is gated. G9 step 3
-  re-counts them on the instance.
+- **Token counts:** source (b).
 
-**What changed:** I2c moves from ₹51–357 to ₹103–233, I2d from ₹66–556 to
-₹295–649, and I2e from ₹102–866 to ₹384–834. The core moves by +₹52 / −₹124
-and the full plan by +₹563 / −₹63.
+*(In the fifth draft these lines used Qwen token counts, and the other
+oracle lines kept μ = 2.0–11.3. Before that, all three Llama lines used a
+FLOP-split prefill model × the assumed μ.)*
 
-**What it is still not:** a Llama measurement, or a measurement of the new
-GPU-side exact-mass pass (§4.7), which is new code. The canary measures μ
-for that pass (DP1). The other oracle-pass lines (C, I1, I2a, X) still use
-the assumed lower μ = 2.0. Against the measured 6.19, that lower bound is
-optimistic: at μ ≥ 6.19 the core's lower end would be about ₹2,530, not
-₹1,842. The upper ends, which set the cap, use the measured 11.3 and do not
-move.
+**Intrinsic-only and extrinsic, full plan** (X-rep excluded, as before):
 
-**Intrinsic-only and extrinsic, full plan:**
-
-- intrinsic: ₹1,633–6,367 (6.2–23.0 h);
-- extrinsic: ₹5,440–14,700 (19.1–51.7 h), of which Llama is ₹4,530–9,930.
+- intrinsic: ₹1,992–5,714 (7.5–20.7 h), from ₹1,633–6,367 (6.2–23.0 h);
+- extrinsic: ₹5,640–14,588 (19.9–51.4 h), from ₹5,440–14,700, of which
+  Llama is ₹4,530–9,930 (unchanged).
 
 **T4 calibrated, as amended,** is a separate pre-registration, not under this
 cap:
@@ -1353,26 +1513,26 @@ sessions.
 |---|---|---|
 | custom images `attnbench-env-v5-20260905`, `attnbench-env-v6-20260917` | 22.0 GiB archive each | about ₹194/month, billed whether or not a session runs |
 | results bucket `gs://attnbench-results-research-507316` | 5.19 GiB, about 10 GiB after the study | about ₹18/month |
-| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹16–82 over the core, ₹62–182 over the full plan |
+| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹23–78 over the core, ₹67–176 over the full plan |
 | FA3 wheel build | — | already a ★ line above (₹130–325) |
 
-**Share of the core that depends on XAttention arms.** About **30–33%**:
-₹612–2,876 of the ₹1,842–9,526 core. That includes the X-rep line, which
-is XA-only. *(31%, ₹560–3,000 of ₹1,790–9,650, before the Llama oracle-pass
-lines were re-derived.)*
+**Share of the core that depends on XAttention arms.** About **30–31%**:
+₹762–2,810 of the ₹2,540–9,053 core. That includes the X-rep line, which
+is XA-only. *(Fifth draft: 30–33%, ₹612–2,876 of ₹1,842–9,526. Before that:
+31%, ₹560–3,000 of ₹1,790–9,650.)*
 
 | component | XA-dependent ₹ |
 |---|---:|
-| X0 + X, the XA share of the 1.5B extrinsic rows (2–3 of 5–8 arms) | 270–1,430 |
+| X0 + X, the XA share of the 1.5B extrinsic rows (2–3 of 5–8 arms) | 333–1,397 |
 | X-rep, the T4 replication at 32768 (XA only) | 72–288 |
-| C, the 7B calibration (XA only) | 86–404 |
-| I2c, the Llama positive control (XA only) | 103–233 |
+| C, the 7B calibration (XA only) | 158–348 |
+| I2c, the Llama positive control (XA only) | 117–262 |
 | replicates, assuming a third of near-parity cells are XA | 0–359 |
 | I3's XA end-to-end arms | 47–94 |
 | I1's XA end-to-end arms and components | 35–62 |
 | the recall passes (dominated by the shared exact-mass pass) | ≈ 0 |
 
-So the non-XA core is about ₹1,230–6,650 (unchanged).
+So the non-XA core is about ₹1,778–6,243.
 
 **Running non-XA parts first is mostly possible, with two exceptions:**
 
@@ -1387,9 +1547,9 @@ So the non-XA core is about ₹1,230–6,650 (unchanged).
   reserve, T4 calibrated excluded.
   - **Confirmed by the researcher on 2026-10-03**, in conversation, after it
     was stated back. It cannot be raised after lock.
-  - It covers, at worst-case inputs, the never-cut core (₹9,526) plus the
-    storage reserve (about ₹510) plus one rerun of the largest ★ session
-    (₹1,740), which is about ₹11,780, leaving about ₹220.
+  - It covers, at worst-case inputs, the never-cut core (₹9,053) plus the
+    storage reserve (about ₹500) plus one rerun of the largest ★ session
+    (₹1,698), which is about ₹11,250, leaving about ₹750.
   - Anything cuttable is paid for only from what the measured μ (DP1) frees
     up.
 - **Ledger:** `results/frontier_spend.csv`. Each session's teardown appends
@@ -1444,13 +1604,14 @@ So the non-XA core is about ₹1,230–6,650 (unchanged).
 
 | | ₹ |
 |---|---:|
-| core, including the T4-replication line at 32768 | 9,526 |
-| S_res, two months | about 510 |
-| one rerun of the largest ★ session (an extrinsic band, up to 1,740) | 1,740 |
-| **total** | **about 11,780** |
+| core, including the T4-replication line at 32768 | 9,053 (fifth draft 9,526) |
+| S_res, two months | about 500 (₹424 storage + ₹2.4/h × 32.4 h) |
+| one rerun of the largest ★ session (one band of X primary, half of ₹3,397) | 1,698 (fifth draft 1,740) |
+| **total** | **about 11,250** (fifth draft about 11,780) |
 
-That is **inside the ₹12,000 cap**, with about ₹220 to spare (₹100 before
-the Llama oracle-pass lines were re-derived). So:
+That is **inside the ₹12,000 cap**, with about ₹750 to spare (fifth draft
+₹220, fourth ₹100). Source of the change: the measured A100 μ (§8.2, (a))
+and the Llama token counts ((b)). So:
 
 - a single failed session at worst-case μ does not stop the study;
 - a second one does, unless DP1 measures μ below its upper bound;
@@ -1611,8 +1772,11 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 | 10 | Teacher-forced recall. | Open (F5). |
 | 11 | **New:** calibration is the authors' released substitute, not the paper's DP. | Open (F1). H6b measures it, and §14 asks the authors. |
 | 12 | **New:** era 3 against era 4 is cross-era. | T4's head-uniform arms against this study's per-head arms are descriptive only. |
-| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹21,347 worst case for the full plan. | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
+| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹20,589 worst case for the full plan (sixth draft, measured μ). | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
 | 14 | **New:** H2c, H2d and H5a were written with the A100 crossover estimates visible (§3). | Stated. They are reported as priors anchored on visible data, not blind predictions. The blind tests of the crossover are H1 and H2a/H2b. |
+| 16 | **New:** the authors' calibration and RULER pipelines feed a double BOS; this study feeds one (§4.9). | Stated as a confound for H6a/H6b and H8. A double-BOS sensitivity arm is not planned; adding one needs the researcher's yes and a dated amendment before I2c. |
+| 17 | **New:** Llama accuracy uses this study's completion-style prompts and newline stop, not the authors' chat format. | Stated. H8 is not a reproduction of the authors' RULER scores, and is never compared with them numerically. |
+| 18 | **New:** Llama number-task caps are 6 tokens (2 × a 3-token answer). | Kept by the rule. XL0 reports the dense cap-hit rate, and above 5% it is a stated truncation confound. The cap does not change after XL0. |
 | 15 | **New:** the H100 in-model speedups are against `sdpa_flash`, and no banked H100 dense kernel exists at (12, 2). | Labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`). Run D in I3 measures it. Nothing is adjusted from a different geometry. |
 
 ---
@@ -1631,7 +1795,7 @@ seven of these are met and committed with it (L7 added 2026-10-03):
 | L3 | The `mask_selector` column on every row type, era 4 registered (§4.5), and its stripped-column break-test | **not started** |
 | L4 | The cuDNN-on-H100 record checked (§4.6) | **done.** The record exists and is guard-written: cuDNN was never launched above 8192 on an H100. §4.6 is corrected, and so is every doc that called these rows faults (runbook, `run_probe.py` help, `silent_failure_patterns.md` ×2, `limitations.md`, `a100_session_plan.md`): "observed on L4 and A100, H100 untested above 8192". |
 | L5 | The Llama-3.1-8B `config.json` check (G9) at revision `0e9e39f…`: `max_position_embeddings`, `rope_scaling`, sha256 | **Passed 2026-10-03, for the position limit only.** The researcher read it locally with their own token (values and sha256 in §4.9). On CPU the same day: the repo id and table shape match the authors' model; transformers 4.46.0 and 5.18.0 implement `llama3`, and the logits gate passes with it (`tests/test_llama3_rope_gate.py`). What it does not cover is L7. |
-| L7 | The Llama stop rule (added 2026-10-03 from the researcher's pre-lock list): `generation_config.json`'s stop ids recorded in §4.9; the Llama caps measured with the Llama tokenizer and committed to `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS`; `text.json` re-counted with the Llama tokenizer (G9 step 3, done early) | **pending, with the researcher.** The tokenizer is gated, and only `config.json` is in the local cache. The code is ready (`measure_answer_lengths.py --model … --revision …`). |
+| L7 | The Llama stop rule (added 2026-10-03 from the researcher's pre-lock list): `generation_config.json`'s stop ids recorded in §4.9; the Llama caps measured with the Llama tokenizer and committed to `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS`; `text.json` re-counted with the Llama tokenizer (G9 step 3, done early) | **Done 2026-10-03 (sixth draft).** `generation_config.json` was reported by the researcher, with the token ids confirmed locally. The caps were measured offline with the cached tokenizer (no token) and committed, pinned to the §4.9 table by a test. The `text.json` maximum is 65,314. Also done: forced and asserted greedy decoding, the three-id stop set, `stop_token_id`, the newline set rebuilt from the Llama vocab, the shared encoder (sizer = fed ids) and the double-BOS guard, all tested (`tests/test_llama_decoding_and_prompts.py`). |
 | L6 | Banked rows flagged for positions past 32,768 (§4.9) | **done.** `scripts/flag_positions_over_limit.py` → `results/positions_over_limit/`: 1,638 / 34,582 rows, plus the per-band sizing deltas. The root cause is sizing on example 0 (`ruler.py` docstring fixed). The script is committed. Its output sits in gitignored `results/` and is regenerated by the script. |
 
 **Settled 2026-10-03, no longer open:** §0.1 records the researcher's
@@ -1787,6 +1951,21 @@ table's "now" column is labelled "second draft".)*
 | Sizing wording | "token-exact", "never above" | corrected in `limitations.md`, `writeup_input.md`, `sizing.py`, `ruler.py` and `reestimate_stage3.py`; 182 distinct over-budget examples (655 file-example pairs) |
 | §4.6 | "Neither is corrected here"; "four machines" | stale: the docs were corrected in `3f8a884`, and three Xid 31 events are banked |
 | §13 | later drafts' tables nested inside earlier tables' separator rows | repaired, in draft order |
+
+**Sixth draft (2026-10-03):**
+
+| area | fifth draft | sixth draft |
+|---|---|---|
+| Push | none | the 8 commits `dbabef7`..`469fed2` pushed to `origin` as branch `frontier-prereg-2026-10-03`, with the researcher's logged yes; no merge, no tag |
+| μ in §8 | 2.0 (assumed) – 11.3 (L4) on C, I1, I2a, X | **6.19–9.08**, measured on the A100 (1.5B oracle pass); old and new side by side (§8.2) |
+| Llama oracle lines | Qwen token counts | Llama token counts of `text.json` (3.63M, max 65,314, 130 ≤ 32K) |
+| Cost | core ₹1,842–9,526; full ₹7,133–21,347; worst case about ₹11,780 | core **₹2,540–9,053**; full **₹7,704–20,589**; worst case **about ₹11,250** against ₹12,000 |
+| L7 | pending | done: `generation_config.json` recorded; caps measured (6 / 56 / 40 / 6 / 30 / 30 / 42 / 46); `text.json` recounted |
+| Decoding | argmax only | greedy forced and asserted on Llama, refusal test, determinism test, on-instance determinism STOP (G9 step 6) |
+| Stop set | union of tokenizer and generation_config | Llama must be exactly {128001, 128008, 128009}; the tokenizer's 128009 alone is refused; `stop_token_id` on every row |
+| Encoding | two call sites agreeing by default | one encoder (`prompting.py`, `add_special_tokens=True`), fed length checked against sized length, double-BOS guard |
+| Authors' pipeline | not checked | greedy; chat format; **double BOS** in calibration and RULER (156/156); recorded with the confounds it leaves (§4.9, §3.9) |
+| Block 0 | — | holds the BOS on Llama |
 
 ---
 
