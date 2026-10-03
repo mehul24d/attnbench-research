@@ -80,27 +80,43 @@ sparsity, at 0.984×. Forcing the sink does not change which cell qualifies:
 the 0.90 row moves from 62.0 to 97.0 and still does not reach 100. The
 correction makes the row worse and the column's own rule is what requires it.*
 
-## The five gaps this targets
+## Research gaps
 
-1. **Kernel speedup vs end-to-end speedup.** On the L4: 1.24–1.26× as a
-   whole-model prefill ratio at 16384/0.9, 1.186× end-to-end at the same
-   cell, and ≤1.06× and usually <1.0× end-to-end at accuracy-matched points
-   at 8K and below. The kernel at the model's `(12,2)` geometry was measured
-   on the A100 only. *(This item called 1.24× a kernel figure, with "both ends
-   measured, on the same hardware", until 2026-10-01; it is a prefill ratio.)*
-2. **Random masks vs importance-derived masks.** Timing under a random mask
-   says nothing about accuracy. Stage 2 uses random masks to isolate the
-   kernel; Stage 3 uses real importance-derived ones. Every row records which.
-3. **The estimator's cost, which kernel benchmarks exclude.** Priced here as
-   a first-class result rather than a limitation. Training-free prefill
-   methods such as MInference and XAttention already count theirs. *(This
-   item said "which published speedups exclude" until 2026-10-01.)*
-4. **Accuracy and latency measured apart vs at matched accuracy.** A speedup
-   at an operating point that loses accuracy is not a speedup — and on two of
-   three tasks the honest comparison turns out to be unreachable at any
-   affordable sample size, which is a finding in its own right.
-5. **One card vs two architectures.** Every ratio is remeasured against a
-   baseline on the same machine; nothing is carried across hosts.
+The study set out against five gaps. Where each stands, using only what
+[`docs/claims.md`](docs/claims.md) supports:
+
+| # | original gap | status | evidence (sections of `docs/claims.md`) |
+|---|---|---|---|
+| 1 | Kernel speedup vs end-to-end speedup | **partly closed** | On the L4: 1.24–1.26× as a whole-model prefill ratio at 16384/0.9, 1.186× end-to-end at the same cell, and ≤1.06× and usually <1.0× end-to-end at accuracy-matched points at 8K and below ("End-to-end speedup, which is the point of the whole study"). The kernel at the model's `(12,2)` geometry was measured on the A100 only ("The same comparison at the model's real head geometry"). |
+| 2 | Random masks vs importance-derived masks | **partly closed** | Kernel cells are timed under random masks and accuracy under importance-derived ones ("Block-sparse accuracy"; "The speedup does not survive a change of card"). No row of `claims.md` states the separation as a supported claim, so it is not marked closed. |
+| 3 | The estimator's cost, which kernel benchmarks exclude | **partly closed** | The oracle's cost is priced at ~35× the latency it saves ("THE STUDY'S CONCLUSION"). One deployable estimator, MInference's mean-pool, was run inline on an L4: it costs 0.06–0.31 of the attention time it saves and is non-inferior to dense at no sparsity on that pilot's tasks, at 16384 and 32768 ("The deployable estimator, run inline"; the 32768 rows carry that file's 32K-positions caveat). Latency at matched accuracy is unmeasured. Training-free prefill methods such as MInference and XAttention already count their own estimator ("Where this study sits"). |
+| 4 | Accuracy and latency measured apart vs at matched accuracy | **partly closed** | Matched operating points exist: 15 of 34 are dominated by dense and the best is 1.059× ("End-to-end speedup…"). On two of three tasks the unconfounded end-to-end comparison is not obtainable at any affordable sample size ("The unconfounded end-to-end comparison is not obtainable on two of three tasks"). |
+| 5 | One card vs two architectures | **partly closed** | The end-to-end speedup is hardware-conditional: with the reference builder, 1.344× on the L4 against 0.480× on the A100 at 32768/0.75, in one mask era ("The speedup does not survive a change of card"). The A100 figure is against `sdpa_flash` and falls under the A100 baseline caveat above, whose adjusted figures are estimates until run D. The backend ranking across architectures rests on 11 cells ("Cross-architecture timing"). |
+
+*Gap 1 called 1.24× a kernel figure, with "both ends measured, on the same
+hardware", until 2026-10-01; it is a prefill ratio. Gap 3 said "which published
+speedups exclude" until 2026-10-01.*
+
+**The current primary question.** For training-free block-sparse prefill:
+where is the frontier between an importance estimator's cost and the quality
+of its ranking, how does it scale with context length, and where does each
+point on it become profitable across GPU generations? The study that asks it
+is written up in
+[`docs/estimator_frontier_preregistration.md`](docs/estimator_frontier_preregistration.md)
+(§1). That file is an **unlocked draft**. The study has not run: no GPU
+session and no measurement exists for it.
+
+**What the earlier study did not establish** (from
+[`docs/limitations.md`](docs/limitations.md)):
+
+- Every accuracy figure uses oracle masks, from a full dense attention pass
+  whose cost is excluded from the latency ("Importance scores are an upper
+  bound, and their cost is excluded").
+- It covers one model family (Qwen2.5, at two sizes) and one sparse kernel
+  family (block-sparse at block size 128), in prefill only ("SCOPE, before
+  anything else").
+- The host CPU was an uncontrolled variable: no GPU session recorded it in
+  its stamp until 2026-10-01, when it was measured ("Host CPU provenance").
 
 ## Scope and cost, stated up front
 
@@ -129,18 +145,20 @@ this hardware**, and it says which and why.
 
 ---
 
-## Stages
+## Methodology
 
-| Stage | What it produces | Hardware |
-|---|---|---|
-| 0 | Capability matrix: what each backend *claims* vs actually supports (the claimed/actual split follows CAB, [arXiv:2210.07661](https://arxiv.org/abs/2210.07661)) | any CUDA GPU |
-| 1 | Correctness gate vs a float64 reference | any CUDA GPU |
-| 2 | Kernel microbenchmarks (synthetic, random masks) | locked clocks, exclusive |
-| 3 | End-to-end accuracy on RULER-style tasks | 24 GB+ |
-| 4 | Matched-accuracy operating points (non-inferiority + bootstrap) | derived |
-| 5 | Phase decomposition: prefill, decode step, scoring | locked clocks, exclusive |
-| 6 | Pareto frontiers per grid cell | CPU only |
-| 7 | Decision map | CPU only |
+### The eight stages
+
+| Stage | What it measures | What it feeds | Hardware |
+|---|---|---|---|
+| 0 | Capability matrix: what each backend *claims* vs actually supports (the claimed/actual split follows CAB, [arXiv:2210.07661](https://arxiv.org/abs/2210.07661)) | which cells Stages 1 and 2 may run | any CUDA GPU |
+| 1 | Correctness gate vs a float64 reference | which cells Stage 2 is licensed to time | any CUDA GPU |
+| 2 | Kernel microbenchmarks (synthetic, random masks) | the kernel side of gap 1, and the dense-kernel comparison behind the A100 baseline caveat | exclusive; clocks **not** locked on any run |
+| 3 | End-to-end accuracy on RULER-style tasks | Stage 4, and Stage 6's measured latency | 24 GB+ |
+| 4 | Matched-accuracy operating points (non-inferiority + bootstrap) | Stages 6 and 7 | derived |
+| 5 | Phase decomposition: prefill, decode step, scoring | Stage 6's `normalized_ms`, and the oracle-cost ratio | locked clocks, exclusive |
+| 6 | Pareto frontiers per grid cell | Stage 7 | CPU only |
+| 7 | Decision map | the write-up ([`docs/writeup_input.md`](docs/writeup_input.md)) | CPU only |
 
 *Stages 4, 6 and 7 were rebuilt on 2026-09-20 from forced-sink accuracy
 (audit item S1a) and now occupy `results/stage4|6|7`. The versions published
@@ -148,8 +166,114 @@ before that date are correct measurements of a mask the current code does not
 build, and are kept under `results/_superseded/` — see `docs/claims.md`, "The
 derived stages rebuilt on forced-sink accuracy".*
 
-Only Stages 2 and 5 need rented, clock-locked, exclusive GPUs. Everything
-else runs on free-tier hardware or a laptop.
+Only Stages 2 and 5 need rented, exclusive GPUs. Everything else runs on
+free-tier hardware or a laptop.
+
+**Clock state, from the `clocks_locked` column of the banked rows.**
+
+| stage | files | dates | cards | `clocks_locked` |
+|---|---|---|---|---|
+| 2 | 6 `sweep.parquet` files, 1,027 rows | 2026-09-03 to 2026-09-17 | L4, A100, H100 | `False` on every row |
+| 5 | 11 `phases.parquet` files, 162 rows | 2026-09-07 to 2026-09-16 | L4, A100 | `True` on every row |
+
+*The stage table gave Stage 2's hardware as "locked clocks, exclusive", and
+the sentence above it read "clock-locked, exclusive GPUs" for both stages,
+until 2026-10-04. No Stage 2 run locked its clocks; see "Measurement
+discipline" below.*
+
+### Measurement integrity
+
+The full list is under "Measurement discipline" below. In short:
+
+- **Provenance on every row.** No result row is written without a stamp
+  (GPU, driver, clock state, commit).
+- **A correctness gate.** Stage 1 checks each cell against a float64
+  reference before Stage 2 times it (`attnbench/gates.py`).
+- **Resolution floors from measured variance.** A difference inside its
+  cell's floor is not reported as a win (`docs/claims.md`, "End-to-end
+  speedup…"; `docs/audit_register.md`, item S11).
+- **Mask eras tied to commit ancestry.** A row's era is fixed by where its
+  commit sits relative to the mask-rule fixes, and the comparison scripts
+  refuse a cross-era pair (`attnbench/analysis/eras.py`,
+  `tests/test_eras.py`; `docs/limitations.md`, "Which mask era each banked
+  accuracy file belongs to").
+- **A canary inside the comparison.** A re-measurement re-runs the dense arm
+  in the same session and requires it to reproduce the banked run before any
+  difference is attributed to the change under test: 300/300 for S1a,
+  200/200 for S7 (`docs/audit_register.md`).
+- **A check is not trusted until it has been made to fail.** Guards are
+  break-tested: the defect is put back and the test is watched going red
+  (`tests/test_no_stale_figures.py`; `docs/audit_register.md`, item S14).
+
+### The planned frontier design
+
+Pre-registration drafted (unlocked), in
+[`docs/estimator_frontier_preregistration.md`](docs/estimator_frontier_preregistration.md).
+Nothing below has run. What the draft plans:
+
+- Every estimator runs on the GPU, through one kernel call site and one mask
+  format (§4.2, §4.7). The arms are an oracle as a reference ceiling,
+  mean-pool, XAttention's antidiagonal scoring as a baseline under study,
+  vertical-slash-style scoring, and a sink + local window with no estimator.
+- Calibration, budget-selection and evaluation splits are disjoint, and the
+  evaluation split shares no example with any banked run (§5).
+- Each hypothesis states a numeric prediction, the tolerance on its input
+  ratio (0.05 at the kernel level, 0.07 end to end) and its pass rule (§3).
+- A hard cost cap of ₹12,000, with a reservation check before every launch
+  (§8.3).
+- If the check fails, items are cut in a fixed order, and nothing is cut
+  because of a result (§8.3, §8.4).
+
+### The finding that changed the framing
+
+The A100 reversal — block-sparse prefill faster than dense on the L4 and
+slower on the A100 — was explained by host-side mask construction. The
+builder costs the same on both hosts; the slower L4 hides it behind queued
+GPU work and the faster A100 no longer can. The account was then tested on
+an H100 under a pre-registration with three predictions: two passed, and one
+(that the direction is set by the build-to-GPU time ratio) failed, with 7 of
+9 cells where every cell was needed. H100 speedups in that section are
+against `sdpa_flash`, and their baseline strength is unmeasured. The tables
+are in [`docs/limitations.md`](docs/limitations.md): "The A100 reversal is CPU
+mask construction", "Measured 2026-10-01" and "The H100 test
+(pre-registered)". The prediction file is
+[`docs/h100_overlap_preregistration.md`](docs/h100_overlap_preregistration.md).
+
+## Remaining work and progress
+
+As of 2026-10-04, commit `d71efc8`.
+
+| item | status | source |
+|---|---|---|
+| Lock of the frontier draft | waiting on the researcher: the draft is unlocked, and whether to lock it is their call | draft §11.1 |
+| T4 calibrated, sessions A and B (`docs/t4_xattention_calibrated.md`) | not started, after lock | §0.4 |
+| Era table: T4 files registered as era 3, era 4 registered | done | §11.2 item 6 |
+| `positions_over_limit` and the estimator-path label on accuracy rows; `rebracket()` with its leak guard | done | §11.2 items 1 and 4 |
+| Host-floor provenance (`launch_floor_us`, `sync_floor_us`, `h2d_floor_us`, `cpuPlatform`) on every row type | not started | §11.2 item 1, §4.8 |
+| Dense baseline: the "runs correctly" check, the health check, the `dense_baseline` column | not started | §11.2 item 2, §4.6 |
+| FA3 build script for a CPU VM, pinned | not started | §11.2 item 2 |
+| Era-4 per-head selector | in progress: the `mask_selector` column and the era registration are in the tree; the selector itself is not | §11.2 item 3; `attnbench/masks.py`, `attnbench/analysis/eras.py` |
+| `bsa_prefill`, per-head mean-pool, vertical-slash-style scoring, sink + local window, the GPU-side multi-block-size oracle | not started | §11.2 item 3 |
+| Recall script, the `split` column on recall rows, the selection script's refusal | not started | §11.2 item 3 |
+| Extensions to `measure_estimator_cost.py` and `run_vectorised_endtoend.py` | not started | §11.2 item 3 |
+| Frontier grid config at n = 300 | not started: `frontier_prereg.evaluation_indices` exists, and no config is built from it | §11.2 item 3 |
+| Gate G12 wired into split generation | in progress: the check exists in `attnbench/analysis/frontier_prereg.py`, and nothing calls it | §11.2 item 3, §6 |
+| `results/frontier_spend.csv` and `scripts/frontier_budget_gate.py` | not started | §11.2 item 4 |
+| Llama-3.1-8B gated access | in progress: access granted; the G9 position-limit check passed, for the position limit only; weights not fetched | §11.1 L5 and L7, §11.2 item 5 |
+| A100 canary, with the first re-bracketing of the cost plan | not started | §6, §8.3 |
+| Run D: dense kernels compared in one session at the model's geometry; replaces the A100 estimates and measures the H100 baseline | not started | §4.6 |
+| H100 session (I3) | not started | §8.2, §8.5 |
+| cuDNN-on-H100 isolated probe, the last phase of I3 | not started | §4.6 |
+| Llama answer-length caps: measured offline and pinned by `tests/test_stopping.py` | done | §4.9 |
+| Llama answer-length caps: the cap-hit check in the dense task probe, which may double a cap once | not started | §4.9 |
+| S12: the oracle-versus-estimator gap at 16384 under the fixed mask builder | not started: open, and the register recommends leaving it and labelling the rows era 2 | `docs/audit_register.md` §5 |
+| Whether audit items S1–S4 ever existed | blocked: it cannot be resolved from the repository | `docs/audit_register.md` §3 |
+
+This table is a snapshot. It was derived from
+`docs/estimator_frontier_preregistration.md` (§4, §6, §8, §11),
+`docs/audit_register.md` and the code at that commit, and it goes stale as
+they change. No session of the frontier study has run, and §0.4 of the
+draft fixes the order in which they may start.
 
 ## Quick start
 
@@ -240,8 +364,12 @@ register item D1.)* *The Llama-3.1 RoPE gate (`tests/test_llama3_rope_gate.py`)
 was run on both 5.18.0 and 4.46.0 on 2026-10-03, with 4.46.0 installed in a
 scratch directory on this macOS host, not a Linux container. That is one file
 on 4.46.0, not the suite.* Reproducing 4.46.0 needs a Linux container and this host
-has no container runtime — it is the one item on the audit register's
-could-not-verify list that is still open.* *(This paragraph said "The 11 skips … 2 need CUDA, and 9 read banked
+has no container runtime. The Linux/4.46.0 suite run on record is audit item S9
+(`docs/audit_register.md` §4): 4 failed, 977 passed, 20 skipped. Its failures
+were fixed afterwards (`4ab382f`, and item S13), and the register records no
+Linux rerun since.* *(This sentence ended "it is the one item on the audit
+register's could-not-verify list that is still open" until 2026-10-04; the
+register has no such list.)* *(This paragraph said "The 11 skips … 2 need CUDA, and 9 read banked
 result files" against a code block saying 10 skipped, while the real numbers
 were 23 and 9. Three figures for one quantity, none of them measured. The
 PASSED figures then went stale on their own: they read 1109 and 1133 from
