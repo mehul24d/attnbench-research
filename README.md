@@ -241,26 +241,28 @@ mask construction", "Measured 2026-10-01" and "The H100 test
 
 ## Remaining work and progress
 
-As of 2026-10-04, commit `d71efc8`.
+As of 2026-10-04. Rows marked † describe code built that day in the commits
+that follow this README change on the branch; before those commits the
+files they name are not in the tree.
 
 | item | status | source |
 |---|---|---|
 | Lock of the frontier draft | waiting on the researcher: the draft is unlocked, and whether to lock it is their call | draft §11.1 |
-| T4 calibrated, sessions A and B (`docs/t4_xattention_calibrated.md`) | not started, after lock | §0.4 |
+| T4 calibrated, sessions A and B (`docs/t4_xattention_calibrated.md`) | not started, after lock. Amended before any data on 2026-10-04 (amendment A8)† | §0.4 |
 | Era table: T4 files registered as era 3, era 4 registered | done | §11.2 item 6 |
 | `positions_over_limit` and the estimator-path label on accuracy rows; `rebracket()` with its leak guard | done | §11.2 items 1 and 4 |
 | Host-floor provenance (`launch_floor_us`, `sync_floor_us`, `h2d_floor_us`, `cpuPlatform`) on every row type | not started | §11.2 item 1, §4.8 |
 | Dense baseline: the "runs correctly" check, the health check, the `dense_baseline` column | not started | §11.2 item 2, §4.6 |
 | FA3 build script for a CPU VM, pinned | not started | §11.2 item 2 |
-| Era-4 per-head selector | in progress: the `mask_selector` column and the era registration are in the tree; the selector itself is not | §11.2 item 3; `attnbench/masks.py`, `attnbench/analysis/eras.py` |
+| Era-4 per-head selector | done†: the selector is built, and with the same scores on every head it reproduces the head-uniform rule bitwise, checked on CPU. No arm calls it yet | §4.5; `attnbench/masks.py`, `tests/test_per_head_selector.py` |
 | `bsa_prefill`, per-head mean-pool, vertical-slash-style scoring, sink + local window, the GPU-side multi-block-size oracle | not started | §11.2 item 3 |
-| Recall script, the `split` column on recall rows, the selection script's refusal | not started | §11.2 item 3 |
+| Recall script, the `split` column on recall rows, the selection script's refusal | in progress†: the row schema with `split`, the selection refusal and the firewall in front of the evaluation analysis are built; the recall pass that writes the rows is not started | §11.2 item 3; `attnbench/analysis/frontier_recall.py` |
 | Extensions to `measure_estimator_cost.py` and `run_vectorised_endtoend.py` | not started | §11.2 item 3 |
 | Frontier grid config at n = 300 | not started: `frontier_prereg.evaluation_indices` exists, and no config is built from it | §11.2 item 3 |
-| Gate G12 wired into split generation | in progress: the check exists in `attnbench/analysis/frontier_prereg.py`, and nothing calls it | §11.2 item 3, §6 |
-| `results/frontier_spend.csv` and `scripts/frontier_budget_gate.py` | not started | §11.2 item 4 |
+| Gate G12 wired into split generation | done†: split generation and the calibration script both stop on it. Run on the calibration texts as shipped, it stopped; a dated amendment (§5) changes which texts the calibration uses, and the gate passes on those | §5, §6; `attnbench/accuracy/frontier_splits.py` |
+| `results/frontier_spend.csv` and `scripts/frontier_budget_gate.py` | in progress†, **verified only against a stand-in `gcloud`**: the gate script is built, and the A100, H100 and L4 launchers refuse to create an instance without it. Not wired: the compile-session launcher, the image boot-test and image-capture scripts, and the teardown's ledger row. The ledger file is created at first use | §8.3 |
 | Llama-3.1-8B gated access | in progress: access granted; the G9 position-limit check passed, for the position limit only; weights not fetched | §11.1 L5 and L7, §11.2 item 5 |
-| A100 canary, with the first re-bracketing of the cost plan | not started | §6, §8.3 |
+| A100 canary, with the re-bracketing of the cost plan from its measurements | not started. The worst case was re-bracketed once already, before any session, from banked measurements (§8.2) | §6, §8.3 |
 | Run D: dense kernels compared in one session at the model's geometry; replaces the A100 estimates and measures the H100 baseline | not started | §4.6 |
 | H100 session (I3) | not started | §8.2, §8.5 |
 | cuDNN-on-H100 isolated probe, the last phase of I3 | not started | §4.6 |
@@ -269,10 +271,21 @@ As of 2026-10-04, commit `d71efc8`.
 | S12: the oracle-versus-estimator gap at 16384 under the fixed mask builder | not started: open, and the register recommends leaving it and labelling the rows era 2 | `docs/audit_register.md` §5 |
 | Whether audit items S1–S4 ever existed | blocked: it cannot be resolved from the repository | `docs/audit_register.md` §3 |
 
+**Verified only against a stand-in `gcloud`.** The budget gate's wiring into
+the launchers has never run against the real project. Its tests run each
+launcher with a fake `gcloud` that only logs its arguments, and check three
+things:
+
+- with no passing gate, no create call is made;
+- with a passing gate, one create call is made, under the hard cap the gate
+  set;
+- the launch is written to the ledger.
+
+The first real launch is the first real test of all three.
+
 This table is a snapshot. It was derived from
-`docs/estimator_frontier_preregistration.md` (§4, §6, §8, §11),
-`docs/audit_register.md` and the code at that commit, and it goes stale as
-they change. No session of the frontier study has run, and §0.4 of the
+`docs/estimator_frontier_preregistration.md` (§4, §5, §6, §8, §11),
+`docs/audit_register.md` and the code, and it goes stale as they change. No session of the frontier study has run, and §0.4 of the
 draft fixes the order in which they may start.
 
 ## Quick start
@@ -359,8 +372,9 @@ virtualenv on this workstation runs **5.18.0** (with torch 2.14.1), installed
 2026-10-01 20:31 by its `dist-info` timestamps, so it is no longer the 5.17.0
 the equality was measured at. *(This sentence said "runs 5.17.0, the version
 it was measured at" until 2026-10-03, and the workstation "now runs 5.16.1"
-until 2026-10-01; that is the system `python3`, which the suite does not use —
-register item D1.)* *The Llama-3.1 RoPE gate (`tests/test_llama3_rope_gate.py`)
+until 2026-10-01; that is the system `python3`, which the suite does not
+use.)* *(That note ended "register item D1" until 2026-10-04;
+`docs/audit_register.md` has no item D1.)* *The Llama-3.1 RoPE gate (`tests/test_llama3_rope_gate.py`)
 was run on both 5.18.0 and 4.46.0 on 2026-10-03, with 4.46.0 installed in a
 scratch directory on this macOS host, not a Linux container. That is one file
 on 4.46.0, not the suite.* Reproducing 4.46.0 needs a Linux container and this host
