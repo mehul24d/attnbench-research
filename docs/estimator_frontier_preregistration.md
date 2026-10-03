@@ -37,8 +37,13 @@ it is not permitted (§0.2).
 
 **The researcher's note on scope, in their own words** (typed in the chat on
 2026-10-04): "Permission granted for fair use of the work". It is the
-researcher's wording, not a quote of the email. It widens nothing above, and
-nothing is read into "fair use": every act still goes through §0.2.
+researcher's wording, not a quote of the email. It sits beside the summary
+above and widens nothing.
+
+**The summary above remains the stated basis for the gate** (the
+researcher, 2026-10-04). They confirmed that the permission covers
+publishing XAttention results and reproducing the authors' kernel lines.
+Every act still goes through §0.2.
 
 **Superseded.** The professor's guidance ("researcher-reported institutional
 guidance, no written artifact yet") is superseded by this written permission.
@@ -53,10 +58,11 @@ It was never the authors' permission.
 The pinned commit is cloned at run time. The repository still has no
 licence (§4.1).
 
-**Request date: 2026-06-03.** *(Typed by the researcher on 2026-10-04 as
-"3/6/2026", read day-first, as the permission date was. Until then this
-line carried 2026-10-03, which was inferred and not theirs.)* Nothing else
-about the request is kept in the repository.
+**Request date: 2026-10-03.** *(Typed by the researcher on 2026-10-04 as
+"3/10/2026", read day-first, as the permission date was. Earlier the same
+day they had typed "3/6/2026", which was recorded here as 2026-06-03 and
+pushed in `dc21dec`. This entry corrects it.)* Nothing else about the
+request is kept in the repository.
 
 **Two questions remain unanswered.** Both were asked in that request:
 
@@ -1950,12 +1956,13 @@ oracle-pass line.** The fifth draft's figures are kept beside the new ones.
 | ★ X: 1.5B primary `qa_1`, n = 300, dense + 5–8 arms | A100 | 137–735 | 170–511 | 650–3,478 | 803–2,416 | μ (a); row bound (c) |
 | ★ X: 1.5B secondary, 100 per band | A100 | 40–235 | 51–196 | 192–1,112 | 242–926 | μ (a); row bound (c) |
 | ★ X-rep: T4 replication on T4's own prompts at 16384 and 32768, dense + XA native, 200 ids per band (§4.9) | A100 | 15–61 | 24–69 | 72–288 | 112–325 | eighth draft: the 16384 band added, because the evaluation split no longer shares T4's ids; row bound (c) |
+| SL: sink + local window at 0.25, one more arm in X0 and X (cut item 0c) | A100 | — | 24–66 | — | 113–312 | priced 2026-10-04; it was "about ₹90–500" in §8.4 and in no total |
 | XL0: Llama dense task probe | A100 | 22–50 | 22–50 | 106–238 | 106–238 | — |
 | XL: Llama primary `qa_1`, n = 300, 16K + 32K, dense + 4 | A100 | 272–601 | 272–601 | 1,289–2,843 | 1,289–2,843 | — |
 | XL: Llama secondary, 16K + 32K | A100 | 88–195 | 88–195 | 417–924 | 417–924 | — |
 | XL: Llama 65536 band | A100 | 574–1,252 | 574–1,252 | 2,719–5,925 | 2,719–5,925 | — |
 | **Never-cut core** | | **6.8–34.1 h** | **9.6–28.9 h** | **₹1,842–9,526** | **₹2,594–7,975** | eighth draft ₹2,594–9,231; seventh ₹2,539–9,053 |
-| **Full plan** | | **25.7–75.7 h** | **28.2–70.1 h** | **₹7,133–21,347** | **₹7,860–19,740** | eighth draft ₹7,860–20,997; seventh ₹7,820–20,852 |
+| **Full plan** | | **25.7–75.7 h** | **28.6–71.2 h** | **₹7,133–21,347** | **₹7,973–20,052** | with the SL line, new on 2026-10-04 (₹7,860–19,740 without it); eighth draft ₹7,860–20,997 |
 
 *The "now" columns are `attnbench/analysis/frontier_prereg.bracket()` at its
 default inputs, rounded. `tests/test_frontier_prereg_plan.py` fails if any of
@@ -2053,8 +2060,9 @@ FLOP-split prefill model × the assumed μ.)*
 **Intrinsic-only and extrinsic, full plan** (X-rep excluded, as before):
 
 - intrinsic: ₹2,109–5,976 (7.9–21.6 h) with I2c-B, from ₹1,633–6,367 (6.2–23.0 h);
-- extrinsic: ₹5,640–13,439 (19.9–47.3 h), from ₹5,640–14,588 in the eighth
-  draft, of which Llama is ₹4,530–9,930 (unchanged).
+- extrinsic: ₹5,753–13,751 (20.3–48.4 h) with the SL line, from
+  ₹5,640–14,588 in the eighth draft, of which Llama is ₹4,530–9,930
+  (unchanged).
 
 **T4 calibrated, as amended,** is a separate pre-registration, not under this
 cap:
@@ -2072,7 +2080,7 @@ sessions.
 |---|---|---|
 | custom images `attnbench-env-v5-20260905`, `attnbench-env-v6-20260917` | 22.0 GiB archive each | about ₹194/month, billed whether or not a session runs |
 | results bucket `gs://attnbench-results-research-507316` | 5.19 GiB, about 10 GiB after the study | about ₹18/month |
-| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹23–69 over the core, ₹68–168 over the full plan |
+| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹23–69 over the core, ₹69–171 over the full plan |
 | FA3 wheel build | — | already a ★ line above (₹130–325) |
 
 **Share of the core that depends on XAttention arms.** About **31%**:
@@ -2121,7 +2129,24 @@ So the non-XA core is about ₹1,793–5,472.
 - **Reservation check, before every launch:**
   `scripts/frontier_budget_gate.py` must pass, refusing with `STOP` otherwise:
 
-      spent + U(next session) + Σ U(every remaining ★ session) + S_res + R_B  ≤  ₹12,000
+      spent + U(next session) + Σ U(every remaining ★ session)
+            + Σ U(every higher-priority cuttable item not yet run) + S_res + R_B  ≤  ₹12,000
+
+  - **The higher-priority term (added 2026-10-04; the researcher's rule).** A
+    session launches only if what is left still covers every never-cut
+    session and every higher-priority cuttable item not yet run
+    (`frontier_prereg.launch_check`).
+    - "Higher priority" means later in the cut order (§8.4), so cut later.
+    - A cuttable session also reserves the rest of its own item. The Llama
+      dense probe XL0 does not launch unless XL primary is covered too.
+    - A ★ session outranks every cuttable item and reserves none of them.
+    - A cut takes the whole item. Cutting item 11 also takes items 1 and 2,
+      which need its dense probe.
+    - **Why.** Until this rule, I2b, I2d and I2e (cut items 7, 3 and 9) ran
+      before the Llama runs in §8.5's order and took the money item 11
+      needed. At worst-case inputs H8 was then "not run" with no session
+      having failed. Under the rule those three are cut and XL0 and XL
+      primary run (`frontier_prereg.fund`, with a break-test).
 
   - **R_B** (added 2026-10-03) is U(I2c-B), the conditional double-BOS arm,
     while H6a is unscored or has missed and I2c-B has not run. It is 0 once
@@ -2209,6 +2234,16 @@ next launch, and read timings only:
     **proceed with cuts**, or **STOP**. STOP means the core alone fails the
     check, with no study session run. Raising the cap is then a new
     pre-registration (above).
+  - **The arm factor's trigger, as a number (added 2026-10-04).** The arm
+    factor is the largest ratio, over the deployable arms and the three
+    bands, of an arm's end-to-end prefill to dense prefill in the canary.
+    The bracket's upper end is 1.6 (`ARM_FACTOR_UPPER`).
+    - At or below 1.6: the bracket stands.
+    - A measured arm factor above 1.6: the measured value replaces 1.6 and
+      every U is recomputed before I1.
+    - At or above 2.60: the worst case no longer fits the cap, so the
+      verdict is "proceed with cuts" or STOP
+      (`frontier_prereg.dp1_arm_factor`).
   - **Leak guard:** the function reads only timing, μ, and cost columns.
     It **refuses** any parquet with `correct`, `predicted`, `R`, `R̃` or
     density columns, so no canary result can enter a funding decision.
@@ -2221,7 +2256,7 @@ next launch, and read timings only:
 
 0a. Replicate escalation beyond 4 sessions on the A100 (§7.3).
 0b. Replicate escalation beyond 3 sessions on the H100.
-0c. SL in the 1.5B extrinsic run: about ₹90–500, one more arm.
+0c. SL in the 1.5B extrinsic run: ₹113–312, one more arm (§8.2).
 1. XL: the Llama 65536 band.
 2. XL: Llama secondary cells.
 3. I2d: Llama H6a on texts > 32K.
@@ -2241,6 +2276,31 @@ next launch, and read timings only:
     cut last among cuttable items: without it, a missed H6a cannot be
     interpreted. It is cut only if H6a has not yet missed, or if the check
     fails with nothing else left to cut.
+
+**If publication is withheld (pre-registered 2026-10-04; the researcher's
+rule):** if publication of XAttention results is withheld at any point, cuts
+0c and 10 move to the end of the order, after item 12, with 0c cut before
+10 (`frontier_prereg.cut_order`). The fallback (§0.3) rests on SL and VS. The
+move applies from the launch after the withholding is logged. A cut already
+made is not undone.
+
+**SL as a never-cut line: priced 2026-10-04, not adopted.** SL is the
+frontier's zero-cost endpoint. Its intrinsic and end-to-end points are
+already never cut, inside I1 and I3. Only its accuracy arm is item 0c.
+
+| | SL cuttable (as now) | SL never-cut |
+|---|---:|---:|
+| core, upper end | ₹7,975 | ₹8,287 |
+| one rerun (the 32768 band of X primary, with one more arm) | ₹1,472 | ₹1,601 |
+| worst case | ₹10,202 | ₹10,646 |
+| spare | ₹1,798 | ₹1,354 |
+| arm factor at which the spare is zero | 2.60 | 2.30 |
+| left for cuttable work at worst-case inputs | about ₹3,270 | about ₹2,955 |
+
+So the worst case would be ₹10,646, leaving ₹1,354. The cost is elsewhere:
+the Llama probe and primary run need ₹3,081, so SL as never-cut leaves H8
+unfunded at worst-case inputs. With SL cuttable, H8 is funded and SL is cut.
+Which of the two to protect is the researcher's decision.
 
 **Never cut (★):**
 
@@ -2266,13 +2326,19 @@ without the label below.
 
 | cut | hypothesis | effect |
 |---|---|---|
+| 0a | H2, H5 | no threshold changes. A near-parity A100 cell with σ̂ > 2.5% keeps its 4 sessions and is unresolved if its bound still spans 1. Labelled "A100 escalation not run" |
+| 0b | H2 | the same on the H100, at the sessions run. Labelled "H100 escalation not run" |
+| 0c | H4, H5 | H4 pools the arms that ran and H5 counts them, both labelled "without SL". The frontier's zero-cost endpoint keeps its recall and timing and has no accuracy point. H2 is unchanged: SL's end-to-end cells are in I1 and I3 |
 | 1 | H8 | scored on the bands run, labelled "without the 65536c band" |
+| 2 | none tested | Llama secondary cells are in no test (H8 is the primary cells); they are not reported |
 | 3 | H6a | none: its population is the ≤ 32K texts (I2c) |
 | 4 | H7 | the 12 1.5B cells, pass at 8 of 12, labelled "1.5B only (cut 4)" |
 | 5 | none tested | strides 4 and 16 are descriptive |
+| 6 | H2 | no threshold changes. A near-parity H100 cell has 3 sessions, not 4, so its bound is wider (2.48σ against 1.59σ) and it is more often unresolved. Labelled "H100 near-parity cells on 3 sessions" |
 | 7 | H2 | none: 7B cells are in no denominator |
 | 9 | H6b | "not run (cost stop)" |
-| 11 | H8 | "not run (cost stop)" |
+| 10 | H4, H5 | H4 pools the arms that ran and H5 counts them, both labelled "without VS". VS keeps its recall and timing (I1, I3), so the fallback's descriptive VS-against-MP comparison (§0.3) is unchanged |
+| 11 | H8 | "not run (cost stop)". Items 1 and 2 go with it |
 | 12 | H6a | none on the verdict; a miss is then reported without its attribution |
 
 ### 8.5 Order
@@ -2459,6 +2525,8 @@ summary, the date and "XAttention authors"; §8.3 records the ₹12,000 cap.
 - The era-4 stripped-column break-test (L3).
 - A reservation-check break-test: a ledger and plan over the cap must print
   `STOP`.
+- Added 2026-10-04: at worst-case inputs, a lower-priority cuttable item
+  running first cannot consume H8's funding.
 - A `rebracket()` refusal of any parquet carrying a result column.
 - A cross-card refusal of `torch_fallback` rows.
 - The A100 caveat test (`tests/test_a100_baseline_caveat.py`) is **done**:
@@ -2697,6 +2765,14 @@ the first four blocking findings.
 | Rerun term | half of X primary, ₹1,698 | the 32768 band of X primary, ₹1,472; at the old inputs it should have been ₹2,251 (§8.2 (d)) |
 | Worst case | ₹11,696, ₹304 spare (₹12,248 and over the cap once the rerun term is corrected) | ₹10,202, ₹1,798 spare |
 | Core | ₹2,594–9,231 | ₹2,594–7,975 |
+| Push | `2c568ef` | `dc21dec` pushed, with the researcher's logged yes |
+| Request date, corrected | 2026-06-03 (from "3/6/2026") | 2026-10-03 (from "3/10/2026") |
+| Scope | the note beside the summary | the researcher confirmed the summary is the gate's basis, and that it covers publishing XA results and the kernel lines |
+| Reservation check | reserved never-cut sessions only, so I2b, I2d and I2e could run first and leave H8 unfunded | also reserves every higher-priority cuttable item not yet run, and the rest of the session's own item |
+| Cut order under withholding | unchanged by it | 0c (SL) and 10 (VS) move to the end |
+| SL's accuracy arm | "about ₹90–500", in no total | ₹113–312, a line in §8.2; priced as never-cut and not adopted (§8.4) |
+| Cut-effects table | no row for 0a, 0b, 0c, 2, 6, 10 | every cut item has a row |
+| DP1 and the arm factor | no number | above 1.6 re-brackets; at or above 2.60 cuts or stops |
 
 ## 14. Licence and provenance request to the XAttention authors
 

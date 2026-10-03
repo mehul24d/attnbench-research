@@ -547,3 +547,101 @@ def test_the_eighth_drafts_worst_case_was_over_the_cap_once_the_rerun_is_priced(
     assert round(band) == 2251
     assert round(9231.26 + 503.94 + band + 262.14) == 12248
     assert _has("₹12,248, which is ₹248 over the cap")
+
+
+# --- the reservation rule, the cut order and DP1's trigger (2026-10-04) -----
+
+def test_h8s_funding_cannot_be_consumed_by_a_lower_priority_item_running_first():
+    """At worst-case inputs I2b, I2d and I2e (cut items 7, 3 and 9) come
+    before the Llama runs (item 11) in sec. 8.5's order. They must not
+    launch, and H8's runs must."""
+    lines = fp.bracket()
+    new = fp.fund(lines, fp.RUN_ORDER)
+    assert {"XL0", "XL primary"} <= set(new["ran"])
+    assert not {"I2b", "I2d", "I2e"} & set(new["ran"])
+    assert new["stopped_at"] is None and new["spent"] <= fp.CAP_INR
+    # The rule before 2026-10-04 let them run, and H8 then went unfunded.
+    old = fp.fund(lines, fp.RUN_ORDER, reserve_higher=False)
+    assert {"I2b", "I2d", "I2e"} <= set(old["ran"]) and "XL primary" in old["cut"]
+
+
+def test_no_walk_leaves_a_never_cut_session_unrun_or_goes_over_the_cap():
+    for kw in ({}, {"xa_withheld": True}, {"reserve_higher": False}):
+        out = fp.fund(fp.bracket(), fp.RUN_ORDER, **kw)
+        assert out["stopped_at"] is None and out["spent"] <= fp.CAP_INR
+        assert {l.name for l in fp.bracket() if l.star} <= set(out["ran"])
+
+
+def test_launch_check_reserves_higher_priority_items_only():
+    kw = dict(spent=0, next_u=500, remaining_star_u=[8000], s_res_inr=500, r_b=0)
+    # Item 3 must leave room for item 11; item 11 need not leave room for item 3.
+    assert fp.launch_check(next_item="3", remaining_cuttable_u={"11": 3081}, **kw) == "STOP"
+    assert fp.launch_check(next_item="11", remaining_cuttable_u={"3": 3081}, **kw) == "PROCEED"
+    # A never-cut session reserves no cuttable item.
+    assert fp.launch_check(next_item=None, remaining_cuttable_u={"11": 3081}, **kw) == "PROCEED"
+    # The rest of a session's own item is reserved: XL0 needs XL primary covered.
+    assert fp.launch_check(next_item="11", remaining_cuttable_u={"11": 3081}, **kw) == "STOP"
+    with pytest.raises(ValueError):
+        fp.launch_check(next_item="8", remaining_cuttable_u={}, **kw)
+    with pytest.raises(ValueError):
+        fp.launch_check(next_item="3", remaining_cuttable_u={"8": 1}, **kw)
+
+
+def test_a_cut_takes_the_whole_item_and_the_llama_runs_that_need_the_probe():
+    out = fp.fund(fp.bracket(), fp.RUN_ORDER, xa_withheld=True)
+    assert {"XL0", "XL primary", "XL secondary", "XL 65536"} <= set(out["cut"])
+    assert "SL" in out["ran"]
+
+
+def test_withheld_publication_moves_sl_and_vs_to_the_end_of_the_cut_order():
+    assert fp.cut_order() == fp.CUT_ORDER and fp.CUT_ORDER.index("0c") == 2
+    w = fp.cut_order(xa_withheld=True)
+    assert w[-2:] == ("0c", "10") and sorted(w) == sorted(fp.CUT_ORDER)
+    assert "8" not in fp.CUT_ORDER
+    assert _has("if publication of XAttention results is withheld at any point, cuts 0c and 10 move to the end")
+    kw = dict(spent=0, next_u=500, remaining_star_u=[8000], s_res_inr=500,
+              next_item="11", remaining_cuttable_u={"0c": 3081})
+    assert fp.launch_check(**kw) == "PROCEED"
+    assert fp.launch_check(xa_withheld=True, **kw) == "STOP"
+
+
+def test_every_cut_item_has_a_row_in_the_cut_effects_table():
+    rows = [r for r in DOC.read_text().splitlines() if r.startswith("| ")]
+    for c in fp.CUT_ORDER:
+        assert any(r.startswith(f"| {c} |") for r in rows), c
+    for c, pairs in fp.CUT_LABEL.items():
+        for _, label in pairs:
+            assert any(r.startswith(f"| {c} |") and label in r for r in rows), (c, label)
+    # And the other way: every label the table prints is in the code.
+    import re
+    for c in fp.CUT_ORDER:
+        row = next(r for r in rows if r.startswith(f"| {c} |"))
+        for label in re.findall(r'abelled "([^"]+)"', row):
+            assert label in [l for _, l in fp.CUT_LABEL.get(c, ())], (c, label)
+    for names in fp.CUT_LINES.values():
+        assert all(any(l.name == n for l in fp.bracket()) for n in names)
+
+
+def test_sl_is_priced_as_cuttable_and_as_never_cut():
+    lines = fp.bracket()
+    sl = next(l for l in lines if l.name == "SL")
+    assert not sl.star and fp.cut_item_of("SL") == "0c"
+    assert _has(f"₹{_inr(sl.inr[0])}–{_inr(sl.inr[1])}, one more arm")
+    star = fp.bracket(fp.BracketInputs(sl_star=True))
+    w0, w1 = fp.worst_case(lines), fp.worst_case(star)
+    assert w1["core"] - w0["core"] == pytest.approx(sl.inr[1])
+    assert w1["rerun"] > w0["rerun"]
+    assert _has(f"₹{_inr(w1['total'])}, leaving ₹{_inr(w1['spare'])}")
+    # As never-cut it takes H8's funding at worst-case inputs.
+    assert "XL primary" in fp.fund(star, fp.RUN_ORDER)["cut"]
+    assert _has("SL as never-cut leaves H8 unfunded at worst-case inputs")
+
+
+def test_dp1s_trigger_on_the_arm_factor_is_a_number():
+    assert fp.ARM_FACTOR_UPPER == fp.BracketInputs().ex[1] == 1.6
+    be = fp.arm_factor_break_even()
+    assert 2.5 < be < 2.7 and _has(f"at or above {be:.2f}")
+    assert fp.dp1_arm_factor(1.6) == "within"
+    assert fp.dp1_arm_factor(1.61) == "rebracket"
+    assert fp.dp1_arm_factor(be + 0.01) == "cut_or_stop"
+    assert _has("measured arm factor above 1.6")

@@ -720,9 +720,46 @@ def check_calibration_texts_disjoint(texts: Sequence[str], probes: Sequence[str]
 
 # What a cut (sec. 8.4) does to a hypothesis, fixed before any result.
 CUT_NOT_RUN = {"9": ("H6b",), "11": ("H8",)}
-CUT_LABEL = {"1": ("H8", "without the 65536c band"),
-             "4": ("H7a", "1.5B only (cut 4)")}
-# Cut 7 (I2b) labels nothing: H2's 84 cells are 1.5B only (sec. 3, H2).
+# cut -> ((hypothesis, label), ...). A label never changes a pass threshold.
+CUT_LABEL = {
+    "0a": (("H2", "A100 escalation not run"), ("H5", "A100 escalation not run")),
+    "0b": (("H2", "H100 escalation not run"),),
+    "0c": (("H4", "without SL"), ("H5", "without SL")),
+    "1": (("H8", "without the 65536c band"),),
+    "4": (("H7a", "1.5B only (cut 4)"),),
+    "6": (("H2", "H100 near-parity cells on 3 sessions"),),
+    "10": (("H4", "without VS"), ("H5", "without VS")),
+}
+# Cuts 2, 3, 5, 7 and 12 label no hypothesis (sec. 8.4): Llama secondary cells
+# are in no test, H6a's population is the <= 32K texts, strides 4 and 16 are
+# descriptive, H2's 84 cells are 1.5B only, and I2c-B never changes H6a.
+
+# The cut order (sec. 8.4), first cut first. Item 8 was removed (I4 is never
+# cut). A later item has HIGHER priority: it is cut later.
+CUT_ORDER = ("0a", "0b", "0c", "1", "2", "3", "4", "5", "6", "7", "9", "10", "11", "12")
+CUT_WITHHELD_LAST = ("0c", "10")
+# Cut items that are sessions or arms of their own, as bracket lines. The
+# others (0a, 0b, 4, 5, 10) are parts of a star line or have no line.
+CUT_LINES = {"0c": ("SL",), "1": ("XL 65536",), "2": ("XL secondary",), "3": ("I2d",),
+             "6": ("R H100#3",), "7": ("I2b",), "9": ("I2e",),
+             "11": ("XL0", "XL primary"), "12": ("I2c-B",)}
+
+
+# Cutting item 11 (the Llama dense probe and primary run) takes the other
+# Llama accuracy items with it: they need the probe.
+CUT_IMPLIES = {"11": ("1", "2")}
+
+
+def cut_order(*, xa_withheld: bool = False) -> tuple:
+    """Sec. 8.4. If publication of XAttention results is withheld at any
+    point, SL (0c) and VS (10) are cut last: the fallback rests on them."""
+    if not xa_withheld:
+        return CUT_ORDER
+    return tuple(c for c in CUT_ORDER if c not in CUT_WITHHELD_LAST) + CUT_WITHHELD_LAST
+
+
+def cut_item_of(line_name: str) -> Optional[str]:
+    return next((c for c, names in CUT_LINES.items() if line_name in names), None)
 
 
 def apply_cuts(verdicts: Mapping[str, Verdict], cuts: Iterable[str]) -> dict:
@@ -753,7 +790,7 @@ class BracketInputs:
     mu: tuple = (6.19, 9.08)
     wall: tuple = (1.25, 1.69)
     overhead_min: tuple = (8, 15)
-    ex: tuple = (1.0, 1.6)
+    ex: tuple = (1.0, 1.6)   # the arm factor; ARM_FACTOR_UPPER is its upper end
     decode_s: tuple = (0.020, 0.035)
     block_mult: tuple = (1.1, 1.5)
     # Upper-bound generated tokens per row: the task's hard cap
@@ -762,6 +799,8 @@ class BracketInputs:
     # are half of each (52). Used from the 2026-10-04 re-bracket.
     cap_tokens: Mapping[str, float] = field(default_factory=lambda: {
         "primary": 42, "secondary": 62, "rep": 52})
+    # Priced, not adopted: SL's extrinsic arm as a never-cut line (sec. 8.4).
+    sl_star: bool = False
     n_gen: Mapping[int, float] = field(default_factory=lambda: {16384: 28, 32768: 36.5, 65536: 40})
     p7_lo: Mapping[int, float] = field(default_factory=lambda: {16384: 1.85, 32768: 4.19})
     decode_llama_s: tuple = (0.025, 0.045)
@@ -844,16 +883,29 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
     def ext15(n, arms, kind, bands=(16384, 32768)):
         return lambda k: n * (1 + arms[k]) * sum(row15(b, k, kind) for b in bands) * inp.wall[k] / 60
 
-    def x_primary(bands, k):
-        return (ext15(300, (5, 8), "primary", bands)(k)
+    def x_primary(bands, k, extra_arms=0):
+        return (ext15(300, tuple(a + extra_arms for a in (5, 8)), "primary", bands)(k)
                 + 300 * sum(pa[b] for b in bands) * inp.mu[k] / 60
                 + len(bands) * inp.overhead_min[k])
+
+    def sl(k):
+        """SL at 0.25, one more arm in X0, X primary and X secondary. It has
+        no estimator and reuses no exact-mass pass."""
+        one = (0, 0)
+        return (12 * (row15(16384, k, "secondary") + row15(32768, k, "secondary")) / 2
+                * inp.wall[k] / 60
+                + ext15(300, one, "primary")(k) + ext15(100, one, "secondary")(k))
     add("X0", "A100", lambda k: 12 * (1 + (5, 8)[k]) * (row15(16384, k, "secondary")
         + row15(32768, k, "secondary")) / 2 * inp.wall[k] / 60 + inp.overhead_min[k] + ext(k),
         True, "extrinsic")
     # X primary is one session per band; a rerun repeats the larger band.
     add("X primary", "A100", lambda k: x_primary((16384, 32768), k), True, "extrinsic",
         rerun_unit_min=max(x_primary((b,), 1) for b in (16384, 32768)))
+    # Cut item 0c. As a star line it rides in X primary's sessions, so the
+    # rerun unit is the 32768 band with one more arm.
+    add("SL", "A100", sl, inp.sl_star, "extrinsic",
+        rerun_unit_min=max(x_primary((b,), 1, extra_arms=1) for b in (16384, 32768))
+        if inp.sl_star else None)
     add("X secondary", "A100", lambda k: ext15(100, (5, 8), "secondary")(k)
         + 100 * (pa[16384] + pa[32768]) * inp.mu[k] / 60, True, "extrinsic")
     # The T4 replication: dense + XA native on T4's own 200 ids per band, at
@@ -898,6 +950,99 @@ def reservation_check(*, spent: float, next_u: float, remaining_star_u: Sequence
     """'PROCEED' or 'STOP' (sec. 8.3)."""
     need = spent + next_u + sum(remaining_star_u) + s_res_inr + r_b
     return "PROCEED" if need <= cap else "STOP"
+
+
+def launch_check(*, spent: float, next_u: float, next_item: Optional[str],
+                 remaining_star_u: Sequence[float], remaining_cuttable_u: Mapping[str, float],
+                 s_res_inr: float, r_b: float = 0.0, cap: float = CAP_INR,
+                 xa_withheld: bool = False) -> str:
+    """The reservation check from 2026-10-04 (sec. 8.3). A session launches
+    only if what is left still covers every never-cut session and every
+    higher-priority cuttable item not yet run.
+
+    `next_item` is the session's cut-order item, or None for a never-cut
+    session. A never-cut session outranks every cuttable item, so it reserves
+    none of them. A cuttable session reserves every remaining item that is
+    cut after it, and the rest of its own item. Item 12 (I2c-B) is reserved through `r_b`, never here."""
+    order = cut_order(xa_withheld=xa_withheld)
+    unknown = set(remaining_cuttable_u) - set(order)
+    if unknown or (next_item is not None and next_item not in order):
+        raise ValueError(f"not a cut-order item: {sorted(unknown) or next_item}")
+    # From the item itself on: its own later sessions (XL primary after XL0)
+    # are reserved too, so a probe cannot launch without its main run.
+    higher = () if next_item is None else order[order.index(next_item):]
+    reserve = sum(u for c, u in remaining_cuttable_u.items() if c in higher and c != "12")
+    need = spent + next_u + sum(remaining_star_u) + reserve + s_res_inr + r_b
+    return "PROCEED" if need <= cap else "STOP"
+
+
+def fund(lines: Sequence[BracketLine], run_order: Sequence[str], *, months: int = 2,
+         reserve_higher: bool = True, xa_withheld: bool = False) -> dict:
+    """Walk `run_order` (line names) with every session costing its upper
+    bound. Returns what launched and what was cut. `reserve_higher=False` is
+    the rule before 2026-10-04, kept so the difference can be tested."""
+    by = {l.name: l for l in lines}
+    spent, ran, cut = 0.0, [], []
+    todo = list(run_order)
+    while todo:
+        name = todo.pop(0)
+        line, item = by[name], cut_item_of(name)
+        star = line.star
+        rest = [by[n] for n in todo]
+        cuttable = {}
+        for l in rest:
+            c = cut_item_of(l.name)
+            if not l.star and c is not None:
+                cuttable[c] = cuttable.get(c, 0.0) + l.inr[1]
+        r_b = by["I2c-B"].inr[1] if "I2c-B" in todo else 0.0
+        hours = (line.minutes[1] + sum(l.minutes[1] for l in rest if l.star)) / 60
+        verdict = launch_check(
+            spent=spent, next_u=line.inr[1], next_item=None if star else item,
+            remaining_star_u=[l.inr[1] for l in rest if l.star],
+            remaining_cuttable_u=cuttable if reserve_higher else {},
+            s_res_inr=s_res(months, hours), r_b=r_b, xa_withheld=xa_withheld)
+        if verdict == "PROCEED":
+            spent += line.inr[1]
+            ran.append(name)
+        elif star:
+            return {"ran": ran, "cut": cut + [name] + todo, "spent": spent, "stopped_at": name}
+        else:
+            # A cut takes the whole item, and what depends on it.
+            gone = (item,) + CUT_IMPLIES.get(item, ())
+            also = [n for n in todo if cut_item_of(n) in gone and not by[n].star]
+            cut += [name] + also
+            todo = [n for n in todo if n not in also]
+    return {"ran": ran, "cut": cut, "spent": spent, "stopped_at": None}
+
+
+# Sec. 8.5, as line names. Replicates and I2c-B run only if triggered.
+RUN_ORDER = ("FA3", "C", "I1", "I2a", "I2c", "I2c-B", "I2b", "I2d", "I2e", "I3", "I4",
+             "R A100x3", "R H100x2", "R H100#3", "X0", "X primary", "X secondary",
+             "SL", "X-rep", "XL0", "XL primary", "XL secondary", "XL 65536")
+
+# DP1's trigger on the arm factor (sec. 8.3): the bracket's upper end.
+ARM_FACTOR_UPPER = 1.6
+
+
+def arm_factor_break_even(inp: BracketInputs = BracketInputs()) -> float:
+    """The arm factor's upper end at which the worst case equals the cap."""
+    import dataclasses
+    lo, hi = inp.ex[1], 10.0
+    f = lambda x: worst_case(bracket(dataclasses.replace(inp, ex=(inp.ex[0], x))))["spare"]  # noqa: E731
+    assert f(lo) > 0 > f(hi)
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if f(mid) > 0 else (lo, mid)
+    return lo
+
+
+def dp1_arm_factor(measured: float, inp: BracketInputs = BracketInputs()) -> str:
+    """'within' (<= 1.6: the bracket stands), 'rebracket' (above 1.6: the
+    measured value replaces the upper end before I1), or 'cut_or_stop'
+    (at or above the break-even: the worst case no longer fits)."""
+    if measured <= ARM_FACTOR_UPPER:
+        return "within"
+    return "cut_or_stop" if measured >= arm_factor_break_even(inp) else "rebracket"
 
 
 def worst_case(lines: Sequence[BracketLine], *, months: int = 2) -> dict:
