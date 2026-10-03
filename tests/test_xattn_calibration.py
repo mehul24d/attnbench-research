@@ -355,8 +355,39 @@ def test_chat_markers_are_stripped_and_overlap_is_refused():
     ex = lambda i, c: RulerExample(task="qa_1", example_id=str(i), context=c, question="",
                                    answer=["a"], context_length=1)
     cal.assert_disjoint({("qa_1", 1): [ex(0, "a")]}, {("qa_1", 1): [ex(1, "b")]})
-    with pytest.raises(SystemExit, match="test examples"):
+    with pytest.raises(SystemExit, match="leaks into the test"):
         cal.assert_disjoint({("qa_1", 1): [ex(0, "a")]}, {("qa_1", 1): [ex(9, "a")]})
+
+
+def test_a1_a_shared_qa_question_under_another_seed_is_refused(monkeypatch, tmp_path):
+    """T4 amendment A1's break-test (pre-registration sec. 5). Seed 1 at
+    offset 0 asks the test's own qa_1 questions with other distractors, so
+    whole contexts differ and the old check passed it. The new one refuses
+    it; at the registered offset (2000) the same seed is disjoint."""
+    from attnbench.accuracy import ruler, sizing
+    from attnbench.accuracy import ruler_data
+    cal = _script("calibrate_xattn_thresholds")
+    from attnbench.accuracy import t4_pilot
+
+    def make(seed, offset):
+        return {("qa_1", 400): ruler.generate_examples(
+            "qa_1", [400], n_per_length=3, seed=seed, index_offset=offset,
+            count_tokens=sizing.approximate_token_count)}
+    try:
+        test = make(0, 0)
+    except Exception as e:  # the QA corpora are not committed
+        pytest.skip(f"qa_1 resources unavailable here: {type(e).__name__}")
+    leaky = make(t4_pilot.XATTN_CALIBRATION_SEED, 0)
+    assert all(a.context != b.context for a, b in zip(leaky[("qa_1", 400)], test[("qa_1", 400)]))
+    # The ids collide too, which the check also refuses. Give the leaky set
+    # fresh ids (same trailing question index) so only the question leaks.
+    import dataclasses
+    leaky = {k: [dataclasses.replace(e, example_id="cal_" + e.example_id) for e in v]
+             for k, v in leaky.items()}
+    with pytest.raises(SystemExit, match="qa_question"):
+        cal.assert_disjoint(leaky, test)
+    cal.assert_disjoint(make(t4_pilot.XATTN_CALIBRATION_SEED,
+                             t4_pilot.XATTN_CALIBRATION_INDEX_OFFSET), test)
 
 
 # ---- on the instance --------------------------------------------------------

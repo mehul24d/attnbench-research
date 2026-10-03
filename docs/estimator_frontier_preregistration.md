@@ -1,6 +1,6 @@
 # Estimator cost/quality frontier — pre-registration (DRAFT)
 
-Status: **unlocked draft, amended 2026-10-03 (sixth draft). Not locked.** No GPU
+Status: **unlocked draft, amended 2026-10-03 (seventh draft). Not locked.** No GPU
 session has run for this study, and no row exists. §13 lists what changed in
 each draft.
 
@@ -1964,7 +1964,7 @@ seven of these are met and committed with it (L7 added 2026-10-03):
 | # | gate | status 2026-10-03 |
 |---|---|---|
 | L1 | `attnbench/analysis/frontier_prereg.py`, its plan test `tests/test_frontier_prereg_plan.py`, and the §11.3 break-tests, each watched red | **Done 2026-10-03.** One scorer per hypothesis (H1–H8, R1–R4, P-T4), each with a pass, a fail and an indeterminate case. Every pre-registered number is pinned to this text as a whole number. The rules the text left open are written into §3.10. The split firewall, resolution floor, profit classes, bracket, `worst_case`, `reservation_check`, `rebracket()` with its leak guard, and the torch-fallback refusal are all in the module. §8.2–8.3's figures are checked against `bracket()`. Ten mutations were each watched red, including the H1 band (which first passed and exposed a substring match, now fixed). |
-| L2 | The T4 amendment code (§12), with T4's own plan test updated, committed with the dated amendment sections | **not started** |
+| L2 | The T4 amendment code (§12), with T4's own plan test updated, committed with the dated amendment sections | **Done 2026-10-03.** A1–A7 are appended, dated, to `docs/t4_xattention_calibrated.md`, and a dated note is in `docs/t4_xattention_pilot.md`. The code: `generate_examples(index_offset=)`; the four-identity `assert_disjoint` with its break-test; over-length exclusion; descriptive p90/argmax records; the A100-only calibration refusal; `procedure`; `positions_over_limit` and `xattn_path` on rows. T4's plan test pins the amendments to `t4_pilot`, and `tests/test_t4_amendments.py` covers each. The A1 check was watched red. |
 | L3 | The `mask_selector` column on every row type, era 4 registered (§4.5), and its stripped-column break-test | **Done 2026-10-03.** The column is on accuracy, component, end-to-end and phase rows; era 4 is in `eras.py` and in the `limitations.md` table; a stripped per-head row is refused (break-tested). Recall rows inherit the requirement when their writer is built. `PER_HEAD_SELECTOR_COMMIT` is recorded in the commit after the introducing one. |
 | L4 | The cuDNN-on-H100 record checked (§4.6) | **done.** The record exists and is guard-written: cuDNN was never launched above 8192 on an H100. §4.6 is corrected, and so is every doc that called these rows faults (runbook, `run_probe.py` help, `silent_failure_patterns.md` ×2, `limitations.md`, `a100_session_plan.md`): "observed on L4 and A100, H100 untested above 8192". |
 | L5 | The Llama-3.1-8B `config.json` check (G9) at revision `0e9e39f…`: `max_position_embeddings`, `rope_scaling`, sha256 | **Passed 2026-10-03, for the position limit only.** The researcher read it locally with their own token (values and sha256 in §4.9). On CPU the same day: the repo id and table shape match the authors' model; transformers 4.46.0 and 5.18.0 implement `llama3`, and the logits gate passes with it (`tests/test_llama3_rope_gate.py`). What it does not cover is L7. |
@@ -2017,6 +2017,9 @@ summary, the date and "XAttention authors"; §8.3 records the ₹12,000 cap.
 ---
 
 ## 12. T4 amendments, to append (dated) to `docs/t4_xattention_calibrated.md` before this file locks
+
+**Appended 2026-10-03** as "Amendments, 2026-10-03 (before Session A)",
+with the code (L2, §11.1).
 
 Session A has not run, so each is an amendment before data.
 
@@ -2142,6 +2145,21 @@ table's "now" column is labelled "second draft".)*
 | Encoding | two call sites agreeing by default | one encoder (`prompting.py`, `add_special_tokens=True`), fed length checked against sized length, double-BOS guard |
 | Authors' pipeline | not checked | greedy; chat format; **double BOS under default tokenizer settings** in calibration and RULER (156/156; file-and-line trace in §4.9); recorded with the confounds it leaves (§4.9, §3.9) |
 | Block 0 | — | holds the BOS on Llama |
+
+**Seventh draft (2026-10-03):**
+
+| area | sixth draft | seventh draft |
+|---|---|---|
+| Push | `469fed2` on the remote branch | `d849ded` pushed (the three local commits plus the §4.9 double-BOS wording the condition required), with the researcher's logged yes |
+| Double BOS | "the authors' pipelines produce one" | "under default tokenizer settings", traced to file and line in both paths at `e379887`, with their unpinned library versions stated |
+| I2c-B | not planned | a conditional double-BOS arm, triggered by an H6a miss, cut-order item 12, reserved as R_B; worst case ₹11,516 (₹484 spare) |
+| μ | A100's on every line | per card: every oracle line here is on the A100; no L4 oracle line exists; H100 μ recorded for I3 |
+| Llama | a version convention | a hard transformers pin (4.46.0) at load, generate and score; `transformers` on every row |
+| Banked rows | — | `stop_token_id`, `transformers`, `positions_over_limit`, `xattn_path` and `mask_selector` load as typed nulls |
+| Caps | "not changed after XL0" | a pre-registered trigger: a dense XL0 cap-hit rate over 5% doubles the cap once |
+| L3 | not started | **done**: `mask_selector` on every row type; era 4 and native in `eras.py`; stripped-column refusal; anchor `a1b7801` |
+| L1 | not started | **done**: `frontier_prereg.py`, its plan test and the §11.3 break-tests; §3.10 rules; H1's wording fixed; §8 numbers equal `bracket()` |
+| L2 | not started | **done**: A1–A7 code and dated sections |
 
 ---
 

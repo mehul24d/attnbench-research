@@ -16,7 +16,9 @@ __all__ = ["T4_DENSE_PILOT_TASKS", "PILOT_BANDS", "PROBE_N", "SELECTED_PILOT_N",
            "SPARSITY_SEQUENCE", "MARGIN_PTS", "ALPHA", "TIERS",
            "XATTN_SCORE_SOURCE", "XATTN_THRESHOLD_SEQUENCE", "XATTN_STRIDE",
            "XATTN_CALIBRATIONS", "XATTN_CALIBRATION_SEED", "XATTN_CALIBRATION_RULER_N",
-           "XATTN_CALIBRATION_TABLES"]
+           "XATTN_CALIBRATION_TABLES", "XATTN_CALIBRATION_INDEX_OFFSET",
+           "XATTN_CALIBRATION_STATISTIC", "XATTN_CALIBRATION_DESCRIPTIVE_GAP",
+           "XATTN_CALIBRATION_CARD"]
 
 # ---- dense-only pilot (docs/t4_dense_pilot.md) ---------------------------
 PILOT_BANDS = (16384, 32768)
@@ -83,6 +85,17 @@ XATTN_CALIBRATIONS = {"authors": "claim", "ruler_heldout": "descriptive"}
 # this many examples per (task, band).
 XATTN_CALIBRATION_SEED = 1
 XATTN_CALIBRATION_RULER_N = 8
+
+# T4 amendments, 2026-10-03 (docs/t4_xattention_calibrated.md, "Amendments").
+# A1: the held-out set's examples start at this index, so its qa_1 questions
+#     are 2000-2007 and never the test's 0-99 (a seed alone changes only the
+#     distractors: ruler.py `index=i`).
+XATTN_CALIBRATION_INDEX_OFFSET = 2000
+# A3: the table statistic, verbatim from the released profiler, no cap.
+XATTN_CALIBRATION_STATISTIC = "max over used texts, no cap"
+XATTN_CALIBRATION_DESCRIPTIVE_GAP = 0.05     # entries with max - p90 above this
+# A4: calibration runs where the official estimator takes its Triton path.
+XATTN_CALIBRATION_CARD = "A100"
 
 # Where the committed tables live, by calibration name.
 XATTN_CALIBRATION_TABLES = {

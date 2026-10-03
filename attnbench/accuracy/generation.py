@@ -92,6 +92,16 @@ class ModelGeometry:
                        seq_len=seq_len)
 
 
+def _positions_over_limit(wrapped, prompt_len: int, n_generated: int):
+    """max(0, prompt + generated - max_position_embeddings), or None when
+    the model does not state a limit (T4 amendment A7)."""
+    cfg = getattr(getattr(wrapped, "model", None), "config", None)
+    limit = getattr(cfg, "max_position_embeddings", None)
+    if not isinstance(limit, int):
+        return None
+    return max(0, prompt_len + n_generated - limit)
+
+
 def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBackend,
                  example, geometry: ModelGeometry, stop_tokens: StopTokens,
                  score_cache_dir: str, device: str = "cuda",
@@ -156,7 +166,13 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
     realised_density = xattn_threshold = xattn_calibration = by_layer = None
+    xattn_path = None
     if selecting:
+        # The path the official estimator took, as it decided it
+        # (backends/xattention.triton_for_device); anything but a confirmed
+        # Triton run is the fallback (T4 amendment A4).
+        xattn_path = ("triton" if getattr(backend, "triton_effective", None) is True
+                      else "torch_fallback")
         # One entry per prefill layer: decode runs on the dense fallback and
         # never reaches this backend. Any other count means the density is
         # not this example's prefill, so it is refused rather than averaged.
@@ -175,6 +191,9 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     return Generated(text=tokenizer.decode(result.token_ids, skip_special_tokens=True),
                      latency_ms=latency_ms, stop_reason=result.stop_reason,
                      stop_token_id=result.stop_token_id,
+                     positions_over_limit=_positions_over_limit(
+                         wrapped, int(input_ids.shape[-1]), result.n_generated),
+                     xattn_path=xattn_path,
                      n_generated=result.n_generated,
                      decode_backend=result.decode_backend,
                      decode_pinned=pinned_fallback_decode is not None,

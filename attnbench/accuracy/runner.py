@@ -460,6 +460,8 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             correct=example_score >= 100.0,
             stop_reason=gen.stop_reason,
             stop_token_id=gen.stop_token_id,
+            positions_over_limit=gen.positions_over_limit,
+            xattn_path=gen.xattn_path,
             # Every row from the introducing commit on (sec. 4.5): the era of a
             # new row is read from this column first, then from its commit.
             mask_selector=masks.mask_selector_for(

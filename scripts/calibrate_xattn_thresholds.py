@@ -62,17 +62,60 @@ def strip_chat_markers(text: str) -> str:
     return CHAT_MARKER.sub("", text)
 
 
-def assert_disjoint(calibration: dict, test: dict) -> None:
-    """Refuse a calibration set that shares any context with a test example.
+def split_identities(examples_by_key: dict) -> list[dict]:
+    """The four identities sec. 5 compares, per example: id, context sha256,
+    QA question index (the number after the band in the id, which is the
+    index `_render` asks), and NIAH answer values (task-qualified)."""
+    out = []
+    for (task, _band), exs in examples_by_key.items():
+        for ex in exs:
+            row = {"example_id": ex.example_id,
+                   "context_sha256": hashlib.sha256(ex.context.encode()).hexdigest()}
+            m = re.search(r"_(\d+)$", ex.example_id)
+            if task.startswith("qa_") and m:
+                # The firewall keys on the tuple's first element: the
+                # task-qualified question index (qa_1 and qa_2 index different
+                # datasets).
+                row["qa_question"] = ((task, int(m.group(1))),)
+            if task.startswith("niah"):
+                row["niah_needles"] = [(task, a) for a in ex.answer]
+            out.append(row)
+    return out
 
-    `calibration` and `test` map (task, band) to lists of examples. A
-    different seed should guarantee this; it is checked, not assumed."""
-    test_contexts = {ex.context for exs in test.values() for ex in exs}
-    shared = [(t, b, ex.example_id) for (t, b), exs in calibration.items()
-              for ex in exs if ex.context in test_contexts]
-    if shared:
-        raise SystemExit(f"REFUSING: {len(shared)} calibration examples are test "
-                         f"examples, e.g. {shared[:3]}")
+
+def assert_disjoint(calibration: dict, test: dict) -> None:
+    """Refuse a calibration set that shares any example with the test by any
+    of the four identities (estimator-frontier pre-registration sec. 5; T4
+    amendment A1, 2026-10-03). Until then this compared whole contexts only,
+    and a seed-1 qa_1 example asking test question 3 with other distractors
+    passed it."""
+    from attnbench.analysis.frontier_prereg import SplitLeak, check_splits_disjoint
+    try:
+        check_splits_disjoint({"calibration": split_identities(calibration),
+                               "test": split_identities(test)})
+    except SplitLeak as e:
+        raise SystemExit(f"REFUSING: the calibration set leaks into the test: {e}")
+
+
+def excluded_over_length(lengths: list[int], limit: int) -> list[int]:
+    """Indices of texts longer than the model's max_position_embeddings (A2).
+    They are excluded, never truncated."""
+    return [i for i, n in enumerate(lengths) if n > limit]
+
+
+def descriptive_records(per_text, used: list[int]) -> dict:
+    """A3's descriptive records, never used to build the table: the p90
+    table, how many entries have max - p90 above the gap, and which text
+    sets each entry's max."""
+    import torch
+    stack = torch.stack([per_text[i] for i in used])
+    mx, arg = stack.max(dim=0)
+    p90 = torch.quantile(stack.float(), 0.9, dim=0)
+    gap = t4_pilot.XATTN_CALIBRATION_DESCRIPTIVE_GAP
+    return {"p90": [[round(float(x), 8) for x in row] for row in p90.tolist()],
+            "n_max_minus_p90_above": int(((mx - p90) > gap).sum()),
+            "gap": gap,
+            "argmax_text": [[used[int(i)] for i in row] for row in arg.tolist()]}
 
 
 def authors_texts() -> tuple[list[str], str]:
@@ -89,7 +132,8 @@ def ruler_texts(grid, count_tokens) -> tuple[list[str], str]:
     bands = {b: t4_pilot.XATTN_CALIBRATION_RULER_N for b in t4_pilot.PILOT_BANDS}
     cal = build_examples_by_task_length(
         grid, seed=t4_pilot.XATTN_CALIBRATION_SEED, count_tokens=count_tokens,
-        tasks=t4_pilot.SPARSE_PILOT_TASKS, seq_lens=bands)
+        tasks=t4_pilot.SPARSE_PILOT_TASKS, seq_lens=bands,
+        index_offset=t4_pilot.XATTN_CALIBRATION_INDEX_OFFSET)
     test = build_examples_by_task_length(
         grid, seed=0, count_tokens=count_tokens, tasks=t4_pilot.SPARSE_PILOT_TASKS,
         seq_lens={b: max(t4_pilot.SPARSE_PILOT_N.values()) for b in t4_pilot.PILOT_BANDS})
@@ -124,6 +168,14 @@ def main() -> int:
                                                ThresholdTable, installed_checkout)
     from attnbench.config import AttnConfig
 
+    # A4: the profiler's use_triton=True takes the Triton path only where the
+    # device name contains "100"; the table is made on the A100.
+    from attnbench.backends.xattention import triton_for_device
+    card = torch.cuda.get_device_name() if torch.cuda.is_available() else "cpu"
+    if t4_pilot.XATTN_CALIBRATION_CARD not in card or not triton_for_device(card):
+        raise SystemExit(f"REFUSING: calibration runs on the {t4_pilot.XATTN_CALIBRATION_CARD} "
+                         f"(T4 amendment A4); this device is {card!r}.")
+
     head, dirty = installed_checkout()
     if (head, dirty) != (XATTN_COMMIT, False):
         raise SystemExit(f"REFUSING: x-attention is {head} (dirty={dirty}), not "
@@ -146,16 +198,25 @@ def main() -> int:
     wrapped = SwappableAttentionModel(model, template, model_id=model_id,
                                       score_source=t4_pilot.XATTN_SCORE_SOURCE)
     profiler = ThresholdProfiler(n_layers=wrapped.n_layers, stride=t4_pilot.XATTN_STRIDE)
+    # A2: texts over the model's position limit, read from its config at run
+    # time, are excluded, never truncated, and recorded in the table.
+    limit = int(model.config.max_position_embeddings)
+    all_lengths = [len(tokenizer(t).input_ids) for t in texts]
+    excluded = excluded_over_length(all_lengths, limit)
+    used = [i for i in range(len(texts)) if i not in set(excluded)]
+    print(f"{len(used)} of {len(texts)} texts within {limit} positions; "
+          f"excluded {excluded}", flush=True)
     lengths = []
     try:
-        for i, text in enumerate(texts):
+        for n, i in enumerate(used):
+            text = texts[i]
             ids = tokenizer(text, return_tensors="pt").input_ids.to(args.device)
             lengths.append(int(ids.shape[-1]))
             cfg = geometry.onto(template, seq_len=lengths[-1])
             profiler.start_text()
             wrapped.run_measured(ids, profiler, cfg=cfg, logits_to_keep=1)
             profiler.end_text()
-            print(f"  text {i + 1}/{len(texts)}: {lengths[-1]} tokens", flush=True)
+            print(f"  text {n + 1}/{len(used)} (index {i}): {lengths[-1]} tokens", flush=True)
     finally:
         wrapped.unwrap()
 
@@ -166,8 +227,18 @@ def main() -> int:
         sha256=ThresholdTable.digest(values),
         model=model_id, stride=t4_pilot.XATTN_STRIDE, block_size=128,
         exact_mass_coverage=0.9,                 # fixed inside the official profiler
-        aggregation="max over texts",
-        n_texts=len(texts),
+        aggregation=t4_pilot.XATTN_CALIBRATION_STATISTIC,
+        procedure="calibrated by the authors' released profiler "
+                  "(profile_threshold.py), their substitute for the paper's "
+                  "unreleased DP method (issue #13); T4 amendment A5",
+        xattn_path="triton",
+        card=card,
+        max_position_embeddings=limit,
+        n_texts=len(used),
+        n_texts_offered=len(texts),
+        excluded=[dict(index=i, tokens=all_lengths[i]) for i in excluded],
+        descriptive=descriptive_records(
+            {i: t for i, t in zip(used, profiler.per_text)}, used),
         tokens=dict(min=min(lengths), median=statistics.median(lengths), max=max(lengths)),
         source_sha256=source_sha,
         source=("x-attention xattn/threshold/profile_threshold/text.json, chat markers stripped"

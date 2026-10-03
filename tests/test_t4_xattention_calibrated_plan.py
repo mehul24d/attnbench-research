@@ -59,3 +59,19 @@ def test_committed_tables_load_and_fit_the_model():
         t = ThresholdTable.load(p)
         assert t.name == name
         assert len(t.values) == 28 and {len(r) for r in t.values} == {12}   # Qwen2.5-1.5B
+
+
+def test_the_dated_amendments_are_appended_and_match_the_module():
+    """T4 amendments A1-A7 (2026-10-03): appended, dated, and holding the
+    module's numbers."""
+    i = DOC.index("## Amendments, 2026-10-03 (before Session A)")
+    amend = " ".join(DOC[i:].split())
+    for a in ("A1.", "A2.", "A3.", "A4.", "A5.", "A6.", "A7."):
+        assert f"**{a}" in amend, a
+    assert f"index offset {t4_pilot.XATTN_CALIBRATION_INDEX_OFFSET}" in amend
+    assert f"XATTN_CALIBRATION_INDEX_OFFSET = {t4_pilot.XATTN_CALIBRATION_INDEX_OFFSET}" in amend
+    assert f'XATTN_CALIBRATION_CARD = "{t4_pilot.XATTN_CALIBRATION_CARD}"' in amend
+    assert "max over used texts" in amend and "no cap" in amend
+    assert f"max − p90 > {t4_pilot.XATTN_CALIBRATION_DESCRIPTIVE_GAP:g}" in amend
+    # The pre-registered text above the amendments is unchanged in place.
+    assert DOC.index("## Sessions") < i

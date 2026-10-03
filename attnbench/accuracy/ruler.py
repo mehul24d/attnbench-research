@@ -247,6 +247,7 @@ def _example_seed(seed: int, task: str, num_haystack: int, index: int) -> int:
 def generate_examples(task: str, token_budgets: list[int], n_per_length: int,
                        seed: int, *, count_tokens: sizing.TokenCounter,
                        per_example_fit: bool = False,
+                       index_offset: int = 0,
                        ) -> list[RulerExample]:
     """Generate `n_per_length` examples at each of `token_budgets` for
     `task`.
@@ -272,6 +273,11 @@ def generate_examples(task: str, token_budgets: list[int], n_per_length: int,
     is essentially constant at a fixed budget since only needle contents
     vary -- but each example's own token count is measured and recorded.
 
+    `index_offset` shifts every example's index -- its seed, its id and,
+    for QA, WHICH QUESTION it asks (`_render(index=...)`) -- so a split can
+    draw questions no other split uses (estimator-frontier pre-registration
+    sec. 5; T4 amendment A1, 2026-10-03). 0 reproduces every banked example.
+
     `per_example_fit=True` sizes EVERY example on its own, whatever the
     task, and raises if any example still lands above its budget. The
     estimator-frontier pre-registration (sec. 4.9) requires it for every
@@ -288,12 +294,13 @@ def generate_examples(task: str, token_budgets: list[int], n_per_length: int,
         # Solve the filler count once per budget, against the first
         # example's seed, rather than per example: ~log2(n) tokenizations
         # of a 30k-token string per cell instead of per row.
-        probe_seed = _example_seed(seed, task, budget, 0)
+        probe_seed = _example_seed(seed, task, budget, index_offset)
         fit = sizing.fit_units_to_budget(
             lambda units: _render(task, probe_seed, units)[0],
             count_tokens, budget, min_units=_min_haystack_units(task))
 
-        for i in range(n_per_length):
+        for j in range(n_per_length):
+            i = index_offset + j
             example_seed = _example_seed(seed, task, budget, i)
             example_id = f"{task}_{budget}_{i}"
             units = fit.units
