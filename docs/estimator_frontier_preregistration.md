@@ -369,7 +369,10 @@ card ratios, H2a/H2b's per-cell model, H3, H4, H6, H7 and H8.
   **indeterminate**. The expected D/W is ≈ 0.49 for L4–A100 and ≈ 1.34 for
   A100–H100.
 - **Pass:** at least 15 of the determinate cells in band, and no more than 3
-  indeterminate. Otherwise H1 is **unresolved**.
+  indeterminate. With more than 3 indeterminate, H1 is **unresolved**. With 3
+  or fewer and fewer than 15 in band, it **fails**. *(Until 2026-10-03 this
+  read "Otherwise H1 is **unresolved**", which left H1 no way to fail. Fixed
+  with L1, before lock.)*
 - **XAttention is excluded.** Its L4 rows are the torch fallback and never
   enter a cross-card ratio (§4.9). Its A100–H100 ratio is reported
   descriptively.
@@ -502,6 +505,37 @@ block size.
 - **Input ratio:** none on the test; it is exact. The prediction is scored
   only if G1, G2 and G9 pass on Llama.
 - If no primary cell is selected, H8 is **unscorable** and reported as such.
+
+### 3.10 Indeterminate and unscorable cases, as implemented (L1, 2026-10-03)
+
+`attnbench/analysis/frontier_prereg.py` scores every hypothesis above.
+Where the text left a case open, the code decides it as follows. These rules
+are part of the pre-registration from lock, and
+`tests/test_frontier_prereg_plan.py` exercises each.
+
+- **H2a / H2b:** no determinate cell (every |1 − m| ≤ 0.07) is
+  **unresolved**.
+- **H2c:** no deployable point at 8192 on either card is **unscorable**. An
+  unresolved point counts as not profitable.
+- **H2d:** a missing cell is **unscorable**. If either cell's profitability
+  is unresolved, H2d is **unresolved**.
+- **H3:** a cell outside G7's density ratio 1 ± 0.01 is indeterminate. If
+  passing cells plus indeterminate cells could still reach 16, but passing
+  cells alone do not, H3 is **unresolved**. Otherwise it fails.
+- **H3b:** no cell is **unscorable**.
+- **H5a / H5b:** no point at the band is **unscorable**. The count is of
+  points both profitable and certified.
+- **H6a:** not measured is **unscorable**.
+- **H6b:** a table with other than 996 non-zero entries is **unscorable**.
+- **P-T4:** a missing primary cell is **unscorable**.
+- **R1 / R2:** id sets that differ, or n ≠ 400, are **unscorable**.
+- **R3 / R4:** no cell or band is **unscorable**. R3 and R4 carry
+  "path-divergent" when R1 does not pass, and "card-confounded" when R2 does
+  not pass.
+- **H4:** with tercile 3's loss rate at 0 and tercile 1's above 0, the ratio
+  is infinite, so it passes the ≥ 2.0× test. The trend test is the stratified
+  Mantel extension with tercile scores 1, 2, 3, one-sided for loss
+  decreasing with tercile.
 
 ### 3.9 Before T4 runs: the T4 outcome and the replication
 
@@ -1548,13 +1582,18 @@ oracle-pass line.** The fifth draft's figures are kept beside the new ones.
 | ★ X0: 1.5B extrinsic canary | A100 | 13–37 | 13–37 | 62–177 | 62–177 | — |
 | ★ X: 1.5B primary `qa_1`, n = 300, dense + 5–8 arms | A100 | 137–735 | 170–718 | 650–3,478 | 803–3,397 | μ (a) |
 | ★ X: 1.5B secondary, 100 per band | A100 | 40–235 | 51–229 | 192–1,112 | 242–1,085 | μ (a) |
-| ★ X-rep: T4 replication on T4's 32768 prompts, dense + XA native, 200 ids (§4.9) | A100 | 15–61 | 15–61 | 72–288 | 72–288 | — |
+| ★ X-rep: T4 replication on T4's 32768 prompts, dense + XA native, 200 ids (§4.9) | A100 | 15–61 | 15–61 | 72–288 | 71–289 | — (recomputed by `frontier_prereg.bracket`) |
 | XL0: Llama dense task probe | A100 | 22–50 | 22–50 | 106–238 | 106–238 | — |
 | XL: Llama primary `qa_1`, n = 300, 16K + 32K, dense + 4 | A100 | 272–601 | 272–601 | 1,289–2,843 | 1,289–2,843 | — |
 | XL: Llama secondary, 16K + 32K | A100 | 88–195 | 88–195 | 417–924 | 417–924 | — |
 | XL: Llama 65536 band | A100 | 574–1,252 | 574–1,252 | 2,719–5,925 | 2,719–5,925 | — |
-| **Never-cut core** | | **6.8–34.1 h** | **9.4–32.4 h** | **₹1,842–9,526** | **₹2,540–9,053** | |
-| **Full plan** | | **25.7–75.7 h** | **28.1–73.9 h** | **₹7,133–21,347** | **₹7,821–20,851** | |
+| **Never-cut core** | | **6.8–34.1 h** | **9.3–32.4 h** | **₹1,842–9,526** | **₹2,539–9,053** | |
+| **Full plan** | | **25.7–75.7 h** | **28.0–74.0 h** | **₹7,133–21,347** | **₹7,820–20,852** | |
+
+*The "now" columns are `attnbench/analysis/frontier_prereg.bracket()` at its
+default inputs, rounded. `tests/test_frontier_prereg_plan.py` fails if any of
+them, or the §8.3 arithmetic, differs from what the code computes (added with
+lock gate L1, 2026-10-03).*
 
 **Sources of the change.**
 
@@ -1616,7 +1655,7 @@ FLOP-split prefill model × the assumed μ.)*
 
 **Intrinsic-only and extrinsic, full plan** (X-rep excluded, as before):
 
-- intrinsic: ₹1,992–5,714 (7.5–20.7 h), from ₹1,633–6,367 (6.2–23.0 h);
+- intrinsic: ₹2,109–5,976 (7.9–21.6 h) with I2c-B, from ₹1,633–6,367 (6.2–23.0 h);
 - extrinsic: ₹5,640–14,588 (19.9–51.4 h), from ₹5,440–14,700, of which
   Llama is ₹4,530–9,930 (unchanged).
 
@@ -1640,14 +1679,14 @@ sessions.
 | FA3 wheel build | — | already a ★ line above (₹130–325) |
 
 **Share of the core that depends on XAttention arms.** About **30–31%**:
-₹762–2,810 of the ₹2,540–9,053 core. That includes the X-rep line, which
+₹761–2,811 of the ₹2,539–9,053 core. That includes the X-rep line, which
 is XA-only. *(Fifth draft: 30–33%, ₹612–2,876 of ₹1,842–9,526. Before that:
 31%, ₹560–3,000 of ₹1,790–9,650.)*
 
 | component | XA-dependent ₹ |
 |---|---:|
 | X0 + X, the XA share of the 1.5B extrinsic rows (2–3 of 5–8 arms) | 333–1,397 |
-| X-rep, the T4 replication at 32768 (XA only) | 72–288 |
+| X-rep, the T4 replication at 32768 (XA only) | 71–289 |
 | C, the 7B calibration (XA only) | 158–348 |
 | I2c, the Llama positive control (XA only) | 117–262 |
 | replicates, assuming a third of near-parity cells are XA | 0–359 |
@@ -1655,7 +1694,7 @@ is XA-only. *(Fifth draft: 30–33%, ₹612–2,876 of ₹1,842–9,526. Before 
 | I1's XA end-to-end arms and components | 35–62 |
 | the recall passes (dominated by the shared exact-mass pass) | ≈ 0 |
 
-So the non-XA core is about ₹1,778–6,243.
+So the non-XA core is about ₹1,778–6,242.
 
 **Running non-XA parts first is mostly possible, with two exceptions:**
 
@@ -1671,9 +1710,9 @@ So the non-XA core is about ₹1,778–6,243.
   - **Confirmed by the researcher on 2026-10-03**, in conversation, after it
     was stated back. It cannot be raised after lock.
   - It covers, at worst-case inputs, the never-cut core (₹9,053) plus the
-    storage reserve (about ₹500) plus one rerun of the largest ★ session
-    (₹1,698) plus the conditional arm I2c-B (₹262), which is about ₹11,510,
-    leaving about ₹490.
+    storage reserve (₹502) plus one rerun of the largest ★ session
+    (₹1,698) plus the conditional arm I2c-B (₹262), which is ₹11,516,
+    leaving ₹484 (`frontier_prereg.worst_case`).
   - Anything cuttable is paid for only from what the measured μ (DP1) frees
     up.
 - **Ledger:** `results/frontier_spend.csv`. Each session's teardown appends
@@ -1734,12 +1773,12 @@ So the non-XA core is about ₹1,778–6,243.
 | | ₹ |
 |---|---:|
 | core, including the T4-replication line at 32768 | 9,053 (fifth draft 9,526) |
-| S_res, two months | about 500 (₹424 storage + ₹2.4/h × 32.4 h) |
+| S_res, two months | 502 (₹424 storage + ₹2.4/h × 32.4 h) |
 | one rerun of the largest ★ session (one band of X primary, half of ₹3,397) | 1,698 (fifth draft 1,740) |
 | the conditional double-BOS arm I2c-B, if H6a misses (§4.9) | 262 |
-| **total** | **about 11,510** (about 11,250 without I2c-B; fifth draft about 11,780) |
+| **total** | **11,516** (11,254 without I2c-B; fifth draft about 11,780) |
 
-That is **inside the ₹12,000 cap**, with about ₹490 to spare (₹750 without
+That is **inside the ₹12,000 cap**, with ₹484 to spare (₹746 without
 I2c-B; fifth draft ₹220, fourth ₹100). Source of the change: the measured A100 μ (§8.2, (a))
 and the Llama token counts ((b)). So:
 
@@ -1906,7 +1945,7 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 | 10 | Teacher-forced recall. | Open (F5). |
 | 11 | **New:** calibration is the authors' released substitute, not the paper's DP. | Open (F1). H6b measures it, and §14 asks the authors. |
 | 12 | **New:** era 3 against era 4 is cross-era. | T4's head-uniform arms against this study's per-head arms are descriptive only. |
-| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹20,851 worst case for the full plan (measured μ, with I2c-B). | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
+| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹20,852 worst case for the full plan (measured μ, with I2c-B). | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
 | 14 | **New:** H2c, H2d and H5a were written with the A100 crossover estimates visible (§3). | Stated. They are reported as priors anchored on visible data, not blind predictions. The blind tests of the crossover are H1 and H2a/H2b. |
 | 16 | **New:** under default tokenizer settings, the authors' calibration and RULER code paths pass a double BOS to the model (traced to file and line, their library versions unpinned); this study feeds one (§4.9). | Stated as a confound for H6a/H6b and H8. **Controlled for H6a** by the conditional arm I2c-B, which is triggered by an H6a miss (§4.9) and is cut-order item 12. Not controlled for H6b or H8. |
 | 17 | **New:** Llama accuracy uses this study's completion-style prompts and newline stop, not the authors' chat format. | Stated. H8 is not a reproduction of the authors' RULER scores, and is never compared with them numerically. |
@@ -1924,7 +1963,7 @@ seven of these are met and committed with it (L7 added 2026-10-03):
 
 | # | gate | status 2026-10-03 |
 |---|---|---|
-| L1 | `attnbench/analysis/frontier_prereg.py`, its plan test `tests/test_frontier_prereg_plan.py`, and the §11.3 break-tests, each watched red | **not started** |
+| L1 | `attnbench/analysis/frontier_prereg.py`, its plan test `tests/test_frontier_prereg_plan.py`, and the §11.3 break-tests, each watched red | **Done 2026-10-03.** One scorer per hypothesis (H1–H8, R1–R4, P-T4), each with a pass, a fail and an indeterminate case. Every pre-registered number is pinned to this text as a whole number. The rules the text left open are written into §3.10. The split firewall, resolution floor, profit classes, bracket, `worst_case`, `reservation_check`, `rebracket()` with its leak guard, and the torch-fallback refusal are all in the module. §8.2–8.3's figures are checked against `bracket()`. Ten mutations were each watched red, including the H1 band (which first passed and exposed a substring match, now fixed). |
 | L2 | The T4 amendment code (§12), with T4's own plan test updated, committed with the dated amendment sections | **not started** |
 | L3 | The `mask_selector` column on every row type, era 4 registered (§4.5), and its stripped-column break-test | **Done 2026-10-03.** The column is on accuracy, component, end-to-end and phase rows; era 4 is in `eras.py` and in the `limitations.md` table; a stripped per-head row is refused (break-tested). Recall rows inherit the requirement when their writer is built. `PER_HEAD_SELECTOR_COMMIT` is recorded in the commit after the introducing one. |
 | L4 | The cuDNN-on-H100 record checked (§4.6) | **done.** The record exists and is guard-written: cuDNN was never launched above 8192 on an H100. §4.6 is corrected, and so is every doc that called these rows faults (runbook, `run_probe.py` help, `silent_failure_patterns.md` ×2, `limitations.md`, `a100_session_plan.md`): "observed on L4 and A100, H100 untested above 8192". |
@@ -1961,6 +2000,9 @@ summary, the date and "XAttention authors"; §8.3 records the ₹12,000 cap.
 6. The era table: **done** (`65cd9c1`). The 16 T4 files are registered as era 3 by commit, with their XAttention rows marked as native selection in prose. `tests/test_eras.py` passes, and its key regex was fixed and break-tested. Era-4 registration (L3) still has to add `mask_selector`.
 
 ### 11.3 Break-tests (part of L1), permanent and watched red
+
+**All done 2026-10-03** (`tests/test_frontier_prereg_plan.py` and
+`tests/test_eras.py`, each watched red):
 
 - One fail case and one indeterminate case per scorer (H1–H8, R1–R4, P-T4).
 - The split break-test (§5).
