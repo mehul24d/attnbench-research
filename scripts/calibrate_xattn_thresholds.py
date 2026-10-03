@@ -118,12 +118,28 @@ def descriptive_records(per_text, used: list[int]) -> dict:
             "argmax_text": [[used[int(i)] for i in row] for row in arg.tolist()]}
 
 
+def g12_or_refuse(texts: list[str]) -> dict:
+    """Gate G12 (estimator-frontier pre-registration sec. 6): the `text.json`
+    texts are held to the split firewall before anything is profiled on
+    them. A leak, or QA data the gate cannot read, stops the run."""
+    from attnbench.accuracy import frontier_splits
+    from attnbench.analysis.frontier_prereg import SplitLeak
+    try:
+        return frontier_splits.g12(texts)
+    except SplitLeak as e:
+        raise SystemExit(f"STOP (G12): {e}")
+    except Exception as e:
+        raise SystemExit(f"STOP (G12 could not run, so it has not passed): "
+                         f"{type(e).__name__}: {e}")
+
+
 def authors_texts() -> tuple[list[str], str]:
     import xattn
     path = (Path(xattn.__file__).resolve().parent / "threshold" / "profile_threshold"
             / "text.json")
     raw = path.read_bytes()
     texts = [strip_chat_markers(t) for t in json.loads(raw)]
+    g12_or_refuse(texts)
     return texts, hashlib.sha256(raw).hexdigest()
 
 
