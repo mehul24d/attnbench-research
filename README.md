@@ -155,7 +155,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1387 passed, 70 skipped, ~70s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1401 passed, 90 skipped, ~70s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -169,15 +169,17 @@ credentials. Verified from a clean clone into a fresh virtualenv on
 2026-09-12, resolving dependencies from scratch. The counts were re-measured
 2026-10-03 from a clean clone of the commit, using the existing virtualenv
 (not a fresh one) and `$ATTNBENCH_RULER_DATA` pointed at an empty directory.
+A clean clone is a *partial* tree: it carries the 38 force-committed files
+under `results/` and none of the rest.
 
-The 70 skips are the honest part, and they split five ways: **14** need CUDA,
-**45** read banked result files that `results/` correctly keeps out of git,
-**5** are scripts `test_script_call_sites.py` has nothing to check because
-they import nothing from `attnbench`, and **5** are the same scripts skipped
+The 90 skips are the honest part, and they split five ways: **14** need CUDA,
+**63** read banked result files that `results/` correctly keeps out of git,
+**6** are scripts `test_script_call_sites.py` has nothing to check because
+they import nothing from `attnbench`, and **6** are the same scripts skipped
 again by `test_import_resolution.py`, which only has something to say about a
 script that imports the package, and **1** needs the pinned RULER data
 directory (`scripts/fetch_ruler_data.py`; the essays and QA sets are not
-committed). The 45 validate real measured data —
+committed). The 63 validate real measured data —
 including the check that the cross-arm decode guard actually fires on the
 confounded Stage 3 rows, and the check that the two comparison scripts refuse
 the banked era-2/era-3 pair, and the check that segment 1's 2026-09-03 probe
@@ -195,8 +197,11 @@ was written from the figures its measurement script printed rather than the
 columns it banked — see `silent_failure_patterns.md` #54.*
 
 *The third and fourth numbers were 4 until 2026-10-03, when
-`scripts/flag_positions_over_limit.py` was added; it imports nothing from
-`attnbench`.*
+`scripts/flag_positions_over_limit.py` was added, and 5 until later that day,
+when `scripts/derive_llama_oracle_cost.py` was; neither imports anything from
+`attnbench`. The second number was 45 until 2026-10-03, when the 18 tests of
+`tests/test_h100_baseline_caveat.py` were added; two of their inputs are not
+tracked.*
 
 *That third number was 6 until 2026-09-21. It became 4 then because
 `run_scale_comparison.py` and `run_scorer_comparison.py` acquired the mask-era
@@ -204,9 +209,9 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1433 passed, 24 skipped**, because the 45 banked-file tests run instead of
+1465 passed, 26 skipped**, because the 63 banked-file tests run instead of
 skipping (and, on a workstation with the RULER data directory, the data
-test runs too). Both totals are 1457, which is what `pytest --collect-only` reports —
+test runs too). Both totals are 1491, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 
