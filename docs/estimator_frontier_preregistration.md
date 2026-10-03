@@ -537,7 +537,8 @@ The A100 runs the Triton path. T4 Session B runs on the L4 torch fallback.
   is also **greedy**: `config_models.sh` sets `TEMPERATURE="0.0"`, and
   `call_api.py` passes `do_sample=False`. It does not sample, so no
   replication here needs a sampling treatment (no seeds, no repeated draws).
-- **Where it differs from this study:** chat-format prompts, a double BOS,
+- **Where it differs from this study:** chat-format prompts, a double BOS
+  under default tokenizer settings (traced in §4.9),
   no newline stop, and its own `tokens_to_generate`. These are recorded in
   §4.9 as confounds for the positive control and H8.
 
@@ -630,7 +631,7 @@ run C on the A100.
 - every prefill layer;
 - decoding in their pipeline: greedy (`TEMPERATURE="0.0"` →
   `do_sample=False`), no stop words, chat-format prompts with a double BOS
-  (§4.9). This study keeps greedy and the kernel settings above. It changes
+  under default tokenizer settings (§4.9, traced to file and line). This study keeps greedy and the kernel settings above. It changes
   the prompt format for accuracy and the BOS count everywhere, both stated as
   confounds (§4.9).
 
@@ -1137,14 +1138,47 @@ with the pinned tokenizer, 2026-10-03).**
     `meta-llama3`, the same user/assistant wrapping (`data/template.py`).
   - Neither is `tokenizer.apply_chat_template`, which would add a system
     header. Neither has a system turn.
-- **Double BOS: yes, in both.** Both strings start with a literal
-  `<|begin_of_text|>` and are tokenized with the default
-  `add_special_tokens=True` (`profile_threshold.py:212`,
-  `model_wrappers.py`, `tokenizer(prompts, …)`). With the pinned tokenizer,
-  **156 of 156** `text.json` prompts and the RULER template encode to
-  `[128000, 128000, 128006, …]`. The shipped `llama_fuse_*` tables'
-  calibration pipeline is unreleased (§4.1). If it used the same pipeline,
-  they were calibrated on double-BOS inputs.
+- **Double BOS, under default tokenizer settings** (wording and trace
+  amended 2026-10-03, before this section was pushed).
+  - **What was checked.** Both prompt strings begin with a literal
+    `<|begin_of_text|>`. Encoded with `add_special_tokens` left at its
+    default (True), the pinned tokenizer (revision `0e9e39f`) produces
+    `[128000, 128000, 128006, …]` on transformers 4.46.0 and 5.18.0. That
+    holds for **156 of 156** `text.json` prompts and for the RULER
+    `meta-llama3` template.
+  - **Calibration path** (`xattn/threshold/profile_threshold/profile_threshold.py`,
+    `e379887`):
+    - line 208 loads `text.json`, whose strings carry the literal BOS;
+    - line 212 calls `tokenizer(text, return_tensors="pt")`, so
+      `add_special_tokens` is not passed and takes its default;
+    - lines 213–214 call `model(**inputs)` with those ids.
+  - **RULER evaluation path** (`eval/RULER/scripts/`, `e379887`):
+    - `data/prepare.py:86-91` formats the `meta-llama3` template, literal
+      BOS included, into each task's template;
+    - the task generators fill it (for example `data/synthetic/niah.py:188`)
+      to give each example's `input`;
+    - `pred/call_api.py:323` passes `data_point['input']` to
+      `llm.process_batch` (`:266`);
+    - `pred/model_wrappers.py:64` calls `self.tokenizer(prompts,
+      return_tensors="pt", padding=True)`, with `add_special_tokens` not
+      passed;
+    - `:66` calls `self.model.generate(**inputs)` with those ids. That is the
+      branch taken for `Llama-3.1-8B-Instruct` (`pipeline=None`, lines 31–32).
+  - **So, from source,** both paths feed the model the ids the tokenizer
+    returns under default settings. Those are double-BOS ids **if** their
+    installed tokenizer behaves as the pinned one does here. **Not
+    established:**
+    - their transformers and tokenizers versions, which their code does not
+      pin;
+    - whether the published runs used this code path unmodified.
+
+    Nobody here ran their pipeline.
+  - **The shipped tables.** The `llama_fuse_*` calibration pipeline is
+    unreleased (§4.1). If it used the profiler path above, the tables were
+    calibrated on double-BOS inputs.
+  - **Asked of the authors?** Whether the calibration prompts were meant to
+    carry a double BOS is a third question, after the two in §0.1. Sending it
+    is the researcher's action.
 
 **Pre-registered prompt format for this study, and the confounds it
 leaves.**
@@ -1774,7 +1808,7 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 | 12 | **New:** era 3 against era 4 is cross-era. | T4's head-uniform arms against this study's per-head arms are descriptive only. |
 | 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹20,589 worst case for the full plan (sixth draft, measured μ). | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
 | 14 | **New:** H2c, H2d and H5a were written with the A100 crossover estimates visible (§3). | Stated. They are reported as priors anchored on visible data, not blind predictions. The blind tests of the crossover are H1 and H2a/H2b. |
-| 16 | **New:** the authors' calibration and RULER pipelines feed a double BOS; this study feeds one (§4.9). | Stated as a confound for H6a/H6b and H8. A double-BOS sensitivity arm is not planned; adding one needs the researcher's yes and a dated amendment before I2c. |
+| 16 | **New:** under default tokenizer settings, the authors' calibration and RULER code paths pass a double BOS to the model (traced to file and line, their library versions unpinned); this study feeds one (§4.9). | Stated as a confound for H6a/H6b and H8. A double-BOS sensitivity arm is not planned; adding one needs the researcher's yes and a dated amendment before I2c. |
 | 17 | **New:** Llama accuracy uses this study's completion-style prompts and newline stop, not the authors' chat format. | Stated. H8 is not a reproduction of the authors' RULER scores, and is never compared with them numerically. |
 | 18 | **New:** Llama number-task caps are 6 tokens (2 × a 3-token answer). | Kept by the rule. XL0 reports the dense cap-hit rate, and above 5% it is a stated truncation confound. The cap does not change after XL0. |
 | 15 | **New:** the H100 in-model speedups are against `sdpa_flash`, and no banked H100 dense kernel exists at (12, 2). | Labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`). Run D in I3 measures it. Nothing is adjusted from a different geometry. |
@@ -1964,7 +1998,7 @@ table's "now" column is labelled "second draft".)*
 | Decoding | argmax only | greedy forced and asserted on Llama, refusal test, determinism test, on-instance determinism STOP (G9 step 6) |
 | Stop set | union of tokenizer and generation_config | Llama must be exactly {128001, 128008, 128009}; the tokenizer's 128009 alone is refused; `stop_token_id` on every row |
 | Encoding | two call sites agreeing by default | one encoder (`prompting.py`, `add_special_tokens=True`), fed length checked against sized length, double-BOS guard |
-| Authors' pipeline | not checked | greedy; chat format; **double BOS** in calibration and RULER (156/156); recorded with the confounds it leaves (§4.9, §3.9) |
+| Authors' pipeline | not checked | greedy; chat format; **double BOS under default tokenizer settings** in calibration and RULER (156/156; file-and-line trace in §4.9); recorded with the confounds it leaves (§4.9, §3.9) |
 | Block 0 | — | holds the BOS on Llama |
 
 ---

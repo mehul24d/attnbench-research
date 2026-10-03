@@ -10,12 +10,16 @@ would undercount every prompt by one and could put a prompt over its budget
 by exactly that token. Both sides now call `encode_prompt`, and
 `generate_one` checks the fed length against the sized one.
 
-The double-BOS guard exists because the XAttention authors' pipelines produce
-one. Their RULER template and every `text.json` calibration prompt begin
-with a literal `<|begin_of_text|>`, and they are tokenized with the default
-`add_special_tokens=True`, so the ids start `[128000, 128000, ...]` (checked
-2026-10-03 against the pinned tokenizer, 156 of 156 texts). This study feeds
-one BOS, and refuses two.
+The double-BOS guard exists because of the XAttention authors' code at
+`e379887`. Their RULER template and every `text.json` calibration prompt
+begin with a literal `<|begin_of_text|>` and are tokenized with
+`add_special_tokens` left at its default (`profile_threshold.py:212`,
+`eval/RULER/scripts/pred/model_wrappers.py:64`). Under those default
+settings the pinned tokenizer gives `[128000, 128000, ...]` (checked
+2026-10-03 on transformers 4.46.0 and 5.18.0, 156 of 156 texts). Their
+library versions are not pinned, and their pipeline was not run here. The
+file-and-line trace is in the estimator-frontier pre-registration, sec. 4.9.
+This study feeds one BOS, and refuses two.
 """
 
 from __future__ import annotations
