@@ -127,7 +127,7 @@ SELECTOR_ERA = {"per_head": 4, "xattn_native": NATIVE}
 # rather than read by commit -- the stripped-column case, where a per-head row
 # would otherwise pass as era 3. None until the introducing commit exists; it
 # is recorded in the commit that follows it.
-PER_HEAD_SELECTOR_COMMIT: str | None = None
+PER_HEAD_SELECTOR_COMMIT: str | None = "a1b7801"   # L3, 2026-10-03
 
 
 class EraRefusal(SystemExit):

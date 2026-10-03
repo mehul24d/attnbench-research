@@ -728,8 +728,8 @@ recall, component and end-to-end row carries `mask_selector`:
   - `ERA_LABELS[4]` and `NATIVE`;
   - `era_of_row` (`mask_selector` first, then commit);
   - `side_from_frame`, which the two comparison scripts now use;
-  - `PER_HEAD_SELECTOR_COMMIT`, recorded in the commit after the
-    introducing one.
+  - `PER_HEAD_SELECTOR_COMMIT` = `a1b7801`, the introducing commit,
+    recorded in the commit after it.
 - `licence` no longer passes two sides on equal commits alone. Their eras
   must match too, because one commit can now hold era 3 and era 4.
 - The era-4 row is added to the `limitations.md` table.

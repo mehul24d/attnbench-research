@@ -639,3 +639,21 @@ def test_era_4_files_are_derived_from_the_table_joined_to_mask_selector():
         assert era4_listed == [], (
             f"the table lists {era4_listed} as era 4 but no banked parquet "
             f"carries mask_selector")
+
+
+def test_the_recorded_selector_commit_is_the_one_that_introduced_the_column():
+    """`PER_HEAD_SELECTOR_COMMIT` must name the commit that added
+    `mask_selector` to `masks.py`, and no banked commit may descend from it."""
+    if _git_head() is None:
+        pytest.skip("no git history in this checkout")
+    c = eras.PER_HEAD_SELECTOR_COMMIT
+    assert c is not None
+    first = subprocess.run(
+        ["git", "log", "--format=%h", "--reverse", "-S", "MASK_SELECTORS = (",
+         "--", "attnbench/masks.py"], cwd=REPO, capture_output=True, text=True
+    ).stdout.split()
+    assert first and first[0].startswith(c[:7]), (first[:1], c)
+    for banked in eras.COMMIT_ERA:
+        assert not eras.at_or_after_selector_commit(banked, str(REPO)), banked
+    head = _git_head()
+    assert eras.at_or_after_selector_commit(head, str(REPO))
