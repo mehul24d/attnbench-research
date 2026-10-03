@@ -61,6 +61,12 @@ if [[ -z "$PROJECT" ]]; then
   exit 1
 fi
 
+# The frontier study's budget gate (pre-registration sec. 8.3). Nothing below
+# this line runs unless it passes or the session is declared to belong to
+# another pre-registration. It also sets HALT_MINUTES and MAX_RUN.
+source "$(dirname "${BASH_SOURCE[0]}")/frontier_gate.sh"
+frontier_gate A100
+
 STARTUP_SCRIPT="$(mktemp)"
 trap 'rm -f "$STARTUP_SCRIPT"' EXIT
 cat > "$STARTUP_SCRIPT" <<EOF
@@ -117,6 +123,7 @@ else
 fi
 
 echo
+frontier_record_launch A100 "$INSTANCE_NAME"
 echo "Created on $MODEL_USED. Billing now."
 echo "  halts   at +${HALT_MINUTES}m (disk still recoverable after this)"
 echo "  DELETES at $MAX_RUN (disk goes with it)"

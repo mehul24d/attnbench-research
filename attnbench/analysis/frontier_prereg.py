@@ -822,6 +822,9 @@ class BracketLine:
     # Upper-bound minutes of the line's largest single phase, where the line
     # is more than one phase. A rerun repeats one phase (sec. 7.3).
     rerun_unit_min: Optional[float] = None
+    # Upper-bound minutes per session, where the line is more than one
+    # session: {unit name: minutes}. None means the line is one session.
+    units: Optional[Mapping[str, float]] = None
 
     @property
     def inr(self) -> tuple:
@@ -837,9 +840,13 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
     ext = lambda k: (3, 10)[k]  # noqa: E731
     lines: list[BracketLine] = []
 
-    def add(name, card, f, star, group, rerun_unit_min=None):
+    def add(name, card, f, star, group, rerun_unit_min=None, units=None):
         lines.append(BracketLine(name, card, tuple(f(k) for k in K), star, group,
-                                 rerun_unit_min))
+                                 rerun_unit_min, units))
+
+    def split(f, n):
+        """n equal sessions of a line."""
+        return {str(i + 1): f(1) / n for i in range(n)}
 
     add("FA3", "CPU", lambda k: (60, 150)[k], True, "intrinsic")
     add("C", "A100", lambda k: p7[16384][k] * inp.c_text_factor * inp.mu[k] / 60
@@ -866,8 +873,9 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
     def rep(p):
         return lambda k: (0, 3 * (inp.overhead_min[1] + sum(15 * 23 * 2 * p[x] for x in p)
                                   * inp.ex[1] / 60))[k]
-    add("R A100x3", "A100", rep(pa), True, "intrinsic")
-    add("R H100x2", "H100", lambda k: rep(ph)(k) * 2 / 3, True, "intrinsic")
+    add("R A100x3", "A100", rep(pa), True, "intrinsic", units=split(rep(pa), 3))
+    add("R H100x2", "H100", lambda k: rep(ph)(k) * 2 / 3, True, "intrinsic",
+        units=split(lambda k: rep(ph)(k) * 2 / 3, 2))
     add("R H100#3", "H100", lambda k: rep(ph)(k) / 3, False, "intrinsic")
 
     def row15(bd, k, kind):
@@ -900,7 +908,8 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
         True, "extrinsic")
     # X primary is one session per band; a rerun repeats the larger band.
     add("X primary", "A100", lambda k: x_primary((16384, 32768), k), True, "extrinsic",
-        rerun_unit_min=max(x_primary((b,), 1) for b in (16384, 32768)))
+        rerun_unit_min=max(x_primary((b,), 1) for b in (16384, 32768)),
+        units={str(b): x_primary((b,), 1) for b in (16384, 32768)})
     # Cut item 0c. As a star line it rides in X primary's sessions, so the
     # rerun unit is the 32768 band with one more arm.
     add("SL", "A100", sl, inp.sl_star, "extrinsic",
@@ -1058,6 +1067,144 @@ def worst_case(lines: Sequence[BracketLine], *, months: int = 2) -> dict:
     total = core_hi + sres + rerun + i2cb
     return {"core": core_hi, "s_res": sres, "rerun": rerun, "i2cb": i2cb,
             "total": total, "spare": CAP_INR - total}
+
+
+# --------------------------------------------------------------------------
+# The budget gate (sec. 8.3): the ledger, the plan state, and the verdict
+# scripts/frontier_budget_gate.py prints before every launch.
+# --------------------------------------------------------------------------
+
+LEDGER_COLUMNS = ("date", "session", "instance", "card", "minutes", "est_inr", "status", "source")
+LEDGER_STATUS = ("launched", "complete", "failed", "other")
+# An arm inside other sessions, not a session: the gate decides its funding,
+# and a launcher refuses it.
+ARM_LINES = ("SL",)
+# Lines that run only if triggered. Only these can be released unrun.
+CONDITIONAL_LINES = ("R A100x3", "R H100x2", "R H100#3", "I2c-B")
+STATE_KEYS = ("cut", "released", "xa_withheld", "h6a_passed", "months_remaining", "inputs")
+
+
+class GateRefusal(ValueError):
+    """The gate cannot give a verdict: a bad ledger, state or session name."""
+
+
+def session_units(line: BracketLine) -> dict:
+    """{session name: upper-bound minutes}. 'I1' for a one-session line,
+    'X primary:32768' for a unit of a line with several."""
+    if line.units is None:
+        return {line.name: line.minutes[1]}
+    return {f"{line.name}:{u}": m for u, m in line.units.items()}
+
+
+def read_ledger(rows: Iterable[Mapping]) -> dict:
+    """Spend and progress from ledger rows. A 'launched' row counts at its
+    recorded upper bound until a 'complete' or 'failed' row for the same
+    instance replaces it, so a launch whose teardown was never recorded
+    stays reserved in full."""
+    final, opened, direct, complete = {}, {}, 0.0, set()
+    for r in rows:
+        if set(r) != set(LEDGER_COLUMNS):
+            raise GateRefusal(f"ledger row has columns {sorted(r)}, not {sorted(LEDGER_COLUMNS)}")
+        status, inst = r["status"], r["instance"]
+        if status not in LEDGER_STATUS:
+            raise GateRefusal(f"ledger status {status!r} is not one of {LEDGER_STATUS}")
+        try:
+            inr = float(r["est_inr"])
+        except (TypeError, ValueError):
+            raise GateRefusal(f"ledger est_inr {r['est_inr']!r} is not a number") from None
+        if inr < 0:
+            raise GateRefusal("ledger est_inr is negative")
+        if status == "other" or not inst:
+            if status in ("launched", "complete", "failed"):
+                raise GateRefusal(f"a {status!r} row needs an instance")
+            direct += inr
+        elif status == "launched":
+            opened[inst] = (r["session"], inr)
+        else:
+            final[inst] = final.get(inst, 0.0) + inr
+            if status == "complete":
+                complete.add(r["session"])
+    still_open = {i: v for i, v in opened.items() if i not in final}
+    spent = direct + sum(final.values()) + sum(u for _, u in still_open.values())
+    return {"spent": spent, "complete": complete,
+            "open": {sess for sess, _ in still_open.values()}}
+
+
+def gate(session: str, card: Optional[str], rows: Iterable[Mapping],
+         state: Optional[Mapping] = None) -> dict:
+    """The verdict for launching `session` now. `card` is the launcher's
+    card, or None for a funding decision on an arm (ARM_LINES)."""
+    state = dict(state or {})
+    if set(state) - set(STATE_KEYS):
+        raise GateRefusal(f"unknown state keys {sorted(set(state) - set(STATE_KEYS))}")
+    try:
+        inp = BracketInputs(**dict(state.get("inputs", {})))
+    except TypeError as e:
+        raise GateRefusal(f"state inputs: {e}") from None
+    lines = bracket(inp)
+    by = {l.name: l for l in lines}
+    units = {u: (l, m) for l in lines for u, m in session_units(l).items()}
+    cut, released = set(state.get("cut", ())), set(state.get("released", ()))
+    for name in cut | released:
+        if name not in by:
+            raise GateRefusal(f"state names {name!r}, which is not a bracket line")
+    if any(by[n].star for n in cut):
+        raise GateRefusal(f"a never-cut line cannot be cut: {sorted(n for n in cut if by[n].star)}")
+    if released - set(CONDITIONAL_LINES):
+        raise GateRefusal(f"only {CONDITIONAL_LINES} can be released")
+    if session not in units:
+        raise GateRefusal(f"{session!r} is not a session of the plan; sessions are {sorted(units)}")
+    line, minutes = units[session]
+    if line.name in cut | released:
+        raise GateRefusal(f"{line.name} is cut or released")
+    if line.name in ARM_LINES:
+        if card is not None:
+            raise GateRefusal(f"{line.name} is an arm, not a session: nothing launches for it")
+    elif card != line.card:
+        raise GateRefusal(f"{session} runs on the {line.card}, not on {card!r}")
+    led = read_ledger(rows)
+    unknown = (led["complete"] | led["open"]) - set(units) - {""}
+    if unknown:
+        raise GateRefusal(f"the ledger names sessions the plan does not have: {sorted(unknown)}")
+    if session in led["complete"]:
+        raise GateRefusal(f"{session} is already complete; a complete phase is never rerun (sec. 7.3)")
+    if session in led["open"]:
+        raise GateRefusal(f"{session} has a launch with no teardown recorded")
+
+    def rate(l, m):
+        return m / 60 * RATE[l.card]
+    gone = led["complete"] | led["open"] | {session}
+    rest = {u: lm for u, lm in units.items()
+            if u not in gone and lm[0].name not in cut | released}
+    xa_withheld = bool(state.get("xa_withheld", False))
+    star_u = [rate(l, m) for l, m in rest.values() if l.star]
+    cuttable, hours = {}, minutes + sum(m for l, m in rest.values() if l.star)
+    order = cut_order(xa_withheld=xa_withheld)
+    item = None if line.star else cut_item_of(line.name)
+    higher = () if item is None else order[order.index(item):]
+    for l, m in rest.values():
+        c = cut_item_of(l.name)
+        if not l.star and c is not None and c != "12":
+            cuttable[c] = cuttable.get(c, 0.0) + rate(l, m)
+            if c in higher:
+                hours += m
+    i2cb_pending = ("I2c-B" in {l.name for l, _ in rest.values()}
+                    and not state.get("h6a_passed", False))
+    r_b = rate(by["I2c-B"], by["I2c-B"].minutes[1]) if i2cb_pending else 0.0
+    if i2cb_pending:
+        hours += by["I2c-B"].minutes[1]
+    sres = s_res(state.get("months_remaining", 2), hours / 60)
+    next_u = rate(line, minutes)
+    verdict = launch_check(spent=led["spent"], next_u=next_u, next_item=item,
+                           remaining_star_u=star_u, remaining_cuttable_u=cuttable,
+                           s_res_inr=sres, r_b=r_b, xa_withheld=xa_withheld)
+    reserve = sum(u for c, u in cuttable.items() if c in higher)
+    halt = math.ceil(1.25 * minutes)
+    return {"verdict": verdict, "session": session, "line": line.name, "star": line.star,
+            "cut_item": item, "spent": led["spent"], "next_u": next_u,
+            "remaining_star": sum(star_u), "reserved_cuttable": reserve, "s_res": sres,
+            "r_b": r_b, "need": led["spent"] + next_u + sum(star_u) + reserve + sres + r_b,
+            "cap": CAP_INR, "halt_minutes": halt, "max_run_minutes": halt + 10}
 
 
 # The leak guard (sec. 8.3): no canary result may enter a funding decision.

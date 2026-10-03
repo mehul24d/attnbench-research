@@ -56,6 +56,12 @@ if [[ -z "$PROJECT" ]]; then
   exit 1
 fi
 
+# The frontier study's budget gate (pre-registration sec. 8.3). Nothing below
+# this line runs unless it passes or the session is declared to belong to
+# another pre-registration. It also sets HALT_MINUTES and MAX_RUN.
+source "$(dirname "${BASH_SOURCE[0]}")/frontier_gate.sh"
+frontier_gate L4
+
 STARTUP_SCRIPT="$(mktemp)"
 trap 'rm -f "$STARTUP_SCRIPT"' EXIT
 cat > "$STARTUP_SCRIPT" <<EOF
@@ -105,6 +111,7 @@ gcloud compute instances create "$INSTANCE_NAME" \
   --metadata-from-file=startup-script="$STARTUP_SCRIPT"
 
 echo
+frontier_record_launch L4 "$INSTANCE_NAME"
 echo "Created. This instance is now billing. Remember:"
 echo "  - it halts at +${HALT_MINUTES} min from boot regardless of what you do"
 echo "    (GPU billing stops; the disk survives until DELETE)"
