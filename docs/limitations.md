@@ -962,8 +962,25 @@ corrected accordingly. What it is a property of is not yet established: driver
 and torch were held constant across all four observations, so it could equally
 be a cuDNN version issue rather than a silicon one. That distinction needs a
 second driver or torch build to separate, and this study has not run one.
-Stating it as architecture-general is what the evidence supports; stating it as
-hardware-independent is not.
+**Scope, corrected 2026-10-03: observed on L4 and A100; the H100 is untested
+above 8192.**
+
+- **This sentence used to read** "Stating it as architecture-general is what
+  the evidence supports". Two architectures are not general.
+- **The H100 rows are not observations.** Every H100 probe file records
+  cuDNN as `illegal_memory_access` above 8192, but those rows were written by
+  the device-fault guard without launching (`gates.py` returns before
+  `run_once`).
+- **"Four machines" overstates the banked evidence.** The banked serial logs
+  hold three real Xid 31 events:
+  - `results/stage2/seg2_aborted_20260904/serial_console.log` and
+    `results/stage2/seg2b_20260904/serial_console.log`, both L4, 2026-09-04;
+  - `results/a100/serial_console.log:2686`, A100, 2026-09-05.
+
+  Rows that record the fault in 84-row blocks after 2026-09-04 (`492b9b5`)
+  are guard-written, not confirmations.
+- **Not hardware-independent either.** The fault is still not shown to be
+  independent of driver and torch.
 
 **A prior claim here was wrong and is worth recording.** During the A100
 session it was reported that the fault "was gone on Ampere", on the strength of

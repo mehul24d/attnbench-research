@@ -663,10 +663,22 @@ cuDNN last:
 | fa2 flex gla naive sage sdpa_efficient sdpa_math sdpa_flash | rc=0 |
 | sdpa_cudnn | rc=0 -- `illegal_memory_access=84` RECORDED, clean exit |
 
-The cuDNN row is the one that matters. It faults on all 84 configs and the
-process still exits 0, because those faults are **synchronous**: they raise at
-the call, `probe()` catches them, and "this backend faults here" is written
-down as a legitimate capability result. block_sparse's fault is
+**Corrected 2026-10-03.** The cuDNN row records a fault that never happened.
+Its 84 rows were **not launched**. At this session's commits (`92c253f` to
+`de0e8ed`), `gates.py` returns `actual="illegal_memory_access"` **before**
+`run_once` whenever the claim reason starts with `KNOWN DEVICE FAULT: `, and
+all 84 rows carry that prefix and one shared timestamp. So cuDNN exited 0
+because it never ran. The cuDNN fault above 8192 is **observed on L4 and
+A100, and the H100 is untested above 8192.**
+
+*(Until 2026-10-03 this paragraph read: "The cuDNN row is the one that
+matters. It faults on all 84 configs and the process still exits 0, because
+those faults are **synchronous**: they raise at the call, `probe()` catches
+them, and 'this backend faults here' is written down as a legitimate
+capability result.")*
+
+The synchronous/asynchronous contrast below stands as a general hazard. Its
+cuDNN example does not. block_sparse's fault is
 **asynchronous**: nothing raises, the context is already dead, and the run
 ends somewhere else entirely.
 
@@ -697,7 +709,9 @@ block_sparse excluded, the full 32768 band completed rc=0 across nine
 backends, cuDNN included and faulting loudly the whole way.
 
 **Two wrong diagnoses, both disproved by measurement.** cuDNN was blamed first
-because its 84 faults at 16384 fit the standing "cuDNN last" rule; a fix was
+because its 84 fault rows at 16384 fit the standing "cuDNN last" rule. *(Those
+rows were written by the device-fault guard without launching; see the
+correction above, 2026-10-03.)* A fix was
 committed to it and excluding it changed nothing. `sdpa_flash` was blamed
 second because it ran last before the crash -- which is precisely the
 inference an asynchronous fault invalidates, made immediately after being

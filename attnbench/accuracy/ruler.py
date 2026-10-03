@@ -90,7 +90,11 @@ T4_DENSE_PILOT_TASKS = (
 # word needles). They are sized per example, so every example lands at or
 # under its budget by construction rather than by assuming the first
 # example's fit holds for the rest -- which is all the existing tasks rely
-# on, and is safe only because their filler is uniform.
+# on. That is NOT safe for them: their filler is uniform, but their needles
+# (UUIDs, numbers) are not, so later examples overshoot by up to +82 tokens
+# (see the `RulerExample` docstring; corrected 2026-10-03). Left unchanged
+# here because changing the sizing would change every regenerated prompt for
+# those tasks and break identity with banked rows.
 _PER_EXAMPLE_FIT = frozenset(_QA_PARAMS) | frozenset(
     t for t, p in _NIAH_PARAMS.items()
     if p["haystack_mode"] == "essay" or "words" in (p["type_needle_k"], p["type_needle_v"]))
@@ -104,8 +108,19 @@ class RulerExample:
     keeping it separate, so there's nothing distinct to put there.
 
     `context_length` is the REAL tokenized length of `context` under the
-    tokenizer that generated it -- not a word-count estimate. It will be at
-    or just below `token_budget`, never above (see accuracy/sizing.py).
+    tokenizer that generated it -- not a word-count estimate.
+
+    It is at or below `token_budget` only for tasks in `_PER_EXAMPLE_FIT`,
+    which are sized per example. Every other task is sized ONCE per budget,
+    on example 0, and that filler count is reused for the rest; their needles
+    (UUIDs, numbers) tokenize to different lengths per example, so an example
+    can land ABOVE budget. Measured 2026-10-03 across banked data:
+    `niah_multikey` up to +82 tokens at 16384, `niah_single` up to +20,
+    `vt` up to +5, and `niah_single` +1 at 32768 -- a 32,769-token prompt,
+    past Qwen2.5's 32,768-position limit
+    (`results/positions_over_limit/sizing_delta_by_band_task.csv`). Callers
+    that need a hard ceiling must check `context_length` themselves.
+    (Until 2026-10-03 this said "never above".)
 
     Both are recorded because they are not identical: the budget is the
     grid's requested length, and the actual is what the filler granularity

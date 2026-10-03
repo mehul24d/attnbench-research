@@ -2092,8 +2092,11 @@ path, and it might as well be the first.
 Both wrong diagnoses in this session were made *after* the relevant lesson was
 in hand.
 
-  - cuDNN was blamed because its 84 faults at 16384 fit the standing "cuDNN
-    last" rule. A fix was written, committed, and deployed before anything
+  - cuDNN was blamed because its 84 fault rows at 16384 fit the standing
+    "cuDNN last" rule. *(Corrected 2026-10-03: those rows were written by the
+    device-fault guard without launching, so cuDNN never ran above 8192 on
+    that H100. The fault is observed on L4 and A100; the H100 is untested
+    above 8192.)* A fix was written, committed, and deployed before anything
     tested whether cuDNN was the cause. Excluding it changed nothing.
   - `sdpa_flash` was blamed next, on the reasoning that it ran last before the
     crash -- the exact inference an asynchronous fault invalidates, made
@@ -2117,6 +2120,14 @@ at its launch site:
                     as a capability result, and the run continues
     asynchronous -> nothing raises, the context is dead, and the NEXT CUDA
                     call anywhere in the process dies instead
+
+*(Corrected 2026-10-03. The next sentence's cuDNN example is wrong. In the
+H100 session it describes, `sdpa_cudnn`'s 84 rows per band were written by the
+device-fault guard **without launching** (`gates.py` returns before
+`run_once`), so cuDNN exited 0 because it never ran, not because a
+synchronous fault was caught. The hazard stands; the example does not. The
+cuDNN fault above 8192 is observed on L4 and A100, and the H100 is untested
+above 8192.)*
 
 `sdpa_cudnn` faults 84 times per band and exits 0. `block_sparse` faults once
 and takes the process, the band, and every unbanked row with it -- with a
