@@ -292,7 +292,7 @@ draft fixes the order in which they may start.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1664 passed, 95 skipped, ~75s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1696 passed, 96 skipped, ~75s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -311,7 +311,7 @@ from 2026-10-03, `HF_HOME`/`HF_HUB_CACHE` pointed at an empty directory with
 A clean clone is a *partial* tree: it carries the 38 force-committed files
 under `results/` and none of the rest.
 
-The 95 skips are the honest part, and they split six ways: **14** need CUDA,
+The 96 skips are the honest part, and they split six ways: **15** need CUDA,
 **65** read banked result files that `results/` correctly keeps out of git,
 **6** are scripts `test_script_call_sites.py` has nothing to check because
 they import nothing from `attnbench`, and **6** are the same scripts skipped
@@ -343,6 +343,10 @@ when `scripts/derive_llama_oracle_cost.py` was; neither imports anything from
 `tests/test_h100_baseline_caveat.py` were added; two of their inputs are not
 tracked.*
 
+*The CUDA number was 14 until 2026-10-04, when `tests/test_kernels.py` added
+the check of `bsa_prefill` against its plain-torch reference, which needs the
+real kernel.*
+
 *The second number was 63 until 2026-10-03, when
 `tests/test_frontier_eval_ids.py` added two: that the registry of banked
 example indices is the whole banked tree, and that no estimator timing is
@@ -358,9 +362,9 @@ check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1733 passed, 26 skipped**, because the 65 banked-file tests run instead of
+1765 passed, 27 skipped**, because the 65 banked-file tests run instead of
 skipping (and, on a workstation with the RULER data directory and the
-cached Llama tokenizer, those four tests run too). Both totals are 1759, which is what `pytest --collect-only` reports —
+cached Llama tokenizer, those four tests run too). Both totals are 1792, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 
