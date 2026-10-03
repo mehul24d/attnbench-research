@@ -134,7 +134,7 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     t0 = time.perf_counter()
     result = wrapped.generate(
         input_ids, backend, cfg=run_cfg,
-        max_new_tokens=stopping.token_cap(example.task),
+        max_new_tokens=stopping.token_cap(example.task, wrapped.model_id),
         eos_token_ids=stop_tokens.eos,
         newline_token_ids=stop_tokens.newline,
         whitespace_token_ids=stop_tokens.whitespace,

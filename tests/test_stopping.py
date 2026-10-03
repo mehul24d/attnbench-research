@@ -46,6 +46,26 @@ def test_an_unmeasured_task_raises_rather_than_borrowing_a_cap():
         token_cap("qa")
 
 
+def test_llama_never_borrows_the_qwen_caps():
+    """Estimator-frontier pre-registration, sec. 4.9 (2026-10-03): Llama-3.1-8B
+    caps are measured with its own tokenizer. Until they are, every Llama
+    lookup raises, including for tasks Qwen has caps for."""
+    from attnbench.accuracy import stopping
+    assert stopping.LLAMA_31_8B == "meta-llama/Llama-3.1-8B-Instruct"
+    for task in TASK_TOKEN_CAPS:
+        if task in stopping.LLAMA_31_8B_TASK_TOKEN_CAPS:
+            continue
+        with pytest.raises(KeyError, match="not reused"):
+            token_cap(task, stopping.LLAMA_31_8B)
+
+
+def test_other_models_keep_the_qwen_caps():
+    """Qwen ids, the toy test models (LlamaForCausalLM, id "toy") and None
+    all read TASK_TOKEN_CAPS, so banked-run behaviour is unchanged."""
+    for model_id in (None, "Qwen/Qwen2.5-1.5B-Instruct", "toy", "toy/llama"):
+        assert token_cap("qa_1", model_id) == TASK_TOKEN_CAPS["qa_1"]
+
+
 def test_caps_are_at_least_twice_the_measured_maximum():
     """The rule the numbers came from, asserted so an edit has to keep it.
     Observed maxima over 200 examples/task: 7 / 36 / 20."""

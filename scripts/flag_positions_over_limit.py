@@ -111,10 +111,19 @@ def main(argv=None) -> int:
         deltas.append(d)
     if deltas:
         dd = pd.concat(deltas)
+        # `over_budget` counts (file, example) pairs, and an example recurs
+        # across files; `over_budget_distinct` counts each example once
+        # (added 2026-10-03: 655 pairs are 182 examples).
+        distinct = (dd[dd.delta > 0].drop_duplicates(["example_id", "context_length"])
+                    .groupby(["budget", "task"]).size().rename("over_budget_distinct"))
         (dd.groupby(["budget", "task"]).delta
            .agg(n="size", min="min", median="median", max="max",
                 over_budget=lambda s: int((s > 0).sum()))
+           .join(distinct).fillna({"over_budget_distinct": 0})
+           .astype({"over_budget_distinct": int})
            .to_csv(out / "sizing_delta_by_band_task.csv"))
+        print(f"over budget: {int((dd.delta > 0).sum())} file-example pairs, "
+              f"{int(distinct.sum())} distinct examples")
 
     pd.set_option("display.width", 250)
     print(s[s.over_user_def > 0].to_string(index=False))

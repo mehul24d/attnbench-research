@@ -693,7 +693,7 @@ def main():
                               if b in want}
     print(f"backends      : {', '.join(configs_by_backend)}")
     print("caps (tokens) : " + ", ".join(
-        f"{t}={stopping.token_cap(t)}" for t in selected_tasks))
+        f"{t}={stopping.token_cap(t, model_id)}" for t in selected_tasks))
 
     cells = build_cells(configs_by_backend=configs_by_backend,
                         examples_by_task_length=examples_by_task_length)

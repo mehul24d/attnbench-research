@@ -43,16 +43,40 @@ TASK_TOKEN_CAPS: dict[str, int] = {
 }
 
 
-def token_cap(task: str) -> int:
+# Llama-3.1-8B-Instruct's own caps (estimator-frontier pre-registration,
+# sec. 4.9, 2026-10-03). Same rule, measured with the Llama tokenizer by
+# `scripts/measure_answer_lengths.py --model`. Qwen's caps above are NOT
+# reused: a different tokenizer splits the same answer differently. Empty
+# until measured, so every Llama lookup raises.
+LLAMA_31_8B = "meta-llama/Llama-3.1-8B-Instruct"
+LLAMA_31_8B_TASK_TOKEN_CAPS: dict[str, int] = {}
+
+# Models whose caps are not TASK_TOKEN_CAPS. Exact repo ids, not a substring
+# match: the toy test models are LlamaForCausalLM too.
+_CAPS_BY_MODEL: dict[str, dict[str, int]] = {LLAMA_31_8B: LLAMA_31_8B_TASK_TOKEN_CAPS}
+
+
+def token_cap(task: str, model_id: Optional[str] = None) -> int:
     """The per-task cap, or a raise. Never a default.
 
     A default here would silently apply one task's answer-length distribution
     to another's, and the failure would be a quietly truncated answer scored
     as wrong -- indistinguishable in the parquet from a backend that got it
     wrong. Adding a task to the grid must mean measuring its answer lengths.
+
+    `model_id` selects a model's own table (`_CAPS_BY_MODEL`); any other
+    model, or None, reads `TASK_TOKEN_CAPS`, measured with the Qwen2.5
+    tokenizer.
     """
+    table = _CAPS_BY_MODEL.get(model_id, TASK_TOKEN_CAPS)
+    if table is not TASK_TOKEN_CAPS and task not in table:
+        raise KeyError(
+            f"no measured token cap for task {task!r} on {model_id} (have "
+            f"{sorted(table)}). Measure it with that model's tokenizer "
+            f"(scripts/measure_answer_lengths.py --model); the Qwen caps are "
+            f"not reused.")
     try:
-        return TASK_TOKEN_CAPS[task]
+        return table[task]
     except KeyError:
         raise KeyError(
             f"no measured token cap for task {task!r} (have "
