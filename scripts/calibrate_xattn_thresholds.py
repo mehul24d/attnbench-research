@@ -119,7 +119,7 @@ def descriptive_records(per_text, used: list[int]) -> dict:
 
 
 def g12_or_refuse(texts: list[str]) -> dict:
-    """Gate G12 (estimator-frontier pre-registration sec. 6): the `text.json`
+    """Gate G12 (estimator-frontier pre-registration sec. 6): the calibration
     texts are held to the split firewall before anything is profiled on
     them. A leak, or QA data the gate cannot read, stops the run."""
     from attnbench.accuracy import frontier_splits
@@ -133,14 +133,53 @@ def g12_or_refuse(texts: list[str]) -> dict:
                          f"{type(e).__name__}: {e}")
 
 
-def authors_texts() -> tuple[list[str], str]:
+def authors_selection(texts: list[str], raw_sha256: str, *, full: bool) -> tuple[list[int], dict]:
+    """Which of the authors' texts a table is profiled on, and its G12 record
+    (T4 amendment A8; estimator-frontier pre-registration sec. 5).
+
+    `authors` (full=False) leaves out the QA texts, and G12 must then pass on
+    the rest. `authors_full` keeps every text; G12 is run and its failure is
+    written into the table, which is descriptive.
+
+    Both refuse a text.json other than the one the exclusion and the needle
+    comparison were worked out on."""
+    from attnbench.accuracy import frontier_splits as fs
+    if raw_sha256 != fs.TEXT_JSON_SHA256 or len(texts) != fs.TEXT_JSON_N_TEXTS:
+        raise SystemExit("STOP (G12): this is not the text.json the gate was worked out on "
+                         f"(sha256 {raw_sha256[:12]}, {len(texts)} texts).")
+    qa = fs.qa_text_indices(texts)
+    if len(qa) != fs.TEXT_JSON_N_QA_TEXTS:
+        raise SystemExit(f"STOP (G12): {len(qa)} QA texts found, not {fs.TEXT_JSON_N_QA_TEXTS}.")
+    if full:
+        try:
+            hits = fs.g12_hits(texts)
+        except Exception as e:
+            raise SystemExit(f"STOP (G12 could not run): {type(e).__name__}: {e}")
+        by = {}
+        for h in hits:
+            c = by.setdefault(h["split"], {"questions": 0, "gold_documents": 0})
+            c["questions"] += bool(h["question_in_texts"])
+            c["gold_documents"] += bool(h["gold_document_in_texts"])
+        return list(range(len(texts))), {"gate": "G12", "passed": False, "role": "descriptive",
+                                         "held_out_material": by, "qa_texts_excluded": []}
+    keep = [k for k in range(len(texts)) if k not in set(qa)]
+    record = g12_or_refuse([texts[k] for k in keep])
+    record.update(qa_texts_excluded=qa, needles=fs.NEEDLE_COMPARISON)
+    return keep, record
+
+
+def authors_texts(*, full: bool = False) -> tuple[list[str], str, list[int], dict]:
+    """(every text, the file's sha256, the indices to profile, the G12
+    record). Indices stay those of the file, so the table can name what it
+    left out."""
     import xattn
     path = (Path(xattn.__file__).resolve().parent / "threshold" / "profile_threshold"
             / "text.json")
     raw = path.read_bytes()
     texts = [strip_chat_markers(t) for t in json.loads(raw)]
-    g12_or_refuse(texts)
-    return texts, hashlib.sha256(raw).hexdigest()
+    sha = hashlib.sha256(raw).hexdigest()
+    keep, record = authors_selection(texts, sha, full=full)
+    return texts, sha, keep, record
 
 
 def ruler_texts(grid, count_tokens) -> tuple[list[str], str]:
@@ -200,11 +239,12 @@ def main() -> int:
     grid = load_grid(args.grid)
     model_id = grid.model_primary
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    if args.source == "authors":
-        texts, source_sha = authors_texts()
+    if args.source in ("authors", "authors_full"):
+        texts, source_sha, keep, g12_record = authors_texts(full=args.source == "authors_full")
     else:
         texts, source_sha = ruler_texts(
             grid, lambda text: len(tokenizer(text).input_ids))
+        keep, g12_record = list(range(len(texts))), None
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id, torch_dtype=getattr(torch, args.dtype)).to(args.device).eval()
@@ -219,7 +259,7 @@ def main() -> int:
     limit = int(model.config.max_position_embeddings)
     all_lengths = [len(tokenizer(t).input_ids) for t in texts]
     excluded = excluded_over_length(all_lengths, limit)
-    used = [i for i in range(len(texts)) if i not in set(excluded)]
+    used = [i for i in keep if i not in set(excluded)]
     print(f"{len(used)} of {len(texts)} texts within {limit} positions; "
           f"excluded {excluded}", flush=True)
     lengths = []
@@ -253,12 +293,15 @@ def main() -> int:
         n_texts=len(used),
         n_texts_offered=len(texts),
         excluded=[dict(index=i, tokens=all_lengths[i]) for i in excluded],
+        g12=g12_record,
         descriptive=descriptive_records(
             {i: t for i, t in zip(used, profiler.per_text)}, used),
         tokens=dict(min=min(lengths), median=statistics.median(lengths), max=max(lengths)),
         source_sha256=source_sha,
-        source=("x-attention xattn/threshold/profile_threshold/text.json, chat markers stripped"
-                if args.source == "authors" else
+        source=("x-attention xattn/threshold/profile_threshold/text.json, chat markers stripped, "
+                "its 24 QA texts left out (T4 amendment A8)" if args.source == "authors" else
+                "x-attention xattn/threshold/profile_threshold/text.json, chat markers stripped, "
+                "every text (descriptive; T4 amendment A8)" if args.source == "authors_full" else
                 f"RULER {list(t4_pilot.SPARSE_PILOT_TASKS)} at {list(t4_pilot.PILOT_BANDS)}, "
                 f"seed {t4_pilot.XATTN_CALIBRATION_SEED}, "
                 f"{t4_pilot.XATTN_CALIBRATION_RULER_N} per (task, band), "

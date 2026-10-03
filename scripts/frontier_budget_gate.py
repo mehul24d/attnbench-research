@@ -73,6 +73,12 @@ def append(path: Path, row: dict) -> None:
         csv.DictWriter(f, fieldnames=fp.LEDGER_COLUMNS).writerow(row)
 
 
+def ledger_rate(card: str) -> float:
+    """Rs per hour a ledger row is priced at: the card's rate plus the boot
+    disk, which the storage reserve covered until the session ran."""
+    return fp.RATE[card] + fp.DISK_PER_HOUR_INR
+
+
 def today() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
@@ -108,7 +114,7 @@ def main(argv=None) -> int:
             o = opened[0]
             append(a.ledger, {"date": today(), "session": o["session"], "instance": o["instance"],
                               "card": o["card"], "minutes": f"{a.minutes:g}",
-                              "est_inr": f"{a.minutes / 60 * fp.RATE[o['card']]:.0f}",
+                              "est_inr": f"{a.minutes / 60 * ledger_rate(o['card']):.0f}",
                               "status": a.status, "source": "frontier_budget_gate --record-teardown"})
             print(f"recorded {a.status}: {o['session']} on {o['instance']}, {a.minutes:g} min")
             return 0
@@ -140,7 +146,7 @@ def main(argv=None) -> int:
         line_card = a.card
         append(a.ledger, {"date": today(), "session": session, "instance": a.record_launch,
                           "card": line_card, "minutes": str(g["max_run_minutes"]),
-                          "est_inr": f"{g['max_run_minutes'] / 60 * fp.RATE[line_card]:.0f}",
+                          "est_inr": f"{g['max_run_minutes'] / 60 * ledger_rate(line_card):.0f}",
                           "status": "launched", "source": "frontier_budget_gate --record-launch"})
         print(f"recorded launch: {session} on {a.record_launch}, reserved to its hard cap")
     return 0

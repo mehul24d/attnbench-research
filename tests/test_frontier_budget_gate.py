@@ -130,7 +130,10 @@ def test_the_gate_reserves_higher_priority_items_at_worst_case_inputs():
     assert fp.gate("I1", "A100", [])["verdict"] == "PROCEED"
     for low in ("I2b", "I2d", "I2e"):
         assert fp.gate(low, "A100", [])["verdict"] == "STOP"
-    assert fp.gate("XL0", "A100", [])["verdict"] == "PROCEED"
+    # H8's probe is covered once H6a has passed (no I2c-B to reserve); with
+    # I2c-B still pending and every input at its upper end it is not.
+    assert fp.gate("XL0", "A100", [], {"h6a_passed": True})["verdict"] == "PROCEED"
+    assert fp.gate("XL0", "A100", [])["verdict"] == "STOP"
     assert fp.gate("SL", None, [])["verdict"] == "STOP"
     # Once the Llama runs are cut, a lower item no longer has to leave room for them.
     state = {"cut": ["XL0", "XL primary", "XL secondary", "XL 65536"]}
@@ -197,5 +200,7 @@ def test_the_cli_exit_codes(tmp_path):
     assert run("--fund", "SL").returncode == 1
     assert run("--session", "I1", "--card", "A100", "--record-launch", "i-9").returncode == 0
     assert run("--record-teardown", "i-9", "--minutes", "120", "--status", "complete").returncode == 0
-    assert fp.read_ledger(list(__import__("csv").DictReader(ledger.open())))["spent"] == 568
+    # 120 minutes at the A100's rate plus the boot disk.
+    assert fp.read_ledger(list(__import__("csv").DictReader(ledger.open())))["spent"] == round(
+        2 * (284 + 2.4))
     assert run("--init").returncode == 2                 # never overwrites a ledger

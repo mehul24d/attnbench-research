@@ -61,11 +61,23 @@ def test_every_recall_row_carries_split_and_mask_selector():
 
 def test_budget_selection_picks_the_smallest_qualifying_budget():
     sel = fr.select_budgets(_selection({0.50: 0.99, 0.25: 0.96, 0.10: 0.951, 0.05: 0.94}))
-    assert sel["MP@16384"]["b_star"] == 0.10 and sel["MP@16384"]["qualified"]
+    assert sel["MP@qa_1@16384"]["b_star"] == 0.10 and sel["MP@qa_1@16384"]["qualified"]
     none = fr.select_budgets(_selection({0.50: 0.9, 0.25: 0.8, 0.10: 0.7, 0.05: 0.6}))
-    assert none["MP@16384"]["b_star"] == 0.50 and not none["MP@16384"]["qualified"]
+    assert none["MP@qa_1@16384"]["b_star"] == 0.50 and not none["MP@qa_1@16384"]["qualified"]
     edge = fr.select_budgets(_selection({0.50: 0.99, 0.25: 0.95, 0.10: 0.9499, 0.05: 0.9}))
-    assert edge["MP@16384"]["b_star"] == 0.25
+    assert edge["MP@qa_1@16384"]["b_star"] == 0.25
+
+
+def test_budget_selection_is_per_task():
+    """One task's recall never enters another's budget."""
+    easy = [_row(index=1000 + i, d_nom=d, recall_norm=0.99, task="niah_multivalue",
+                 example_id=f"niah_multivalue_16384_{1000 + i}")
+            for d in fr.D_NOMS for i in range(4)]
+    hard = [_row(index=1000 + i, d_nom=d, recall_norm=0.5) for d in fr.D_NOMS for i in range(4)]
+    sel = fr.select_budgets(fr.to_frame(easy + hard))
+    assert sel["MP@niah_multivalue@16384"]["b_star"] == 0.05
+    assert sel["MP@qa_1@16384"]["b_star"] == 0.50
+    assert set(sel) == {"MP@niah_multivalue@16384", "MP@qa_1@16384"}
 
 
 def test_budget_selection_refuses_any_row_that_is_not_selection():

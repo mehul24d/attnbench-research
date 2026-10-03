@@ -507,7 +507,7 @@ def test_the_rerun_term_is_the_larger_band_of_x_primary_not_half_the_line():
     assert w["rerun"] == pytest.approx(unit)
     assert w["rerun"] >= max(l.inr[1] for l in lines if l.star and l.name != "X primary")
     assert _has(f"| {_inr(w['rerun'])} (eighth draft 1,698, which should have been 2,251) |")
-    assert _has(f"| {_inr(w['core'])} (eighth draft 9,231")
+    assert _has(f"| {_inr(w['core'])} (7,975 before the second calibration table; eighth draft 9,231")
     assert _has(f"| {_inr(w['s_res'])} (₹424 storage")
     assert _has(f"with ₹{_inr(w['spare'])} to spare")
 
@@ -554,21 +554,29 @@ def test_the_eighth_drafts_worst_case_was_over_the_cap_once_the_rerun_is_priced(
 def test_h8s_funding_cannot_be_consumed_by_a_lower_priority_item_running_first():
     """At worst-case inputs I2b, I2d and I2e (cut items 7, 3 and 9) come
     before the Llama runs (item 11) in sec. 8.5's order. They must not
-    launch, and H8's runs must."""
+    launch, and H8's runs must. The case is the one where H8 can be funded
+    at all: H6a passes, so I2c-B does not run."""
     lines = fp.bracket()
-    new = fp.fund(lines, fp.RUN_ORDER)
+    new = fp.fund(lines, fp.RUN_ORDER, skip=("I2c-B",))
     assert {"XL0", "XL primary"} <= set(new["ran"])
     assert not {"I2b", "I2d", "I2e"} & set(new["ran"])
     assert new["stopped_at"] is None and new["spent"] <= fp.CAP_INR
     # The rule before 2026-10-04 let them run, and H8 then went unfunded.
-    old = fp.fund(lines, fp.RUN_ORDER, reserve_higher=False)
+    old = fp.fund(lines, fp.RUN_ORDER, skip=("I2c-B",), reserve_higher=False)
     assert {"I2b", "I2d", "I2e"} <= set(old["ran"]) and "XL primary" in old["cut"]
+    # If H6a misses and I2c-B runs, every input at its upper end leaves H8
+    # unfunded under either rule; the lower items still do not run.
+    worst = fp.fund(lines, fp.RUN_ORDER)
+    assert {"XL0", "XL primary"} <= set(worst["cut"]) and "I2c-B" in worst["ran"]
+    assert not {"I2b", "I2d", "I2e"} & set(worst["ran"])
+    assert _has("If H6a misses and I2c-B runs, H8 is unfunded at worst-case inputs")
 
 
 def test_no_walk_leaves_a_never_cut_session_unrun_or_goes_over_the_cap():
     for kw in ({}, {"xa_withheld": True}, {"reserve_higher": False}):
         out = fp.fund(fp.bracket(), fp.RUN_ORDER, **kw)
-        assert out["stopped_at"] is None and out["spent"] <= fp.CAP_INR
+        assert out["stopped_at"] is None
+        assert out["spent"] + fp.s_res(2, 0) <= fp.CAP_INR      # with two months of storage
         assert {l.name for l in fp.bracket() if l.star} <= set(out["ran"])
 
 
@@ -632,16 +640,27 @@ def test_sl_is_priced_as_cuttable_and_as_never_cut():
     assert w1["core"] - w0["core"] == pytest.approx(sl.inr[1])
     assert w1["rerun"] > w0["rerun"]
     assert _has(f"₹{_inr(w1['total'])}, leaving ₹{_inr(w1['spare'])}")
-    # As never-cut it takes H8's funding at worst-case inputs.
-    assert "XL primary" in fp.fund(star, fp.RUN_ORDER)["cut"]
+    # As never-cut it takes H8's funding at worst-case inputs, even when
+    # I2c-B does not run.
+    assert "XL primary" in fp.fund(star, fp.RUN_ORDER, skip=("I2c-B",))["cut"]
     assert _has("SL as never-cut leaves H8 unfunded at worst-case inputs")
 
 
 def test_dp1s_trigger_on_the_arm_factor_is_a_number():
     assert fp.ARM_FACTOR_UPPER == fp.BracketInputs().ex[1] == 1.6
     be = fp.arm_factor_break_even()
-    assert 2.5 < be < 2.7 and _has(f"at or above {be:.2f}")
+    assert 2.4 < be < 2.6 and _has(f"at or above {be:.2f}")
     assert fp.dp1_arm_factor(1.6) == "within"
     assert fp.dp1_arm_factor(1.61) == "rebracket"
     assert fp.dp1_arm_factor(be + 0.01) == "cut_or_stop"
     assert _has("measured arm factor above 1.6")
+
+
+def test_c_makes_two_tables_and_the_claim_table_is_the_smaller():
+    inp = fp.BracketInputs()
+    assert inp.c_text_factor < inp.c_text_factor_full
+    c = next(l for l in fp.bracket(inp) if l.name == "C")
+    want = (inp.a7_row_16384 * (inp.c_text_factor + inp.c_text_factor_full) * inp.mu[1] / 60
+            + inp.overhead_min[1] + 10)
+    assert c.minutes[1] == pytest.approx(want) and c.star
+    assert _has("the claim table on 104 texts and the descriptive one on 121")

@@ -99,9 +99,13 @@ def validate_recall_frame(frame: pd.DataFrame) -> None:
 
 
 def select_budgets(frame: pd.DataFrame) -> dict:
-    """Sec. 7.2. Per (arm, band): b* is the smallest d_nom in {0.50, 0.25,
-    0.10, 0.05} whose mean normalised recall is at least 0.95, or 0.50 if
-    none is. Era-4 rows at b = 128 only.
+    """Sec. 7.2. Per (arm, task, band): b* is the smallest d_nom in {0.50,
+    0.25, 0.10, 0.05} whose mean normalised recall is at least 0.95, or 0.50
+    if none is. Era-4 rows at b = 128 only.
+
+    Selection is per task (pre-registered 2026-10-04): a task's budget is
+    chosen on that task's own 32 selection examples, with equal weight per
+    example, and no task's recall enters another's budget.
 
     It refuses a frame holding any row that is not from the selection split:
     a budget chosen with evaluation recall in view is the leak the splits
@@ -115,13 +119,13 @@ def select_budgets(frame: pd.DataFrame) -> dict:
     if use.empty:
         raise SplitLeak("no era-4 selection rows at b = 128 to select a budget from")
     out = {}
-    for (arm, band), g in use.groupby(["arm", "band"]):
+    for (arm, task, band), g in use.groupby(["arm", "task", "band"]):
         means = g.groupby("d_nom")["recall_norm"].mean()
         absent = [d for d in D_NOMS if d not in means.index]
         if absent:
-            raise SplitLeak(f"{arm} at {band} has no rows at d_nom {absent}")
+            raise SplitLeak(f"{arm} on {task} at {band} has no rows at d_nom {absent}")
         ok = [d for d in D_NOMS if means[d] >= SELECTION_THRESHOLD]
-        out[f"{arm}@{int(band)}"] = {
+        out[f"{arm}@{task}@{int(band)}"] = {
             "b_star": min(ok) if ok else SELECTION_FALLBACK, "qualified": bool(ok),
             "mean_recall_norm": {f"{d:.2f}": round(float(means[d]), 6) for d in D_NOMS},
             "n_examples": int(g["example_id"].nunique())}

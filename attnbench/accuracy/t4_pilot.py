@@ -79,7 +79,11 @@ XATTN_STRIDE = 8
 # "authors" profiles on the method's own text set and carries the
 # pre-registered claim; "ruler_heldout" profiles on RULER examples of the
 # pilot's tasks and bands from another seed, and is descriptive only.
-XATTN_CALIBRATIONS = {"authors": "claim", "ruler_heldout": "descriptive"}
+# A8 (2026-10-04): "authors" leaves out the 24 QA texts of the authors' set,
+# which hold test questions and gold documents; "authors_full" is the whole
+# set, as first pre-registered, and is descriptive only.
+XATTN_CALIBRATIONS = {"authors": "claim", "ruler_heldout": "descriptive",
+                      "authors_full": "descriptive"}
 
 # The held-out RULER calibration set: this seed (the pilot's is 0), and
 # this many examples per (task, band).

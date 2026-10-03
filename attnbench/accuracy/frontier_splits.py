@@ -59,6 +59,39 @@ def identities(task: str, examples: Iterable[ruler.RulerExample]) -> list[dict]:
     return out
 
 
+# The opening of RULER's QA template (`_vendor/ruler/qa.py`). A calibration
+# text that carries it is a QA prompt, and is excluded from the claim table
+# (amendment of 2026-10-04: sec. 5 here, A8 in T4).
+QA_TEMPLATE_OPENING = "Answer the question based on the given documents"
+# The file the exclusion and the needle comparison were worked out on:
+# x-attention's text.json at e379887. Another file is refused until both are
+# redone for it.
+TEXT_JSON_SHA256 = "d11899123f032af35abb23515eed685833b2a6853d483e04a6205c6b6296d50a"
+TEXT_JSON_N_TEXTS = 156
+TEXT_JSON_N_QA_TEXTS = 24
+
+
+# The needle half of G12, run on a workstation with scripts/check_g12_needles.py
+# against that file. Every needle in its 96 needle texts (18,361 distinct)
+# was compared with every needle this harness generates for four needle
+# tasks (not niah_multikey), in every split, at 16384 and 32768. No (key,
+# value) pair is shared.
+# Six 7-digit values recur under other keys, against 5.7 expected by chance.
+NEEDLE_COMPARISON = {
+    "checked": "2026-10-04", "text_json_sha256": TEXT_JSON_SHA256,
+    "calibration_needles": 18361, "shared_key_value_pairs": 0,
+    "shared_values": {"t4_replication": 2, "selection": 0, "calibration": 2, "evaluation": 2},
+    "shared_values_expected_by_chance": {"t4_replication": 2.0, "selection": 1.3,
+                                         "calibration": 0.3, "evaluation": 2.0},
+    "rule": "pass if no (key, value) pair is shared",
+}
+
+
+def qa_text_indices(texts: Sequence[str]) -> list[int]:
+    """Indices of the calibration texts that are QA prompts."""
+    return [k for k, t in enumerate(texts) if QA_TEMPLATE_OPENING in _norm(t[:600])]
+
+
 QUESTION_MIN_CHARS = 12
 DOCUMENT_MIN_CHARS = 40
 

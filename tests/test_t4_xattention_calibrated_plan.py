@@ -30,7 +30,8 @@ def test_the_heldout_set_is_the_modules():
 
 def test_table_paths_and_settings():
     for path in t4_pilot.XATTN_CALIBRATION_TABLES.values():
-        assert path.replace("authors", "${CAL}").replace("ruler_heldout", "${CAL}") in DOC
+        names = sorted(t4_pilot.XATTN_CALIBRATIONS, key=len, reverse=True)
+        assert re.sub("|".join(names), "${CAL}", path) in DOC
     assert f"stride {t4_pilot.XATTN_STRIDE}" in DOC
     assert f"Margin of {t4_pilot.MARGIN_PTS:g} points; one-sided alpha {t4_pilot.ALPHA}" in DOC
 

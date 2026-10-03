@@ -810,9 +810,12 @@ class BracketInputs:
     n_gen: Mapping[int, float] = field(default_factory=lambda: {16384: 28, 32768: 36.5, 65536: 40})
     p7_lo: Mapping[int, float] = field(default_factory=lambda: {16384: 1.85, 32768: 4.19})
     decode_llama_s: tuple = (0.025, 0.045)
-    # The C line's text factor: sum over the 121 Qwen-counted text.json
-    # texts <= 32768 of (n/16384)^1.6. Per-text counts are not committed.
-    c_text_factor: float = 117.71112258763596
+    # The C line's text factors: sum over Qwen-counted text.json texts
+    # <= 32768 of (n/16384)^1.6. Per-text counts are not committed. From
+    # 2026-10-04 C makes two tables: the claim table on the 104 texts left
+    # once the 24 QA texts are out, and the descriptive one on all 121.
+    c_text_factor: float = 106.095433
+    c_text_factor_full: float = 117.71112258763596
     # The Llama oracle lines, minutes, from scripts/derive_llama_oracle_cost.py.
     llama_oracle_min: Mapping[str, tuple] = field(default_factory=lambda: {
         "I2c": (24.752, 55.381), "I2d": (47.427, 103.799), "I2e": (69.179, 149.18)})
@@ -855,7 +858,8 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
         return {str(i + 1): f(1) / n for i in range(n)}
 
     add("FA3", "CPU", lambda k: (60, 150)[k], True, "intrinsic")
-    add("C", "A100", lambda k: p7[16384][k] * inp.c_text_factor * inp.mu[k] / 60
+    add("C", "A100", lambda k: p7[16384][k] * (inp.c_text_factor + inp.c_text_factor_full)
+        * inp.mu[k] / 60
         + inp.overhead_min[k] + ext(k), True, "intrinsic")
 
     def i1(k):
@@ -992,13 +996,15 @@ def launch_check(*, spent: float, next_u: float, next_item: Optional[str],
 
 
 def fund(lines: Sequence[BracketLine], run_order: Sequence[str], *, months: int = 2,
-         reserve_higher: bool = True, xa_withheld: bool = False) -> dict:
+         reserve_higher: bool = True, xa_withheld: bool = False,
+         skip: Sequence[str] = ()) -> dict:
     """Walk `run_order` (line names) with every session costing its upper
     bound. Returns what launched and what was cut. `reserve_higher=False` is
-    the rule before 2026-10-04, kept so the difference can be tested."""
+    the rule before 2026-10-04, kept so the difference can be tested. `skip`
+    names conditional lines that were not triggered."""
     by = {l.name: l for l in lines}
     spent, ran, cut = 0.0, [], []
-    todo = list(run_order)
+    todo = [n for n in run_order if n not in set(skip)]     # conditional lines not triggered
     while todo:
         name = todo.pop(0)
         line, item = by[name], cut_item_of(name)
@@ -1017,7 +1023,9 @@ def fund(lines: Sequence[BracketLine], run_order: Sequence[str], *, months: int 
             remaining_cuttable_u=cuttable if reserve_higher else {},
             s_res_inr=s_res(months, hours), r_b=r_b, xa_withheld=xa_withheld)
         if verdict == "PROCEED":
-            spent += line.inr[1]
+            # What a run session leaves in the ledger: its time at the card's
+            # rate, and its boot disk (which S_res reserved until it ran).
+            spent += line.inr[1] + DISK_PER_HOUR_INR * line.minutes[1] / 60
             ran.append(name)
         elif star:
             return {"ran": ran, "cut": cut + [name] + todo, "spent": spent, "stopped_at": name}

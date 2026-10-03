@@ -256,3 +256,80 @@ configuration is what that study replicates, and it is unchanged by it.
 - New rows carry `positions_over_limit = max(0, prompt + generated −
   max_position_embeddings)`.
 - No design change.
+
+## Amendment, 2026-10-04 (before Session A)
+
+Session A has still not run, and no table exists. This is an amendment
+before data, decided by the researcher on 2026-10-04. Nothing above is
+edited. Where it and the text above disagree, it governs.
+
+**A8. The authors' profiling set is a sample of RULER.**
+
+- **What was wrong.** The text above calls `text.json` "156 multi-document QA
+  prompts" and says `authors` "is disjoint from RULER, so nothing about the
+  test tasks tunes it". Both are false. Gate G12 of the estimator-frontier
+  pre-registration (§5, §6) was run on the file at `XATTN_COMMIT` on
+  2026-10-04 and found:
+  - its 156 texts are RULER prompts in RULER's own templates, 12 for each of
+    13 tasks: 96 needle texts, 12 `qa_1`, 12 `qa_2`, 12 variable-tracking and
+    24 word-frequency texts;
+  - its `qa_1` texts ask SQuAD questions 0 and 10, which are two of this
+    phase's 100 primary test questions;
+  - those 12 texts carry the gold document of every one of the 100 primary
+    test questions in their haystacks.
+- **Change, part 1: `authors` leaves out the 24 QA texts.** They are the 12
+  `qa_1` and 12 `qa_2` texts (file indices 0, 1, 18, 19, 26, 27, 44, 45, 52,
+  53, 70, 71, 78, 79, 96, 97, 104, 105, 106, 107, 130, 131, 148, 149).
+  - That leaves 132 texts. With A2's length rule, 104 are used (17 of the
+    QA texts were within the limit and 7 over it).
+  - `authors` still carries this phase's claims.
+  - The table records the excluded indices and its G12 record.
+- **Change, part 2: `authors_full` is added, descriptive.** It is the whole
+  set as first pre-registered: 156 texts, 121 used under A2. It is tested and
+  reported like `ruler_heldout`, and its `claim` is always false. Its table
+  records that G12 fails on it.
+
+  | calibration | source | role |
+  |---|---|---|
+  | `authors` | `text.json` at the pinned commit with its 24 QA texts left out | claim |
+  | `authors_full` | every text of `text.json` at the pinned commit | descriptive |
+  | `ruler_heldout` | unchanged (A1) | descriptive |
+
+- **G12 on `authors`: passes.**
+  - No test question and no gold document's opening occurs in the 132
+    texts.
+  - Every needle in the 96 needle texts (18,361 distinct) was compared with
+    every needle this harness generates for `niah_single`,
+    `niah_multikey_1`, `niah_multivalue` and `niah_multiquery`, at 16384 and
+    32768, for the test ids and the calibration ids. No (key, value) pair is
+    shared. Two 7-digit values recur under other keys among the test ids
+    (one is an answer of `niah_multiquery` at 32768, index 5), against 2.0
+    expected by chance.
+  - The calibration script refuses any other `text.json`.
+- **What `authors` still shares with the test.** Its needle texts use the
+  same templates as `niah_multivalue` and `niah_multiquery`. So `authors` is
+  profiled on the test tasks' format, though on none of their needles,
+  questions or documents. The sentence "disjoint from RULER" is withdrawn.
+  `authors` shares no question, gold document or needle with the test, and
+  that is all that is claimed for it.
+- **The claim reads** "calibrated by the authors' released profiler on their
+  profiling set with its 24 question-answering texts left out".
+- **Nothing banked used either table.** The six banked XAttention files are
+  the scalar phase (thresholds 0.8, 0.9 and 0.95). No calibrated table has
+  been made.
+- **Sessions.** Session A makes three tables, so its `authors` passes
+  roughly double: 30–96 A100-minutes (₹140–460), in place of A4's 15–48.
+  Session B runs three calibrations, 400 cells more: about 3.5 L4-hours
+  (about ₹280), in place of 2.6.
+
+```bash
+for SRC in authors authors_full ruler_heldout; do
+  python scripts/calibrate_xattn_thresholds.py --source ${SRC} \
+      --out results/xattn_calibration_${SRC}_<date>
+done
+for CAL in authors ruler_heldout authors_full; do
+  python scripts/run_accuracy.py --t4-xattn-pilot --only-backends xattention \
+      --xattn-calibration configs/xattn_thresholds/qwen2.5-1.5b-instruct_${CAL}_stride8.json \
+      --out results/t4_xattn_cal_${CAL}_<date>
+done
+```
