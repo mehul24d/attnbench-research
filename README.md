@@ -155,7 +155,7 @@ else runs on free-tier hardware or a laptop.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1363 passed, 68 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1387 passed, 70 skipped, ~70s, no GPU
 ```
 
 The `[dev,eval]` extras are required, not optional: four test modules import
@@ -166,12 +166,14 @@ on a machine where a kernel is unavailable.
 
 The suite runs on CPU and needs no GPU, no model download, and no
 credentials. Verified from a clean clone into a fresh virtualenv on
-2026-09-12, resolving dependencies from scratch.
+2026-09-12, resolving dependencies from scratch. The counts were re-measured
+2026-10-03 from a clean clone of the commit, using the existing virtualenv
+(not a fresh one) and `$ATTNBENCH_RULER_DATA` pointed at an empty directory.
 
-The 68 skips are the honest part, and they split five ways: **14** need CUDA,
+The 70 skips are the honest part, and they split five ways: **14** need CUDA,
 **45** read banked result files that `results/` correctly keeps out of git,
-**4** are scripts `test_script_call_sites.py` has nothing to check because
-they import nothing from `attnbench`, and **4** are the same scripts skipped
+**5** are scripts `test_script_call_sites.py` has nothing to check because
+they import nothing from `attnbench`, and **5** are the same scripts skipped
 again by `test_import_resolution.py`, which only has something to say about a
 script that imports the package, and **1** needs the pinned RULER data
 directory (`scripts/fetch_ruler_data.py`; the essays and QA sets are not
@@ -192,15 +194,19 @@ are `tests/test_s11_tax_derivation.py`, which exists because S11's disposition
 was written from the figures its measurement script printed rather than the
 columns it banked — see `silent_failure_patterns.md` #54.*
 
-*That third number was 6 until 2026-09-21. It is 4 now because
+*The third and fourth numbers were 4 until 2026-10-03, when
+`scripts/flag_positions_over_limit.py` was added; it imports nothing from
+`attnbench`.*
+
+*That third number was 6 until 2026-09-21. It became 4 then because
 `run_scale_comparison.py` and `run_scorer_comparison.py` acquired the mask-era
 check and therefore import `attnbench` for the first time — two scripts moved
 out of the "nothing to check" bucket by being given something to check.*
 
 Those counts are for a fresh clone. **With `results/` present the suite reads
-1409 passed, 22 skipped**, because the 45 banked-file tests run instead of
+1433 passed, 24 skipped**, because the 45 banked-file tests run instead of
 skipping (and, on a workstation with the RULER data directory, the data
-test runs too). Both totals are 1431, which is what `pytest --collect-only` reports —
+test runs too). Both totals are 1457, which is what `pytest --collect-only` reports —
 asserted, not transcribed, by
 `test_the_readme_suite_counts_match_the_collected_suite`.
 

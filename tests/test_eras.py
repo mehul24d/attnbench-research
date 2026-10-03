@@ -170,7 +170,10 @@ def documented_eras() -> dict[str, int]:
         # Reading the whole cell assigns that file to era 3, which is how the
         # first run of this test failed -- correctly, on its own parsing.
         cell = line.split("|")[3].split("\u2014")[0]
-        for name in re.findall(r"`([A-Za-z0-9_/]+)`", cell):
+        # `.` is allowed because T4 keys carry thresholds (`t4_xattn_tau0.8_...`).
+        # Until 2026-10-03 the class omitted it, and such a key could never be
+        # read from the table at all.
+        for name in re.findall(r"`([A-Za-z0-9_/.]+)`", cell):
             if out.get(name, era) != era:
                 pytest.fail(
                     f"the era table lists `{name}` under both era "

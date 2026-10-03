@@ -77,6 +77,14 @@ COMMIT_ERA: dict[str, int] = {
     "44ab65c": 2,   # s1a/accuracy_bands2
     "33598b4": 2,   # sink_control
     "39e1d6d": 3,   # s7_jitter
+    # T4 (2026-10-01..03). XAttention rows here are era 3 by commit only:
+    # their masks are XAttention's own selection, not the sink rule.
+    "822a4dd": 3,   # t4_dense_probe_20261001
+    "40118f7": 3,   # t4_selected_dense_pilot_20261001
+    "e7eabaa": 3,   # t4_sparse_canary_{inline,oracle}_20261001
+    "77b48e5": 3,   # t4_sparse_pilot_{inline,oracle}_{16384,32768}
+    "cc769b3": 3,   # t4_xattn_canary_*_20261002
+    "7490ee4": 3,   # t4_xattn_{dense,tau*}_20261002
 }
 
 # The two commits the eras are defined BY. Era 1 is everything that is not a
