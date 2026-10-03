@@ -23,6 +23,7 @@ from typing import Iterable, Mapping, Optional, Sequence
 
 import numpy as np
 
+from ..masks import era_budget
 from .exact_noninferiority import paired_lower_bound
 
 # --------------------------------------------------------------------------
@@ -353,11 +354,11 @@ def score_h3b(best_r_at_010: Sequence[float]) -> Verdict:
 
 def kept_128(p: int, d_nom: float) -> int:
     """Blocks kept in row p at b = 128 under the era-4 rule (sec. 2.1): the
-    sink and the diagonal free, plus round(d_nom * (p - 1)) of the p - 1
-    candidates, half-to-even."""
+    sink and the diagonal free, plus the budget over the p - 1 candidates,
+    computed as the selector computes it (`masks.era_budget`)."""
     if p < 2:
         return p + 1
-    return 2 + round(d_nom * (p - 1))
+    return 2 + era_budget(d_nom, p - 1)
 
 
 def matched_budget(i: int, b: int, d_nom: float) -> int:
@@ -369,6 +370,11 @@ def matched_budget(i: int, b: int, d_nom: float) -> int:
     p = i * b // 128
     target = kept_128(p, d_nom) / (p + 1)
     return min(max(round(target * (i + 1)) - 2, 0), i - 1)
+
+
+def matched_row_budgets(n: int, b: int, d_nom: float) -> list:
+    """`matched_budget` for rows 0..n-1, as the selector's `row_budgets`."""
+    return [matched_budget(i, b, d_nom) for i in range(n)]
 
 
 def row_density_matches(i: int, b: int, d_nom: float) -> bool:

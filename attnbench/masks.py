@@ -546,6 +546,93 @@ def importance_block_mask_device(seq_len: int, block_size: int, sparsity: float,
                            seed=seed_int, source="importance", causal=causal)
 
 
+def era_budget(d_nom: float, n_cand: int) -> int:
+    """The era-3 and era-4 budget of a row with `n_cand` candidates, as the
+    era-3 code computes it: round((1 - sparsity) * n_cand), half-to-even,
+    with sparsity = 1 - d_nom.
+
+    This is not always round(d_nom * n_cand). In floating point 1 - 0.9 is
+    0.09999999999999998, so 15 candidates give 1.4999999999999998 and round
+    to 1, where 0.1 * 15 is 1.5 and rounds to 2. The two differ by one block
+    in 6 of 128 rows at d_nom = 0.10 and 3 of 128 at 0.05, and in none at
+    0.50 or 0.25. Era 4 must reproduce era 3 bitwise (gate G3), so every
+    budget in the study goes through this function."""
+    return round((1.0 - (1.0 - d_nom)) * n_cand)
+
+
+@dataclass(frozen=True)
+class PerHeadBlockMask:
+    """An era-4 mask: one block pattern per query head. `active` is bool,
+    (H_q, n_blocks, n_blocks), on the device the scores were on."""
+    seq_len: int
+    block_size: int
+    active: torch.Tensor
+    seed: int
+    causal: bool
+    mask_selector: str = "per_head"
+
+    def to_bsa(self) -> torch.Tensor:
+        """(1, H_q, n_qb, n_kb), the form `bsa_prefill` takes."""
+        return self.active.unsqueeze(0)
+
+    def realised_density(self) -> float:
+        """Blocks kept, free blocks included, over causally valid blocks."""
+        n = self.active.shape[-1]
+        valid = torch.ones(n, n, dtype=torch.bool, device=self.active.device).tril()
+        return float((self.active & valid).sum()) / float(valid.sum() * self.active.shape[0])
+
+
+def importance_block_mask_per_head(seq_len: int, block_size: int, sparsity: float,
+                                   scores: torch.Tensor, *, causal: bool, identity_seed: str,
+                                   row_budgets: Optional[torch.Tensor] = None
+                                   ) -> PerHeadBlockMask:
+    """The era-4 selector (estimator-frontier pre-registration sec. 2.1):
+    `importance_block_mask_device` applied to each query head's own scores.
+
+    Per head and row: the sink and the diagonal are free; the budget is
+    filled from the candidates 0 < j < i by descending score of that head;
+    ties break on the era-3 seeded jitter, the same for every head. With one
+    score matrix broadcast to every head it is era 3 bitwise (gate G3,
+    `tests/test_per_head_selector.py`).
+
+    `scores` is (H_q, n, n). `row_budgets`, a length-n integer tensor,
+    replaces the nominal budget per row: below b = 128 the budget is matched
+    to the parent row's realised density (`frontier_prereg.matched_budget`),
+    and a native mask's own kept counts are scored the same way. It is
+    clamped to the row's candidates."""
+    n = _n_blocks(seq_len, block_size)
+    if scores.dim() != 3 or tuple(scores.shape[1:]) != (n, n):
+        raise ValueError(f"scores shape {tuple(scores.shape)} != (H_q, {n}, {n}) for "
+                         f"seq_len={seq_len}, block_size={block_size}")
+    device = scores.device
+    seed_int = _int_seed(identity_seed)
+    cand = _candidate_matrix(n, causal, device)
+    n_cand = cand.sum(dim=1)
+    if row_budgets is None:
+        budgets = torch.round((1.0 - sparsity) * n_cand.double()).long()
+    else:
+        if tuple(row_budgets.shape) != (n,) or row_budgets.is_floating_point():
+            raise ValueError(f"row_budgets must be {n} integers, got {tuple(row_budgets.shape)} "
+                             f"{row_budgets.dtype}")
+        if bool((row_budgets < 0).any()):
+            raise ValueError("row_budgets has a negative entry")
+        budgets = torch.minimum(row_budgets.to(device).long(), n_cand)
+
+    dtype = torch.promote_types(scores.dtype, torch.float32)
+    jitter = _device_jitter(n, causal, seed_int, device)
+    s = (scores.to(dtype) + jitter.to(dtype)).masked_fill(~cand, float("-inf"))
+    order = s.argsort(dim=2, descending=True, stable=True)
+    ranks = torch.empty_like(order)
+    ranks.scatter_(2, order, torch.arange(n, device=device).expand_as(order).contiguous())
+
+    active = cand & (ranks < budgets.view(1, n, 1))
+    eye = torch.eye(n, dtype=torch.bool, device=device)
+    active = active | eye
+    active[:, :, 0] = True
+    return PerHeadBlockMask(seq_len=seq_len, block_size=block_size, active=active,
+                            seed=seed_int, causal=causal)
+
+
 def mask_for(cfg: AttnConfig, *,
              importance_scores: Optional[torch.Tensor] = None) -> BlockSparseMask:
     """The one entry point sweep.py / accuracy/ actually call.
