@@ -461,10 +461,10 @@ def test_the_era_4_stripped_column_break_test_exists():
 
 
 def test_every_row_writer_carries_mask_selector():
-    """sec. 4.5: accuracy, component, end-to-end and phase rows. The recall
-    writer does not exist yet (sec. 11.2); when it does, add it here."""
+    """sec. 4.5: accuracy, component, end-to-end, phase and recall rows."""
     for f in ("attnbench/accuracy/runner.py", "scripts/measure_estimator_cost.py",
-              "scripts/run_vectorised_endtoend.py", "attnbench/accuracy/phase_timing.py"):
+              "scripts/run_vectorised_endtoend.py", "attnbench/accuracy/phase_timing.py",
+              "attnbench/analysis/frontier_recall.py"):
         assert "mask_selector" in (REPO / f).read_text(), f
 
 
