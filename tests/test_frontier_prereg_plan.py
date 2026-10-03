@@ -41,8 +41,13 @@ def _has(phrase: str) -> bool:
     ("Margin 10 points, one-sided alpha 0.025", (fp.MARGIN_PTS, fp.ALPHA)),
     ("B = 10,000, seed 20261003", (fp.BOOT_B, fp.BOOT_SEED)),
     ("∈ [0.75, 1.33]", fp.H1_BAND),
-    ("at least 15 of the determinate cells in band, and no more than 3 indeterminate",
-     (fp.H1_MIN_IN_BAND, fp.H1_MAX_INDETERMINATE)),
+    ("at least 5 of every 6 determinate cells (83%) in band", fp.H1_MIN_FRACTION),
+    ("by a further factor of 1.10", fp.H1_GUARD_MARGIN),
+    ("fewer than 6 determinate cells", fp.H1_MIN_DETERMINATE),
+    ("σ_Q = 0.035", fp.H1_SIGMA_Q),
+    ("at least 6 of the twelve 7B cells", fp.H3_MIN_7B_CELLS),
+    ("parent row p ≥ 7", fp.H7_MIN_PARENT_ROW),
+    ("evaluation indices start at 3000", fp.EVAL_INDEX_OFFSET),
     ("matches the sign of 1 − m in at least 90%", fp.H2A_MIN_MATCH),
     ("no wrong sign where |1 − m| > 0.15", fp.H2A_WRONG_SIGN_GUARD),
     ("max(0.20·|S_pred|, f·T_dense^e2e) in at least 80%", (fp.H2B_REL, fp.H2B_MIN_WITHIN)),
@@ -58,8 +63,7 @@ def _has(phrase: str) -> bool:
     ("mean raw R ≥ 0.85", fp.H6A_PASS), ("STOP at R < 0.70", fp.H6A_STOP),
     ("≥ 0.80 over its 996 non-zero entries", (fp.H6B_MIN_RHO, fp.H6B_N_ENTRIES)),
     ("≤ 0.75 × (1 − R̃_MP) at b = 128", fp.H7A_FACTOR),
-    ("within 1 ± 0.05", fp.H7_DENSITY_TOL),
-    ("more than 4 indeterminate makes H7 unresolved", fp.H7_MAX_INDETERMINATE),
+    ("over the scored rows, within 1 ± 0.01", fp.H7_DENSITY_TOL),
     ("within ±5% (relative) of the L4 run on at least 90% of the 400 ids",
      (fp.R1_REL, fp.R1_MIN_FRAC, fp.R_N_IDS)),
     ("T4's L4 dense predictions on at least 90%", fp.R2_MIN_FRAC),
@@ -80,29 +84,66 @@ def test_the_module_states_the_documents_numbers(phrase, value):
 
 # --- 2. every scorer: pass, fail, indeterminate -------------------------------
 
-def _h1(n_in, n_out, n_ind):
-    good = [fp.H1Cell(c1=1.0, c2=0.5, D=3.3, W=6.6)] * n_in       # Q = 1.0
-    bad = [fp.H1Cell(c1=1.0, c2=2.0, D=3.3, W=6.6)] * n_out       # Q = 4.0
-    ind = [fp.H1Cell(c1=1.0, c2=1.0, D=1.0, W=1.0)] * n_ind       # ln(D/W) = 0
+def _h1(n_in, n_out, n_ind, pair=("L4", "A100")):
+    good = [fp.H1Cell(c1=1.0, c2=0.5, D=3.3, W=6.6, pair=pair)] * n_in    # Q = 1.0
+    bad = [fp.H1Cell(c1=1.0, c2=2.0, D=3.3, W=6.6, pair=pair)] * n_out    # Q = 4.0
+    # D/W = 1.34: the null's Q is 0.75, inside the band, so no discrimination.
+    ind = [fp.H1Cell(c1=1.0, c2=1.34, D=1.34, W=1.0, pair=("A100", "H100"))] * n_ind
     return good + bad + ind
 
 
 def test_h1_band_edges_after_the_tolerance_widening():
     """[0.75, 1.33] widened x/÷ 1.05^2 is [0.680, 1.466]."""
     lo, hi = 0.75 / 1.05 ** 2, 1.33 * 1.05 ** 2
+    assert fp.h1_band() == pytest.approx((lo, hi))
 
     def cell(q):  # D/W = 0.5, so Q = 2 * c2 / c1
         return fp.H1Cell(c1=1.0, c2=q / 2, D=3.3, W=6.6)
-    assert fp.score_h1([cell(lo + 0.002)] * 15).verdict == fp.PASS
-    assert fp.score_h1([cell(lo - 0.002)] * 15).verdict == fp.FAIL
-    assert fp.score_h1([cell(hi - 0.002)] * 15).verdict == fp.PASS
-    assert fp.score_h1([cell(hi + 0.002)] * 15).verdict == fp.FAIL
+    assert fp.score_h1([cell(lo + 0.002)] * 6).verdict == fp.PASS
+    assert fp.score_h1([cell(lo - 0.002)] * 6).verdict == fp.FAIL
+    assert fp.score_h1([cell(hi - 0.002)] * 6).verdict == fp.PASS
+    assert fp.score_h1([cell(hi + 0.002)] * 6).verdict == fp.FAIL
 
 
 def test_h1():
-    assert fp.score_h1(_h1(15, 0, 3)).verdict == fp.PASS
-    assert fp.score_h1(_h1(14, 4, 0)).verdict == fp.FAIL
-    assert fp.score_h1(_h1(14, 0, 4)).verdict == fp.UNRESOLVED
+    assert fp.score_h1(_h1(5, 1, 6)).verdict == fp.PASS            # 5 of 6
+    assert fp.score_h1(_h1(4, 2, 6)).verdict == fp.FAIL
+    assert fp.score_h1(_h1(10, 2, 0)).verdict == fp.PASS           # 10 of 12
+    assert fp.score_h1(_h1(9, 3, 0)).verdict == fp.FAIL
+    assert fp.score_h1(_h1(5, 0, 6)).verdict == fp.UNRESOLVED      # 5 determinate
+    assert fp.score_h1(_h1(0, 0, 12)).verdict == fp.UNRESOLVED
+
+
+def test_h1_a_pair_that_passes_under_the_null_is_not_counted():
+    """The referee's case (2026-10-03): for A100-H100 the expected D/W is
+    1.34, so c the same on both cards gives Q = 0.75, inside the widened
+    band. Such cells used to count as passes."""
+    null_cells = [fp.H1Cell(c1=1.0, c2=1.0, D=1.34, W=1.0, pair=("A100", "H100"))] * 6
+    assert not fp.h1_determinate(1.34, 1.0)
+    v = fp.score_h1(null_cells)
+    assert v.verdict == fp.UNRESOLVED and v.counts["in_band"] == 0
+    # A null cell on a discriminating pair is out of band.
+    assert fp.h1_determinate(3.3, 6.8)
+    assert fp.score_h1([fp.H1Cell(c1=1.0, c2=1.0, D=3.3, W=6.8)] * 6).verdict == fp.FAIL
+    # The guard needs the margin too: the null just outside the band is not enough.
+    lo, hi = fp.h1_band()
+    assert not fp.h1_determinate(1.0, hi * 1.05)
+    assert fp.h1_determinate(1.0, hi * 1.11)
+
+
+def test_h1_l4_h100_is_descriptive():
+    cells = _h1(6, 0, 0) + _h1(0, 6, 0, pair=("L4", "H100"))
+    v = fp.score_h1(cells)
+    assert v.verdict == fp.PASS and v.counts["descriptive"] == 6
+
+
+def test_h1_false_pass_rate_as_the_document_states_it():
+    p = fp.h1_null_cell_pass_probability()
+    assert p == pytest.approx(0.0032, abs=5e-5)
+    independent, correlated = fp.h1_false_pass(p)
+    assert correlated == p and independent < 1e-11
+    assert _has("0.32%") and _has("up to 50%")
+    assert fp.h1_false_pass(0.5)[0] == pytest.approx(7 / 64)
 
 
 def _h2(m, lo, hi, s_meas=10.0, s_pred=10.0):
@@ -124,7 +165,11 @@ def test_h2ab():
 
 def test_h2c():
     p = dict(band=8192, card="A100", deployable=True, f=0.02)
-    assert fp.score_h2c([dict(p, s_lower=0.9, s_upper=1.01)]).verdict == fp.PASS
+    assert fp.score_h2c([dict(p, s_lower=0.9, s_upper=0.97)]).verdict == fp.PASS
+    # A noisy session must not pass it: mostly unresolved points are unresolved.
+    assert fp.score_h2c([dict(p, s_lower=0.9, s_upper=1.01)]).verdict == fp.UNRESOLVED
+    assert fp.score_h2c([dict(p, s_lower=0.9, s_upper=0.97)] * 2
+                        + [dict(p, s_lower=0.9, s_upper=1.01)] * 2).verdict == fp.PASS
     assert fp.score_h2c([dict(p, s_lower=1.1, s_upper=1.2)]).verdict == fp.FAIL
     assert fp.score_h2c([dict(p, band=16384, s_lower=1.1, s_upper=1.2)]).verdict == fp.UNSCORABLE
 
@@ -140,12 +185,16 @@ def test_h2d():
 
 
 def test_h3_and_h3b():
-    win = fp.H3Cell(diffs=[0.08, 0.1, 0.06, 0.07] * 5, density_ratio=1.0)
-    lose = fp.H3Cell(diffs=[0.0, 0.01, -0.01, 0.02] * 5, density_ratio=1.0)
-    off = fp.H3Cell(diffs=[0.08] * 20, density_ratio=1.02)
-    assert fp.score_h3([win] * 16 + [lose] * 8).verdict == fp.PASS
-    assert fp.score_h3([win] * 10 + [lose] * 14).verdict == fp.FAIL
-    assert fp.score_h3([win] * 12 + [off] * 4 + [lose] * 8).verdict == fp.UNRESOLVED
+    def cells(kind, n15, n7):
+        return ([fp.H3Cell(model="1.5B", **kind)] * n15 + [fp.H3Cell(model="7B", **kind)] * n7)
+    win = dict(diffs=[0.08, 0.1, 0.06, 0.07] * 5, density_ratio=1.0)
+    lose = dict(diffs=[0.0, 0.01, -0.01, 0.02] * 5, density_ratio=1.0)
+    off = dict(diffs=[0.08] * 20, density_ratio=1.02)
+    assert fp.score_h3(cells(win, 10, 6) + cells(lose, 2, 6)).verdict == fp.PASS
+    assert fp.score_h3(cells(win, 5, 5) + cells(lose, 7, 7)).verdict == fp.FAIL
+    # 16 of 24, but only 4 of the 7B cells: the T4-informed half cannot carry it.
+    assert fp.score_h3(cells(win, 12, 4) + cells(lose, 0, 8)).verdict == fp.FAIL
+    assert fp.score_h3(cells(win, 12, 4) + cells(off, 0, 4) + cells(lose, 0, 4)).verdict == fp.UNRESOLVED
     assert fp.score_h3b([0.9, 0.9, 0.99]).verdict == fp.PASS
     assert fp.score_h3b([0.9, 0.99, 0.99]).verdict == fp.FAIL
     assert fp.score_h3b([]).verdict == fp.UNSCORABLE
@@ -187,6 +236,8 @@ def test_h5():
     assert (a.verdict, b.verdict) == (fp.FAIL, fp.FAIL)
     a, b = fp.score_h5([dict(pt, band=32768, is_xa=True)])
     assert a.verdict == fp.UNSCORABLE
+    # Both were written with T4's cells in view (sec. 3), and say so.
+    assert b.labels == ("prior anchored on visible data",)
 
 
 def test_h6():
@@ -204,13 +255,52 @@ def test_h6():
 def test_h7():
     good = fp.H7Cell(r_mp_16=0.95, r_mp_128=0.9, gap_16=0.01, gap_128=0.05, density_ratio=1.0)
     bad = fp.H7Cell(r_mp_16=0.9, r_mp_128=0.9, gap_16=0.05, gap_128=0.01, density_ratio=1.0)
-    off = fp.H7Cell(r_mp_16=0.95, r_mp_128=0.9, gap_16=0.01, gap_128=0.05, density_ratio=1.1)
+    off = fp.H7Cell(r_mp_16=0.95, r_mp_128=0.9, gap_16=0.01, gap_128=0.05, density_ratio=1.02)
+    rows = fp.H7Cell(r_mp_16=0.95, r_mp_128=0.9, gap_16=0.01, gap_128=0.05,
+                     density_ratio=1.0, rows_match=False)
     a, b = fp.score_h7([good] * 16 + [bad] * 8)
     assert (a.verdict, b.verdict) == (fp.PASS, fp.PASS)
     a, b = fp.score_h7([good] * 10 + [bad] * 14)
     assert (a.verdict, b.verdict) == (fp.FAIL, fp.FAIL)
     a, b = fp.score_h7([good] * 19 + [off] * 5)
     assert (a.verdict, b.verdict) == (fp.UNRESOLVED, fp.UNRESOLVED)
+    a, b = fp.score_h7([good] * 19 + [rows] * 5)                 # the per-row check
+    assert (a.verdict, b.verdict) == (fp.UNRESOLVED, fp.UNRESOLVED)
+    # Descriptive cells are not counted: 15 good + 4 descriptive is short of 16.
+    a, b = fp.score_h7([good] * 15 + [off] * 4 + [bad] * 5)
+    assert a.verdict == fp.FAIL and a.counts["descriptive"] == 4
+
+
+def test_h7_under_cut_4_can_still_pass_and_fail():
+    """Cut 4 leaves the 12 1.5B cells. Against the old fixed 16 it could not
+    pass at all (the referee's finding)."""
+    good = fp.H7Cell(r_mp_16=0.95, r_mp_128=0.9, gap_16=0.01, gap_128=0.05, density_ratio=1.0)
+    bad = fp.H7Cell(r_mp_16=0.9, r_mp_128=0.9, gap_16=0.05, gap_128=0.01, density_ratio=1.0)
+    a, _ = fp.score_h7([good] * 8 + [bad] * 4)
+    assert a.verdict == fp.PASS and a.labels == ("1.5B only (cut 4)",)
+    assert fp.score_h7([good] * 7 + [bad] * 5)[0].verdict == fp.FAIL
+    assert fp.score_h7([good] * 20)[0].verdict == fp.UNSCORABLE
+
+
+def test_h7_the_matched_budget_equalises_realised_density():
+    """Under the plain rule the b=16 / b=128 density ratio is fixed by
+    arithmetic at about 0.69-0.96 (the referee's table), so the old 1 +/- 0.05
+    check could not be met. The matched budget puts every scored row within
+    0.01 of its parent row, and every cell's ratio within 1 +/- 0.01."""
+    for n in (8192, 16384, 32768):
+        for d in (0.25, 0.10):
+            r128 = fp.h7_rows(n, 128)
+            d128 = sum(fp.kept_128(p, d) for p in r128) / sum(p + 1 for p in r128)
+            rows = fp.h7_rows(n, 16)
+            assert all(fp.row_density_matches(i, 16, d) for i in rows)
+            d16 = sum(2 + fp.matched_budget(i, 16, d) for i in rows) / sum(i + 1 for i in rows)
+            assert abs(d16 / d128 - 1) <= fp.H7_DENSITY_TOL
+            # The plain rule, for the record:
+            plain = sum(2 + round(d * (i - 1)) for i in rows) / sum(i + 1 for i in rows)
+            assert abs(plain / d128 - 1) > 0.02
+    # Below the scored rows a b=16 row cannot always match: that is why p >= 7.
+    assert not all(fp.row_density_matches(i, 16, 0.25) for i in range(2, 56))
+    assert fp.matched_budget(0, 16, 0.25) == 0 and fp.kept_128(1, 0.25) == 2
 
 
 def _pair(n, b, c):
@@ -272,7 +362,10 @@ def test_profit_classes_and_floor():
     assert fp.resolution_floor(0.01) == 0.02
     assert fp.resolution_floor(0.03) == 0.03
     assert fp.resolution_floor(0.0, sigma_s=0.02, k=4) == pytest.approx(3.182 * 0.01, rel=1e-3)
-    assert fp.near_parity(m=1.06) and not fp.near_parity(m=1.08)
+    assert fp.near_parity(1.06) and not fp.near_parity(1.08)
+    with pytest.raises(TypeError):
+        fp.near_parity(1.5, s=1.01)      # the measured speedup never triggers a replicate
+    assert fp.marginal(0.83, 0.88, 0.85) and not fp.marginal(0.86, 0.9, 0.85)
 
 
 # --- 3. the other sec. 11.3 break-tests --------------------------------------
@@ -292,6 +385,42 @@ def test_the_split_leak_is_refused():
                                   "b": [{"niah_needles": [("k", "1")]}]})
 
 
+def test_evaluation_indices_are_fresh():
+    """sec. 5: disjoint from every banked index of the task, at any band, and
+    from the other splits."""
+    idx = list(fp.evaluation_indices(300))
+    assert idx[0] == 3000 and idx[-1] == 3299
+    tasks = {t for t, _ in fp.BANKED_INDEX_RANGES}
+    fp.check_evaluation_unbanked({t: idx for t in tasks})
+    with pytest.raises(fp.SplitLeak, match="banked"):
+        fp.check_evaluation_unbanked({"qa_1": range(0, 300)})      # the old split
+    with pytest.raises(fp.SplitLeak, match="banked"):
+        fp.check_evaluation_unbanked({"vt": [299]})                 # banked at 2048 only
+    spans = {k: set(range(a, a + n)) for k, (a, n) in fp.SPLIT_INDEX.items()}
+    names = sorted(spans)
+    assert all(spans[a].isdisjoint(spans[b]) for i, a in enumerate(names) for b in names[i + 1:])
+    with pytest.raises(ValueError):
+        fp.evaluation_indices(301)
+
+
+def test_calibration_texts_are_held_to_the_firewall():
+    q = "Which document states the year the bridge across the northern river opened?"
+    fp.check_calibration_texts_disjoint(["an unrelated calibration text " * 5], [q])
+    with pytest.raises(fp.SplitLeak, match="calibration text 1"):
+        fp.check_calibration_texts_disjoint(["x", f"Docs ... {q}\n Answer:"], [q])
+    fp.check_calibration_texts_disjoint(["short probe here"], ["short"])   # under min_len
+
+
+def test_a_cut_hypothesis_is_not_run_whatever_the_scorer_says():
+    v = {"H8": fp.Verdict("H8", fp.FAIL), "H6b": fp.Verdict("H6b", fp.PASS),
+         "H1": fp.Verdict("H1", fp.PASS)}
+    out = fp.apply_cuts(v, ["9", "11"])
+    assert out["H8"].verdict == out["H6b"].verdict == fp.NOT_RUN
+    assert out["H1"].verdict == fp.PASS
+    # I4 is never cut, so no cut can leave H1 short of cells.
+    assert next(l for l in fp.bracket() if l.name == "I4").star
+
+
 def test_the_reservation_check_stops_over_the_cap():
     assert fp.reservation_check(spent=9000, next_u=1000, remaining_star_u=[2000],
                                 s_res_inr=600, r_b=262) == "STOP"
@@ -299,7 +428,7 @@ def test_the_reservation_check_stops_over_the_cap():
                                 s_res_inr=600, r_b=262) == "PROCEED"   # exactly 12,000
     assert fp.reservation_check(spent=1000, next_u=1000, remaining_star_u=[2000],
                                 s_res_inr=600, r_b=262) == "PROCEED"
-    assert fp.s_res(2, 32.4) == pytest.approx(424 + 2.4 * 32.4)
+    assert fp.s_res(2, 33.3) == pytest.approx(424 + 2.4 * 33.3)
 
 
 @pytest.mark.parametrize("col", ["correct", "predicted", "R", "R_tilde",
@@ -358,7 +487,7 @@ def test_the_bracket_in_the_document_is_what_the_code_computes():
     assert w["total"] <= fp.CAP_INR
     for name, row_label in (("C", "★ C: XA calibration"), ("I1", "★ I1:"),
                             ("I2a", "★ I2a:"), ("I2c", "★ I2c:"), ("I2d", "I2d:"),
-                            ("I2e", "I2e:"), ("X primary", "★ X: 1.5B primary"),
+                            ("I2e", "I2e:"), ("I4", "★ I4:"), ("X primary", "★ X: 1.5B primary"),
                             ("X secondary", "★ X: 1.5B secondary"), ("X-rep", "★ X-rep:")):
         line = next(l for l in lines if l.name == name)
         cell = f"| {_inr(line.inr[0])}–{_inr(line.inr[1])} |"

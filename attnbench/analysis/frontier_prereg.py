@@ -38,8 +38,11 @@ BOOT_B = 10_000         # recall bootstrap resamples (2.3)
 BOOT_SEED = 20261003    # recall bootstrap seed (2.3)
 
 H1_BAND = (0.75, 1.33)
-H1_MIN_IN_BAND = 15
-H1_MAX_INDETERMINATE = 3
+H1_GUARD_MARGIN = 1.10          # the null must lie this far outside the widened band
+H1_MIN_FRACTION = 5 / 6         # of the determinate cells, in band
+H1_MIN_DETERMINATE = 6
+H1_INDEPENDENT_PAIRS = (("L4", "A100"), ("A100", "H100"))   # L4-H100 is their product
+H1_SIGMA_Q = 0.035              # assumed log-SD of a measured Q (sec. 3, H1)
 H2A_MIN_MATCH = 0.90
 H2A_WRONG_SIGN_GUARD = 0.15
 H2B_MIN_WITHIN = 0.80
@@ -47,6 +50,7 @@ H2B_REL = 0.20
 H2D_RANGE = (1.25, 1.80)
 H3_MIN_DIFF = 0.05
 H3_MIN_CELLS = 16
+H3_MIN_7B_CELLS = 6
 H3_DENSITY_TOL = 0.01
 H3B_LIMIT = 0.95
 H4_RATIO = 2.0
@@ -58,9 +62,11 @@ H6A_STOP = 0.70
 H6B_MIN_RHO = 0.80
 H6B_N_ENTRIES = 996
 H7A_FACTOR = 0.75
-H7_MIN_CELLS = 16
-H7_DENSITY_TOL = 0.05
-H7_MAX_INDETERMINATE = 4
+H7_MIN_FRACTION = 2 / 3         # 16 of 24, or 8 of 12 under cut 4
+H7_DENSITY_TOL = 0.01
+H7_MAX_DESCRIPTIVE_FRACTION = 1 / 6   # 4 of 24, or 2 of 12
+H7_MIN_PARENT_ROW = 7           # b = 128 rows scored by H7: p >= 7 (tokens >= 896)
+H7_CELL_COUNTS = (24, 12)       # full, or 1.5B only (cut 4)
 R1_REL = 0.05
 R1_MIN_FRAC = 0.90
 R2_MIN_FRAC = 0.90
@@ -124,9 +130,17 @@ def classify_profit(s_lower: float, s_upper: float, f: float) -> str:
     return "unresolved"
 
 
-def near_parity(m: Optional[float] = None, s: Optional[float] = None) -> bool:
-    """|1 - m| <= 0.07 or |1 - s| <= 0.07 (7.3)."""
-    return any(x is not None and abs(1 - x) <= TAU_E for x in (m, s))
+def near_parity(m: float) -> bool:
+    """|1 - m| <= 0.07 (7.3). m is an input ratio from components. The
+    measured speedup s never triggers a replicate: that would be a stopping
+    rule on the outcome."""
+    return abs(1 - m) <= TAU_E
+
+
+def marginal(lower: float, upper: float, threshold: float) -> bool:
+    """A point-estimate rule whose 95% interval contains its threshold is
+    labelled "marginal" beside its verdict (7.5). The verdict is unchanged."""
+    return lower <= threshold <= upper
 
 
 # --------------------------------------------------------------------------
@@ -157,25 +171,61 @@ class H1Cell:
     D: float          # T_dense^card1 / T_dense^card2
     W: float          # bandwidth card2 / card1
     xattn_path: Optional[str] = None
+    pair: tuple = ("L4", "A100")      # (card1, card2)
+
+
+def h1_band() -> tuple:
+    """[0.75, 1.33] widened x/÷ 1.05^2 for the tolerance on D and W."""
+    return H1_BAND[0] / (1 + TAU_K) ** 2, H1_BAND[1] * (1 + TAU_K) ** 2
+
+
+def h1_determinate(D: float, W: float) -> bool:
+    """A pair discriminates only if the null's value, Q = 1/(D/W) (c the same
+    on both cards), lies outside the widened band by a further factor of
+    1.10. Otherwise a cell passes whether or not H1 is true."""
+    lo, hi = h1_band()
+    q_null = W / D
+    return q_null < lo / H1_GUARD_MARGIN or q_null > hi * H1_GUARD_MARGIN
+
+
+def h1_false_pass(p: float, n: int = 6, k: int = 5) -> tuple:
+    """(independent cells, fully correlated cells): the chance that at least
+    k of n null cells land in band when each does so with probability p."""
+    ind = sum(math.comb(n, j) * p ** j * (1 - p) ** (n - j) for j in range(k, n + 1))
+    return ind, p
+
+
+def h1_null_cell_pass_probability(sigma_q: float = H1_SIGMA_Q) -> float:
+    """At the guard's edge a null cell is in band only if its measured Q is
+    off by the guard margin: P(Z > ln 1.10 / sigma_Q)."""
+    from scipy import stats
+    return float(stats.norm.sf(math.log(H1_GUARD_MARGIN) / sigma_q))
 
 
 def score_h1(cells: Sequence[H1Cell]) -> Verdict:
-    """Q = (c2/c1)/(D/W) in [0.75, 1.33] widened by x/÷ 1.05^2. A pair with
-    |ln(D/W)| < 2 ln 1.05 is indeterminate. More than 3 indeterminate:
-    unresolved; else >= 15 in band passes and fewer fails."""
+    """Q = (c2/c1)/(D/W) in [0.75, 1.33] widened by x/÷ 1.05^2, on the
+    independent card pairs only. A cell whose pair does not discriminate
+    (`h1_determinate`) is indeterminate. Fewer than 6 determinate cells:
+    unresolved. Else at least 5/6 of them in band passes, and fewer fails."""
     refuse_torch_fallback(c.xattn_path for c in cells)
-    lo, hi = H1_BAND[0] / (1 + TAU_K) ** 2, H1_BAND[1] * (1 + TAU_K) ** 2
-    ind = in_band = 0
+    lo, hi = h1_band()
+    ind = in_band = det = descriptive = 0
     for c in cells:
-        if abs(math.log(c.D / c.W)) < 2 * math.log(1 + TAU_K):
+        if tuple(c.pair) not in H1_INDEPENDENT_PAIRS:
+            descriptive += 1
+            continue
+        if not h1_determinate(c.D, c.W):
             ind += 1
             continue
+        det += 1
         q = (c.c2 / c.c1) / (c.D / c.W)
         in_band += lo <= q <= hi
-    counts = {"cells": len(cells), "indeterminate": ind, "in_band": in_band}
-    if ind > H1_MAX_INDETERMINATE:
-        return Verdict("H1", UNRESOLVED, f"{ind} indeterminate cells", counts=counts)
-    return Verdict("H1", PASS if in_band >= H1_MIN_IN_BAND else FAIL, counts=counts)
+    counts = {"cells": len(cells), "determinate": det, "indeterminate": ind,
+              "in_band": in_band, "descriptive": descriptive}
+    if det < H1_MIN_DETERMINATE:
+        return Verdict("H1", UNRESOLVED, f"{det} determinate cells", counts=counts)
+    need = math.ceil(H1_MIN_FRACTION * det - 1e-9)
+    return Verdict("H1", PASS if in_band >= need else FAIL, counts=counts)
 
 
 # --------------------------------------------------------------------------
@@ -220,15 +270,24 @@ def score_h2ab(cells: Sequence[H2Cell]) -> tuple[Verdict, Verdict]:
 
 
 def score_h2c(points: Sequence[Mapping]) -> Verdict:
-    """No deployable point profitable at 8192 on the A100 or the H100.
+    """No deployable point profitable at 8192 on the A100 or the H100, with
+    at least half of them resolved (unprofitable).
     `points`: dicts with band, card, deployable, s_lower, s_upper, f."""
     pts = [p for p in points if p["band"] == 8192 and p["card"] in ("A100", "H100")
            and p["deployable"]]
     if not pts:
         return Verdict("H2c", UNSCORABLE, "no deployable point at 8192")
-    prof = [p for p in pts if classify_profit(p["s_lower"], p["s_upper"], p["f"]) == "profitable"]
-    return Verdict("H2c", FAIL if prof else PASS, labels=("prior anchored on visible data",),
-                   counts={"points": len(pts), "profitable": len(prof)})
+    cls = [classify_profit(p["s_lower"], p["s_upper"], p["f"]) for p in pts]
+    prof, unres = cls.count("profitable"), cls.count("unresolved")
+    counts = {"points": len(pts), "profitable": prof, "unresolved": unres}
+    labels = ("prior anchored on visible data",)
+    if prof:
+        return Verdict("H2c", FAIL, labels=labels, counts=counts)
+    if 2 * unres > len(pts):
+        # A noisy session must not pass a "none is profitable" prediction.
+        return Verdict("H2c", UNRESOLVED, "more than half the points are unresolved",
+                       labels=labels, counts=counts)
+    return Verdict("H2c", PASS, labels=labels, counts=counts)
 
 
 def score_h2d(points: Sequence[Mapping]) -> Verdict:
@@ -256,23 +315,30 @@ def score_h2d(points: Sequence[Mapping]) -> Verdict:
 class H3Cell:
     diffs: Sequence[float]         # per-example R~_XA8 - R~_MP
     density_ratio: float           # realised density XA8 / MP
+    model: str = "1.5B"            # "1.5B" or "7B"
 
 
 def score_h3(cells: Sequence[H3Cell]) -> Verdict:
     """>= 16 of 24 cells with mean diff >= 0.05 and one-sided 97.5% lower
-    bound > 0. A cell outside the G7 density ratio 1 +/- 0.01 is
-    indeterminate: if that leaves 16 unreachable either way, unresolved."""
-    ok = ind = 0
+    bound > 0, of which at least 6 of the twelve 7B cells (the 1.5B direction
+    was informed by T4). A cell outside the G7 density ratio 1 +/- 0.01 is
+    indeterminate: if indeterminate cells could still decide it, unresolved."""
+    ok = ind = ok7 = ind7 = 0
     for c in cells:
+        is7 = c.model == "7B"
         if abs(c.density_ratio - 1) > H3_DENSITY_TOL:
             ind += 1
+            ind7 += is7
             continue
         d = np.asarray(c.diffs, float)
-        ok += d.mean() >= H3_MIN_DIFF and one_sided_lower(d) > 0
-    counts = {"cells": len(cells), "pass_cells": ok, "indeterminate": ind}
-    if ok >= H3_MIN_CELLS:
+        good = bool(d.mean() >= H3_MIN_DIFF and one_sided_lower(d) > 0)
+        ok += good
+        ok7 += good and is7
+    counts = {"cells": len(cells), "pass_cells": ok, "pass_cells_7b": ok7,
+              "indeterminate": ind}
+    if ok >= H3_MIN_CELLS and ok7 >= H3_MIN_7B_CELLS:
         return Verdict("H3", PASS, counts=counts)
-    if ok + ind >= H3_MIN_CELLS:
+    if ok + ind >= H3_MIN_CELLS and ok7 + ind7 >= H3_MIN_7B_CELLS:
         return Verdict("H3", UNRESOLVED, "indeterminate cells decide it", counts=counts)
     return Verdict("H3", FAIL, counts=counts)
 
@@ -285,26 +351,73 @@ def score_h3b(best_r_at_010: Sequence[float]) -> Verdict:
                    counts={"cells": len(best_r_at_010), "below": k})
 
 
+def kept_128(p: int, d_nom: float) -> int:
+    """Blocks kept in row p at b = 128 under the era-4 rule (sec. 2.1): the
+    sink and the diagonal free, plus round(d_nom * (p - 1)) of the p - 1
+    candidates, half-to-even."""
+    if p < 2:
+        return p + 1
+    return 2 + round(d_nom * (p - 1))
+
+
+def matched_budget(i: int, b: int, d_nom: float) -> int:
+    """The budget of row i at block size b < 128 that matches the realised
+    density of its parent row p = floor(i * b / 128) at b = 128 (sec. 3, H7).
+    The two free blocks are still granted, outside this budget."""
+    if i < 2:
+        return 0
+    p = i * b // 128
+    target = kept_128(p, d_nom) / (p + 1)
+    return min(max(round(target * (i + 1)) - 2, 0), i - 1)
+
+
+def row_density_matches(i: int, b: int, d_nom: float) -> bool:
+    """The per-row check: row i's realised density at b is within 0.01 of its
+    parent row's at b = 128."""
+    p = i * b // 128
+    target = kept_128(p, d_nom) / (p + 1)
+    got = (min(i + 1, 2) + matched_budget(i, b, d_nom)) / (i + 1)
+    return abs(got - target) <= H7_DENSITY_TOL
+
+
+def h7_rows(n_tokens: int, b: int) -> range:
+    """The rows H7 scores at block size b: those whose parent row at b = 128
+    is p >= 7. Below that, a row at b = 16 has too few blocks to match its
+    parent's density within 0.01."""
+    return range(H7_MIN_PARENT_ROW * 128 // b, n_tokens // b)
+
+
 @dataclass(frozen=True)
 class H7Cell:
     r_mp_16: float
     r_mp_128: float
     gap_16: float          # R~_XA8 - R~_MP at b = 16
     gap_128: float
-    density_ratio: float   # realised density b=16 / b=128
+    density_ratio: float   # realised density b=16 / b=128, over the scored rows
+    rows_match: bool = True    # every scored row passed `row_density_matches`
 
 
 def score_h7(cells: Sequence[H7Cell]) -> tuple[Verdict, Verdict]:
-    det = [c for c in cells if abs(c.density_ratio - 1) <= H7_DENSITY_TOL]
-    ind = len(cells) - len(det)
-    if ind > H7_MAX_INDETERMINATE:
-        v = (UNRESOLVED, f"{ind} indeterminate cells")
+    """24 cells, or the 12 1.5B cells under cut 4. A cell whose density ratio
+    is outside 1 +/- 0.01, or with a row failing the per-row check, is
+    descriptive: reported, not counted. More than 1/6 descriptive: unresolved.
+    Pass: at least 2/3 of ALL the cells (16 of 24, 8 of 12)."""
+    n = len(cells)
+    if n not in H7_CELL_COUNTS:
+        v = (UNSCORABLE, f"{n} cells; H7 has 24, or 12 under cut 4")
         return Verdict("H7a", *v), Verdict("H7b", *v)
+    det = [c for c in cells if c.rows_match and abs(c.density_ratio - 1) <= H7_DENSITY_TOL]
+    desc = n - len(det)
+    labels = ("1.5B only (cut 4)",) if n == 12 else ()
+    if desc > math.floor(H7_MAX_DESCRIPTIVE_FRACTION * n + 1e-9):
+        v = (UNRESOLVED, f"{desc} descriptive cells")
+        return Verdict("H7a", *v, labels=labels), Verdict("H7b", *v, labels=labels)
+    need = math.ceil(H7_MIN_FRACTION * n - 1e-9)
     a = sum((1 - c.r_mp_16) <= H7A_FACTOR * (1 - c.r_mp_128) for c in det)
     b = sum(c.gap_16 < c.gap_128 for c in det)
-    counts = {"determinate": len(det), "indeterminate": ind, "a": a, "b": b}
-    return (Verdict("H7a", PASS if a >= H7_MIN_CELLS else FAIL, counts=counts),
-            Verdict("H7b", PASS if b >= H7_MIN_CELLS else FAIL, counts=counts))
+    counts = {"cells": n, "descriptive": desc, "a": a, "b": b, "need": need}
+    return (Verdict("H7a", PASS if a >= need else FAIL, labels=labels, counts=counts),
+            Verdict("H7b", PASS if b >= need else FAIL, labels=labels, counts=counts))
 
 
 # --------------------------------------------------------------------------
@@ -382,7 +495,7 @@ def score_h5(points: Sequence[Mapping]) -> tuple[Verdict, Verdict]:
         else:
             ok = len(hits) <= 1 and all(p["is_xa"] for p in hits)
         out.append(Verdict(name, PASS if ok else FAIL,
-                           labels=("prior anchored on visible data",) if band == 16384 else (),
+                           labels=("prior anchored on visible data",),
                            counts={"points": len(pts), "profitable_certified": len(hits)}))
     return out[0], out[1]
 
@@ -425,7 +538,8 @@ def score_p_t4(primary: Mapping[int, Mapping]) -> Verdict:
     if set(primary) != {16384, 32768}:
         return Verdict("P-T4", UNSCORABLE, f"cells: {sorted(primary)}")
     k = sum(certified(c["dense"], c["sparse"]) for c in primary.values())
-    return Verdict("P-T4", PASS if k == 0 else FAIL, counts={"certified": k})
+    return Verdict("P-T4", PASS if k == 0 else FAIL, counts={"certified": k},
+                   labels=("prior close to guaranteed by the n = 100 bound",))
 
 
 def _aligned(a: Mapping, b: Mapping) -> Optional[list]:
@@ -545,6 +659,81 @@ def _identities(rows, key):
     return out
 
 
+# The evaluation split uses indices no banked file has used (sec. 5). The
+# registry is every (task, band) -> (first, last) example index found in a
+# banked parquet on 2026-10-03; `tests/test_frontier_eval_ids.py` re-derives
+# it from the parquets and fails if they disagree.
+BANKED_INDEX_RANGES = {
+    ("niah_multikey", 2048): (0, 299), ("niah_multikey", 4096): (0, 299),
+    ("niah_multikey", 8192): (0, 299), ("niah_multikey", 16384): (0, 99),
+    ("niah_multikey_1", 16384): (0, 4), ("niah_multikey_1", 32768): (0, 4),
+    ("niah_multiquery", 16384): (0, 49), ("niah_multiquery", 32768): (0, 49),
+    ("niah_multivalue", 16384): (0, 49), ("niah_multivalue", 32768): (0, 49),
+    ("niah_single", 2048): (0, 299), ("niah_single", 4096): (0, 299),
+    ("niah_single", 8192): (0, 299), ("niah_single", 16384): (0, 99),
+    ("niah_single", 32768): (0, 49),
+    ("qa_1", 16384): (0, 99), ("qa_1", 32768): (0, 99),
+    ("qa_2", 16384): (0, 4), ("qa_2", 32768): (0, 4),
+    ("vt", 2048): (0, 299), ("vt", 4096): (0, 299), ("vt", 8192): (0, 299),
+    ("vt", 16384): (0, 99),
+}
+
+# split -> (first index, how many), for every task. Seeds: sec. 5.
+SPLIT_INDEX = {"evaluation": (3000, 300), "calibration": (2000, 48),
+               "selection": (1000, 32), "t4_replication": (0, 100)}
+EVAL_INDEX_OFFSET = SPLIT_INDEX["evaluation"][0]
+
+
+def evaluation_indices(n: int) -> range:
+    first, most = SPLIT_INDEX["evaluation"]
+    if not 0 < n <= most:
+        raise ValueError(f"evaluation n must be 1..{most}, got {n}")
+    return range(first, first + n)
+
+
+def check_evaluation_unbanked(eval_indices: Mapping[str, Iterable[int]],
+                              banked: Mapping[tuple, tuple] = None) -> None:
+    """No evaluation index of a task may appear in any banked file of that
+    task, AT ANY BAND: the QA question is chosen by index alone."""
+    banked = BANKED_INDEX_RANGES if banked is None else banked
+    for task, idx in eval_indices.items():
+        idx = set(idx)
+        for (t, band), (lo, hi) in banked.items():
+            both = sorted(i for i in idx if t == task and lo <= i <= hi)
+            if both:
+                raise SplitLeak(f"evaluation {task} indices {both[:3]} are banked at {band}")
+
+
+def check_calibration_texts_disjoint(texts: Sequence[str], probes: Sequence[str],
+                                     *, min_len: int = 40) -> None:
+    """`text.json` calibrates every Qwen table and is multi-document QA, so it
+    is held to the split firewall too: no evaluation or selection question, and
+    no gold document's opening, may occur in any calibration text."""
+    for p in probes:
+        p = " ".join(p.split())
+        if len(p) < min_len:
+            continue
+        for k, t in enumerate(texts):
+            if p in " ".join(t.split()):
+                raise SplitLeak(f"calibration text {k} contains {p[:60]!r}")
+
+
+# What a cut (sec. 8.4) does to a hypothesis, fixed before any result.
+CUT_NOT_RUN = {"9": ("H6b",), "11": ("H8",)}
+CUT_LABEL = {"1": ("H8", "without the 65536c band"),
+             "4": ("H7a", "1.5B only (cut 4)"), "7": ("H2a", "1.5B cells only")}
+
+
+def apply_cuts(verdicts: Mapping[str, Verdict], cuts: Iterable[str]) -> dict:
+    """A hypothesis whose inputs were cut is 'not run (cost stop)', whatever
+    a scorer would return on what is left."""
+    out = dict(verdicts)
+    for c in cuts:
+        for h in CUT_NOT_RUN.get(str(c), ()):
+            out[h] = Verdict(h, NOT_RUN, f"cut-order item {c}")
+    return out
+
+
 # --------------------------------------------------------------------------
 # Cost: the bracket, the reservation check and rebracket (sec. 8)
 # --------------------------------------------------------------------------
@@ -621,7 +810,8 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
     add("I2e", "A100", lambda k: inp.llama_oracle_min["I2e"][k], False, "intrinsic")
     add("I3", "H100", lambda k: (5, 15)[k] + sum(15 * 23 * 2 * ph[x] for x in ph)
         * inp.ex[k] / 60 + inp.overhead_min[k], True, "intrinsic")
-    add("I4", "L4", lambda k: (3, 10)[k] + inp.overhead_min[k], False, "intrinsic")
+    # Never cut from 2026-10-03: H1 rests on the L4-A100 cells.
+    add("I4", "L4", lambda k: (3, 10)[k] + inp.overhead_min[k], True, "intrinsic")
 
     def rep(p):
         return lambda k: (0, 3 * (inp.overhead_min[1] + sum(15 * 23 * 2 * p[x] for x in p)
@@ -642,7 +832,9 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
         * inp.mu[k] / 60 + 2 * inp.overhead_min[k], True, "extrinsic")
     add("X secondary", "A100", lambda k: ext15(100, (5, 8))(k) + 100 * (pa[16384] + pa[32768])
         * inp.mu[k] / 60, True, "extrinsic")
-    add("X-rep", "A100", lambda k: (15, 61)[k], True, "extrinsic")
+    # The T4 replication: dense + XA native on T4's own 200 ids per band, at
+    # both bands (the evaluation split no longer shares T4's ids).
+    add("X-rep", "A100", ext15(200, (1, 1)), True, "extrinsic")
 
     pl_lo = {16384: 0.124 * 3.05 + 0.312 * 5.4, 32768: 0.496 * 3.05 + 0.606 * 5.4,
              65536: 1.984 * 3.05 + 1.212 * 5.4}
