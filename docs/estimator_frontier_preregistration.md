@@ -466,6 +466,9 @@ Model: Llama-3.1-8B. Configuration: §4.3, the authors' RULER configuration.
   - **Prediction:** mean raw R ≥ 0.85, against the profiler's 0.90 target less
     0.05 tolerance.
   - **STOP at R < 0.70** (gate G6).
+  - **If H6a misses (R < 0.85):** the conditional double-BOS arm I2c-B runs
+    (§4.9), before any G6 STOP takes effect, and its read-out is reported
+    with H6a.
 - **H6b:**
   - **Setup:** run the authors' released profiler on Llama over all 156 texts,
     since none exceeds Llama's limit (§4.9 G9 verifies this). Cap at 0.96 for
@@ -1063,17 +1066,33 @@ If an assertion fails for one band, that band is **dropped for validity**
   - **Firing id recorded.** Every row carries `stop_token_id`, the id that
     ended an `eos` or `newline` stop, beside `stop_reason`. The category
     column keeps its three values, so banked rows and analyses read the same.
+    **Banked rows have no `stop_token_id`.** `schema.load_accuracy_parquet` /
+    `normalise_accuracy_frame` give them a typed null (`Int64` NA, never 0 or
+    a float NaN), and the runner applies the same normaliser on every
+    checkpoint append. Tested.
   - **Newline and whitespace sets** are rebuilt from the Llama vocab
     (128,256 entries). 2,255 newline ids (sha256 of the sorted list, first 16
     hex: `dc24e2c3056c70b4`) and 530 whitespace-only ids (`445dc415bf20b800`).
     No special id is in the newline set. They are **identical on
     transformers 4.46.0 and 5.18.0**. The instance asserts the same digests.
-  - **Decoded text differs by version.** On 4.46.0 the tokenizer's
-    `clean_up_tokenization_spaces=True` applies on decode ("x , y" → "x, y").
-    5.18.0 ignores it for BPE. Scoring is substring match on answers that
-    contain no space before punctuation, so the score is not expected to
-    move, but `predicted` text is version-dependent. Llama rows are
-    generated and decoded on the image's 4.46.0 only.
+  - **Decoded text differs by version, so the version is a hard check.**
+    On 4.46.0 the tokenizer's `clean_up_tokenization_spaces=True` applies on
+    decode ("x , y" → "x, y"). 5.18.0 ignores it for BPE, and substring
+    scoring can be sensitive to spacing before punctuation.
+    `accuracy/pins.py` pins Llama to **transformers 4.46.0**, the image's
+    version per `scripts/gcp_launch_compile_session.sh` and audit S9, not
+    re-read from the v6 image. The Llama path refuses unless the loaded
+    version equals the pin, at three points:
+    - before the model loads (`run_accuracy.build_generate_fn`);
+    - at every `generate` call;
+    - before every row is scored (`runner.run_accuracy`, `model_id=`).
+
+    Every row now records the version (the new provenance field
+    `transformers`; banked rows read it as null). If the instance reports
+    another version, nothing is scored, and the pin changes only by a dated
+    amendment before any Llama row. Tests run on 5.18.0, so the Llama tests
+    stand in for the image explicitly, and one test checks that the real
+    5.18.0 is refused.
   - **Caps, measured 2026-10-03** offline (`HF_HUB_OFFLINE=1`, the cached
     pinned tokenizer, no token) by
     `scripts/measure_answer_lengths.py --model meta-llama/Llama-3.1-8B-Instruct --revision 0e9e39f…`,
@@ -1095,9 +1114,23 @@ If an assertion fails for one band, that band is **dropped for validity**
     Llama groups digits in threes, so a 7-digit answer is 3 tokens (Qwen: 7),
     and the number tasks' caps are less than half of Qwen's. **Flag:** a cap
     of 6 leaves 3 tokens for anything before or after a 3-token number.
-    XL0 reports the cap-hit rate per task, and a `niah_single` or
-    `niah_multikey_1` cap-hit rate above 5% on dense is reported as a
-    truncation confound. The cap is not changed after XL0.
+
+    **Pre-registered cap-change rule (2026-10-03).**
+    - **Input.** The dense cap-hit rate per task in XL0: rows with
+      `stop_reason == "cap"`, over the task's 15 dense rows (5 per band × 3
+      bands).
+    - **Trigger.** A rate **above 5%**, which at n = 15 means **one or more**
+      cap hits, for any Llama task.
+    - **Action.** That task's cap is doubled **once** (for example 6 → 12),
+      committed as a dated amendment, and the task's XL0 dense rows are
+      re-run at the new cap **before** the retention decision (§4.9, task
+      selection) and before any XL row.
+    - **No second change.** If the re-run still exceeds 5%, the task keeps
+      the doubled cap and is reported with a truncation confound.
+    - **Never after XL0.** Caps are not changed on the basis of any sparse
+      row or any XL row.
+    - **Cost.** At most 15 dense rows per task, inside XL0's own bracket
+      (XL0 is cut-order item 11).
   - **Budgets.** 32768c and 65536c Llama budgets are band − the cap above:
     `qa_1` 32,726 and 65,494; `niah_multivalue` and `niah_multiquery` 32,738
     and 65,506.
@@ -1189,9 +1222,24 @@ leaves.**
   input. **Confound, stated:** their double BOS shifts every position by one
   and puts two BOS keys in block 0. H6a's recall and H6b's profiler
   reproduction are both measured on single-BOS inputs, and the confound is
-  reported beside their verdicts. A double-BOS sensitivity arm (I2c on
-  double-BOS inputs, about ₹117–262) is **not** in the plan. It needs the
-  researcher's yes and a dated amendment before I2c runs.
+  reported beside their verdicts.
+  **Conditional arm I2c-B, double-BOS sensitivity (pre-registered
+  2026-10-03 with the researcher's yes):**
+  - **What:** H6a's recall run again on the same ≤ 32K `text.json` texts,
+    encoded exactly as the authors' code does: the literal BOS kept,
+    `add_special_tokens` at its default, so two BOS ids. The double-BOS guard
+    is lifted for this arm only, by an explicit flag recorded on its rows
+    (`bos_count=2`). Same table, settings and recall measure as I2c.
+  - **Trigger:** only if H6a misses its stated tolerance, that is mean raw R
+    < 0.85. That includes the G6 range (R < 0.70). When G6 fires, I2c-B runs
+    in the same session **before** the STOP takes effect, because it is the
+    diagnostic for that STOP.
+  - **Read-out, stated now:** if R on double-BOS inputs is ≥ 0.85, the miss
+    is attributed to the BOS mismatch, and H6a is reported as "passes on the
+    authors' encoding, fails on ours". Otherwise the BOS does not explain the
+    miss, and H6a fails as stated.
+  - **Cost:** about ₹117–262 (25–55 min, as I2c). Cut-order item 12 (§8.4).
+    It is reserved in the worst-case arithmetic (§8.3).
 - **H8 and every Llama accuracy arm:** this study's completion-style RULER
   prompts (no chat wrapping, as for Qwen), one BOS, greedy, the stop rule
   above. **Confound, stated:** the authors evaluated in chat format with no
@@ -1437,7 +1485,8 @@ $1.5/h).
 | dense row, 7B, A100, 16K | 2.73 s | measured | `results/s7_7b_16384` |
 | μ = exact-mass pass / dense prefill, used in §8.2 | **6.19–9.08** (sixth draft; was 2–11.3) | **measured**: this harness's oracle pass on the A100, Qwen2.5-1.5B, min and max over the three bands below. The new GPU-side pass (§4.7) is measured at the canary. | `results/s12_a100_vec_endtoend/logs/s12_vec_e2e.log` |
 | μ of this harness's oracle pass, A100, 1.5B | 7.90 / 6.19 / 9.08 at 8K / 16K / 32K (1.5 / 2.7 / 10.0 s, one cold call each) | measured | same |
-| μ on the L4 | 7.2 at 16K, 11.1–11.3 at 32K | measured, L4 card only; no longer used for A100 lines | `docs/t4_sparse_pilot.md`, `writeup_input.md` |
+| μ on the L4 | 7.2 at 16K, 11.1–11.3 at 32K | measured, L4 card only; used for no line in §8.2 (no L4 oracle line); T4 Session B's | `docs/t4_sparse_pilot.md`, `writeup_input.md` |
+| μ on the H100 | 12.6 / 7.93 / 10.47 at 8K / 16K / 32K (1.0 / 1.5 / 5.3 s) | measured, one cold call each; applies to I3's oracle masks | `results/s12_h100_vec_endtoend/logs/s12_vec_e2e.log` |
 | Llama-8B oracle pass per text | 8.2–14.4 s at 16K, 30.5–53.3 s at 32K, 112–212 s at 65,314 tokens (the longest `text.json` text in Llama tokens) | **derived** from the measured 1.5B pass above, scaled by config geometry (§8.2 note) | `scripts/derive_llama_oracle_cost.py` |
 | block-size recall multiplier | 1.1–1.5 | **assumed** | the canary measures it |
 | wall / Σ row latency | 1.25–1.69 | measured | phase logs |
@@ -1462,6 +1511,7 @@ oracle-pass line.** The fifth draft's figures are kept beside the new ones.
 | ★ I2a: 7B recall, 60 per band, b 16–128 | A100 | 24–188 | 52–156 | 115–890 | 247–738 | μ (a) |
 | I2b: 7B end to end at 32K | A100 | 14–36 | 14–36 | 64–170 | 64–170 | — |
 | ★ I2c: Llama H6a, texts ≤ 32K | A100 | 22–49 | 25–55 | 103–233 | 117–262 | Llama token counts (b) |
+| I2c-B: conditional double-BOS arm, only if H6a misses (§4.9) | A100 | — | 25–55 | — | 117–262 | new (researcher's yes, 2026-10-03) |
 | I2d: Llama H6a, texts > 32K | A100 | 62–137 | 47–104 | 295–649 | 224–491 | Llama token counts (b) |
 | I2e: Llama H6b profiler reproduction | A100 | 81–176 | 69–149 | 384–834 | 327–706 | Llama token counts (b) |
 | ★ I3: H100 cuDNN probe, components, end to end at 3 bands | H100 | 22–44 | 22–44 | 155–313 | 155–313 | — |
@@ -1478,7 +1528,7 @@ oracle-pass line.** The fifth draft's figures are kept beside the new ones.
 | XL: Llama secondary, 16K + 32K | A100 | 88–195 | 88–195 | 417–924 | 417–924 | — |
 | XL: Llama 65536 band | A100 | 574–1,252 | 574–1,252 | 2,719–5,925 | 2,719–5,925 | — |
 | **Never-cut core** | | **6.8–34.1 h** | **9.4–32.4 h** | **₹1,842–9,526** | **₹2,540–9,053** | |
-| **Full plan** | | **25.7–75.7 h** | **27.7–73.0 h** | **₹7,133–21,347** | **₹7,704–20,589** | |
+| **Full plan** | | **25.7–75.7 h** | **28.1–73.9 h** | **₹7,133–21,347** | **₹7,821–20,851** | |
 
 **Sources of the change.**
 
@@ -1496,6 +1546,19 @@ oracle-pass line.** The fifth draft's figures are kept beside the new ones.
   Qwen proxy was 3,921,756, maximum 91,574, 121 ≤ 32K. The Llama pass itself
   is still the measured 1.5B pass scaled by config ratios (below).
   `scripts/derive_llama_oracle_cost.py` reproduces the three lines.
+- **Per card (checked 2026-10-03).** Every oracle-pass line in this table
+  runs on the A100, so each uses the A100's measured μ:
+  - C, I1, I2a, I2c, I2c-B, I2d, I2e, X0 and X.
+  - **No line here runs an oracle pass on the L4.** I4 is components only.
+    The L4's measured μ (7.2 at 16K, 11.1 at 32K) belongs to T4 Session B,
+    which is a separate pre-registration.
+  - **The H100's measured μ** is 12.6 / 7.93 / 10.47 at 8K / 16K / 32K
+    (1.0 / 1.5 / 5.3 s against 0.079 / 0.189 / 0.506 s,
+    `results/s12_h100_vec_endtoend/logs/s12_vec_e2e.log`). It applies only
+    to I3's end-to-end oracle masks: 2 prompts × 3 bands, about 16 s, inside
+    I3's overhead term.
+
+  So the per-card rule changes no figure above.
 - **Still assumed:** the block-size recall multiplier (1.1–1.5), Llama
   prefill and decode for the XL lines, and 7B prefill (§8.1).
 - **What μ still is not.** It is the **existing** oracle pass's cost. The
@@ -1583,7 +1646,8 @@ So the non-XA core is about ₹1,778–6,243.
     was stated back. It cannot be raised after lock.
   - It covers, at worst-case inputs, the never-cut core (₹9,053) plus the
     storage reserve (about ₹500) plus one rerun of the largest ★ session
-    (₹1,698), which is about ₹11,250, leaving about ₹750.
+    (₹1,698) plus the conditional arm I2c-B (₹262), which is about ₹11,510,
+    leaving about ₹490.
   - Anything cuttable is paid for only from what the measured μ (DP1) frees
     up.
 - **Ledger:** `results/frontier_spend.csv`. Each session's teardown appends
@@ -1593,7 +1657,12 @@ So the non-XA core is about ₹1,778–6,243.
 - **Reservation check, before every launch:**
   `scripts/frontier_budget_gate.py` must pass, refusing with `STOP` otherwise:
 
-      spent + U(next session) + Σ U(every remaining ★ session) + S_res  ≤  ₹12,000
+      spent + U(next session) + Σ U(every remaining ★ session) + S_res + R_B  ≤  ₹12,000
+
+  - **R_B** (added 2026-10-03) is U(I2c-B), the conditional double-BOS arm,
+    while H6a is unscored or has missed and I2c-B has not run. It is 0 once
+    H6a passes or I2c-B has run. It is released earlier only by cutting
+    I2c-B as cut-order item 12.
 
   - **S_res is the storage reserve:**
 
@@ -1641,10 +1710,11 @@ So the non-XA core is about ₹1,778–6,243.
 | core, including the T4-replication line at 32768 | 9,053 (fifth draft 9,526) |
 | S_res, two months | about 500 (₹424 storage + ₹2.4/h × 32.4 h) |
 | one rerun of the largest ★ session (one band of X primary, half of ₹3,397) | 1,698 (fifth draft 1,740) |
-| **total** | **about 11,250** (fifth draft about 11,780) |
+| the conditional double-BOS arm I2c-B, if H6a misses (§4.9) | 262 |
+| **total** | **about 11,510** (about 11,250 without I2c-B; fifth draft about 11,780) |
 
-That is **inside the ₹12,000 cap**, with about ₹750 to spare (fifth draft
-₹220, fourth ₹100). Source of the change: the measured A100 μ (§8.2, (a))
+That is **inside the ₹12,000 cap**, with about ₹490 to spare (₹750 without
+I2c-B; fifth draft ₹220, fourth ₹100). Source of the change: the measured A100 μ (§8.2, (a))
 and the Llama token counts ((b)). So:
 
 - a single failed session at worst-case μ does not stop the study;
@@ -1694,6 +1764,10 @@ next launch, and read timings only:
 10. VS in the 1.5B extrinsic run.
 11. XL0 + XL primary: Llama accuracy entirely. H8 becomes "not run (cost
     stop)".
+12. I2c-B, the conditional double-BOS arm (§4.9), added 2026-10-03. It is
+    cut last among cuttable items: without it, a missed H6a cannot be
+    interpreted. It is cut only if H6a has not yet missed, or if the check
+    fails with nothing else left to cut.
 
 **Never cut (★):**
 
@@ -1806,11 +1880,11 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 | 10 | Teacher-forced recall. | Open (F5). |
 | 11 | **New:** calibration is the authors' released substitute, not the paper's DP. | Open (F1). H6b measures it, and §14 asks the authors. |
 | 12 | **New:** era 3 against era 4 is cross-era. | T4's head-uniform arms against this study's per-head arms are descriptive only. |
-| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹20,589 worst case for the full plan (sixth draft, measured μ). | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
+| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹20,851 worst case for the full plan (measured μ, with I2c-B). | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
 | 14 | **New:** H2c, H2d and H5a were written with the A100 crossover estimates visible (§3). | Stated. They are reported as priors anchored on visible data, not blind predictions. The blind tests of the crossover are H1 and H2a/H2b. |
-| 16 | **New:** under default tokenizer settings, the authors' calibration and RULER code paths pass a double BOS to the model (traced to file and line, their library versions unpinned); this study feeds one (§4.9). | Stated as a confound for H6a/H6b and H8. A double-BOS sensitivity arm is not planned; adding one needs the researcher's yes and a dated amendment before I2c. |
+| 16 | **New:** under default tokenizer settings, the authors' calibration and RULER code paths pass a double BOS to the model (traced to file and line, their library versions unpinned); this study feeds one (§4.9). | Stated as a confound for H6a/H6b and H8. **Controlled for H6a** by the conditional arm I2c-B, which is triggered by an H6a miss (§4.9) and is cut-order item 12. Not controlled for H6b or H8. |
 | 17 | **New:** Llama accuracy uses this study's completion-style prompts and newline stop, not the authors' chat format. | Stated. H8 is not a reproduction of the authors' RULER scores, and is never compared with them numerically. |
-| 18 | **New:** Llama number-task caps are 6 tokens (2 × a 3-token answer). | Kept by the rule. XL0 reports the dense cap-hit rate, and above 5% it is a stated truncation confound. The cap does not change after XL0. |
+| 18 | **New:** Llama number-task caps are 6 tokens (2 × a 3-token answer). | Kept by the rule, with a pre-registered trigger (§4.9): a dense XL0 cap-hit rate above 5% (≥ 1 of 15) doubles that task's cap once, before retention and before any XL row. There is no further change. |
 | 15 | **New:** the H100 in-model speedups are against `sdpa_flash`, and no banked H100 dense kernel exists at (12, 2). | Labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`). Run D in I3 measures it. Nothing is adjusted from a different geometry. |
 
 ---

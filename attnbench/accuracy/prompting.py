@@ -33,15 +33,21 @@ class DoubleBOSError(ValueError):
     """The encoded prompt starts with two BOS ids."""
 
 
-def prompt_ids(tokenizer, text: str) -> list[int]:
-    """The ids the model is fed for `text`, as a flat list."""
+def prompt_ids(tokenizer, text: str, *, allow_double_bos: bool = False) -> list[int]:
+    """The ids the model is fed for `text`, as a flat list.
+
+    `allow_double_bos=True` is for one arm only: the conditional double-BOS
+    sensitivity arm I2c-B (pre-registration sec. 4.9), which reproduces the
+    authors' encoding on purpose and records `bos_count=2` on its rows.
+    """
     ids = tokenizer(text, add_special_tokens=ADD_SPECIAL_TOKENS).input_ids
     if hasattr(ids, "tolist"):
         ids = ids.tolist()
     if ids and isinstance(ids[0], list):
         (ids,) = ids
     bos = getattr(tokenizer, "bos_token_id", None)
-    if bos is not None and len(ids) >= 2 and ids[0] == bos and ids[1] == bos:
+    if (not allow_double_bos and bos is not None and len(ids) >= 2
+            and ids[0] == bos and ids[1] == bos):
         raise DoubleBOSError(
             f"prompt encodes to two leading BOS ids ({bos}, {bos}); the text "
             f"already starts with the BOS token and the tokenizer added "
@@ -49,10 +55,11 @@ def prompt_ids(tokenizer, text: str) -> list[int]:
     return list(ids)
 
 
-def encode_prompt(tokenizer, text: str, device=None):
+def encode_prompt(tokenizer, text: str, device=None, *, allow_double_bos: bool = False):
     """`prompt_ids` as a (1, n) long tensor, optionally on `device`."""
     import torch
-    t = torch.tensor([prompt_ids(tokenizer, text)], dtype=torch.long)
+    t = torch.tensor([prompt_ids(tokenizer, text, allow_double_bos=allow_double_bos)],
+                     dtype=torch.long)
     return t if device is None else t.to(device)
 
 

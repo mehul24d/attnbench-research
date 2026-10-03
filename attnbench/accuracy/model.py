@@ -538,6 +538,9 @@ class SwappedAttention(nn.Module):
         return out, None
 
 
+from .pins import require_pinned_transformers  # noqa: E402
+
+
 # Models whose shipped generation_config samples, so every path through this
 # wrapper forces and then asserts greedy decoding (estimator-frontier
 # pre-registration, sec. 4.9, 2026-10-03).
@@ -777,6 +780,7 @@ class SwappableAttentionModel:
         """
         if self.model_id in GREEDY_REQUIRED_MODELS:
             assert_greedy(self.model)
+        require_pinned_transformers(self.model_id)
         if decode_backend is None:
             if not type(backend).supports_decode():
                 raise UnsupportedModelArchitecture(

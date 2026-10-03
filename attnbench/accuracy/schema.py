@@ -271,3 +271,32 @@ class AccuracyResult:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+# Columns added after accuracy rows were already banked, with the dtype a
+# loader gives them. A banked row has no value, so it reads as null (pd.NA),
+# never 0 or "" and never a float NaN that an equality test would silently
+# miss. Added 2026-10-03 (estimator-frontier pre-registration, sec. 4.9).
+LATE_ACCURACY_COLUMNS = {
+    "stop_token_id": "Int64",
+    "transformers": "string",
+}
+
+
+def normalise_accuracy_frame(df):
+    """`df` with every late column present and typed; missing values null."""
+    import pandas as pd
+    df = df.copy()
+    for col, dtype in LATE_ACCURACY_COLUMNS.items():
+        if col not in df.columns:
+            df[col] = pd.Series(pd.NA, index=df.index, dtype=dtype)
+        else:
+            df[col] = df[col].astype(dtype)
+    return df
+
+
+def load_accuracy_parquet(path):
+    """Read an accuracy parquet, banked or new, with the late columns null
+    where a row predates them."""
+    import pandas as pd
+    return normalise_accuracy_frame(pd.read_parquet(path))

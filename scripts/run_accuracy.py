@@ -136,6 +136,11 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
 
     from attnbench.accuracy.model import SwappableAttentionModel
 
+    from attnbench.accuracy.pins import require_pinned_transformers
+    # Before the download and load, not after: a Llama run on the wrong
+    # transformers is refused before it costs anything (pins.py).
+    require_pinned_transformers(model_id)
+
     torch_dtype = getattr(torch, dtype)
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch_dtype)
     model = model.to(device).eval()
@@ -732,7 +737,8 @@ def main():
                               score_source=args.score_source,
                               xattn_threshold=args.xattn_threshold,
                               xattn_calibration=(xattn_table.label if xattn_table
-                                                 is not None else None))
+                                                 is not None else None),
+                              model_id=model_id)
     finally:
         if teardown is not None:
             teardown()

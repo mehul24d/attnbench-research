@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 
-def append_checkpoint(path: Path, rows: list[dict]) -> None:
+def append_checkpoint(path: Path, rows: list[dict], *, normalise=None) -> None:
     """Append `rows` to the parquet file at `path`, creating it if absent.
 
     Written to a temporary file in the same directory and renamed into place.
@@ -35,6 +35,10 @@ def append_checkpoint(path: Path, rows: list[dict]) -> None:
         combined = pd.concat([pd.read_parquet(path), new_df], ignore_index=True)
     else:
         combined = new_df
+    if normalise is not None:
+        # Typed columns added after earlier rows were banked (e.g. the
+        # accuracy schema's stop_token_id): nulls stay nulls, not NaN floats.
+        combined = normalise(combined)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")

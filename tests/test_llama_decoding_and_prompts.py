@@ -115,6 +115,76 @@ class _WordTokenizer:
         return "".join(self._vocab[i] for i in ids)
 
 
+@pytest.fixture(autouse=True)
+def _as_if_on_the_image(monkeypatch):
+    """The Llama path refuses any transformers but the image's pin
+    (accuracy/pins.py), and these tests run on the workstation's newer one.
+    Every test here therefore says explicitly that it stands in for the
+    image. The refusal itself is tested below with the real version."""
+    import transformers
+    from attnbench.accuracy.pins import PINNED_TRANSFORMERS
+    monkeypatch.setattr(transformers, "__version__", PINNED_TRANSFORMERS[LLAMA])
+
+
+# --- transformers pin ----------------------------------------------------------
+
+def test_llama_generation_refuses_another_transformers(monkeypatch):
+    import transformers
+    from attnbench.accuracy.pins import TransformersVersionMismatch
+    monkeypatch.setattr(transformers, "__version__", "5.18.0")
+    with pytest.raises(TransformersVersionMismatch, match="4.46.0"):
+        _wrapped().generate(_ids(), SDPABackend("math"), cfg=_cfg(), max_new_tokens=3)
+    # Other models are not pinned.
+    _wrapped(model_id="toy").generate(_ids(), SDPABackend("math"), cfg=_cfg(),
+                                      max_new_tokens=3)
+
+
+def test_the_runner_refuses_to_score_llama_rows_off_the_pin(monkeypatch, tmp_path):
+    import transformers
+    from attnbench.accuracy import runner
+    from attnbench.accuracy.pins import TransformersVersionMismatch
+    from attnbench.accuracy.runner import AccuracyCell
+    from attnbench.accuracy.schema import Generated
+    ex = ruler.RulerExample(task="niah_single", example_id="niah_single_400_0",
+                            context="c", question="", answer=["42"], context_length=1)
+    cfg = AttnConfig(seq_len=400, batch=1, n_heads_q=1, n_heads_kv=1,
+                     head_dim=128, mask="causal")
+    cell = AccuracyCell(cfg=cfg, backend_name="sdpa_math", task="niah_single",
+                        example_id=ex.example_id)
+    gen = lambda *a: Generated(text="42", latency_ms=1.0)  # noqa: E731
+    monkeypatch.setattr(transformers, "__version__", "5.18.0")
+    with pytest.raises(TransformersVersionMismatch):
+        runner.run_accuracy([cell], out_dir=tmp_path, examples_by_id={
+            ("niah_single", ex.example_id): ex}, generate_fn=gen,
+            allow_dirty=True, model_id=LLAMA)
+    assert not (tmp_path / "accuracy.parquet").exists()
+
+
+def test_every_row_records_the_transformers_version():
+    from attnbench import provenance
+    assert provenance.capture().transformers is not None
+    assert "transformers" in provenance.capture().to_dict()
+
+
+def test_banked_rows_load_the_new_columns_as_null(tmp_path):
+    """Rows written before 2026-10-03 have neither column. The loader gives
+    them typed nulls; new rows keep their integers."""
+    import pandas as pd
+    from attnbench.accuracy.schema import load_accuracy_parquet, normalise_accuracy_frame
+    old = pd.DataFrame({"stop_reason": ["eos", "cap"], "task": ["vt", "vt"]})
+    old.to_parquet(tmp_path / "old.parquet")
+    df = load_accuracy_parquet(tmp_path / "old.parquet")
+    assert str(df.stop_token_id.dtype) == "Int64" and df.stop_token_id.isna().all()
+    assert df.transformers.isna().all()
+    new = normalise_accuracy_frame(pd.DataFrame(
+        {"stop_reason": ["eos", "cap"], "stop_token_id": [128009, None],
+         "transformers": ["4.46.0", "4.46.0"]}))
+    both = normalise_accuracy_frame(pd.concat([df, new], ignore_index=True))
+    assert both.stop_token_id.tolist()[2] == 128009
+    assert both.stop_token_id.isna().tolist() == [True, True, False, True]
+    assert (both.stop_token_id == 128009).sum() == 1
+
+
 # --- greedy -----------------------------------------------------------------
 
 def test_the_wrapper_forces_greedy_on_llama():
@@ -255,6 +325,8 @@ def test_a_double_bos_is_refused():
         prompt_ids(tok, tok.BOS_TEXT + "hello world")
     with pytest.raises(DoubleBOSError):
         encode_prompt(tok, tok.BOS_TEXT + "hello world")
+    # The one exception, the conditional arm I2c-B, says so explicitly.
+    assert prompt_ids(tok, tok.BOS_TEXT + "hello world", allow_double_bos=True)[:2] == [BOS, BOS]
 
 
 # --- the real pinned tokenizer, when cached --------------------------------------

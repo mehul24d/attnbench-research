@@ -157,6 +157,10 @@ class Provenance:
     flashinfer: Optional[str]
     xformers: Optional[str]
     fla: Optional[str]
+    # From 2026-10-03. Rows banked before then do not carry it, and a loader
+    # reads the missing column as null (accuracy/schema.py). Decoded text, and
+    # so a score, can differ between transformers versions (accuracy/pins.py).
+    transformers: Optional[str]
 
     driver: Optional[str]
     gpu_name: Optional[str]
@@ -227,6 +231,7 @@ def capture(clocks_locked: bool = False) -> Provenance:
         flashinfer=_pkg("flashinfer-python") or _pkg("flashinfer"),
         xformers=_pkg("xformers"),
         fla=_pkg("flash-linear-attention"),
+        transformers=_pkg("transformers"),
         driver=driver,
         gpu_name=name,
         compute_capability=cc,
@@ -293,10 +298,15 @@ GATED_FIELDS = frozenset({
 # T1 showed two hosts with the same CPU giving opposite signs, so refusing a
 # comparison on a CPU mismatch would gate on the wrong variable. They are
 # evidence for reading a result, which is what was missing during T1.
+#
+# `transformers` (2026-10-03) is RECORDED here. The hard check on it is
+# `accuracy/pins.require_pinned_transformers`, which reads the LIVE version
+# before a pinned model's row is generated or scored, so a wrong version
+# never produces a row to gate. The column is the per-row record of that.
 RECORDED_FIELDS = frozenset({
     "timestamp", "python", "platform", "cpu_model", "cpu_count",
     "torch", "torch_cuda", "cudnn", "triton",
-    "flash_attn", "flashinfer", "xformers", "fla",
+    "flash_attn", "flashinfer", "xformers", "fla", "transformers",
     "driver", "compute_capability", "gpu_memory_gb", "gpu_count",
     "sm_clock_mhz_at_capture", "mem_clock_mhz", "persistence_mode",
 })
