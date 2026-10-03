@@ -302,7 +302,7 @@ the comparison and interleaving cancels.
 **One new A100 measurement.** These sessions are the first to run 32768 on the
 A100 with the vectorised builder: block-sparse beats flash by **1.250× /
 1.481× / 1.666×** at 0.50 / 0.75 / 0.90, against 0.28× / 0.48× / 0.84× with
-the reference builder.
+the reference builder. *(Against `sdpa_flash`; see the A100 baseline caveat below.)*
 
 All of the above is derived from the banked, force-committed parquets in
 `tests/test_overlap_paired.py`; `results/s12_*`, and on GCS under each
@@ -408,6 +408,14 @@ The claim this licenses: **the end-to-end speedup requires either a dense
 baseline weak enough to beat, or a vectorised mask builder — and the reference
 implementation has neither.** That is a statement about the implementation
 landscape, not about sparse attention.
+
+> **A100 baseline caveat (2026-10-03).** These A100 ratios are against `sdpa_flash`, which is not the fastest correct dense kernel on that card. At the model's `(12,2)` geometry, fa2 is 6.0% faster at 16384, and cuDNN is 25.8% faster at 8192 (cuDNN faults above 8192).
+>
+> - **16384:** against fa2, 1.090× / 1.201× / 1.282× become an **estimated** 1.072× / 1.180× / 1.260×.
+> - **8192:** against cuDNN, the vectorised 0.968× / 1.023× / 1.058× become an **estimated** 0.910× / 0.962× / 0.995×, a loss at every sparsity.
+> - **32768:** unadjusted, an upper bound.
+>
+> These are estimates until run D (`docs/estimator_frontier_preregistration.md` §4.6) measures the kernels in one session. Derivation and test: `docs/claims.md`, `tests/test_a100_baseline_caveat.py`.
 
 **The end-to-end run, 2026-09-17.** Measured rather than composed: one
 process, one model instance, one score tensor, arms interleaved, changing only

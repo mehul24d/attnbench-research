@@ -11,6 +11,14 @@ the ledger rather than rephrased.
 
 Prepared 2026-09-12 against commit `5aa04a1`.
 
+> **A100 baseline caveat (2026-10-03).** Every A100 ratio in this file (headline, Stage 5, the mask-construction rows, the 0.475× prefill-only figures) are against `sdpa_flash`, which is not the fastest correct dense kernel on that card. At the model's `(12,2)` geometry, fa2 is 6.0% faster at 16384, and cuDNN is 25.8% faster at 8192 (cuDNN faults above 8192).
+>
+> - **16384:** against fa2, 1.090× / 1.201× / 1.282× become an **estimated** 1.072× / 1.180× / 1.260×.
+> - **8192:** against cuDNN, the vectorised 0.968× / 1.023× / 1.058× become an **estimated** 0.910× / 0.962× / 0.995×, a loss at every sparsity.
+> - **32768:** unadjusted, an upper bound.
+>
+> These are estimates until run D (`docs/estimator_frontier_preregistration.md` §4.6) measures the kernels in one session. Derivation and test: `docs/claims.md`, `tests/test_a100_baseline_caveat.py`.
+
 ---
 
 ## 1. The finding
@@ -73,7 +81,7 @@ harness's reference mask builder**. The cause is per-call host work outside
 the attention kernel: attnbench's own `importance_block_mask`, a
 per-query-block Python loop, not an upstream implementation. Swapping in a
 vectorised builder and changing nothing else turns the A100 16384 cells into
-wins (1.090× / 1.201× / 1.282×) with bitwise-identical outputs. *This paragraph
+wins (1.090× / 1.201× / 1.282×) [A100-baseline caveat] with bitwise-identical outputs. *This paragraph
 read "the cause is the dense baseline, not the sparse kernel" until
 2026-10-01; the ledger had already refuted that.* Why the L4 did not pay the
 same cost was measured on 2026-10-01: the builder costs the same on both
@@ -232,7 +240,7 @@ false.** NSA is natively trainable; everything here is training-free.
 This study measures the gap between those two for training-free block-sparse
 prefill, and locates it: not in the kernel (1.96× faster than flash at the
 model's geometry), but in CPU-side mask construction, ~91% of which is Python
-interpreter overhead. Replacing that one function turns 0.633× into 1.201× at
+interpreter overhead. Replacing that one function turns 0.633× into 1.201× at [A100-baseline caveat]
 16384/0.75 with bitwise-identical outputs. **The work explains a known negative
 rather than discovering one**, which is the more accurate framing and the more
 defensible.
@@ -435,7 +443,7 @@ second point on an axis that had only one:
 | 2 | …**on an L4**; on an A100 the prefill-only ratio is 0.475× (L4: 1.373×) | a kernel sweep at the real geometry |
 | 3 | …and the A100 kernel is slower, which explains it | the kernel is **1.96× faster**; the cost is CPU-side |
 | 4 | …the penalty is CPU mask construction; the speedup needs **either** a weak dense baseline **or** a vectorised builder | an end-to-end run with the builder swapped |
-| **5** | **block-sparse prefill beats dense on an A100 at 16384 — 1.282× at 16384/0.9 — but only with a vectorised mask builder in place of the harness's own reference builder** | *not overturned; narrowed 2026-09-19 — it said "8192+", but 8192 is parity inside the session spread and 32768 was never measured; measured 2026-10-01 in one session: 1.250× / 1.481× / 1.666× at 32768* |
+| **5** | **block-sparse prefill beats dense on an A100 at 16384 — 1.282× at 16384/0.9 [A100-baseline caveat] — but only with a vectorised mask builder in place of the harness's own reference builder** | *not overturned; narrowed 2026-09-19 — it said "8192+", but 8192 is parity inside the session spread and 32768 was never measured; measured 2026-10-01 in one session: 1.250× / 1.481× / 1.666× at 32768* |
 
 Every version was measured correctly. Versions 1 and 2 were also *replicated*
 — the L4 prefill ratios re-measured on a second L4, agreeing to within 0.19%

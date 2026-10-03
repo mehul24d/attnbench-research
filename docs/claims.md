@@ -14,6 +14,38 @@ The rule for using this file: if a sentence in the write-up is not in the
 "supported" column, it is not licensed by this study's data — regardless of
 how obviously true it seems.
 
+> **32768 accuracy caveat (added 2026-10-03). It applies wherever this file
+> cites an accuracy figure at 32768,** and each such place points here with
+> "[32K-positions caveat]".
+>
+> **The overrun.** Qwen2.5-1.5B- and 7B-Instruct have
+> `max_position_embeddings = 32768`. At the 32768 band the prompt is sized to
+> about 32,768 tokens with no chat template, so greedy decode runs past the
+> trained positions. `scripts/flag_positions_over_limit.py`
+> (→ `results/positions_over_limit/`) flags every banked row:
+>
+> | file | rows over the limit |
+> |---|---|
+> | `stage3_32768` (era 1, Stage 3) | **148 of 200** |
+> | the T4 sparse pilot at 32768 (oracle file / inline file) | **476 of 800 / 354 of 600** |
+> | the T4 XAttention pilot (dense file) | **119 of its 200 rows at 32768** |
+> | the T4 dense probe and selected pilot, all canaries | flagged too |
+> | **all banked accuracy rows** | **1,638 of 34,582**, every one at the 32768 band |
+>
+> **The prefill overrun.** **12 rows** of `stage3_32768` (`niah_single`
+> examples 16, 35 and 40 under 4 arms) have **32,769-token prompts**, so
+> prefill itself crossed the limit. The cause is sizing on example 0 only
+> (`attnbench/accuracy/ruler.py`, `RulerExample`).
+>
+> **What it does not establish.** The overrun is small, at most 62 generated
+> positions, and it is shared by the dense and sparse arms of every
+> comparison. No result is known to change because of it. But no 32768
+> accuracy figure here was produced within the models' trained context.
+> Treat them as such until a band sized to 32,768 minus the generation cap
+> exists. That band is pre-registered in
+> `docs/estimator_frontier_preregistration.md` (§4.9) and is never pooled
+> with these rows.
+
 ---
 
 ## GLA / linear attention
@@ -698,8 +730,8 @@ CI **[−6.00, +0.00]**, which includes zero.
 
 | | |
 |---|---|
-| **Supported** | *Accuracy at 0.9 sparsity reaches ceiling (100.0) by 16384 and is at ceiling or indistinguishable from it at 32768.* |
-| **NOT supported** | *Accuracy turns over / declines at 32768.* One example in 50, CI touching zero. An earlier draft of this section stated the turnover as fact and built a two-axes argument on it; that was a single retrieval failure read as a trend. |
+| **Supported** | *Accuracy at 0.9 sparsity reaches ceiling (100.0) by 16384 and is at ceiling or indistinguishable from it at 32768.* [32K-positions caveat] |
+| **NOT supported** | *Accuracy turns over / declines at 32768.* One example in 50, CI touching zero. An earlier draft of this section stated the turnover as fact and built a two-axes argument on it; that was a single retrieval failure read as a trend. [32K-positions caveat] |
 | **NOT supported either** | *Speed and accuracy are one mechanism.* Accuracy saturates at 100.0 from 16384, so beyond that band the data **cannot distinguish** "accuracy would keep rising if it could" from "accuracy has stopped". The convergence claim is untestable past 16384. **Refuted below it, 2026-09-20** — see the next paragraph. |
 
 *This paragraph read: "What survives is narrower and holds: the convergence
@@ -718,11 +750,45 @@ best latency it buys: **249× → 49× → 36× → 35×** at 4096 / 8192 / 1638
 saved. The ratio improved by 5× from 4096 to 8192 and has moved 4% since
 16384. Whatever asymptote it has is around 35×, not 1×.
 
+> **Baseline-strength caveat (added 2026-10-03). Every A100 figure in this
+> file is measured against `sdpa_flash`, which is not the fastest correct
+> dense kernel on that card.** The kernel sweep at the model's `(12,2)`
+> geometry (`results/s7_sweep_hl122/sweep.parquet`) has two faster ones:
+>
+> - **At 8192, cuDNN SDPA: 1.165 ms per layer against 1.570, 25.8% faster.**
+>   - The "faster than flash" kernel ratios become 0.755× / 0.948× / 1.029×
+>     at sparsity 0.5 / 0.75 / 0.9.
+>   - The end-to-end vectorised figures (0.968× / 1.023× / 1.058×) become an
+>     **estimated** 0.910× / 0.962× / 0.995×. That is a loss at every
+>     sparsity.
+> - **At 16384, fa2: 4.167 ms against 4.434, 6.0% faster.** cuDNN faults
+>   above 8192 on this card (`limitations.md`).
+>   - The kernel ratios 1.315× / 1.957× / 2.470× become 1.235× / 1.839× /
+>     2.321×.
+>   - The headline 1.090× / 1.201× / 1.282× becomes an **estimated** 1.072× /
+>     1.180× / 1.260×.
+> - **At 32768** there is no `(12,2)` A100 row for either kernel. The
+>   1.250× / 1.481× / 1.666× are unadjusted, and an upper bound by an amount
+>   not measured.
+>
+> **How the end-to-end estimates are made.** Each one subtracts
+> 28 layers × the per-layer kernel difference from the vectorised session's
+> dense prefill (`results/s8_vec_endtoend/vec_endtoend.parquet`: 190.4 ms at
+> 8192 becomes 179.0; 436.5 ms becomes 429.0). That assumes the dense
+> prefill is GPU-bound and the kernel difference carries over one for one.
+> They are arithmetic, not measurements.
+>
+> **What changes.** The sign at 16384 does not change. The 8192 parity
+> statement becomes a loss against the fastest correct kernel. A same-session,
+> real-geometry comparison of the dense kernels is planned in
+> `docs/estimator_frontier_preregistration.md` (§4.6, run D). Its numbers
+> replace these estimates when banked.
+
 | | |
 |---|---|
 | **Supported** | *Block-sparse prefill attention is faster than dense on an **A100 at 16384** — **1.090× / 1.201× / 1.282× at 0.5 / 0.75 / 0.9** — **but only with a vectorised mask builder in place of this harness's own reference builder (`masks.importance_block_mask`, attnbench code — not an upstream implementation).** With the reference builder the same configurations are 0.405× / 0.633× / 0.956×. At 8192 the vectorised builder reaches parity, not a win (0.968× / 1.023× / 1.058×). **At 32768** — measured 2026-10-01, one session, builders interleaved per rep — it wins at every sparsity: **1.250× / 1.481× / 1.666×**, against 0.283× / 0.480× / 0.836× with the reference builder. The difference between builders is one function: ~91% of the reference builder's cost is Python interpreter overhead in an unvectorised per-query-block loop.* See "The A100 reversal is CPU mask construction". |
 | **Not supported** | *…at 8192 and above.* This row said so until 2026-09-19. At 8192 the 0.5 cell is a loss and 0.75's +2.3% is inside the 1.8–5.8% session-to-session spread measured on the reference arm at that band. 32768 had no vectorised measurement until 2026-10-01 and now clears the floor at every sparsity (one session); 8192 still does not. |
-| **Supported** | *On an **NVIDIA L4 (sm_89)**, block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* **The card is not a detail of this sentence.** On an A100 the comparable figure is prefill-only — 1.373× on the L4 — and it is 0.475× with the reference builder; 1.321× includes decode, so the two are not the same quantity. The cause is the builder, not the card. *(This row set 1.321× beside 0.475× as "the same configuration" until 2026-10-01.)* |
+| **Supported** | *On an **NVIDIA L4 (sm_89)**, block-sparse attention reaches **1.321× end-to-end at 32768 with no accuracy loss** (100.0 vs 100.0, 0.75 sparsity), and the benefit grows monotonically with context length across five bands.* **The card is not a detail of this sentence.** On an A100 the comparable figure is prefill-only — 1.373× on the L4 — and it is 0.475× with the reference builder; 1.321× includes decode, so the two are not the same quantity. The cause is the builder, not the card. *(This row set 1.321× beside 0.475× as "the same configuration" until 2026-10-01.)* [32K-positions caveat] |
 | **Not supported** | *Block-sparse attention is slower than dense on an A100.* This was the published claim on 2026-09-16 and it is wrong as a statement about the method. It is true only of the reference mask builder, and it inverts when that builder is replaced — measured end-to-end, same process, same scores, only the builder changed, with bitwise-identical model outputs. |
 | **Supported** | *The oracle scoring pass costs ~35× the latency it saves, and that ratio stops improving after 8192. The speedup is an upper bound no measured estimator approaches.* |
 | **Supported; both arms are era-2 and the magnitudes move** | *The oracle requirement is **not** a small-model artifact. Against MInference's mean-pool estimator on `niah_multikey` at 16384, the oracle's advantage **widens** with scale — +32/+40/+19 points at 1.5B against **+39/+67/+76** at 7B — because better representations help the dense-softmax oracle far more than the estimator. At 0.9 sparsity the oracle retains 95% of dense at 7B while the estimator retains 16%.* |
@@ -744,7 +810,7 @@ confirmed by a measurement independent of the intercept check that found it.
 Everything above resolves into one sentence, and both halves are load-bearing:
 
 > **On an NVIDIA L4, block-sparse attention with oracle-derived masks achieves up to 1.32×
-> end-to-end at no accuracy cost at 32K context, and computing the oracle
+> end-to-end at no accuracy cost at 32K context [32K-positions caveat], and computing the oracle
 > costs roughly 35× the latency it saves.**
 
 The second clause is not a caveat on the first. It is the finding. A measured
@@ -773,7 +839,7 @@ accuracy at ceiling. This study measured the **second** bar and not the first.
   k, the mean-pool estimator plus its warm device mask build costs 0.06–0.31
   of the attention time it saves, kernel for kernel, on an L4 at 16384 and
   32768. On the T4 pilot it certifies non-inferiority at no sparsity on any
-  task. See "The deployable estimator, run inline", below. The bullet above
+  task [32K-positions caveat]. See "The deployable estimator, run inline", below. The bullet above
   is kept as it stood, because the paragraph after it reasons from it.
 
 So the honest statement is narrower than "nobody has tried" and worse than it:
@@ -811,7 +877,7 @@ small-scale artifact" until 2026-10-01.)*
 end-to-end numbers differ by regime, and that gap is what the study set out to
 measure. On one card, the L4, it has three measured ends: **a whole-model
 prefill speedup of 1.24–1.26× at 16384/0.9, an oracle-masked end-to-end
-speedup of up to 1.32× at 32K, and an oracle cost of 35× the saving standing
+speedup of up to 1.32× at 32K [32K-positions caveat], and an oracle cost of 35× the saving standing
 between that and any deployment.** One deployable estimator's cost has been
 measured inline since 2026-10-02 (above): it is below the saving, and its masks
 fail the accuracy half. *(This sentence read "A deployable estimator's cost is
@@ -1213,6 +1279,16 @@ real geometry), and the end-to-end loss is CPU-side mask construction.
 Swapping the builder alone turns 0.633× into 1.201× — see "The A100 reversal
 is CPU mask construction" in `limitations.md`.
 
+> **Baseline-strength caveat (2026-10-03).** "Faster than flash" below means
+> faster than `sdpa_flash`.
+>
+> - **At 8192, cuDNN is the fastest correct dense kernel**, and against it
+>   the kernel is 0.755× / 0.948× / 1.029× at sparsity 0.5 / 0.75 / 0.9. It
+>   is **slower at 0.75**, the cell the row below quotes as 1.28×.
+> - **At 16384, against fa2,** the ratios are 1.235× / 1.839× / 2.321×.
+>
+> See the caveat above the A100 end-to-end row.
+
 | | |
 |---|---|
 | **Supported** | *The end-to-end block-sparse prefill speedup is **hardware-conditional**. On an L4 it reaches 1.373× at 32768/0.75 (era 1); on an A100 0.475× (era 2), and sparse is slower than dense at every band and sparsity measured. In one mask era (3), same script, 2026-10-01: 1.344× against 0.480×.* *(This row called the A100 figure "the same configuration" until 2026-10-01; the two were built with different mask rules.)* **"Hardware" here is the whole host + card + builder setup, not the GPU** (qualified 2026-10-01): the two hosts are the same CPU SKU running identical code, yet the L4's rows bound its mask-construction cost at 8192/0.50 below half what the A100's forward paid. **Measured 2026-10-01:** the builder costs the same on both hosts standalone (within 3%); the A100's forward pays 13–88% of it and the L4's about none, because the slower card gives the CPU enough queued GPU work to hide it. A host–device balance effect — not the attention kernel and not the host. see `limitations.md`, "Measured 2026-10-01". |
@@ -1363,7 +1439,7 @@ sentences differ sharply depending on which of their claims is being answered.
 
 | | |
 |---|---|
-| **Supported** | *Sparse Frontier establishes accuracy-vs-sparsity trade-offs without measuring realised wall-clock speedup on the hardware. This study measures it, on two cards: 1.321x at 32768 at 0.75 sparsity on an L4 with no accuracy loss; on an A100, 0.633x at 16384/0.75 with the reference mask builder and **1.201x** with a vectorised one — and the importance oracle producing that accuracy costs ~35x the latency it saves.* |
+| **Supported** | *Sparse Frontier establishes accuracy-vs-sparsity trade-offs without measuring realised wall-clock speedup on the hardware. This study measures it, on two cards: 1.321x at 32768 at 0.75 sparsity on an L4 with no accuracy loss; on an A100, 0.633x at 16384/0.75 with the reference mask builder and **1.201x** with a vectorised one — and the importance oracle producing that accuracy costs ~35x the latency it saves.* [32K-positions caveat] |
 | **Not supported** | *This study contradicts Sparse Frontier.* It does not. It measures a quantity they scope out, on one sparse family (block-sparse), in one regime (prefill), on one model family at two sizes (Qwen2.5 1.5B and 7B). Where the two overlap, they agree. |
 | **Not supported** | *Sparse attention does not pay off.* NSA (arXiv:2502.11089) reports 9.0× forward at 64k against FlashAttention-2, and this study's own vectorised-builder run wins on the A100. Beyond that: prefill-only, block-sparse-only, oracle-masked. See the scope banner at the top of `limitations.md`. Their own positive results are strongest in regimes this study excludes by construction — decode sparsity, and large-batch serving, which per their Appendix B.3 is a decode phenomenon because weights load once per forward pass regardless of batch. |
 
@@ -1596,7 +1672,7 @@ clears by is larger than was claimed, not smaller.*
 The pre-registered pilot is `docs/t4_sparse_pilot.md`. It ran on an NVIDIA
 L4, at one commit (`77b48e5`), with every row `git_dirty=False`, on
 Qwen2.5-1.5B-Instruct. The tasks are `qa_1`, `niah_multivalue` and
-`niah_multiquery`, at 16384 and 32768. The test is the exact paired bound
+`niah_multiquery`, at 16384 and 32768. [32K-positions caveat] The test is the exact paired bound
 with a 10-point margin, one-sided alpha 0.025, under a fixed sequence
 0.5 → 0.75 → 0.9. Two arms are compared with dense in the same session:
 
@@ -1656,7 +1732,7 @@ NVIDIA L4 at one commit (`7490ee4`), with every row `git_dirty=False`.
 | | |
 |---|---|
 | **Supported** | *Run inline with a scalar threshold, XAttention is non-inferior to dense at no threshold (0.95, 0.9 or 0.8) on any of the pilot's tasks or bands. Its first test, at tau 0.95, fails in every primary and secondary cell, with bounds of −12.7 to −50.8 points, at mean realised densities of 0.11 to 0.39.* |
-| **Not supported** | *XAttention cannot preserve accuracy on these tasks.* The threshold is scalar, not profiled per layer for this model. On `qa_1` at 32768 the difference is −2.0 points and fails on its bound (−12.7), as the oracle at 0.5 does on the same cell. Two n=50 cells differ by +2.0 and −4.0 and cannot certify at that n. What is supported is narrower: this configuration does not certify. |
+| **Not supported** | *XAttention cannot preserve accuracy on these tasks.* The threshold is scalar, not profiled per layer for this model. On `qa_1` at 32768 the difference is −2.0 points and fails on its bound (−12.7), as the oracle at 0.5 does on the same cell. Two n=50 cells differ by +2.0 and −4.0 and cannot certify at that n. What is supported is narrower: this configuration does not certify. [32K-positions caveat] |
 | **Supported** | *Neither deployable estimator tested certifies non-inferiority at any setting on the T4 pilot's tasks: not MInference's mean-pool estimator and not XAttention, both run inline. Only the oracle does, at sparsity 0.5 on `qa_1` at 16384, given a ranking computed from the full attention scores.* |
 | **Supported** | *On an NVIDIA L4, XAttention's estimator, on the torch path its official code selects for that card, costs more per layer than dense attention: 19.5 vs 14.5 ms at 16384, and 60.6 vs 58.4 ms at 32768, at every threshold.* |
 | **Not supported** | *XAttention's estimator is slower than dense attention.* That is measured on the L4's torch fallback only. Its Triton path, which the official code uses on A100 and H100 cards, is unmeasured here. |
@@ -1671,7 +1747,7 @@ stated deviation from the method. Nothing here tests that reading.
 **Descriptively, against the same dense predictions:** XAttention at tau
 0.95 keeps fewer blocks than either 0.5 arm of the sparse pilot. Even so, it
 is closer to dense than the mean-pool estimator on four of five primary and
-secondary cells, and equal to the oracle on one (`qa_1`/32768). These
+secondary cells, and equal to the oracle on one (`qa_1`/32768) [32K-positions caveat]. These
 comparisons cross commits and densities and are not tests.
 
 **What this changes upstream.** The break-even argument's accuracy half has
