@@ -214,10 +214,15 @@ asserted, not transcribed, by
 it stood that day: transformers 5.17.0 and 4.46.0 agreed test for test. It has
 not been re-measured since, so treat it as a result about that suite on those
 two versions rather than a standing property of this one. The project
-virtualenv on this workstation runs **5.17.0**, the version it was measured
-at. *(This sentence said the workstation "now runs 5.16.1" until 2026-10-01;
-that is the system `python3`, which the suite does not use — register item
-D1.)* Reproducing 4.46.0 needs a Linux container and this host
+virtualenv on this workstation runs **5.18.0** (with torch 2.14.1), installed
+2026-10-01 20:31 by its `dist-info` timestamps, so it is no longer the 5.17.0
+the equality was measured at. *(This sentence said "runs 5.17.0, the version
+it was measured at" until 2026-10-03, and the workstation "now runs 5.16.1"
+until 2026-10-01; that is the system `python3`, which the suite does not use —
+register item D1.)* *The Llama-3.1 RoPE gate (`tests/test_llama3_rope_gate.py`)
+was run on both 5.18.0 and 4.46.0 on 2026-10-03, with 4.46.0 installed in a
+scratch directory on this macOS host, not a Linux container. That is one file
+on 4.46.0, not the suite.* Reproducing 4.46.0 needs a Linux container and this host
 has no container runtime — it is the one item on the audit register's
 could-not-verify list that is still open.* *(This paragraph said "The 11 skips … 2 need CUDA, and 9 read banked
 result files" against a code block saying 10 skipped, while the real numbers

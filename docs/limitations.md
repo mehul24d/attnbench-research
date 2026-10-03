@@ -347,6 +347,30 @@ every cell and bitwise-identical except at 16384 and 32768 for 0.50 and 0.75,
 the tie-break differences seen on the other cards. Derived in
 `tests/test_h100_overlap_preregistered.py`; banked in `results/s12_h100_*`.
 
+> **H100 baseline strength: unmeasured (caveat added 2026-10-03).** Every
+> H100 speedup in this section is against `sdpa_flash`, the only dense kernel
+> `results/s12_h100_vec_endtoend` timed. That covers the reference builder's
+> 0.294–0.850 and the vectorised 1.245× / 1.537× / 1.790× at 32768
+> (0.923 / 0.990 / 1.036 at 8192, 1.076 / 1.219 / 1.327 at 16384). No banked
+> H100 file times any other dense kernel at the model's (12, 2) geometry, so
+> how far these move against the fastest correct kernel is **unmeasured**.
+> They are not adjusted.
+>
+> - **The only banked H100 dense comparison** is the Stage 2 sweep at
+>   (32, 8) (`results/h100_20260916_stage2/results/sweep/sweep.parquet`).
+>   There `flex` is fastest: `sdpa_flash` takes 1.15× its time at 16384
+>   (6.778 vs 5.886 ms) and 1.16× at 32768 (26.034 vs 22.538 ms). cuDNN
+>   runs at 0.49× flash at 4096 (0.262 vs 0.535 ms) and was never launched
+>   above 8192. The sweep has no 8192 band.
+> - **It does not size the in-model effect.** On the A100 the ranking at
+>   (32, 8) does not carry to (12, 2). At 8192, cuDNN takes 1.007× flash's
+>   time at (32, 8) (2.982 vs 2.960 ms, `results/a100/sweep_a100.parquet`)
+>   but 0.742× at (12, 2) (1.165 vs 1.570 ms, `results/s7_sweep_hl122`).
+>   That gap is the difference that takes the A100's 8192 estimate below 1.
+> - **Measured by:** run D in session I3
+>   (`docs/estimator_frontier_preregistration.md` §4.6), at the real
+>   geometry.
+
 **"As implemented" is load-bearing — this is an engineering cost, not a
 property of sparse attention.** Profiling `importance_block_mask` at 32768:
 the Python loop body is 0.212 s per 10 calls while every torch op inside it
@@ -854,6 +878,19 @@ built on the nominal figure ran ~20% low. Contexts are now binary-searched
 against the target model's real tokenizer
 (`attnbench/accuracy/sizing.py`), so a grid length means what it says, to
 within ~1%.
+
+*"Exact" here means each row's `context_length` is the real measured count.
+It does not mean the count is at or under the band. Tasks outside
+`ruler._PER_EXAMPLE_FIT` are sized once per budget on example 0, and later
+examples whose UUID or number needles tokenize longer land above it: **182
+distinct examples** in banked data (655 file-example pairs across 31 distinct
+parquets, since examples recur), up to **+82** tokens (`niah_multikey`, 16384),
+and `niah_single` at **+1 at 32768** — twelve 32,769-token prompts in
+`stage3_32768`, past Qwen2.5's 32,768-position limit
+(`results/positions_over_limit/sizing_delta_by_band_task.csv`). Added
+2026-10-03; nothing in this section said so before. New runs that need the
+ceiling pass `per_example_fit=True` (estimator-frontier pre-registration,
+§4.9).*
 
 **Results produced before that change are not directly comparable** to ones
 after it at the same nominal length, because the underlying contexts were

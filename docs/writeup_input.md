@@ -314,7 +314,7 @@ Pareto-optimal against 45+ models claiming greater efficiency.
 | **Hardware** | Rented **NVIDIA L4 (24 GB, sm_89)** and **A100-SXM4 (80 GB, sm_80)**: two architectures for every result. An **H100 (80 GB, sm_90)** for the pre-registered host–device overlap test only (2026-10-01). Host CPUs: Xeon Platinum 8273CL on the L4 and A100 hosts, 8481C on the H100's (`limitations.md`, "Host CPU provenance"). |
 | **Model** | Qwen2.5-1.5B-Instruct (28 layers, 2 KV heads), one model |
 | **Tasks** | `niah_single`, `niah_multikey`, `vt` — RULER's task-construction *algorithm*, not RULER's benchmark distribution |
-| **Context** | 2048 / 4096 / 8192 / 16384 / 32768, exact token counts |
+| **Context** | 2048 / 4096 / 8192 / 16384 / 32768, exact token counts *(measured, not capped: 182 distinct banked examples land above their band, up to +82 tokens, and 12 prompts in `stage3_32768` are 32,769 tokens; `limitations.md`, "Context lengths are exact token counts". Note added 2026-10-03)* |
 | **Sparsity** | 0.5 / 0.75 / 0.9, `block_size=128`, **prefill only** — generation runs dense over the cache in both arms |
 | **Regime** | **batch 1**, inference only, no backward pass |
 | **n** | 300 per arm per (band, task) on the three-task grid at 2048–8192; 100 for `niah_single` at 2048–16384; 50 at 32768 |
