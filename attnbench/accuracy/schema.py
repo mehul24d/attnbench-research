@@ -196,6 +196,10 @@ class AccuracyResult:
     # See Generated.stop_token_id. None on banked rows written before
     # 2026-10-03, which did not record it.
     stop_token_id: Optional[int] = None
+    # masks.MASK_SELECTORS; the era-4 column (pre-registration sec. 4.5).
+    # The runner sets it on every row; rows banked before it have none, and
+    # analysis/eras.py resolves those by commit.
+    mask_selector: Optional[str] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
     # See Generated.decode_pinned. Carried so a replayed-regime row can never
@@ -268,6 +272,16 @@ class AccuracyResult:
             raise ValueError(
                 f"backend {self.backend!r} does not select its own blocks; "
                 f"xattn_threshold, xattn_calibration and the densities must be None.")
+        if self.mask_selector is not None:
+            from ..masks import MASK_SELECTORS
+            if self.mask_selector not in MASK_SELECTORS:
+                raise ValueError(f"mask_selector={self.mask_selector!r} is not one "
+                                 f"of {MASK_SELECTORS}")
+            if selecting != (self.mask_selector == "xattn_native"):
+                raise ValueError(
+                    f"backend {self.backend!r} with mask_selector="
+                    f"{self.mask_selector!r}: a self-selecting backend is "
+                    f"xattn_native, and nothing else is.")
 
     def to_dict(self) -> dict:
         return asdict(self)

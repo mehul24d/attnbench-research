@@ -531,3 +531,111 @@ def test_the_script_refuses_a_provenance_column_present_on_one_side_only(
     assert "side only" in out and col in out, (
         f"{script} refused for some other reason than the one-sided "
         f"{col!r}:\n{out[-2000:]}")
+
+
+# --- era 4: the `mask_selector` column (pre-registration sec. 4.5, 2026-10-03) ---
+
+def _frame(commit, selector=...):
+    pd = pytest.importorskip("pandas")
+    d = {"git_commit": [commit, commit]}
+    if selector is not ...:
+        d["mask_selector"] = [selector, selector]
+    return pd.DataFrame(d)
+
+
+def _git_head() -> str | None:
+    r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
+                       text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def test_the_selector_decides_era_4_and_native_before_the_commit():
+    banked_era3 = "39e1d6d"   # s7_jitter
+    assert eras.era_of_row(banked_era3, "per_head") == 4
+    assert eras.era_of_row(banked_era3, "xattn_native") == eras.NATIVE
+    assert eras.era_of_row(banked_era3, "head_uniform") == 3
+    assert eras.era_of_row(banked_era3, "none") == 3
+    assert eras.era_of_row("166b2df", "head_uniform") == 2
+    with pytest.raises(eras.EraRefusal, match="not one of"):
+        eras.era_of_row(banked_era3, "per-head")
+
+
+def test_banked_rows_without_the_column_still_resolve_by_commit(monkeypatch):
+    monkeypatch.setattr(eras, "PER_HEAD_SELECTOR_COMMIT", "0" * 40)
+    for commit, era in (("d27c650", 1), ("166b2df", 2), ("39e1d6d", 3)):
+        assert eras.era_of_row(commit, None) == era
+
+
+def test_a_stripped_per_head_row_is_refused_not_read_as_era_3(monkeypatch):
+    """THE break-test of sec. 4.5: a per-head row with `mask_selector`
+    stripped, at or after the introducing commit, must be refused. Read by
+    commit it would be era 3, which is exactly the silent mislabel."""
+    head = _git_head()
+    if head is None:
+        pytest.skip("no git history in this checkout")
+    monkeypatch.setattr(eras, "PER_HEAD_SELECTOR_COMMIT", head)
+    assert eras.era_of_row(head, "per_head") == 4
+    assert eras.era_from_git(head, str(REPO)) == 3          # what a commit-only read says
+    with pytest.raises(eras.EraRefusal, match="no mask_selector"):
+        eras.era_of_row(head, None)
+    with pytest.raises(eras.EraRefusal, match="no mask_selector"):
+        eras.side_from_frame("stripped", _frame(head))
+    assert eras.side_from_frame("kept", _frame(head, "per_head")).eras == {4}
+
+
+def test_without_git_an_unplaceable_row_is_refused(monkeypatch):
+    monkeypatch.setattr(eras, "PER_HEAD_SELECTOR_COMMIT", "a" * 40)
+    with pytest.raises(eras.EraRefusal, match="no mask_selector"):
+        eras.era_of_row("f" * 40, None)
+
+
+def test_era_3_against_era_4_is_refused_without_a_declaration():
+    left = eras.side_from_frame("head_uniform", _frame("39e1d6d", "head_uniform"))
+    right = eras.side_from_frame("per_head", _frame("39e1d6d", "per_head"))
+    with pytest.raises(eras.EraRefusal, match="different mask eras"):
+        eras.licence(left, right, _args())
+    eras.licence(left, right, _args("era3:era4", "T4 head-uniform arms, descriptive only"))
+    native = eras.side_from_frame("xattn", _frame("39e1d6d", "xattn_native"))
+    with pytest.raises(eras.EraRefusal, match="different mask eras"):
+        eras.licence(right, native, _args())
+
+
+def _documented_era4_row() -> str:
+    text = LIMITATIONS.read_text()
+    block = re.search(
+        r"### Which mask era each banked accuracy file belongs to\n(.*?)\n#",
+        text, re.S).group(1)
+    rows = [l for l in block.splitlines() if re.match(r"\|\s*\*\*4\.", l)]
+    assert len(rows) == 1, "the era table has no single era-4 row"
+    return rows[0]
+
+
+def test_era_4_is_registered_in_the_documented_table():
+    row = _documented_era4_row()
+    assert "per_head" in row and "mask_selector" in row
+    assert eras.ERA_LABELS[4] == "era4" and 4 in eras.ERA_RULES
+
+
+def test_era_4_files_are_derived_from_the_table_joined_to_mask_selector():
+    """sec. 4.5 item 3: a banked file's rows that carry `mask_selector`
+    resolve, row by row, to the era the table gives the file. Era 4 has no
+    banked file yet, so today this checks the other direction too: no banked
+    row says per_head without an era-4 table entry."""
+    pd = pytest.importorskip("pandas")
+    documented = documented_eras()
+    checked = 0
+    for key, paths in _banked_files().items():
+        for p in paths:
+            cols = pd.read_parquet(p, columns=None).columns
+            if "mask_selector" not in cols:
+                continue
+            d = pd.read_parquet(p, columns=["git_commit", "mask_selector"])
+            got = {eras.era_of_row(c, s) for c, s in
+                   d.drop_duplicates().itertuples(index=False)}
+            assert got == {documented.get(key)}, (key, got, documented.get(key))
+            checked += 1
+    era4_listed = [k for k, e in documented.items() if e == 4]
+    if checked == 0:
+        assert era4_listed == [], (
+            f"the table lists {era4_listed} as era 4 but no banked parquet "
+            f"carries mask_selector")

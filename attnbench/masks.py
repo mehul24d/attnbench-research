@@ -175,6 +175,31 @@ class BlockSparseMask:
 # Identity, pool construction, and seeding
 # ---------------------------------------------------------------------------
 
+# Which selector built a row's mask (estimator-frontier pre-registration,
+# sec. 4.5, era 4; added 2026-10-03). Carried on every accuracy, recall,
+# component and end-to-end row from the commit that introduced it, because
+# the per-head selector (era 4) runs BESIDE the head-uniform path (era 3), so
+# the era of a new row cannot be read from its commit alone.
+#
+#   per_head      era 4: the era-3 rule applied per query head
+#   head_uniform  eras 1-3: one mask for all heads (resolved by commit)
+#   xattn_native  XAttention's own selection: not an attnbench era
+#   none          no sparse mask (dense rows)
+MASK_SELECTORS = ("per_head", "head_uniform", "xattn_native", "none")
+SELF_SELECTING = frozenset({"xattention", "xattn_estimate"})
+
+
+def mask_selector_for(backend: str, *, sparse: bool, per_head: bool = False) -> str:
+    """The `mask_selector` of a row produced by `backend`. `sparse` says
+    whether a block mask was applied; `per_head` only the era-4 selector sets.
+    """
+    if backend in SELF_SELECTING:
+        return "xattn_native"
+    if not sparse:
+        return "none"
+    return "per_head" if per_head else "head_uniform"
+
+
 def _n_blocks(seq_len: int, block_size: int) -> int:
     return -(-seq_len // block_size)   # ceil div
 

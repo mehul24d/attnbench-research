@@ -712,6 +712,32 @@ recall, component and end-to-end row carries `mask_selector`:
 | `per_head` | 4 |
 | `head_uniform` | 3, by the existing commit rule |
 | `xattn_native` | **native**: the method's own selection, not an attnbench era |
+| `none` | no sparse mask (dense rows); by the commit rule. Added 2026-10-03, because dense rows also have to be fully populated. |
+
+**Implemented 2026-10-03 (lock gate L3).**
+
+- `masks.MASK_SELECTORS` and `masks.mask_selector_for`.
+- The column is written on:
+  - accuracy rows (`runner`, validated in `AccuracyResult`);
+  - component rows (`measure_estimator_cost.py`);
+  - end-to-end rows (`run_vectorised_endtoend.py`);
+  - phase rows (`PhaseMeasurement`).
+- Recall rows do not exist yet. Their writer (§11.2) must carry it, and
+  `frontier_prereg`'s plan test checks that.
+- `eras.py`:
+  - `ERA_LABELS[4]` and `NATIVE`;
+  - `era_of_row` (`mask_selector` first, then commit);
+  - `side_from_frame`, which the two comparison scripts now use;
+  - `PER_HEAD_SELECTOR_COMMIT`, recorded in the commit after the
+    introducing one.
+- `licence` no longer passes two sides on equal commits alone. Their eras
+  must match too, because one commit can now hold era 3 and era 4.
+- The era-4 row is added to the `limitations.md` table.
+- Tests: `tests/test_eras.py` (era-4 tests, including the stripped-column
+  break-test) and `tests/test_mask_selector_rows.py`. Every guard was
+  watched red.
+- **Not yet built:** the per-head selector itself (§11.2 item 3). Until it
+  exists, no row can be `per_head`.
 
 A row at or after that commit with no `mask_selector` is **refused**. Rows
 before it resolve by commit, as now.
@@ -1900,7 +1926,7 @@ seven of these are met and committed with it (L7 added 2026-10-03):
 |---|---|---|
 | L1 | `attnbench/analysis/frontier_prereg.py`, its plan test `tests/test_frontier_prereg_plan.py`, and the §11.3 break-tests, each watched red | **not started** |
 | L2 | The T4 amendment code (§12), with T4's own plan test updated, committed with the dated amendment sections | **not started** |
-| L3 | The `mask_selector` column on every row type, era 4 registered (§4.5), and its stripped-column break-test | **not started** |
+| L3 | The `mask_selector` column on every row type, era 4 registered (§4.5), and its stripped-column break-test | **Done 2026-10-03.** The column is on accuracy, component, end-to-end and phase rows; era 4 is in `eras.py` and in the `limitations.md` table; a stripped per-head row is refused (break-tested). Recall rows inherit the requirement when their writer is built. `PER_HEAD_SELECTOR_COMMIT` is recorded in the commit after the introducing one. |
 | L4 | The cuDNN-on-H100 record checked (§4.6) | **done.** The record exists and is guard-written: cuDNN was never launched above 8192 on an H100. §4.6 is corrected, and so is every doc that called these rows faults (runbook, `run_probe.py` help, `silent_failure_patterns.md` ×2, `limitations.md`, `a100_session_plan.md`): "observed on L4 and A100, H100 untested above 8192". |
 | L5 | The Llama-3.1-8B `config.json` check (G9) at revision `0e9e39f…`: `max_position_embeddings`, `rope_scaling`, sha256 | **Passed 2026-10-03, for the position limit only.** The researcher read it locally with their own token (values and sha256 in §4.9). On CPU the same day: the repo id and table shape match the authors' model; transformers 4.46.0 and 5.18.0 implement `llama3`, and the logits gate passes with it (`tests/test_llama3_rope_gate.py`). What it does not cover is L7. |
 | L7 | The Llama stop rule (added 2026-10-03 from the researcher's pre-lock list): `generation_config.json`'s stop ids recorded in §4.9; the Llama caps measured with the Llama tokenizer and committed to `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS`; `text.json` re-counted with the Llama tokenizer (G9 step 3, done early) | **Done 2026-10-03 (sixth draft).** `generation_config.json` was reported by the researcher, with the token ids confirmed locally. The caps were measured offline with the cached tokenizer (no token) and committed, pinned to the §4.9 table by a test. The `text.json` maximum is 65,314. Also done: forced and asserted greedy decoding, the three-id stop set, `stop_token_id`, the newline set rebuilt from the Llama vocab, the shared encoder (sizer = fed ids) and the double-BOS guard, all tested (`tests/test_llama_decoding_and_prompts.py`). |

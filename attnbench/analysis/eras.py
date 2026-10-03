@@ -26,6 +26,13 @@ fact. It exists because the comparison scripts must work in a checkout with
 banked results and no git history, and `tests/test_eras.py` requires the two
 to agree wherever git is available.
 
+**Era 4 does use a column (2026-10-03).** The per-head selector runs beside
+the head-uniform path, so from its introducing commit on, every row carries
+`mask_selector` and `era_of_row` reads it before the commit. That is not the
+half-populated field argued against below: it is fully populated from that
+commit, rows before it resolve by commit as before, and a row after it
+without the column is refused.
+
 **Why still no `mask_rule` column.** Not because the information is
 unavailable -- it is, from `git_commit` -- but because adding the column now
 would stamp future rows and leave every banked row unlabelled, and a
@@ -96,14 +103,31 @@ COMMIT_ERA: dict[str, int] = {
 SINK_FIX_COMMIT = "37675a0"      # 2026-09-16, kv block 0 granted free
 JITTER_FIX_COMMIT = "5cc3a40"    # 2026-09-20, jitter drawn unconditionally
 
-ERA_LABELS = {1: "era1", 2: "era2", 3: "era3"}
+# Era 4 and "native" (2026-10-03, estimator-frontier pre-registration sec.
+# 4.5) are not commit eras. The per-head selector runs BESIDE the head-uniform
+# path, so they come from a row's `mask_selector` column (masks.MASK_SELECTORS),
+# and only `head_uniform` / `none` rows fall back to the commit rule.
+NATIVE = 99   # XAttention's own selection: compared with nothing by default
+
+ERA_LABELS = {1: "era1", 2: "era2", 3: "era3", 4: "era4", NATIVE: "native"}
 LABEL_ERAS = {v: k for k, v in ERA_LABELS.items()}
 
 ERA_RULES = {
     1: "pre-sink (kv block 0 an ordinary candidate)",
     2: "forced-sink (kv block 0 free; jitter after the budget check)",
     3: "post-jitter (forced-sink, plus jitter drawn unconditionally)",
+    4: "per-head (the era-3 rule applied per query head; mask_selector=per_head)",
+    NATIVE: "native (the method's own selection, e.g. XAttention; not an attnbench era)",
 }
+
+SELECTOR_ERA = {"per_head": 4, "xattn_native": NATIVE}
+
+# The commit that introduced the `mask_selector` column. Every row produced at
+# it or after it carries the column, and a row there WITHOUT it is refused
+# rather than read by commit -- the stripped-column case, where a per-head row
+# would otherwise pass as era 3. None until the introducing commit exists; it
+# is recorded in the commit that follows it.
+PER_HEAD_SELECTOR_COMMIT: str | None = None
 
 
 class EraRefusal(SystemExit):
@@ -157,17 +181,76 @@ def era_of(commit: str) -> int | None:
     return None
 
 
+def at_or_after_selector_commit(commit: str, repo: str | None = None) -> bool:
+    """Whether `commit` is the column's introducing commit or a descendant.
+
+    Decided from the graph where git can decide it. Without git, a commit in
+    the banked register (`COMMIT_ERA`, all of which predate the column) is
+    before it, and any other commit is treated as AFTER it: a row that cannot
+    be placed must not be read as era 3 by default.
+    """
+    if PER_HEAD_SELECTOR_COMMIT is None:
+        return False
+    c = str(commit).strip()
+    if any(c.startswith(p) for p in COMMIT_ERA):
+        return False
+    import subprocess
+    try:
+        r = subprocess.run(["git", "merge-base", "--is-ancestor",
+                            PER_HEAD_SELECTOR_COMMIT, c], cwd=repo,
+                           capture_output=True)
+    except (OSError, ValueError):
+        return True
+    if r.returncode in (0, 1):
+        return r.returncode == 0
+    return True
+
+
+def era_of_row(commit, mask_selector=None, repo: str | None = None) -> int | None:
+    """One row's era: `mask_selector` first, then the commit.
+
+    Raises `EraRefusal` for a row at or after the introducing commit with no
+    `mask_selector` (sec. 4.5): that is a stripped per-head row as easily as a
+    head-uniform one, and the commit cannot tell them apart.
+    """
+    sel = None if mask_selector is None or mask_selector != mask_selector else str(mask_selector)
+    if sel is not None:
+        from ..masks import MASK_SELECTORS
+        if sel not in MASK_SELECTORS:
+            raise EraRefusal(f"\nREFUSED: mask_selector={sel!r} is not one of "
+                             f"{MASK_SELECTORS}.")
+        if sel in SELECTOR_ERA:
+            return SELECTOR_ERA[sel]
+        era = era_of(commit)
+        return era if era is not None else era_from_git(str(commit), repo)
+    if at_or_after_selector_commit(commit, repo):
+        raise EraRefusal(
+            f"\nREFUSED: a row at commit {str(commit)[:7]} has no mask_selector. "
+            f"Every row from {PER_HEAD_SELECTOR_COMMIT} on carries it, because "
+            f"a per-head (era 4) and a head-uniform (era 3) row share a commit. "
+            f"Without it the era cannot be decided, and it is not read as era 3.")
+    return era_of(commit)
+
+
 @dataclass(frozen=True)
 class Side:
     label: str
     commits: tuple[str, ...]
+    # Set by `side_from_frame`, where eras come per row (mask_selector first);
+    # None for a commits-only side, whose eras come from the register.
+    row_eras: frozenset | None = None
+    row_unknown: tuple[str, ...] | None = None
 
     @property
     def eras(self) -> set[int]:
+        if self.row_eras is not None:
+            return set(self.row_eras)
         return {e for e in (era_of(c) for c in self.commits) if e is not None}
 
     @property
     def unknown(self) -> tuple[str, ...]:
+        if self.row_unknown is not None:
+            return self.row_unknown
         return tuple(c for c in self.commits if era_of(c) is None)
 
     def describe(self) -> str:
@@ -227,7 +310,10 @@ def licence(left: Side, right: Side, args: argparse.Namespace) -> list[str]:
     same_era = both_known and left.eras == right.eras and len(left.eras) == 1
 
     if args.cross_era is None:
-        if same_commits:
+        # Same commits are no longer enough on their own (2026-10-03): from
+        # the `mask_selector` commit on, one commit can hold an era-3 and an
+        # era-4 row, so the eras must match too.
+        if same_commits and left.eras == right.eras:
             return head
         if same_era:
             era = next(iter(left.eras))
@@ -290,6 +376,30 @@ def sides(a_commits: Iterable[str], b_commits: Iterable[str],
           a_label: str, b_label: str) -> tuple[Side, Side]:
     return (Side(a_label, tuple(sorted(set(map(str, a_commits))))),
             Side(b_label, tuple(sorted(set(map(str, b_commits))))))
+
+
+def side_from_frame(label: str, frame, repo: str | None = None) -> Side:
+    """A comparison side whose eras are resolved row by row (`era_of_row`),
+    so `mask_selector` decides era 4 and native, and a stripped row at or
+    after the introducing commit refuses."""
+    commits = commits_of(frame)
+    sel = frame["mask_selector"] if "mask_selector" in frame else None
+    pairs = set()
+    for i, c in enumerate(frame["git_commit"] if "git_commit" in frame else []):
+        s = None if sel is None else sel.iloc[i]
+        pairs.add((str(c), None if s is None or s != s else str(s)))
+    eras_, unknown = set(), set()
+    for c, s in pairs:
+        e = era_of_row(c, s, repo)
+        if e is None:
+            unknown.add(c)
+        else:
+            eras_.add(e)
+    return Side(label, commits, frozenset(eras_), tuple(sorted(unknown)))
+
+
+def sides_from_frames(a, b, a_label: str, b_label: str) -> tuple[Side, Side]:
+    return side_from_frame(a_label, a), side_from_frame(b_label, b)
 
 
 def commits_of(frame) -> tuple[str, ...]:

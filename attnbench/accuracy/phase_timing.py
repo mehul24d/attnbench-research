@@ -120,6 +120,15 @@ class PhaseMeasurement:
     n_reps: int
     clocks_locked: bool
     detail: str = ""
+    # The era-4 column (pre-registration sec. 4.5). Derived from the backend
+    # and sparsity when not given: every sparse phase today is head-uniform.
+    mask_selector: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.mask_selector is None:
+            from ..masks import mask_selector_for
+            object.__setattr__(self, "mask_selector", mask_selector_for(
+                self.backend, sparse=self.sparsity is not None))
 
     def to_dict(self) -> dict:
         return asdict(self)

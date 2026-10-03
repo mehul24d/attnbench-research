@@ -2487,6 +2487,9 @@ that.
 
 ### Which mask era each banked accuracy file belongs to
 
+*(Era 4 added 2026-10-03, with no banked file yet. The sentence below said
+"three" before it, and still describes the banked data.)*
+
 **There are now three, and a replicate of any banked number will disagree
 across an era boundary for a reason that is not drift.** Stating that eras
 exist is not enough — a canary comparison that straddles one fails with no
@@ -2499,6 +2502,7 @@ assignment is per file:
 | **2. forced-sink** | kv block 0 granted free (`37675a0`, 2026-09-16); jitter drawn **after** the budget check | `accuracy_forced_sink`, `accuracy_forced_sink_cheap`, `s7_7b_16384`, `s9_7b_cheap_16384`, `s1a/accuracy_band2048`, `s1a/accuracy_bands2`, `s1a/accuracy_all_bands`, `sink_control` (`importance_randfree`) |
 | **3. post-jitter** | as era 2, plus jitter drawn unconditionally (instance 45, 2026-09-20) | `s7_jitter` — 16384, `niah_single` and `niah_multikey` only, n=100. **Supersedes the same cells of `accuracy_forced_sink`.** That file's `vt` cells at 16384, and every other band, remain era 2. |
 | **3. post-jitter (T4, registered 2026-10-03)** | as era 2, plus unconditional jitter: the rule at commits `822a4dd`, `40118f7`, `e7eabaa`, `77b48e5`, `cc769b3` and `7490ee4`, all descendants of `5cc3a40` | `t4_dense_probe_20261001`, `t4_selected_dense_pilot_20261001`, `t4_sparse_canary_inline_20261001`, `t4_sparse_canary_oracle_20261001`, `t4_sparse_pilot_inline_16384_20261001`, `t4_sparse_pilot_inline_32768_20261002`, `t4_sparse_pilot_oracle_16384_20261001`, `t4_sparse_pilot_oracle_32768_20261002`, `t4_xattn_canary_dense_20261002`, `t4_xattn_canary_tau0.8_20261002`, `t4_xattn_canary_tau0.95_20261002`, `t4_xattn_canary_tau0.9_20261002`, `t4_xattn_dense_20261002`, `t4_xattn_tau0.8_20261002`, `t4_xattn_tau0.95_20261002`, `t4_xattn_tau0.9_20261002` — the T4 dense-only, sparse and XAttention phases. Their dense rows carry no mask. Their oracle and inline mean-pool rows use the era-3 head-uniform rule. **Their XAttention rows do not use an attnbench mask rule at all**: XAttention's own per-head threshold selection made those masks. Those rows are era 3 only by commit, and comparing them with any other era-3 sparse row crosses selection rules. `docs/estimator_frontier_preregistration.md` §4.5 gives them the row-level label `xattn_native` from era-4 registration on. |
+| **4. per-head (registered 2026-10-03)** | the era-3 rule applied per **query head**, each head ranking its own scores; sink and diagonal free; read from the row column `mask_selector` = `per_head`, not from the commit, because the head-uniform path (era 3) runs beside it (estimator-frontier pre-registration §2.1, §4.5) | *(none banked yet)* — every row from the column's introducing commit on carries `mask_selector` (`per_head`, `head_uniform`, `xattn_native` or `none`); `head_uniform` and `none` rows take their era from the commit as before; `xattn_native` rows are labelled **native**, XAttention's own selection and not an attnbench era; a row at or after that commit with no `mask_selector` is refused (`analysis/eras.py`, `era_of_row`; break-tested in `tests/test_eras.py`) |
 
 **One file is era 3, and it is a partial band.** `s7_jitter` covers 16384 at
 `niah_single` and `niah_multikey`; `vt` was deliberately excluded, because its

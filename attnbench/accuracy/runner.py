@@ -17,6 +17,7 @@ from typing import Callable
 import pandas as pd
 
 from .. import provenance
+from .. import masks
 from ..checkpoint import append_checkpoint
 from .pins import require_pinned_transformers
 from .schema import normalise_accuracy_frame
@@ -459,6 +460,11 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             correct=example_score >= 100.0,
             stop_reason=gen.stop_reason,
             stop_token_id=gen.stop_token_id,
+            # Every row from the introducing commit on (sec. 4.5): the era of a
+            # new row is read from this column first, then from its commit.
+            mask_selector=masks.mask_selector_for(
+                cell.backend_name, sparse=cell.cfg.mask == "block_sparse",
+                per_head=getattr(cell.cfg, "mask_selector", None) == "per_head"),
             n_generated=gen.n_generated,
             decode_backend=gen.decode_backend,
             decode_pinned=gen.decode_pinned,
