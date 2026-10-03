@@ -1078,8 +1078,15 @@ recall, component and end-to-end row carries `mask_selector`:
     at four sparsities, four sizes, fp32 and fp16, and where only the jitter
     decides (`tests/test_per_head_selector.py`).
   - It takes `row_budgets` for the matched budgets below b = 128.
-  - No arm calls it yet: per-head MP, VS, SL and `bsa_prefill` are still
-    §11.2 items. Until one does, no row is `per_head`.
+  - **Built 2026-10-04:** `attnbench.kernels.bsa_prefill` (§4.4), with a
+    plain-torch reference of what it computes; the per-head mean-pool
+    scorer (`meanpool_scores_per_head_on_device`); and the recall pass
+    (`attnbench/accuracy/recall.py`), which is the first caller of the
+    selector and writes `per_head` rows. All three are tested on CPU only.
+    The kernel wrapper has never called the real kernel: gate G1b, and a
+    CUDA test against the reference, run on the first instance.
+  - Still to build: VS, SL, the timed arms that call `bsa_prefill`, and the
+    script that runs the recall pass over a split.
 
 A row at or after that commit with no `mask_selector` is **refused**. Rows
 before it resolve by commit, as now.
@@ -1805,7 +1812,9 @@ calibration).** The text above is kept as it was written.
   12 `qa_2`). That leaves 132 texts. For Qwen, 104 of them are within
   32,768 tokens.
 - **The full-set tables are also made, and are descriptive.** For the 7B
-  model, C makes both: the claim table on 104 texts and the descriptive one on 121.
+  model, C makes the claim table on 104 texts, and a separate cuttable
+  session, C-full, makes the descriptive one on 121 (§8.4, cut item 0). If
+  C-full is cut, the paper states "full-set table not made".
   The frontier's arms use the claim table. The full-set table is reported
   beside it entry by entry (the largest difference, and the rank
   correlation over the 28 × 28 entries), with no pass rule and no arm of
@@ -1817,19 +1826,57 @@ calibration).** The text above is kept as it was written.
   - *Needles: compared, not left unchecked.* Every needle in the 96 needle
     texts (18,361 distinct) was compared with every needle this harness
     generates for `niah_single`, `niah_multikey_1`, `niah_multivalue` and
-    `niah_multiquery`, in every split, at 16384 and 32768
-    (`scripts/check_g12_needles.py`). **No (key, value) pair is shared.**
-  - *Values that recur under other keys:* 2 among T4's ids, 0 in selection,
-    2 in calibration, 2 in evaluation. Chance alone gives 2.0, 1.3, 0.3 and
-    2.0, because the values are random 7-digit numbers and the texts hold
-    about 14,000 of them. The two evaluation values are in
-    `niah_multikey_1`, which is not an evaluation task of the 1.5B or 7B
-    models.
-  - *Not compared:* `niah_multikey`. Its haystack is itself made of
-    needles, so which ones it holds depends on the prompt's length. It is
-    in no split of this study.
-  - The rule is: pass if no (key, value) pair is shared. The calibration
-    script refuses any `text.json` other than the one this was run on.
+    `niah_multiquery`, in every split, at every budget either study
+    generates a prompt at: 16384, 32768, 32768 minus the task's Qwen cap,
+    and 32768 and 65536 minus its Llama cap (`scripts/check_g12_needles.py`).
+    The budget is part of an example's seed, so the capped bands hold other
+    needles than the plain ones. **No (key, value) pair is shared.**
+  - *Values that recur under other keys:* 5 among T4's ids, 1 in selection,
+    3 in calibration, 9 in evaluation. Chance alone gives 5.1, 3.3, 0.8 and
+    5.1, because the values are random 7-digit numbers and the texts hold
+    about 14,000 of them.
+  - *`niah_multikey` is not compared, and is outside both studies' splits.*
+    Its haystack is itself made of needles, so which ones it holds depends
+    on the prompt's length. It is not a task of T4 (`qa_1`,
+    `niah_multivalue`, `niah_multiquery`), of the Qwen evaluation (the same
+    three), or of the Llama candidates (`niah_multikey_1`,
+    `niah_multivalue`, `niah_multiquery`, `qa_1`, `qa_2`, §4.9). Its banked
+    rows are Stage 3's, which no XAttention table touches.
+  - *`qa_2`:* none of its held-out questions or gold documents is in the
+    132 texts either. It matters only as a Llama candidate.
+  - The calibration script refuses any `text.json` other than the one this
+    was run on.
+- **Why the pass rule is "no shared (key, value) pair".**
+  - A needle is one sentence binding a key to a value, and a needle
+    question asks for the value of a key. What a calibration text could
+    give away is that binding. A value sitting under a different key gives
+    away nothing the question asks for.
+  - The profiler does not store content. It records, per layer and head,
+    one number from the attention mass of each text. A text can only bias a
+    table toward a test prompt by containing the same sentence in the same
+    role, and that is what a shared pair would be.
+  - A rule of "no shared value" could not be met by any large needle set.
+    The values are 7-digit random numbers. With about 14,000 in the
+    calibration texts and about 4,500 in this harness's held-out prompts,
+    about 14 collisions are expected by chance, and 18 are found. The
+    chance of none is below one in a million. Such a rule would fail on
+    chance, not on leakage.
+  - So shared values are counted and reported beside their chance rate,
+    and they do not fail the gate. A count far above chance would be
+    reported as a finding.
+- **The one test example whose answer value recurs** (pre-registered
+  2026-10-04). `niah_multiquery` at 32768, index 5, is in T4's test ids, and
+  one of its four answer values also occurs in a calibration text under
+  another key.
+  - It stays in the test. Dropping it would change T4's n after its test
+    was fixed.
+  - No claim rests on its cell: `niah_multiquery` at 32768 is T4's
+    observational cell, which yields no statement.
+  - Wherever that cell is reported (T4, and R3 here), it is reported twice:
+    on all 50 examples and with index 5 left out. Both are descriptive.
+  - The same is done for any evaluation example a later run of the
+    comparison finds: reported with and without, and the test as
+    pre-registered is the one on all examples.
 - **What the claim tables still share with the test.** The 96 needle texts
   use RULER's needle templates, the same as `niah_multivalue` and
   `niah_multiquery`. The authors' set is therefore in-distribution for
@@ -2044,7 +2091,8 @@ oracle-pass line.** The fifth draft's figures are kept beside the new ones.
 | run | card | min, fifth | min, now | ₹, fifth | ₹, now | what moved it |
 |---|---|---:|---:|---:|---:|---|
 | ★ FA3 wheel build | CPU | 60–150 | 60–150 | 130–325 | 130–325 | — |
-| ★ C: XA calibration, Qwen 7B, two tables (104 texts and 121 texts) | A100 | 18–85 | 54–117 | 86–404 | 254–555 | μ (a); the second table (e), 2026-10-04 |
+| ★ C: XA calibration, Qwen 7B, the claim table (104 texts) | A100 | 18–85 | 31–69 | 86–404 | 148–326 | μ (a); 104 texts, not 121 (e), 2026-10-04 |
+| C-full: the full-set 7B table, descriptive (cut item 0) | A100 | — | 30–64 | — | 144–301 | new 2026-10-04 (e); its own session, last in the order |
 | ★ I1: 1.5B components, end to end at 3 bands, recall (192 selection + 800 evaluation, b 16–128) | A100 | 59–259 | 117–220 | 281–1,228 | 553–1,040 | μ (a) |
 | ★ I2a: 7B recall, 60 per band, b 16–128 | A100 | 24–188 | 52–156 | 115–890 | 247–738 | μ (a) |
 | I2b: 7B end to end at 32K | A100 | 14–36 | 14–36 | 64–170 | 64–170 | — |
@@ -2066,8 +2114,8 @@ oracle-pass line.** The fifth draft's figures are kept beside the new ones.
 | XL: Llama primary `qa_1`, n = 300, 16K + 32K, dense + 4 | A100 | 272–601 | 272–601 | 1,289–2,843 | 1,289–2,843 | — |
 | XL: Llama secondary, 16K + 32K | A100 | 88–195 | 88–195 | 417–924 | 417–924 | — |
 | XL: Llama 65536 band | A100 | 574–1,252 | 574–1,252 | 2,719–5,925 | 2,719–5,925 | — |
-| **Never-cut core** | | **6.8–34.1 h** | **10.0–29.6 h** | **₹1,842–9,526** | **₹2,690–8,182** | ₹2,594–7,975 before the second calibration table; eighth draft ₹2,594–9,231 |
-| **Full plan** | | **25.7–75.7 h** | **28.9–71.9 h** | **₹7,133–21,347** | **₹8,069–20,259** | with the SL line and the second calibration table, both new on 2026-10-04; eighth draft ₹7,860–20,997 |
+| **Never-cut core** | | **6.8–34.1 h** | **9.6–28.8 h** | **₹1,842–9,526** | **₹2,584–7,952** | eighth draft ₹2,594–9,231; seventh ₹2,539–9,053 |
+| **Full plan** | | **25.7–75.7 h** | **29.0–72.1 h** | **₹7,133–21,347** | **₹8,107–20,330** | with the SL and C-full lines, both new on 2026-10-04; eighth draft ₹7,860–20,997 |
 
 *The "now" columns are `attnbench/analysis/frontier_prereg.bracket()` at its
 default inputs, rounded. `tests/test_frontier_prereg_plan.py` fails if any of
@@ -2099,9 +2147,10 @@ and not left to DP1. Two things changed. Both touch upper ends only.
   66% at the old ones. At the eighth draft's inputs the correct term is
   ₹2,251, not ₹1,698, and the worst case was **₹12,248, which is ₹248 over
   the cap**, not ₹304 under it. `worst_case` now prices the larger band.
-- **(e) C makes two tables** (the researcher's decision, 2026-10-04, §5): the
-  claim table on 104 texts and the full-set one on 121. C goes from ₹158–348
-  to ₹254–555.
+- **(e) Two calibration tables** (the researcher's decisions, 2026-10-04,
+  §5). C makes the claim table on 104 texts, so it falls from ₹158–348 to
+  ₹148–326. The full-set table on 121 texts is C-full, ₹144–301: a cuttable
+  session, cut first (§8.4).
 - **Checked and left alone:** wall / Σ row latency (1.61–1.67 in the T4 XA
   pilot session, inside 1.25–1.69) and the session overhead. The T4
   sparse pilot at 32768 took 342 minutes against a bracket of 293–348 by
@@ -2167,7 +2216,7 @@ FLOP-split prefill model × the assumed μ.)*
 
 **Intrinsic-only and extrinsic, full plan** (X-rep excluded, as before):
 
-- intrinsic: ₹2,205–6,183 (8.3–22.3 h) with I2c-B and both C tables, from ₹1,633–6,367 (6.2–23.0 h);
+- intrinsic: ₹2,243–6,254 (8.4–22.6 h) with I2c-B and C-full, from ₹1,633–6,367 (6.2–23.0 h);
 - extrinsic: ₹5,753–13,751 (20.3–48.4 h) with the SL line, from
   ₹5,640–14,588 in the eighth draft, of which Llama is ₹4,530–9,930
   (unchanged).
@@ -2188,12 +2237,11 @@ sessions.
 |---|---|---|
 | custom images `attnbench-env-v5-20260905`, `attnbench-env-v6-20260917` | 22.0 GiB archive each | about ₹194/month, billed whether or not a session runs |
 | results bucket `gs://attnbench-results-research-507316` | 5.19 GiB, about 10 GiB after the study | about ₹18/month |
-| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹24–71 over the core, ₹69–173 over the full plan |
+| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹23–69 over the core, ₹70–173 over the full plan |
 | FA3 wheel build | — | already a ★ line above (₹130–325) |
 
-**Share of the core that depends on XAttention arms.** About **33%**:
-₹898–2,710 of the ₹2,690–8,182 core *(31%, ₹802–2,503 of ₹2,594–7,975,
-before the second calibration table)*. That includes the X-rep line, which
+**Share of the core that depends on XAttention arms.** About **31%**:
+₹792–2,481 of the ₹2,584–7,952 core. That includes the X-rep line, which
 is XA-only. *(Eighth draft: 31–32%, ₹802–2,955 of ₹2,594–9,231.)* *(Seventh draft: 30–31%, ₹761–2,811 of ₹2,539–9,053.)* *(Fifth draft: 30–33%, ₹612–2,876 of ₹1,842–9,526. Before that:
 31%, ₹560–3,000 of ₹1,790–9,650.)*
 
@@ -2201,14 +2249,14 @@ is XA-only. *(Eighth draft: 31–32%, ₹802–2,955 of ₹2,594–9,231.)* *(Se
 |---|---:|
 | X0 + X, the XA share of the 1.5B extrinsic rows (2–3 of 5–8 arms) | 333–1,053 |
 | X-rep, the T4 replication at 16384 and 32768 (XA only) | 112–325 |
-| C, the 7B calibration, two tables (XA only) | 254–555 |
+| C, the 7B claim table (XA only) | 148–326 |
 | I2c, the Llama positive control (XA only) | 117–262 |
 | replicates, assuming a third of near-parity cells are XA | 0–359 |
 | I3's XA end-to-end arms | 47–94 |
 | I1's XA end-to-end arms and components | 35–62 |
 | the recall passes (dominated by the shared exact-mass pass) | ≈ 0 |
 
-So the non-XA core is about ₹1,793–5,472.
+So the non-XA core is about ₹1,792–5,471.
 
 **Running non-XA parts first is mostly possible, with two exceptions:**
 
@@ -2223,12 +2271,11 @@ So the non-XA core is about ₹1,793–5,472.
   reserve, T4 calibrated excluded.
   - **Confirmed by the researcher on 2026-10-03**, in conversation, after it
     was stated back. It cannot be raised after lock.
-  - It covers, at worst-case inputs, the never-cut core (₹8,182) plus the
-    storage reserve (₹495) plus one rerun of the largest ★ session
-    (₹1,472) plus the conditional arm I2c-B (₹262), which is ₹10,410,
-    leaving ₹1,590 (`frontier_prereg.worst_case`). *(Re-bracketed
-    2026-10-04, §8.2 (c), (d) and (e). It was ₹10,202, leaving ₹1,798,
-    before the second calibration table. The eighth draft said ₹11,696,
+  - It covers, at worst-case inputs, the never-cut core (₹7,952) plus the
+    storage reserve (₹493) plus one rerun of the largest ★ session
+    (₹1,472) plus the conditional arm I2c-B (₹262), which is ₹10,179,
+    leaving ₹1,821 (`frontier_prereg.worst_case`). *(Re-bracketed
+    2026-10-04, §8.2 (c), (d) and (e). The eighth draft said ₹11,696,
     leaving ₹304; with its rerun term corrected that was ₹12,248, over the
     cap.)*
   - Anything cuttable is paid for only from what the measured μ (DP1) frees
@@ -2294,11 +2341,23 @@ So the non-XA core is about ₹1,793–5,472.
       needed. At worst-case inputs H8 was then "not run" with no session
       having failed. Under the rule those three are cut and XL0 and XL
       primary run (`frontier_prereg.fund`, with a break-test).
-    - **How close it is.** That holds when H6a passes, with about ₹217 to
-      spare. If H6a misses and I2c-B runs, H8 is unfunded at worst-case inputs
-      by about ₹48, whichever rule is used. The second calibration table
-      (₹207 at the upper end) is what moved it across. The lower items
-      still do not run ahead of it.
+    - **H8's funding at worst-case inputs, in both cases.** The walk runs
+      every never-cut session at its upper bound, then reaches the Llama
+      probe. H8 is funded in both cases:
+
+      | | H6a passes | H6a misses, I2c-B runs |
+      |---|---:|---:|
+      | spent when the Llama probe is reached | ₹8,229 | ₹8,285 |
+      | the probe and the primary run | ₹3,080 | ₹3,080 |
+      | storage still to reserve | ₹450 | ₹450 |
+      | needed | ₹11,759 | ₹11,816 |
+      | to spare under ₹12,000 | ₹241 | ₹184 |
+      | cut | I2b, I2d, I2e, SL, Llama secondary, Llama 65536, C-full | the same, and the third H100 replicate |
+
+      (When H6a passes, the third H100 replicate has run, which is why the
+      two "spent" figures are close.) The full-set table is cut in both
+      cases. Were it inside C, as first written on 2026-10-04, the second
+      case would be ₹48 short.
     - **The ledger carries the boot disk.** A ledger row is priced at the
       card's rate plus ₹2.4/h, because S_res stops reserving a session's
       disk once it has run.
@@ -2351,24 +2410,24 @@ So the non-XA core is about ₹1,793–5,472.
 
 | | ₹ |
 |---|---:|
-| core, including the T4-replication line at both bands and I4 | 8,182 (7,975 before the second calibration table; eighth draft 9,231; seventh 9,053; fifth 9,526) |
-| S_res, two months | 495 (₹424 storage + ₹2.4/h × 29.6 h) |
+| core, including the T4-replication line at both bands and I4 | 7,952 (eighth draft 9,231; seventh 9,053; fifth 9,526) |
+| S_res, two months | 493 (₹424 storage + ₹2.4/h × 28.8 h) |
 | one rerun of the largest ★ session (the 32768 band of X primary: 311 of the line's 511 minutes) | 1,472 (eighth draft 1,698, which should have been 2,251) |
 | the conditional double-BOS arm I2c-B, if H6a misses (§4.9) | 262 |
-| **total** | **10,410** (10,148 without I2c-B; eighth draft 11,696, or 12,248 with its rerun term corrected) |
+| **total** | **10,179** (9,917 without I2c-B; eighth draft 11,696, or 12,248 with its rerun term corrected) |
 
-That is **inside the ₹12,000 cap**, with ₹1,590 to spare (₹1,852 without
-I2c-B). Source of the change: the row bound, the rerun term and the second
-calibration table (§8.2, (c), (d) and (e)). So:
+That is **inside the ₹12,000 cap**, with ₹1,821 to spare (₹2,083 without
+I2c-B). Source of the change: the row bound, the rerun term and the smaller
+claim table (§8.2, (c), (d) and (e)). So:
 
 - a single failed session at worst-case inputs does not stop the study;
-- a second rerun of the same band (₹1,472) also fits, leaving ₹118;
+- a second rerun of the same band (₹1,472) also fits, leaving ₹350;
 - a third does not, unless DP1 measures inputs below their upper ends;
 - the H100 cuDNN probe now runs last, so it needs no relaunch (§4.6).
 
 **What the margin rests on.** It is zero if the arm factor's upper end is
-about 2.5 and not 1.6, or if decode on the A100 is about 59 ms per token
-and not 35, or if wall / Σ row latency is about 2.3 and not 1.69. The arm
+about 2.6 and not 1.6, or if decode on the A100 is about 62 ms per token
+and not 35, or if wall / Σ row latency is about 2.4 and not 1.69. The arm
 factor is the one still assumed. DP1 and DP2 measure all three.
 
 **Re-bracketing decision points.** These are mechanical, committed before the
@@ -2396,9 +2455,14 @@ next launch, and read timings only:
     - At or below 1.6: the bracket stands.
     - A measured arm factor above 1.6: the measured value replaces 1.6 and
       every U is recomputed before I1.
-    - A measured arm factor at or above 2.48: the worst case no longer fits the cap, so the
+    - A measured arm factor at or above 2.61: the worst case no longer fits the cap, so the
       verdict is "proceed with cuts" or STOP
       (`frontier_prereg.dp1_arm_factor`).
+    - **Built 2026-10-04:** `frontier_prereg.dp1` reads the factor from
+      the canary's timing rows (`band`, `arm`, `prefill_ms`), refuses any
+      frame with a result column, re-brackets, and returns the funded set,
+      the cuts and the verdict. The oracle is timed but is not a deployable
+      arm, so it is not in the factor.
   - **Leak guard:** the function reads only timing, μ, and cost columns.
     It **refuses** any parquet with `correct`, `predicted`, `R`, `R̃` or
     density columns, so no canary result can enter a funding decision.
@@ -2409,6 +2473,8 @@ next launch, and read timings only:
 
 ### 8.4 Cut order (first cut first)
 
+0. C-full: the full-set 7B calibration table, descriptive (added 2026-10-04;
+   the researcher's decision). ₹144–301. Cut first.
 0a. Replicate escalation beyond 4 sessions on the A100 (§7.3).
 0b. Replicate escalation beyond 3 sessions on the H100.
 0c. SL in the 1.5B extrinsic run: ₹113–312, one more arm (§8.2).
@@ -2439,28 +2505,40 @@ rule):** if publication of XAttention results is withheld at any point, cuts
 move applies from the launch after the withholding is logged. A cut already
 made is not undone.
 
+**The full-set table's trigger (pre-registered 2026-10-04).** C-full is its
+own session and runs last, after every other session has run or been cut.
+It is made if, and only if, the launch check passes for it then:
+
+    spent + U(C-full) + S_res  ≤  ₹12,000
+
+with U(C-full) re-projected at the latest decision point, and ₹301 at
+worst-case inputs. Nothing ranked above it is ever cut to make room for it,
+and no result decides it. If it is cut, the paper states "full-set table not
+made", and the claim table is reported without that comparison. It stays
+first in the cut order if publication is withheld.
+
 **SL as a never-cut line: priced 2026-10-04, not adopted.** SL is the
 frontier's zero-cost endpoint. Its intrinsic and end-to-end points are
 already never cut, inside I1 and I3. Only its accuracy arm is item 0c.
 
 | | SL cuttable (as now) | SL never-cut |
 |---|---:|---:|
-| core, upper end | ₹8,182 | ₹8,494 |
+| core, upper end | ₹7,952 | ₹8,264 |
 | one rerun (the 32768 band of X primary, with one more arm) | ₹1,472 | ₹1,601 |
-| worst case | ₹10,410 | ₹10,855 |
-| spare | ₹1,590 | ₹1,145 |
-| arm factor at which the spare is zero | 2.48 | 2.19 |
-| left for cuttable work at worst-case inputs | about ₹3,061 | about ₹2,746 |
+| worst case | ₹10,179 | ₹10,623 |
+| spare | ₹1,821 | ₹1,377 |
+| arm factor at which the spare is zero | 2.61 | 2.31 |
+| left for cuttable work at worst-case inputs | about ₹3,293 | about ₹2,978 |
 
 *(The two differences are not the same number. The worst case rises by
 ₹444 and the pool for cuttable work falls by ₹315. The pool has no rerun in
 it. SL costs ₹312, its 1.1 hours add ₹3 of disk, and the rerun of the
 32768 band gains one arm, ₹129.)*
 
-So the worst case would be ₹10,855, leaving ₹1,145. The cost is elsewhere:
-the Llama probe and primary run need ₹3,081, so SL as never-cut leaves H8
-unfunded at worst-case inputs. With SL cuttable, H8 is funded when H6a
-passes, and SL is cut.
+So the worst case would be ₹10,623, leaving ₹1,377. The cost is elsewhere:
+the Llama probe and primary run need ₹3,080, so SL as never-cut leaves H8
+unfunded at worst-case inputs when I2c-B runs. With SL cuttable, H8 is
+funded in both cases, and SL is cut.
 
 **Decided 2026-10-04 (the researcher): SL's accuracy arm stays cuttable,
 ranked below H8.**
@@ -2489,6 +2567,7 @@ without the label below.
 
 | cut | hypothesis | effect |
 |---|---|---|
+| 0 | none tested | the full-set 7B table is not made. The paper states "full-set table not made". The claim table and every arm are unchanged |
 | 0a | H2, H5 | no threshold changes. A near-parity A100 cell with σ̂ > 2.5% keeps its 4 sessions and is unresolved if its bound still spans 1. Labelled "A100 escalation not run" |
 | 0b | H2 | the same on the H100, at the sessions run. Labelled "H100 escalation not run" |
 | 0c | H4, H5 | H4 pools the arms that ran and H5 counts them, both labelled "without SL". The frontier's zero-cost endpoint keeps its recall and timing and has no accuracy point. H2 is unchanged: SL's end-to-end cells are in I1 and I3 |
@@ -2623,7 +2702,9 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 | 32 | **2026-10-04:** the authors' profiling set is RULER (§5). The claim tables leave out its QA texts, but its needle texts share their templates with two of the study's tasks. | Stated with every XA result: an XA table is calibrated in-distribution for format, and the other estimators have nothing to calibrate. |
 | 33 | **2026-10-04:** H6 and H8 use the authors' shipped Llama table, whose profiling set is unknown. If it was `text.json`, the gold documents of 218 of the 300 Llama `qa_1` evaluation questions were in its profiling haystacks. | Cannot be removed: the table is theirs. H8 is reported with that sentence. |
 | 34 | **2026-10-04:** the budget is the era-3 code's expression, not the worded rule: one block different in 6 of 128 rows at 0.10 and 3 of 128 at 0.05. | Recorded as a deviation (§2.1). One function computes every budget. |
-| 35 | **2026-10-04:** the worst-case margin is ₹1,590, and it rests on an assumed arm factor of 1.6 (row 31's ₹304 was wrong: it was ₹248 over). | DP1 measures the factor; above 1.6 it re-brackets, at or above 2.48 it cuts or stops (§8.3). |
+| 35 | **2026-10-04:** the worst-case margin is ₹1,821, and it rests on an assumed arm factor of 1.6 (row 31's ₹304 was wrong: it was ₹248 over). | DP1 measures the factor; above 1.6 it re-brackets, at or above 2.61 it cuts or stops (§8.3). |
+| 36 | **2026-10-04:** at worst-case inputs the descriptive full-set 7B table is not made, and H8 is funded with under ₹250 to spare. | Stated. Both depend on DP1 and DP2 coming in below their upper ends. |
+| 37 | **2026-10-04:** shared needle values do not fail G12; only a shared (key, value) pair does. | Justified in §5. Shared values are counted against their chance rate and reported. |
 | 15 | **New:** the H100 in-model speedups are against `sdpa_flash`, and no banked H100 dense kernel exists at (12, 2). | Labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`). Run D in I3 measures it. Nothing is adjusted from a different geometry. |
 
 ---
@@ -2664,13 +2745,16 @@ summary, the date and "XAttention authors"; §8.3 records the ₹12,000 cap.
    run D, and the `dense_baseline` column. The FA3 build script for a CPU
    VM, pinned.
 3. Implementation, each with its gate test:
-   - `bsa_prefill`;
-   - the era-4 selector;
-   - per-head MP;
+   - `bsa_prefill`: **done 2026-10-04**, CPU-tested against a recorder and a
+     reference; never run on CUDA;
+   - the era-4 selector: **done 2026-10-04**;
+   - per-head MP: **done 2026-10-04** (the scorer);
    - VS (vendored MIT code and NOTICE);
    - SL;
    - the GPU-side multi-b oracle;
-   - the recall script;
+   - the recall script: the pass is **done 2026-10-04**
+     (`attnbench/accuracy/recall.py`, checked against a token-by-token
+     computation); the script that runs it over a split is not;
    - extensions to `measure_estimator_cost.py` and
      `run_vectorised_endtoend.py`;
    - a frontier grid config at n = 300, built from
@@ -2961,6 +3045,14 @@ the first four blocking findings.
 | Budget selection | "mean R̃", population unstated | per (estimator, task, band), 32 examples, equal weight |
 | Scripts not wired to the gate | named in a sentence | listed in §8.3 with what each creates |
 | SL's accuracy arm | priced as never-cut, undecided | stays cuttable, below H8 (the researcher) |
+| Full-set 7B table | inside C, never cut | C-full: its own session, cut item 0, run last; "full-set table not made" if cut |
+| Worst case, third time | ₹10,410, ₹1,590 spare | ₹10,179, ₹1,821 spare |
+| H8's funding at worst-case inputs, again | funded only if H6a passes | funded in both cases (₹241 and ₹184 to spare) |
+| Needle comparison | at 16384 and 32768 | at every budget either study generates a prompt at, the capped bands included; still no shared pair |
+| Needle pass rule | stated | justified; the one T4 example whose answer value recurs is reported with and without |
+| Quoted question | one SQuAD question quoted | replaced by its index and the file's sha256 |
+| Built | selector, gate, G12, recall rows | also `bsa_prefill`, per-head mean-pool, the recall pass, DP1 from timing rows |
+| Push | `d71efc8` | README `a343917`, then the build commits `236bcd0`, each with the researcher's logged yes |
 
 ## 14. Licence and provenance request to the XAttention authors
 

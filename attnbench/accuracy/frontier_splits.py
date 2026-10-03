@@ -74,15 +74,16 @@ TEXT_JSON_N_QA_TEXTS = 24
 # The needle half of G12, run on a workstation with scripts/check_g12_needles.py
 # against that file. Every needle in its 96 needle texts (18,361 distinct)
 # was compared with every needle this harness generates for four needle
-# tasks (not niah_multikey), in every split, at 16384 and 32768. No (key,
-# value) pair is shared.
-# Six 7-digit values recur under other keys, against 5.7 expected by chance.
+# tasks (not niah_multikey, which is in no split of either study), in every
+# split, at every budget either study generates a prompt at. No (key, value)
+# pair is shared. 18 seven-digit values recur under other keys, against 14.3
+# expected by chance.
 NEEDLE_COMPARISON = {
     "checked": "2026-10-04", "text_json_sha256": TEXT_JSON_SHA256,
     "calibration_needles": 18361, "shared_key_value_pairs": 0,
-    "shared_values": {"t4_replication": 2, "selection": 0, "calibration": 2, "evaluation": 2},
-    "shared_values_expected_by_chance": {"t4_replication": 2.0, "selection": 1.3,
-                                         "calibration": 0.3, "evaluation": 2.0},
+    "shared_values": {"t4_replication": 5, "selection": 1, "calibration": 3, "evaluation": 9},
+    "shared_values_expected_by_chance": {"t4_replication": 5.1, "selection": 3.3,
+                                         "calibration": 0.8, "evaluation": 5.1},
     "rule": "pass if no (key, value) pair is shared",
 }
 

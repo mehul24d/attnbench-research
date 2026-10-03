@@ -507,7 +507,7 @@ def test_the_rerun_term_is_the_larger_band_of_x_primary_not_half_the_line():
     assert w["rerun"] == pytest.approx(unit)
     assert w["rerun"] >= max(l.inr[1] for l in lines if l.star and l.name != "X primary")
     assert _has(f"| {_inr(w['rerun'])} (eighth draft 1,698, which should have been 2,251) |")
-    assert _has(f"| {_inr(w['core'])} (7,975 before the second calibration table; eighth draft 9,231")
+    assert _has(f"| {_inr(w['core'])} (eighth draft 9,231")
     assert _has(f"| {_inr(w['s_res'])} (₹424 storage")
     assert _has(f"with ₹{_inr(w['spare'])} to spare")
 
@@ -564,12 +564,18 @@ def test_h8s_funding_cannot_be_consumed_by_a_lower_priority_item_running_first()
     # The rule before 2026-10-04 let them run, and H8 then went unfunded.
     old = fp.fund(lines, fp.RUN_ORDER, skip=("I2c-B",), reserve_higher=False)
     assert {"I2b", "I2d", "I2e"} <= set(old["ran"]) and "XL primary" in old["cut"]
-    # If H6a misses and I2c-B runs, every input at its upper end leaves H8
-    # unfunded under either rule; the lower items still do not run.
+    # If H6a misses and I2c-B runs, H8 is still funded, with less to spare.
     worst = fp.fund(lines, fp.RUN_ORDER)
-    assert {"XL0", "XL primary"} <= set(worst["cut"]) and "I2c-B" in worst["ran"]
+    assert {"XL0", "XL primary", "I2c-B"} <= set(worst["ran"])
     assert not {"I2b", "I2d", "I2e"} & set(worst["ran"])
-    assert _has("If H6a misses and I2c-B runs, H8 is unfunded at worst-case inputs")
+    assert worst["spent"] > new["spent"] - lines_inr(lines, "R H100#3") - 1
+    # The full-set table, cut first and run last, is cut in both cases.
+    assert "C-full" in new["cut"] and "C-full" in worst["cut"]
+    assert _has("H8 is funded in both cases")
+
+
+def lines_inr(lines, name):
+    return next(l for l in lines if l.name == name).inr[1]
 
 
 def test_no_walk_leaves_a_never_cut_session_unrun_or_goes_over_the_cap():
@@ -602,7 +608,7 @@ def test_a_cut_takes_the_whole_item_and_the_llama_runs_that_need_the_probe():
 
 
 def test_withheld_publication_moves_sl_and_vs_to_the_end_of_the_cut_order():
-    assert fp.cut_order() == fp.CUT_ORDER and fp.CUT_ORDER.index("0c") == 2
+    assert fp.cut_order() == fp.CUT_ORDER and fp.CUT_ORDER.index("0c") == 3
     w = fp.cut_order(xa_withheld=True)
     assert w[-2:] == ("0c", "10") and sorted(w) == sorted(fp.CUT_ORDER)
     assert "8" not in fp.CUT_ORDER
@@ -640,27 +646,104 @@ def test_sl_is_priced_as_cuttable_and_as_never_cut():
     assert w1["core"] - w0["core"] == pytest.approx(sl.inr[1])
     assert w1["rerun"] > w0["rerun"]
     assert _has(f"₹{_inr(w1['total'])}, leaving ₹{_inr(w1['spare'])}")
-    # As never-cut it takes H8's funding at worst-case inputs, even when
-    # I2c-B does not run.
-    assert "XL primary" in fp.fund(star, fp.RUN_ORDER, skip=("I2c-B",))["cut"]
-    assert _has("SL as never-cut leaves H8 unfunded at worst-case inputs")
+    # As never-cut it takes H8's funding at worst-case inputs if I2c-B runs.
+    assert "XL primary" in fp.fund(star, fp.RUN_ORDER)["cut"]
+    assert "XL primary" in fp.fund(star, fp.RUN_ORDER, skip=("I2c-B",))["ran"]
+    assert _has("SL as never-cut leaves H8 unfunded at worst-case inputs when I2c-B runs")
 
 
 def test_dp1s_trigger_on_the_arm_factor_is_a_number():
     assert fp.ARM_FACTOR_UPPER == fp.BracketInputs().ex[1] == 1.6
     be = fp.arm_factor_break_even()
-    assert 2.4 < be < 2.6 and _has(f"at or above {be:.2f}")
+    assert 2.5 < be < 2.7 and _has(f"at or above {be:.2f}")
     assert fp.dp1_arm_factor(1.6) == "within"
     assert fp.dp1_arm_factor(1.61) == "rebracket"
     assert fp.dp1_arm_factor(be + 0.01) == "cut_or_stop"
     assert _has("measured arm factor above 1.6")
 
 
-def test_c_makes_two_tables_and_the_claim_table_is_the_smaller():
+def test_the_full_set_table_is_its_own_cuttable_session_cut_first_and_run_last():
     inp = fp.BracketInputs()
-    assert inp.c_text_factor < inp.c_text_factor_full
-    c = next(l for l in fp.bracket(inp) if l.name == "C")
-    want = (inp.a7_row_16384 * (inp.c_text_factor + inp.c_text_factor_full) * inp.mu[1] / 60
-            + inp.overhead_min[1] + 10)
-    assert c.minutes[1] == pytest.approx(want) and c.star
-    assert _has("the claim table on 104 texts and the descriptive one on 121")
+    lines = {l.name: l for l in fp.bracket(inp)}
+    c, full = lines["C"], lines["C-full"]
+    assert c.star and not full.star
+    assert c.minutes[1] == pytest.approx(
+        inp.a7_row_16384 * inp.c_text_factor * inp.mu[1] / 60 + inp.overhead_min[1] + 10)
+    assert full.minutes[1] == pytest.approx(
+        inp.a7_row_16384 * inp.c_text_factor_full * inp.mu[1] / 60 + inp.overhead_min[1])
+    assert fp.CUT_ORDER[0] == "0" and fp.cut_item_of("C-full") == "0"
+    assert fp.cut_order(xa_withheld=True)[0] == "0"
+    assert fp.RUN_ORDER[-1] == "C-full"
+    assert fp.CUT_STATEMENT["0"] == "full-set table not made"
+    assert _has('the paper states "full-set table not made"')
+    assert _has(f"| C-full: the full-set 7B table, descriptive (cut item 0) | A100 | — | "
+                f"{round(full.minutes[0])}–{round(full.minutes[1])} | — | "
+                f"{_inr(full.inr[0])}–{_inr(full.inr[1])} |")
+    # Its trigger: with everything above it run or cut, the money is there.
+    kw = dict(spent=11000, next_item="0", remaining_star_u=[], remaining_cuttable_u={},
+              s_res_inr=fp.s_res(2, full.minutes[1] / 60))
+    assert fp.launch_check(next_u=full.inr[1], **kw) == "PROCEED"
+    assert fp.launch_check(next_u=full.inr[1] + 300, **kw) == "STOP"
+    # While anything ranked above it is still to run, it must leave room for it.
+    kw["remaining_cuttable_u"] = {"0a": 400}
+    assert fp.launch_check(next_u=full.inr[1], **kw) == "STOP"
+    # When money is left, it runs: nothing is funded ahead of the Llama runs here.
+    rich = fp.fund(fp.bracket(fp.BracketInputs(mu=(6.19, 6.19), ex=(1.0, 1.0),
+                                               wall=(1.25, 1.25), overhead_min=(8, 8))),
+                   fp.RUN_ORDER, skip=("I2c-B", "R A100x3", "R H100x2", "R H100#3"))
+    assert "C-full" in rich["ran"]
+
+
+# --- DP1 on the arm factor, from timing rows ---------------------------------
+
+def _timing(factor_by_band, extra=()):
+    rows = []
+    for band, f in factor_by_band.items():
+        rows += [{"band": band, "arm": "dense", "prefill_ms": 100.0},
+                 {"band": band, "arm": "dense", "prefill_ms": 102.0},
+                 {"band": band, "arm": "MP", "prefill_ms": 101.0 * f},
+                 {"band": band, "arm": "SL", "prefill_ms": 90.0},
+                 {"band": band, "arm": "O", "prefill_ms": 900.0}]     # the oracle is not deployable
+    return pd.DataFrame(rows + list(extra))
+
+
+def test_dp1_reads_the_arm_factor_as_the_largest_deployable_ratio():
+    frame = _timing({8192: 1.2, 16384: 1.4, 32768: 1.1})
+    assert fp.measured_arm_factor(frame) == pytest.approx(1.4)
+    out = fp.dp1(frame)
+    assert out["trigger"] == "within" and out["arm_factor_upper"] == 1.6
+    assert out["worst_case"]["total"] == pytest.approx(fp.worst_case(fp.bracket())["total"])
+
+
+def test_dp1_above_the_trigger_rebrackets_with_the_measured_value():
+    out = fp.dp1(_timing({16384: 1.9, 32768: 2.1}))
+    assert out["trigger"] == "rebracket" and out["arm_factor_upper"] == pytest.approx(2.1)
+    assert out["worst_case"]["total"] > fp.worst_case(fp.bracket())["total"]
+    assert out["worst_case"]["total"] <= fp.CAP_INR and out["verdict"] == "proceed with cuts"
+    assert out["u_inr"]["X primary"] > next(l for l in fp.bracket() if l.name == "X primary").inr[1]
+
+
+def test_dp1_at_the_break_even_cuts_or_stops_and_far_above_it_stops():
+    be = fp.arm_factor_break_even()
+    edge = fp.dp1(_timing({32768: be + 0.02}))
+    assert edge["trigger"] == "cut_or_stop" and edge["worst_case"]["total"] > fp.CAP_INR
+    far = fp.dp1(_timing({32768: 6.0}))
+    assert far["trigger"] == "cut_or_stop" and far["verdict"] == "STOP"
+
+
+@pytest.mark.parametrize("col", ["correct", "recall_norm", "realised_density"])
+def test_dp1_refuses_a_frame_with_a_result_column(col):
+    frame = _timing({16384: 1.2})
+    frame[col] = 1.0
+    with pytest.raises(fp.LeakRefusal):
+        fp.dp1(frame)
+
+
+def test_dp1_needs_a_dense_arm_and_a_deployable_arm_at_every_band():
+    with pytest.raises(ValueError, match="no dense"):
+        fp.dp1(pd.DataFrame([{"band": 16384, "arm": "MP", "prefill_ms": 1.0}]))
+    with pytest.raises(ValueError, match="no deployable"):
+        fp.dp1(pd.DataFrame([{"band": 16384, "arm": "dense", "prefill_ms": 1.0},
+                             {"band": 16384, "arm": "O", "prefill_ms": 9.0}]))
+    with pytest.raises(ValueError, match="DP1 needs"):
+        fp.dp1(pd.DataFrame([{"band": 16384, "arm": "dense"}]))

@@ -333,3 +333,18 @@ for CAL in authors ruler_heldout authors_full; do
       --out results/t4_xattn_cal_${CAL}_<date>
 done
 ```
+
+**A9. One test example whose answer value recurs in the profiling set
+(2026-10-04, before Session A).**
+
+- `niah_multiquery` at 32768, index 5: one of its four answer values also
+  occurs in an `authors` text, under another key. It is a 7-digit random
+  number, and two such coincidences are expected by chance among this
+  phase's test ids. No (key, value) pair is shared, which is the rule the
+  gate passes on (estimator-frontier pre-registration, §5, where the rule is
+  justified).
+- **It stays in the test.** n is not changed after the test was fixed.
+- **No claim rests on it.** Its cell is this phase's observational cell.
+- **Reporting.** That cell is reported on all 50 examples and with index 5
+  left out. Both are descriptive.
+- `niah_multikey` is not a task of this phase, so it was not compared.

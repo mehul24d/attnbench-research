@@ -335,6 +335,23 @@ def minference_meanpool_scores_on_device(q: torch.Tensor, k: torch.Tensor, *,
     only, which would have put a device sync on every layer of an inline
     forward.)
     """
+    a_hat = meanpool_scores_per_head_on_device(q, k, n_heads_kv=n_heads_kv,
+                                               block_size=block_size)
+    n_heads_q, n_blocks = a_hat.shape[0], a_hat.shape[-1]
+    # Mean over the query heads within each KV group, as the oracle does.
+    return a_hat.view(n_heads_kv, n_heads_q // n_heads_kv, n_blocks, n_blocks).mean(dim=1)
+
+
+def meanpool_scores_per_head_on_device(q: torch.Tensor, k: torch.Tensor, *,
+                                       n_heads_kv: int, block_size: int) -> torch.Tensor:
+    """The MP arm's scorer for era 4 (estimator-frontier pre-registration
+    sec. 4.2): `minference_meanpool_scores_on_device` without the head
+    average. One score matrix per QUERY head, each from that head's own
+    pooled queries and its KV group's pooled keys.
+
+    Returns (n_heads_q, n_blocks, n_blocks) fp32 on q's device. The
+    head-uniform function above is this, averaged within each KV group, and
+    computes the same numbers it did before the split (2026-10-04)."""
     batch, n_heads_q, seq_len, head_dim = q.shape
     if batch != 1:
         raise ValueError(f"minference_meanpool_scores expects batch=1, got {batch}")
@@ -361,10 +378,7 @@ def minference_meanpool_scores_on_device(q: torch.Tensor, k: torch.Tensor, *,
     kv = torch.arange(n_blocks, device=q.device).unsqueeze(0)
     logits = logits.masked_fill(kv > qb, float("-inf"))
 
-    a_hat = torch.softmax(logits, dim=-1)
-    # Mean over the query heads within each KV group, as the oracle does.
-    a_hat = a_hat.view(batch, n_heads_kv, group_size, n_blocks, n_blocks).mean(dim=2)
-    return a_hat[0]
+    return torch.softmax(logits, dim=-1)[0]
 
 
 def pool_scores_to_block_size(scores_finest: torch.Tensor, *,

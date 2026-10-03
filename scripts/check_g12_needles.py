@@ -5,7 +5,8 @@
 
 Compares every needle in the calibration texts ("One of the special magic
 <type> for <key> is: <value>.") with every needle this harness generates
-for four of its needle tasks, in every split, at 16384 and 32768. A needle's key and
+for four of its needle tasks, in every split, at every budget either study
+generates a prompt at (see `budgets`). A needle's key and
 value come from the example's seed alone (task, band, index), so each example
 is rendered with a short haystack.
 
@@ -34,7 +35,18 @@ NEEDLE = re.compile(r"One of the special magic (\w+) for (.+?) is: (.+?)\.(?=\s|
 # which ones it holds changes with the haystack's length, and a short render
 # is not the real prompt. It is not a task of the frontier study or of T4.
 TASKS = ("niah_single", "niah_multikey_1", "niah_multivalue", "niah_multiquery")
-BANDS = (16384, 32768)
+
+
+def budgets(task: str) -> tuple:
+    """Every token budget a prompt of this task is generated at, in either
+    study. The budget is part of an example's seed, so the capped bands
+    (band minus the task's answer cap, per model) hold other needles than
+    the plain ones: 16384 and 32768 (T4, and Llama at 16384), 32768 minus the
+    Qwen cap, and 32768 and 65536 minus the Llama cap."""
+    from attnbench.accuracy import stopping
+    qwen = stopping.token_cap(task)
+    llama = stopping.token_cap(task, stopping.LLAMA_31_8B)
+    return tuple(sorted({16384, 32768, 32768 - qwen, 32768 - llama, 65536 - llama}))
 
 
 def needles(text: str) -> set:
@@ -59,7 +71,7 @@ def harness_needles() -> dict:
     for split in ("t4_replication", "selection", "calibration", "evaluation"):
         got = set()
         for task in TASKS:
-            for band in BANDS:
+            for band in budgets(task):
                 for i in frontier_splits.split_indices(split, task):
                     got |= example_needles(task, split, band, i)
         out[split] = got

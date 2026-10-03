@@ -130,11 +130,12 @@ def test_the_gate_reserves_higher_priority_items_at_worst_case_inputs():
     assert fp.gate("I1", "A100", [])["verdict"] == "PROCEED"
     for low in ("I2b", "I2d", "I2e"):
         assert fp.gate(low, "A100", [])["verdict"] == "STOP"
-    # H8's probe is covered once H6a has passed (no I2c-B to reserve); with
-    # I2c-B still pending and every input at its upper end it is not.
+    # H8's probe is covered whether or not I2c-B is still to be reserved.
     assert fp.gate("XL0", "A100", [], {"h6a_passed": True})["verdict"] == "PROCEED"
-    assert fp.gate("XL0", "A100", [])["verdict"] == "STOP"
+    assert fp.gate("XL0", "A100", [])["verdict"] == "PROCEED"
     assert fp.gate("SL", None, [])["verdict"] == "STOP"
+    # The full-set table reserves everything ranked above it, so it waits.
+    assert fp.gate("C-full", "A100", [])["verdict"] == "STOP"
     # Once the Llama runs are cut, a lower item no longer has to leave room for them.
     state = {"cut": ["XL0", "XL primary", "XL secondary", "XL 65536"]}
     assert fp.gate("I2e", "A100", [], state)["verdict"] == "PROCEED"

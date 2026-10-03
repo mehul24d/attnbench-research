@@ -736,17 +736,19 @@ CUT_LABEL = {
     "6": (("H2", "H100 near-parity cells on 3 sessions"),),
     "10": (("H4", "without VS"), ("H5", "without VS")),
 }
-# Cuts 2, 3, 5, 7 and 12 label no hypothesis (sec. 8.4): Llama secondary cells
+# What the paper states when a cut removes something no hypothesis reads.
+CUT_STATEMENT = {"0": "full-set table not made"}
+# Cuts 0, 2, 3, 5, 7 and 12 label no hypothesis (sec. 8.4): Llama secondary cells
 # are in no test, H6a's population is the <= 32K texts, strides 4 and 16 are
 # descriptive, H2's 84 cells are 1.5B only, and I2c-B never changes H6a.
 
 # The cut order (sec. 8.4), first cut first. Item 8 was removed (I4 is never
 # cut). A later item has HIGHER priority: it is cut later.
-CUT_ORDER = ("0a", "0b", "0c", "1", "2", "3", "4", "5", "6", "7", "9", "10", "11", "12")
+CUT_ORDER = ("0", "0a", "0b", "0c", "1", "2", "3", "4", "5", "6", "7", "9", "10", "11", "12")
 CUT_WITHHELD_LAST = ("0c", "10")
 # Cut items that are sessions or arms of their own, as bracket lines. The
 # others (0a, 0b, 4, 5, 10) are parts of a star line or have no line.
-CUT_LINES = {"0c": ("SL",), "1": ("XL 65536",), "2": ("XL secondary",), "3": ("I2d",),
+CUT_LINES = {"0": ("C-full",), "0c": ("SL",), "1": ("XL 65536",), "2": ("XL secondary",), "3": ("I2d",),
              "6": ("R H100#3",), "7": ("I2b",), "9": ("I2e",),
              "11": ("XL0", "XL primary"), "12": ("I2c-B",)}
 
@@ -812,8 +814,9 @@ class BracketInputs:
     decode_llama_s: tuple = (0.025, 0.045)
     # The C line's text factors: sum over Qwen-counted text.json texts
     # <= 32768 of (n/16384)^1.6. Per-text counts are not committed. From
-    # 2026-10-04 C makes two tables: the claim table on the 104 texts left
-    # once the 24 QA texts are out, and the descriptive one on all 121.
+    # 2026-10-04 there are two tables: C makes the claim table on the 104
+    # texts left once the 24 QA texts are out; C-full, a cuttable session
+    # that runs last, makes the descriptive one on all 121.
     c_text_factor: float = 106.095433
     c_text_factor_full: float = 117.71112258763596
     # The Llama oracle lines, minutes, from scripts/derive_llama_oracle_cost.py.
@@ -858,9 +861,13 @@ def bracket(inp: BracketInputs = BracketInputs()) -> list[BracketLine]:
         return {str(i + 1): f(1) / n for i in range(n)}
 
     add("FA3", "CPU", lambda k: (60, 150)[k], True, "intrinsic")
-    add("C", "A100", lambda k: p7[16384][k] * (inp.c_text_factor + inp.c_text_factor_full)
-        * inp.mu[k] / 60
+    add("C", "A100", lambda k: p7[16384][k] * inp.c_text_factor * inp.mu[k] / 60
         + inp.overhead_min[k] + ext(k), True, "intrinsic")
+
+    # Cut item 0, cut first: the full-set 7B table, descriptive. Its own
+    # session, last in the run order (sec. 8.4).
+    add("C-full", "A100", lambda k: p7[16384][k] * inp.c_text_factor_full * inp.mu[k] / 60
+        + inp.overhead_min[k], False, "intrinsic")
 
     def i1(k):
         e2e = sum(15 * 23 * 2 * pa[x] for x in pa) * inp.ex[k] / 60
@@ -1016,7 +1023,12 @@ def fund(lines: Sequence[BracketLine], run_order: Sequence[str], *, months: int 
             if not l.star and c is not None:
                 cuttable[c] = cuttable.get(c, 0.0) + l.inr[1]
         r_b = by["I2c-B"].inr[1] if "I2c-B" in todo else 0.0
-        hours = (line.minutes[1] + sum(l.minutes[1] for l in rest if l.star)) / 60
+        # S_res covers the disk of everything this launch reserves: itself,
+        # the never-cut sessions left, and the higher-priority cuttable ones.
+        order = cut_order(xa_withheld=xa_withheld)
+        higher = () if (star or item is None or not reserve_higher) else order[order.index(item):]
+        hours = (line.minutes[1] + sum(l.minutes[1] for l in rest
+                                       if l.star or cut_item_of(l.name) in higher)) / 60
         verdict = launch_check(
             spent=spent, next_u=line.inr[1], next_item=None if star else item,
             remaining_star_u=[l.inr[1] for l in rest if l.star],
@@ -1039,9 +1051,11 @@ def fund(lines: Sequence[BracketLine], run_order: Sequence[str], *, months: int 
 
 
 # Sec. 8.5, as line names. Replicates and I2c-B run only if triggered.
+# C-full is last: by then every item ranked above it has run or been cut,
+# so its launch check is simply whether the money is still there.
 RUN_ORDER = ("FA3", "C", "I1", "I2a", "I2c", "I2c-B", "I2b", "I2d", "I2e", "I3", "I4",
              "R A100x3", "R H100x2", "R H100#3", "X0", "X primary", "X secondary",
-             "SL", "X-rep", "XL0", "XL primary", "XL secondary", "XL 65536")
+             "SL", "X-rep", "XL0", "XL primary", "XL secondary", "XL 65536", "C-full")
 
 # DP1's trigger on the arm factor (sec. 8.3): the bracket's upper end.
 ARM_FACTOR_UPPER = 1.6
@@ -1066,6 +1080,54 @@ def dp1_arm_factor(measured: float, inp: BracketInputs = BracketInputs()) -> str
     if measured <= ARM_FACTOR_UPPER:
         return "within"
     return "cut_or_stop" if measured >= arm_factor_break_even(inp) else "rebracket"
+
+
+DP1_COLUMNS = ("band", "arm", "prefill_ms")
+NOT_DEPLOYABLE = ("dense", "O")
+
+
+def measured_arm_factor(frame) -> float:
+    """DP1's arm factor (sec. 8.3): the largest ratio, over the deployable
+    arms and the bands, of an arm's mean end-to-end prefill to the dense
+    prefill of the same band. Reads timing columns only."""
+    check_no_result_columns(frame.columns)
+    missing = [c for c in DP1_COLUMNS if c not in frame.columns]
+    if missing:
+        raise ValueError(f"DP1 needs {DP1_COLUMNS}; missing {missing}")
+    means = frame.groupby(["band", "arm"])["prefill_ms"].mean()
+    ratios = []
+    for band in sorted({b for b, _ in means.index}):
+        if (band, "dense") not in means.index:
+            raise ValueError(f"no dense prefill at band {band}: the factor cannot be formed")
+        arms = [a for b, a in means.index if b == band and a not in NOT_DEPLOYABLE]
+        ratios += [means[(band, a)] / means[(band, "dense")] for a in arms]
+    if not ratios:
+        raise ValueError("no deployable arm was timed")
+    return float(max(ratios))
+
+
+def dp1(frame, inp: BracketInputs = BracketInputs(), *, i2cb_runs: bool = True) -> dict:
+    """The DP1 decision on the arm factor, from the canary's timing rows.
+
+    At or below 1.6 the bracket stands. Above it the measured value replaces
+    the upper end and every U is recomputed. The verdict is STOP if the
+    never-cut core, the storage reserve and I2c-B alone exceed the cap,
+    'proceed with cuts' if the funding walk cuts anything, else 'proceed'."""
+    import dataclasses
+    factor = measured_arm_factor(frame)
+    trigger = dp1_arm_factor(factor, inp)
+    new = inp if trigger == "within" else dataclasses.replace(inp, ex=(inp.ex[0], factor))
+    lines = bracket(new)
+    w = worst_case(lines)
+    walk = fund(lines, RUN_ORDER, skip=() if i2cb_runs else ("I2c-B",))
+    core_alone = w["core"] + w["s_res"] + (w["i2cb"] if i2cb_runs else 0.0)
+    if core_alone > CAP_INR or walk["stopped_at"] is not None:
+        verdict = "STOP"
+    else:
+        verdict = "proceed with cuts" if walk["cut"] else "proceed"
+    return {"arm_factor": factor, "trigger": trigger, "arm_factor_upper": new.ex[1],
+            "verdict": verdict, "cut": walk["cut"], "funded": walk["ran"],
+            "worst_case": w, "u_inr": {l.name: l.inr[1] for l in lines}}
 
 
 def worst_case(lines: Sequence[BracketLine], *, months: int = 2) -> dict:

@@ -74,6 +74,12 @@ CLASSIFIED: dict[tuple[str, str, str], str] = {
         "block_sparse against plain causal configs, creating cells this "
         "study's design excludes.",
 
+    ("attnbench/accuracy/recall.py", "forward", "forward"):
+        "UNGUARDED BY DESIGN. RecallPass.forward scores the layer's exact "
+        "block mass and each arm's recall, then returns dense causal SDPA as "
+        "the layer output so the next layer is scored on the hidden states "
+        "the real model produces. The dense backend it calls is the same one "
+        "ThresholdProfiler uses, on a causal config it always supports.",
     ("attnbench/backends/xattention.py", "forward", "forward"):
         "UNGUARDED BY DESIGN. ThresholdProfiler.forward hands the official "
         "profiler each layer's q and k, then returns dense causal SDPA as the "
