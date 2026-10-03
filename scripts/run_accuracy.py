@@ -50,6 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from attnbench.accuracy.config import load_grid                        # noqa: E402
+from attnbench.accuracy.prompting import prompt_token_counter  # noqa: E402
 from attnbench.accuracy.generation import (                            # noqa: E402
     ModelGeometry, StopTokens, generate_one)
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
@@ -152,7 +153,7 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
                                       score_source=score_source)
 
     stop_tokens = StopTokens.from_tokenizer(
-        tokenizer, getattr(model, "generation_config", None))
+        tokenizer, getattr(model, "generation_config", None), model_id=model_id)
     if verbose:
         print(f"stop tokens   : {len(stop_tokens.eos)} eos, "
               f"{len(stop_tokens.newline)} newline, "
@@ -632,9 +633,8 @@ def main():
     else:
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-        def count_tokens(text: str) -> int:
-            return len(tokenizer(text).input_ids)
+        # The same encoding generation feeds the model (prompting.py).
+        count_tokens = prompt_token_counter(tokenizer)
 
         print(f"sizing        : exact, via {model_id} tokenizer")
 

@@ -48,7 +48,7 @@ class _FakeTokenizer:
     def __len__(self):
         return VOCAB
 
-    def __call__(self, text, return_tensors=None):
+    def __call__(self, text, return_tensors=None, add_special_tokens=True):
         g = torch.Generator().manual_seed(abs(hash(text)) % (2 ** 31))
         ids = torch.randint(0, VOCAB, (1, self._prompt_len), generator=g)
         return type("Enc", (), {"input_ids": ids})()

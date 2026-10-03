@@ -38,7 +38,7 @@ class _Tok:
     def __len__(self):
         return VOCAB
 
-    def __call__(self, text, return_tensors=None):
+    def __call__(self, text, return_tensors=None, add_special_tokens=True):
         ids = torch.randint(0, VOCAB, (1, PROMPT), generator=torch.Generator().manual_seed(1))
         return type("Enc", (), {"input_ids": ids})()
 

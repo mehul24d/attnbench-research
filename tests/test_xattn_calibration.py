@@ -215,7 +215,7 @@ class _Tok:
     def __len__(self):
         return 64
 
-    def __call__(self, text, return_tensors=None):
+    def __call__(self, text, return_tensors=None, add_special_tokens=True):
         return type("E", (), {"input_ids": torch.randint(
             0, 64, (1, 300), generator=torch.Generator().manual_seed(1))})()
 

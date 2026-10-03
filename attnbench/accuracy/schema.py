@@ -120,6 +120,10 @@ class Generated:
     text: str
     latency_ms: Optional[float] = None
     stop_reason: Optional[StopReason] = None
+    # The token id that fired an "eos" or "newline" stop; None on "cap".
+    # Added 2026-10-03: Llama-3.1 has three EOS ids, and which one ended a row
+    # is a fact the category alone does not carry.
+    stop_token_id: Optional[int] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
     # True when the caller pinned the dense-decode fallback to a historical
@@ -189,6 +193,9 @@ class AccuracyResult:
     # inference from answer length against a per-task cap table that would
     # have to be kept in sync with the one generation actually used.
     stop_reason: Optional[StopReason] = None
+    # See Generated.stop_token_id. None on banked rows written before
+    # 2026-10-03, which did not record it.
+    stop_token_id: Optional[int] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
     # See Generated.decode_pinned. Carried so a replayed-regime row can never

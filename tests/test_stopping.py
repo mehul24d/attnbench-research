@@ -48,15 +48,41 @@ def test_an_unmeasured_task_raises_rather_than_borrowing_a_cap():
 
 def test_llama_never_borrows_the_qwen_caps():
     """Estimator-frontier pre-registration, sec. 4.9 (2026-10-03): Llama-3.1-8B
-    caps are measured with its own tokenizer. Until they are, every Llama
-    lookup raises, including for tasks Qwen has caps for."""
+    caps come from its own table, measured with its tokenizer. A Llama lookup
+    returns that table's value, never Qwen's, and a task missing from it
+    raises even where Qwen has a cap."""
     from attnbench.accuracy import stopping
     assert stopping.LLAMA_31_8B == "meta-llama/Llama-3.1-8B-Instruct"
+    llama = stopping.LLAMA_31_8B_TASK_TOKEN_CAPS
     for task in TASK_TOKEN_CAPS:
-        if task in stopping.LLAMA_31_8B_TASK_TOKEN_CAPS:
-            continue
+        if task in llama:
+            assert token_cap(task, stopping.LLAMA_31_8B) == llama[task]
+        else:
+            with pytest.raises(KeyError, match="not reused"):
+                token_cap(task, stopping.LLAMA_31_8B)
+    # The two tokenizers really differ: a borrowed table would be wrong here.
+    assert any(llama[t] != TASK_TOKEN_CAPS[t] for t in llama)
+    try:
+        stopping.LLAMA_31_8B_TASK_TOKEN_CAPS.pop("qa_2")
         with pytest.raises(KeyError, match="not reused"):
-            token_cap(task, stopping.LLAMA_31_8B)
+            token_cap("qa_2", stopping.LLAMA_31_8B)
+    finally:
+        stopping.LLAMA_31_8B_TASK_TOKEN_CAPS["qa_2"] = 46
+
+
+@pytest.mark.parametrize("task", sorted(
+    __import__("attnbench.accuracy.stopping", fromlist=["x"]).LLAMA_31_8B_TASK_TOKEN_CAPS))
+def test_every_llama_cap_is_twice_its_documented_measured_max(task):
+    """Each Llama cap is 2x the max in the measured table in the
+    pre-registration (sec. 4.9), read from the doc, not retyped."""
+    import re
+    from pathlib import Path
+    from attnbench.accuracy import stopping
+    doc = (Path(__file__).resolve().parents[1] / "docs"
+           / "estimator_frontier_preregistration.md").read_text()
+    m = re.search(rf"\| `{task}` \| 200 \|[^|]*\|[^|]*\|[^|]*\| (\d+) \| \*\*(\d+)\*\* \| Llama \|", doc)
+    assert m, f"{task} missing from the Llama measured table"
+    assert token_cap(task, stopping.LLAMA_31_8B) == 2 * int(m.group(1)) == int(m.group(2))
 
 
 def test_other_models_keep_the_qwen_caps():

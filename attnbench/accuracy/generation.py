@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from typing import Optional
 
 from . import stopping
+from .prompting import encode_prompt
 from .grid_configs import decode_backend_for, gate_source_of
 from .schema import SELF_SELECTING_BACKENDS, Generated
 from ..backends.base import AttentionBackend
@@ -49,8 +50,11 @@ class StopTokens:
     whitespace: frozenset[int]
 
     @classmethod
-    def from_tokenizer(cls, tokenizer, generation_config=None) -> "StopTokens":
-        return cls(eos=stopping.eos_token_ids(tokenizer, generation_config),
+    def from_tokenizer(cls, tokenizer, generation_config=None,
+                       model_id: Optional[str] = None) -> "StopTokens":
+        eos = stopping.eos_token_ids(tokenizer, generation_config)
+        stopping.check_eos_for_model(eos, model_id)
+        return cls(eos=eos,
                    newline=stopping.newline_token_ids(tokenizer),
                    whitespace=stopping.whitespace_token_ids(tokenizer))
 
@@ -106,7 +110,15 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
     if synchronize is None:
         synchronize = torch.cuda.synchronize if device == "cuda" else (lambda: None)
 
-    input_ids = tokenizer(example.context, return_tensors="pt").input_ids.to(device)
+    input_ids = encode_prompt(tokenizer, example.context, device)
+    # The sizer and this call must agree token for token (prompting.py). An
+    # example sized by a real tokenizer carries its count; a mismatch means
+    # the budget was checked against something other than what runs.
+    if (example.token_budget > 0 and getattr(example, "sizing", "exact") == "exact"
+            and int(input_ids.shape[-1]) != example.context_length):
+        raise RuntimeError(
+            f"{example.example_id}: sized at {example.context_length} tokens "
+            f"but {int(input_ids.shape[-1])} are fed to the model")
     run_cfg = geometry.onto(cfg, seq_len=int(input_ids.shape[-1]))
 
     layer_scores: Optional[dict] = None
@@ -162,6 +174,7 @@ def generate_one(wrapped, tokenizer, *, cfg: AttnConfig, backend: AttentionBacke
 
     return Generated(text=tokenizer.decode(result.token_ids, skip_special_tokens=True),
                      latency_ms=latency_ms, stop_reason=result.stop_reason,
+                     stop_token_id=result.stop_token_id,
                      n_generated=result.n_generated,
                      decode_backend=result.decode_backend,
                      decode_pinned=pinned_fallback_decode is not None,
