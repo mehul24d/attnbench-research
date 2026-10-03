@@ -251,6 +251,16 @@ h and row i:
   own** scores.
 - **Ties:** the era-3 seeded 1e-9 jitter, identical across heads.
 
+**How the budget is computed (stated 2026-10-04, when the selector was
+built).** The era-3 code computes round((1 − sparsity)·n_cand) with
+sparsity = 1 − d_nom, and era 4 uses the same expression
+(`masks.era_budget`). In floating point that is not always
+round(d_nom·n_cand): 1 − 0.9 is 0.09999999999999998, so 15 candidates give 1,
+not 2. The two differ by one block in 6 of 128 rows at d_nom = 0.10 and in 3
+of 128 at 0.05, and in none at 0.50 or 0.25. Gate G3 needs the era-3
+expression, so every budget in the study, `kept_128` and the matched budgets
+included, goes through that one function.
+
 That is the era-3 rule (`masks.importance_block_mask_device`) applied per head
 instead of to the head mean. With head-mean scores broadcast to every head, it
 reproduces era 3 bitwise (gate G3). The era is registered in §4.5.
@@ -1059,8 +1069,14 @@ recall, component and end-to-end row carries `mask_selector`:
 - Tests: `tests/test_eras.py` (era-4 tests, including the stripped-column
   break-test) and `tests/test_mask_selector_rows.py`. Every guard was
   watched red.
-- **Not yet built:** the per-head selector itself (§11.2 item 3). Until it
-  exists, no row can be `per_head`.
+- **The per-head selector: built 2026-10-04**
+  (`masks.importance_block_mask_per_head`, returning a `PerHeadBlockMask`).
+  - Gate G3 holds on CPU: one score matrix on every head is era 3 bitwise,
+    at four sparsities, four sizes, fp32 and fp16, and where only the jitter
+    decides (`tests/test_per_head_selector.py`).
+  - It takes `row_budgets` for the matched budgets below b = 128.
+  - No arm calls it yet: per-head MP, VS, SL and `bsa_prefill` are still
+    §11.2 items. Until one does, no row is `per_head`.
 
 A row at or after that commit with no `mask_selector` is **refused**. Rows
 before it resolve by commit, as now.
@@ -1750,6 +1766,39 @@ evaluation, under another seed and context, must be refused.
   document's opening, may occur in any of its texts
   (`frontier_prereg.check_calibration_texts_disjoint`).
 
+**G12 on the real file says STOP (run 2026-10-04, on a workstation, before
+any session).** `scripts/check_g12.py` was run on `text.json` at `e379887`
+(sha256 `d11899123f032af35abb23515eed685833b2a6853d483e04a6205c6b6296d50a`).
+
+- **`text.json` is a sample of RULER.** Its 156 texts are RULER prompts in
+  RULER's own templates, 12 per task for 13 tasks: 96 needle-in-a-haystack
+  texts (8 tasks), 12 `qa_1`, 12 `qa_2`, 12 variable-tracking, and 24
+  word-frequency texts. It is not a separate multi-document QA set.
+- **Its `qa_1` texts ask SQuAD questions 0 and 10,** each in six texts.
+  Both are in T4's test ids (0–99).
+- **Held-out gold documents occur in it.** Those 12 `qa_1` texts carry 825
+  of the 1,204 SQuAD documents as their haystack.
+
+  | split | `qa_1` n | question in a text | gold document in a text |
+  |---|---:|---:|---:|
+  | evaluation | 300 | 0 | 218 |
+  | selection | 32 | 0 | 18 |
+  | T4 replication | 100 | 2 (indices 0 and 10) | 100 |
+
+- **What follows in code.** `calibrate_xattn_thresholds.py --source authors`
+  now stops at G12. So C and T4 Session A's `authors` table cannot be made
+  until this is decided.
+- **What is not checked.** Whether a needle in the 96 needle texts equals
+  one this harness generates. They come from RULER's generator with RULER's
+  seeds, and this harness draws its own.
+- **The decision is the researcher's.** It changes what "the authors'
+  profiling set" means, so it is a dated amendment here and in T4 before
+  either calibration runs. The options are in the report of 2026-10-04.
+- The gate matched questions only from 40 characters until this run, which
+  skipped the 36-character question that texts 0, 26, 52, 78, 106 and 130 of
+  the file ask (SQuAD question index 0; the file's sha256 is above). It now
+  matches from 12.
+
 **Firewall order:**
 
 1. The tables are committed.
@@ -1801,7 +1850,7 @@ tier, `qa_1`). It comes from the exact bound
 | **G10** | The dense baseline "runs correctly" (§4.6), including the device-health check after every probe. | the candidate is excluded; on a failed health check the session ends |
 | **G11** | Every new Qwen example at the capped 32K band satisfies `context_length` ≤ 32,768 − `token_cap(task)`; every new Llama example at 32768c and 65536c satisfies `context_length` ≤ band − `token_cap(task, "meta-llama/Llama-3.1-8B-Instruct")` and was generated with `per_example_fit=True`; and every new example at any band satisfies `context_length` ≤ its budget. Checked on the generated prompts before any row is written (§4.9). | STOP |
 
-| **G12** | No evaluation or selection question, and no gold document's opening, occurs in any `text.json` text (§5). Run when the splits are generated, before C and before T4 Session A. | STOP |
+| **G12** | No evaluation or selection question, and no gold document's opening, occurs in any `text.json` text (§5). Run when the splits are generated, before C and before T4 Session A. Wired 2026-10-04 into `frontier_splits.generate_splits` and `calibrate_xattn_thresholds.py`. **It fails on the real file (§5).** | STOP |
 
 **Canary (A100, before I1).** Two selection-split examples per (task, band)
 (indices 1000 and 1001), every arm, every
@@ -2127,7 +2176,24 @@ So the non-XA core is about ₹1,793–5,472.
   rebuilt from the audit log, as `docs/spend_ledger.md` does. Spend is never
   restated in prose.
 - **Reservation check, before every launch:**
-  `scripts/frontier_budget_gate.py` must pass, refusing with `STOP` otherwise:
+  `scripts/frontier_budget_gate.py` must pass, refusing with `STOP` otherwise.
+  **Built 2026-10-04.** `gcp_launch_a100.sh`, `gcp_launch_h100.sh` and
+  `gcp_launch_l4.sh` source `scripts/frontier_gate.sh` before they create
+  anything:
+  - `FRONTIER_SESSION=<session>` must pass the gate on that launcher's card.
+    The gate then sets the in-guest halt and the hard cap, over the
+    launcher's defaults and over `GCP_MAX_RUN`.
+  - A session of another pre-registration (T4 calibrated) must say so with
+    `ATTNBENCH_NOT_FRONTIER=<reason>`. It is outside this cap.
+  - With neither set the launcher refuses. So does a missing ledger: it is
+    not read as zero spend.
+  - A launch is written to the ledger at its hard cap and stays reserved in
+    full until its teardown is recorded.
+  - **Not wired:** `gcp_launch_compile_session.sh`, the FA3 CPU build (it has
+    no launcher yet), and the teardown script, which does not yet write the
+    ledger row. The row is recorded by hand with `--record-teardown`.
+
+  The check:
 
       spent + U(next session) + Σ U(every remaining ★ session)
             + Σ U(every higher-priority cuttable item not yet run) + S_res + R_B  ≤  ₹12,000
@@ -2508,9 +2574,17 @@ summary, the date and "XAttention authors"; §8.3 records the ₹12,000 cap.
      `run_vectorised_endtoend.py`;
    - a frontier grid config at n = 300, built from
      `frontier_prereg.evaluation_indices`;
-   - gate G12 wired into split generation;
-   - the `split` column on recall rows, and the selection script's refusal.
-4. `results/frontier_spend.csv` and `scripts/frontier_budget_gate.py`.
+   - gate G12 wired into split generation: **done 2026-10-04**
+     (`attnbench/accuracy/frontier_splits.py`); it fails on the real file
+     (§5);
+   - the `split` column on recall rows, and the selection script's refusal:
+     **done 2026-10-04** (`attnbench/analysis/frontier_recall.py`). The
+     recall pass that writes the rows is still to build;
+   - the per-head selector: **done 2026-10-04** (§4.5).
+4. `scripts/frontier_budget_gate.py`, and the launchers' refusal without it:
+   **done 2026-10-04** (§8.3). `results/frontier_spend.csv` is created with
+   `--init` before the first launch; the teardown's ledger row is still to
+   wire.
    (`frontier_prereg.rebracket()` with its leak guard: done with L1.)
 5. Llama gated access on the project token, verified.
 6. The era table: **done** (`65cd9c1`). The 16 T4 files are registered as era 3 by commit, with their XAttention rows marked as native selection in prose. `tests/test_eras.py` passes, and its key regex was fixed and break-tested. Era-4 registration (L3) has since added `mask_selector`.
@@ -2773,6 +2847,12 @@ the first four blocking findings.
 | SL's accuracy arm | "about ₹90–500", in no total | ₹113–312, a line in §8.2; priced as never-cut and not adopted (§8.4) |
 | Cut-effects table | no row for 0a, 0b, 0c, 2, 6, 10 | every cut item has a row |
 | DP1 and the arm factor | no number | above 1.6 re-brackets; at or above 2.60 cuts or stops |
+| Push | `dc21dec` | `d71efc8` pushed, with the researcher's logged yes |
+| Budget gate | a rule in prose and a function | `scripts/frontier_budget_gate.py`; the three GPU launchers refuse without it |
+| G12 | a function and a test | wired into split generation and the calibration script; **it says STOP on the real `text.json`**, which is a RULER sample (§5) |
+| Recall rows | no schema | `split` is required and checked against the example's index; selection refuses any other split; the evaluation analysis refuses without the committed selection |
+| Per-head selector | not built | built; G3 holds on CPU |
+| Budget expression | round(d_nom·n_cand) in prose | the era-3 code's expression, one function; they differ in a few rows at 0.10 and 0.05 (§2.1) |
 
 ## 14. Licence and provenance request to the XAttention authors
 
