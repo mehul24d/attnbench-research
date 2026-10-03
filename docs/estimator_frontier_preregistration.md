@@ -1,6 +1,6 @@
 # Estimator cost/quality frontier — pre-registration (DRAFT)
 
-Status: **unlocked draft, amended 2026-10-03 (fourth draft). Not locked.** No GPU
+Status: **unlocked draft, amended 2026-10-03 (fifth draft). Not locked.** No GPU
 session has run for this study, and no row exists. §13 lists what changed in
 each draft.
 
@@ -47,8 +47,10 @@ It was never the authors' permission.
 The pinned commit is cloned at run time. The repository still has no
 licence (§4.1).
 
-**Two questions remain unanswered.** Both were asked 2026-10-03 (the request
-was drafted that day, and the reply came the same day):
+**Request date: 2026-10-03.** Nothing else about the request is kept in the
+repository.
+
+**Two questions remain unanswered.** Both were asked in that request:
 
 1. the provenance of the shipped `llama_fuse_*` thresholds;
 2. whether the Triton and torch paths select the same blocks.
@@ -323,6 +325,29 @@ components (`results/t4_{sparse,xattn}_{canary,pilot}_session_*/…/estimator_co
 
 So the **kernel-level tolerance is τ_k = 0.05**. The **end-to-end tolerance is
 τ_e = 0.07**, which covers P2's 6.8% miss.
+
+**What was visible when these predictions were written (stated 2026-10-03).**
+The A100 crossover estimates were in view while H2 and H5 were drafted and
+amended:
+
+- the per-layer A100 kernels at (12, 2) (`results/s7_sweep_hl122`):
+  cuDNN 1.165 ms against flash 1.570 at 8192, fa2 4.167 against 4.434 at
+  16384, and block-sparse at each sparsity;
+- the banked A100 end-to-end speedups against `sdpa_flash`
+  (`results/s8_vec_endtoend`, `results/s12_a100_vec_endtoend`), including
+  1.48× and 1.67× at 32768;
+- the baseline-strength estimates in `claims.md`: at 8192 against cuDNN,
+  0.962–0.995×, below 1 at every sparsity; at 16384 against fa2, 1.072–1.260×.
+
+H2c (no profitable point at 8192), H2d (A100 32768 in [1.25, 1.80]) and H5a
+(none at 16384) were written with these numbers in view, and quote them. They
+are **priors anchored on visible data**, not blind predictions of the A100
+crossover. What they test is whether the new arms (era-4 selector, per-head
+MP, XA through `bsa_prefill`) behave as the banked arms predict. Each is
+reported with this label. The H100 half of H2c is the same: the banked H100
+figures at 8192 (0.923–1.036× against `sdpa_flash`, `limitations.md`) were
+also visible. The predictions not anchored on banked crossover data are H1's
+card ratios, H2a/H2b's per-cell model, H3, H4, H6, H7 and H8.
 
 ### H1: estimator cost moves across cards as the roofline predicts
 
@@ -753,7 +778,10 @@ measures them. It runs in I1 (A100) and I3 (H100), before candidate timing:
   `status="illegal_memory_access"`. The evidence (`limitations.md`, "cuDNN
   fused attention faults the device above 8192"): Xid 31, an MMU fault, on
   four machines across sm_89 and sm_80, all at driver 580.173.02 and torch
-  2.9.1+cu129. They are not re-probed while driver and torch are unchanged.
+  2.9.1+cu129. *(Corrected 2026-10-03: the banked serial logs hold three
+  real Xid 31 events, two on L4 and one on A100. Later rows that record the
+  fault are guard-written; see `limitations.md`.)* They are not re-probed
+  while driver and torch are unchanged.
   If either changes, they are re-probed as for the H100.
 - **H100 (sm_90). A record exists, and it is not an observation. Checked
   2026-10-03.**
@@ -777,7 +805,9 @@ measures them. It runs in I1 (A100) and I3 (H100), before candidate timing:
     faults "raise at the call, `probe()` catches them". The `--exclude-backends`
     help in `scripts/run_probe.py` says cuDNN "took the 32768 band down with
     it", which the same runbook then disproves ("excluding it changed
-    nothing"). Both are flagged (§13). Neither is corrected here.
+    nothing"). Both were corrected on 2026-10-03 (`3f8a884`), and each
+    keeps its old text. *(This said "Both are flagged (§13). Neither is
+    corrected here." until 2026-10-03, after the correction had been made.)*
   - **The sm_80 evidence is real.** `results/a100/serial_console.log:2686`
     logs Xid 31 (MMU fault) at 2026-09-05 13:03.
   - **The probe runs LAST** (amended 2026-10-03). It is the final phase of
@@ -879,28 +909,119 @@ stamped on every row from the start values:
 
 **Models and pinned revisions:**
 
-| model | revision | `max_position_embeddings` | `rope_scaling` | how verified |
+| repo id | revision | `max_position_embeddings` | `rope_scaling` | how verified |
 |---|---|---:|---|---|
-| Qwen2.5-1.5B-Instruct | `989aa7980e4cf806f80c7fef2b1adb7bc71aa306` | 32768 | none | local HF cache |
-| Qwen2.5-7B-Instruct | `a09a35458c702b33eeacc393d103063234e8bc28` | 32768 | none | HF |
-| Llama-3.1-8B-Instruct | `0e9e39f249a16976918f6564b8830bc894c89659` | — | — | **not verified**: the repository is gated (`gated: manual`), and `config.json` returned 401 without a token. The model card states 128K. |
+| `Qwen/Qwen2.5-1.5B-Instruct` | `989aa7980e4cf806f80c7fef2b1adb7bc71aa306` | 32768 | none | local HF cache |
+| `Qwen/Qwen2.5-7B-Instruct` | `a09a35458c702b33eeacc393d103063234e8bc28` | 32768 | none | HF |
+| `meta-llama/Llama-3.1-8B-Instruct` | `0e9e39f249a16976918f6564b8830bc894c89659` | 131072 | `llama3`: factor 8.0, low 1.0, high 4.0, original 8192; `rope_theta` 500000.0 | **G9, 2026-10-03:** read by the researcher locally with their own token. `config.json` sha256 `29e4c210b0d6ac178b16b2a255a568bdb23b581e50ca1ef6a6d071dd85704e6e`, taken from the researcher's local HF cache, whose only snapshot is this revision. *(Until 2026-10-03 this row read "not verified: gated, 401 without a token".)* |
+
+**G9 result, 2026-10-03 (lock gate L5): passed for the position limit
+only.** The researcher read `config.json` at the pinned revision locally,
+with their own token:
+
+- `max_position_embeddings` 131072;
+- `rope_scaling` {`rope_type` llama3, `factor` 8.0, `low_freq_factor` 1.0,
+  `high_freq_factor` 4.0, `original_max_position_embeddings` 8192};
+- `rope_theta` 500000.0;
+- 32 layers, 32 attention heads, 8 KV heads, `hidden_size` 4096 (head_dim
+  128), vocab 128256, bfloat16.
+
+The geometry matches §2. Every Llama band below fits under 131,072 with any
+generation cap. The pass covers the limit and nothing else. The checks below
+were done on CPU on 2026-10-03, or are still open.
+
+**Same model as XAttention's shipped thresholds (checked from source,
+`e379887`).**
+
+- **Repo id.** This study uses `meta-llama/Llama-3.1-8B-Instruct`. The
+  authors' RULER run (`scripts/run_ruler.sh`, model `llama3.1-8b-chat`)
+  resolves in `eval/RULER/scripts/config_models.sh` to
+  `${MODEL_DIR}/Llama-3.1-8B-Instruct`, a local directory. The profiler's
+  default is `meta-llama/Llama-3.1-8B-Instruct`
+  (`profile_threshold.py:185`). LongBench names `Meta-Llama-3.1-8B-Instruct`,
+  the repository's earlier name.
+- **Revision.** Not recorded anywhere in their code (a local path), so the
+  tables were calibrated on this model at an **unknown revision**.
+- **Table shape.** `llama_fuse_4`, `llama_fuse_8` and `llama_fuse_16` are
+  each 32 × 32. `load_llama.py` repeats K and V up to 32 heads before
+  `Xattention_prefill`, which asserts `num_q_head == num_kv_head`, and passes
+  `threshold[layer_idx]`. `find_blocks_chunked` (`xattn/src/utils.py:91-93`)
+  broadcasts that 32-vector over the head axis. So the table is **32 layers ×
+  32 query heads**, matching G9's 32 layers and 32 attention heads.
+
+**RoPE `llama3` in the pinned transformers.**
+
+- The GPU images pin transformers 4.46.0. It implements `llama3`
+  (`modeling_rope_utils.py:310`, `_compute_llama3_parameters`, registered
+  at line 362), as does the workstation venv's 5.18.0.
+- **The logits gate was re-run** with llama3 scaling that triggers:
+  `tests/test_llama3_rope_gate.py`, a tiny random Llama with the G9 rope
+  values and `original_max_position_embeddings` scaled to 16, run to 64
+  positions. Wrapped logits equal unwrapped logits within 1e-5 on both
+  4.46.0 and 5.18.0. The installed inverse frequencies equal Meta's formula,
+  implemented independently in the test, for the real G9 geometry too. A
+  wrapper fed unscaled RoPE fails the gate (break-tested, watched red).
+- **A trap, found doing this.** transformers 4.46.0 **silently ignores** a
+  config key it does not read: given `rope_parameters` (the newer spelling)
+  instead of `rope_scaling`, it builds default RoPE with θ = 10000 and no
+  error. The real `config.json` uses `rope_scaling`, which both versions
+  read. Step 4 below guards against this on the instance.
 
 **Gate G9, on the instance, before any Llama row:**
 
-1. Read `config.json` at the pinned revision with the project's token, and
-   record its sha256 and `rope_scaling`.
-2. Assert `max_position_embeddings` ≥ band + `stopping.token_cap(task)` for
-   every Llama band.
+1. Read `config.json` at the pinned revision with the project's token.
+   Assert its sha256 equals the one in the table above, so the instance
+   loads the file the researcher checked.
+2. Assert `max_position_embeddings` ≥ every Llama band's budget +
+   `stopping.token_cap(task, "meta-llama/Llama-3.1-8B-Instruct")`.
 3. Assert that `text.json`'s maximum Llama token count is within the limit,
-   for H6b.
+   for H6b. It is counted with the Llama tokenizer. The Qwen count is 91,574.
+4. After loading the model, assert `model.model.rotary_emb.rope_type ==
+   "llama3"` and that its `inv_freq` equals Meta's formula (the helper in
+   `tests/test_llama3_rope_gate.py`). STOP otherwise.
 
-If the 65536 assertion fails, that band is **dropped for validity** (not
-under §8.4).
+If an assertion fails for one band, that band is **dropped for validity**
+(not under §8.4).
 
 **Bands:**
 
-- Qwen: 8192, 16384, 32768.
-- Llama extrinsic: 16384, 32768, 65536.
+- Qwen: 8192, 16384, 32768 (the 32K band capped, below).
+- Llama extrinsic: 16384, 32768c and 65536c (amended 2026-10-03):
+  - **32768c:** budget 32,768 − the Llama cap for the task, the same rule as
+    Qwen's (below). Llama's limit does not require it. It keeps
+    prompt + generation ≤ 32,768, so the 32K band means the same number of
+    positions on both models.
+  - **65536c:** budget 65,536 − the Llama cap, so prompt + generation ≤
+    65,536, below the 131,072 limit.
+  - **16384:** uncapped, as for Qwen. 16,384 plus any cap is far below the
+    limit.
+  - **No 128K band is planned.** One would need its own cap at 131,072. At
+    about 4× the 65536 band's cost per row (§8.2), it does not fit under
+    §8.3, and the 65536 band is already cut first.
+- **Llama sizing: per example, every task.** Every Llama generation calls
+  `ruler.generate_examples(..., per_example_fit=True)` (added 2026-10-03,
+  `tests/test_per_example_fit_flag.py`, break-tested). That sizes every
+  example on its own and raises if one still lands above budget. The five
+  candidate tasks are already in `_PER_EXAMPLE_FIT`, so the flag changes none
+  of their prompts. It closes the gap for any other task. G11 holds Llama to
+  it as well.
+- **Llama stop rule (amended 2026-10-03).**
+  - **Caps.** Measured with the Llama tokenizer, by the same rule as Qwen's
+    (2× the longest answer over 200 examples):
+    `scripts/measure_answer_lengths.py --model meta-llama/Llama-3.1-8B-Instruct --revision 0e9e39f…`.
+    They are recorded in `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS`. **Qwen's
+    caps are not reused.** Until the table is filled, every Llama cap lookup
+    raises (`tests/test_stopping.py`, break-tested). `generation.py` passes
+    the model id, so this binds at the call site.
+  - **Stop tokens.** The newline stop applies, with the newline token set
+    derived from the Llama tokenizer. EOS ids come from the tokenizer and
+    from `generation_config.json`, **which the researcher will provide**.
+    `config.json` lists `eos_token_id` 128001, 128008 and 128009. Decoding is
+    greedy (`argmax` in `accuracy/model.py`), so `generation_config.json`'s
+    sampling fields are not used.
+  - **Order.** The caps fix the 32768c and 65536c budgets, so they are
+    measured, and committed with `generation_config.json`'s stop ids, before
+    the Llama probe XL0.
 
 **Positions past Qwen's limit at 32768.**
 
@@ -953,8 +1074,8 @@ under §8.4).
   - At 16384 there is no overrun, so the T4 prompts serve both the
     replication and the frontier.
 - **On every row:** `positions_over_limit = max(0, prompt + generated − limit)`.
-- **Llama** stays within its limit at 65536 once G9 is verified, so it needs
-  no cap.
+- **Llama** is capped at 32768c and 65536c (above). G9 confirms both are
+  far inside the 131,072 limit.
 
 **Llama task selection.** A dense probe, n = 5 per task and band, on the T4
 candidates (`niah_multikey_1`, `niah_multivalue`, `niah_multiquery`, `qa_1`,
@@ -1034,7 +1155,7 @@ tier, `qa_1`). It comes from the exact bound
 |---|---|---|
 | **G1** | The XA native arm through `bsa_prefill` is bitwise equal to `Xattention_prefill` (with the matching `keep_*` settings) for Qwen 1.5B, Qwen 7B and Llama-3.1-8B, at 8192 and 32768, on the Triton path. | STOP |
 | **G1b** | `bsa_prefill` is bitwise equal to the XA backend's own kernel call on the same inputs and per-head mask (§4.4). | STOP |
-| **G2** | The same q and k through `xattn_estimate(use_triton=True)` and `(False)` on the A100, at every b used: masks disagree on ≤ 0.5% of causal blocks, and |ΔR| ≤ 0.005. | Not a stop. Labels T4's L4 XA rows as not the official selections (in `claims.md`); scores R1 as indeterminate. |
+| **G2** | The same q and k through `xattn_estimate(use_triton=True)` and `(False)` on the A100, at every b used: masks disagree on ≤ 0.5% of causal blocks, and \|ΔR\| ≤ 0.005. | Not a stop. Labels T4's L4 XA rows as not the official selections (in `claims.md`); scores R1 as indeterminate. |
 | **G3** | The era-4 selector on head-mean scores is bitwise equal to `importance_block_mask_device`. | STOP |
 | **G4** | Each scorer matches its reference (MP bitwise before averaging; VS fp32 at rtol 1e-5; O rows sum to 1 ± 1e-4, at every b). | STOP |
 | **G5** | The sync-debug check is clean for MP, VS, O and the selector, and XA's `n_sync` is recorded. | STOP |
@@ -1043,7 +1164,7 @@ tier, `qa_1`). It comes from the exact bound
 | **G8** | Every row has `git_dirty=False`, one commit per analysis, `dense_baseline`, `mask_selector`, `cpu_model`, `cpu_count`, `launch_floor_us`, `sync_floor_us`, `h2d_floor_us`, `positions_over_limit`, `xattn_path` and the calibration digest (on XA rows). | the analysis refuses |
 | **G9** | Llama `config.json` verified (§4.9). | that band or model is dropped for validity |
 | **G10** | The dense baseline "runs correctly" (§4.6), including the device-health check after every probe. | the candidate is excluded; on a failed health check the session ends |
-| **G11** | Every new Qwen example at the capped 32K band satisfies `context_length` ≤ 32,768 − `token_cap(task)`, and every new example at any band satisfies `context_length` ≤ its budget. Checked on the generated prompts before any row is written (§4.9). | STOP |
+| **G11** | Every new Qwen example at the capped 32K band satisfies `context_length` ≤ 32,768 − `token_cap(task)`; every new Llama example at 32768c and 65536c satisfies `context_length` ≤ band − `token_cap(task, "meta-llama/Llama-3.1-8B-Instruct")` and was generated with `per_example_fit=True`; and every new example at any band satisfies `context_length` ≤ its budget. Checked on the generated prompts before any row is written (§4.9). | STOP |
 
 **Canary (A100, before I1).** Two examples per (task, band), every arm, every
 gate. It measures μ (exact-mass pass / dense prefill, at b = 128 and with all
@@ -1136,7 +1257,9 @@ $1.5/h).
 | dense prefill, 1.5B | A100 0.190 / 0.436 / 1.102 s; H100 0.079 / 0.189 / 0.506 s at 8K / 16K / 32K | measured | `results/s12_{a100,h100}_vec_endtoend` |
 | dense row, 1.5B, L4 | 2.59 / 5.40 s at 16K / 32K | measured | T4 pilot parquets |
 | dense row, 7B, A100, 16K | 2.73 s | measured | `results/s7_7b_16384` |
-| μ = exact-mass pass / dense prefill | 2–11.3 | upper measured (L4 CPU-resident oracle at 32K), **lower assumed** | `docs/t4_sparse_pilot.md`; the canary measures it |
+| μ = exact-mass pass / dense prefill | 2–11.3 | upper measured (L4 CPU-resident oracle at 32K), **lower assumed** for the new GPU-side pass (§4.7) | `docs/t4_sparse_pilot.md`; the canary measures it |
+| μ of this harness's oracle pass, A100, 1.5B | 7.90 / 6.19 / 9.08 at 8K / 16K / 32K (1.5 / 2.7 / 10.0 s, one cold call each) | measured | `results/s12_a100_vec_endtoend/logs/s12_vec_e2e.log` |
+| Llama-8B oracle pass per text | 8.2–14.4 s at 16K, 30.5–53.3 s at 32K, 212–416 s at 91,574 tokens | **derived** from the measured 1.5B pass above, scaled by config geometry (§8.2 note) | `scripts/derive_llama_oracle_cost.py` |
 | block-size recall multiplier | 1.1–1.5 | **assumed** | the canary measures it |
 | wall / Σ row latency | 1.25–1.69 | measured | phase logs |
 | session overhead | 8–15 min | measured range | ledger sessions |
@@ -1156,9 +1279,9 @@ The computation moves into `attnbench/analysis/frontier_prereg.py` before lock
 | ★ I1: 1.5B components, end to end at 3 bands, recall (192 selection + 800 evaluation, b 16–128) | A100 | 59–259 | 281–1,228 |
 | ★ I2a: 7B recall, 60 per band, b 16–128 | A100 | 24–188 | 115–890 |
 | I2b: 7B end to end at 32K | A100 | 14–36 | 64–170 |
-| ★ I2c: Llama H6a, texts ≤ 32K | A100 | 11–75 | 51–357 |
-| I2d: Llama H6a, texts > 32K | A100 | 14–117 | 66–556 |
-| I2e: Llama H6b profiler reproduction | A100 | 22–183 | 102–866 |
+| ★ I2c: Llama H6a, texts ≤ 32K | A100 | 22–49 | 103–233 |
+| I2d: Llama H6a, texts > 32K | A100 | 62–137 | 295–649 |
+| I2e: Llama H6b profiler reproduction | A100 | 81–176 | 384–834 |
 | ★ I3: H100 cuDNN probe, components, end to end at 3 bands | H100 | 22–44 | 155–313 |
 | I4: L4 components | L4 | 11–25 | 15–33 |
 | ★ R: A100 replicates ×3 (0 if no near-parity) | A100 | 0–140 | 0–664 |
@@ -1172,12 +1295,46 @@ The computation moves into `attnbench/analysis/frontier_prereg.py` before lock
 | XL: Llama primary `qa_1`, n = 300, 16K + 32K, dense + 4 | A100 | 272–601 | 1,289–2,843 |
 | XL: Llama secondary, 16K + 32K | A100 | 88–195 | 417–924 |
 | XL: Llama 65536 band | A100 | 574–1,252 | 2,719–5,925 |
-| **Never-cut core** | | **6.6–34.5 h** | **₹1,790–9,650** |
-| **Full plan** | | **23.7–75.9 h** | **₹6,570–21,410** |
+| **Never-cut core** | | **6.8–34.1 h** | **₹1,842–9,526** |
+| **Full plan** | | **25.7–75.7 h** | **₹7,133–21,347** |
+
+**The Llama oracle-pass lines, re-derived 2026-10-03 from measured numbers.**
+I2c, I2d and I2e used to multiply a FLOP-split Llama prefill model by μ =
+2–11.3. The lower μ was assumed, and so was a 1.6× upper factor on the
+prefill. They now start from this harness's oracle pass on the A100,
+**measured** for Qwen2.5-1.5B at 1.5 / 2.7 / 10.0 s at 8K / 16K / 32K
+(μ = 7.90 / 6.19 / 9.08). Two ratios from the configs scale it to Llama:
+
+- **attention:** layers × query heads × head_dim, 3.048;
+- **everything else:** non-embedding linear parameters, 6.979B against
+  1.310B, 5.327.
+
+The split between the two is not assumed. The lower bound puts the whole
+pass at 3.048 and the upper at 5.327, and any split lies between them.
+
+- **Interpolation:** a power law between the measured bands. Past 32K, the
+  exponent is the 16K–32K one (1.89) or 2. Below 8K, the 8K point is scaled
+  linearly or quadratically.
+- **XA estimate pass:** up to one dense prefill more, which is at most
+  1 / 6.19 of the oracle pass.
+- **Token counts:** Qwen's, because the Llama tokenizer is gated. G9 step 3
+  re-counts them on the instance.
+
+**What changed:** I2c moves from ₹51–357 to ₹103–233, I2d from ₹66–556 to
+₹295–649, and I2e from ₹102–866 to ₹384–834. The core moves by +₹52 / −₹124
+and the full plan by +₹563 / −₹63.
+
+**What it is still not:** a Llama measurement, or a measurement of the new
+GPU-side exact-mass pass (§4.7), which is new code. The canary measures μ
+for that pass (DP1). The other oracle-pass lines (C, I1, I2a, X) still use
+the assumed lower μ = 2.0. Against the measured 6.19, that lower bound is
+optimistic: at μ ≥ 6.19 the core's lower end would be about ₹2,530, not
+₹1,842. The upper ends, which set the cap, use the measured 11.3 and do not
+move.
 
 **Intrinsic-only and extrinsic, full plan:**
 
-- intrinsic: ₹1,070–6,430 (4.2–23.2 h);
+- intrinsic: ₹1,633–6,367 (6.2–23.0 h);
 - extrinsic: ₹5,440–14,700 (19.1–51.7 h), of which Llama is ₹4,530–9,930.
 
 **T4 calibrated, as amended,** is a separate pre-registration, not under this
@@ -1196,19 +1353,20 @@ sessions.
 |---|---|---|
 | custom images `attnbench-env-v5-20260905`, `attnbench-env-v6-20260917` | 22.0 GiB archive each | about ₹194/month, billed whether or not a session runs |
 | results bucket `gs://attnbench-results-research-507316` | 5.19 GiB, about 10 GiB after the study | about ₹18/month |
-| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹15–81 over the core, ₹56–181 over the full plan |
+| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹16–82 over the core, ₹62–182 over the full plan |
 | FA3 wheel build | — | already a ★ line above (₹130–325) |
 
-**Share of the core that depends on XAttention arms.** About **31%**:
-₹560–3,000 of the ₹1,790–9,650 core. That includes the X-rep line, which
-is XA-only.
+**Share of the core that depends on XAttention arms.** About **30–33%**:
+₹612–2,876 of the ₹1,842–9,526 core. That includes the X-rep line, which
+is XA-only. *(31%, ₹560–3,000 of ₹1,790–9,650, before the Llama oracle-pass
+lines were re-derived.)*
 
 | component | XA-dependent ₹ |
 |---|---:|
 | X0 + X, the XA share of the 1.5B extrinsic rows (2–3 of 5–8 arms) | 270–1,430 |
 | X-rep, the T4 replication at 32768 (XA only) | 72–288 |
 | C, the 7B calibration (XA only) | 86–404 |
-| I2c, the Llama positive control (XA only) | 51–357 |
+| I2c, the Llama positive control (XA only) | 103–233 |
 | replicates, assuming a third of near-parity cells are XA | 0–359 |
 | I3's XA end-to-end arms | 47–94 |
 | I1's XA end-to-end arms and components | 35–62 |
@@ -1229,9 +1387,9 @@ So the non-XA core is about ₹1,230–6,650 (unchanged).
   reserve, T4 calibrated excluded.
   - **Confirmed by the researcher on 2026-10-03**, in conversation, after it
     was stated back. It cannot be raised after lock.
-  - It covers, at worst-case inputs, the never-cut core (₹9,650) plus the
+  - It covers, at worst-case inputs, the never-cut core (₹9,526) plus the
     storage reserve (about ₹510) plus one rerun of the largest ★ session
-    (₹1,740), which is about ₹11,900, leaving about ₹100.
+    (₹1,740), which is about ₹11,780, leaving about ₹220.
   - Anything cuttable is paid for only from what the measured μ (DP1) frees
     up.
 - **Ledger:** `results/frontier_spend.csv`. Each session's teardown appends
@@ -1286,12 +1444,13 @@ So the non-XA core is about ₹1,230–6,650 (unchanged).
 
 | | ₹ |
 |---|---:|
-| core, including the T4-replication line at 32768 | 9,650 |
+| core, including the T4-replication line at 32768 | 9,526 |
 | S_res, two months | about 510 |
 | one rerun of the largest ★ session (an extrinsic band, up to 1,740) | 1,740 |
-| **total** | **about 11,900** |
+| **total** | **about 11,780** |
 
-That is **inside the ₹12,000 cap**, with about ₹100 to spare. So:
+That is **inside the ₹12,000 cap**, with about ₹220 to spare (₹100 before
+the Llama oracle-pass lines were re-derived). So:
 
 - a single failed session at worst-case μ does not stop the study;
 - a second one does, unless DP1 measures μ below its upper bound;
@@ -1452,7 +1611,9 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 | 10 | Teacher-forced recall. | Open (F5). |
 | 11 | **New:** calibration is the authors' released substitute, not the paper's DP. | Open (F1). H6b measures it, and §14 asks the authors. |
 | 12 | **New:** era 3 against era 4 is cross-era. | T4's head-uniform arms against this study's per-head arms are descriptive only. |
-| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹21,410 worst case for the full plan. | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
+| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹21,347 worst case for the full plan. | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
+| 14 | **New:** H2c, H2d and H5a were written with the A100 crossover estimates visible (§3). | Stated. They are reported as priors anchored on visible data, not blind predictions. The blind tests of the crossover are H1 and H2a/H2b. |
+| 15 | **New:** the H100 in-model speedups are against `sdpa_flash`, and no banked H100 dense kernel exists at (12, 2). | Labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`). Run D in I3 measures it. Nothing is adjusted from a different geometry. |
 
 ---
 
@@ -1461,7 +1622,7 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 ### 11.1 Lock gates (only these; set 2026-10-03 by the researcher)
 
 The hold on the authors' answers is lifted (§0.1). The file locks when all
-six of these are met and committed with it:
+seven of these are met and committed with it (L7 added 2026-10-03):
 
 | # | gate | status 2026-10-03 |
 |---|---|---|
@@ -1469,7 +1630,8 @@ six of these are met and committed with it:
 | L2 | The T4 amendment code (§12), with T4's own plan test updated, committed with the dated amendment sections | **not started** |
 | L3 | The `mask_selector` column on every row type, era 4 registered (§4.5), and its stripped-column break-test | **not started** |
 | L4 | The cuDNN-on-H100 record checked (§4.6) | **done.** The record exists and is guard-written: cuDNN was never launched above 8192 on an H100. §4.6 is corrected, and so is every doc that called these rows faults (runbook, `run_probe.py` help, `silent_failure_patterns.md` ×2, `limitations.md`, `a100_session_plan.md`): "observed on L4 and A100, H100 untested above 8192". |
-| L5 | The Llama-3.1-8B `config.json` check (G9) at revision `0e9e39f…`: `max_position_embeddings`, `rope_scaling`, sha256 | **pending, with the researcher**, who runs it locally with their own token. The result goes into §4.9 as a dated entry. The token is never pasted here. |
+| L5 | The Llama-3.1-8B `config.json` check (G9) at revision `0e9e39f…`: `max_position_embeddings`, `rope_scaling`, sha256 | **Passed 2026-10-03, for the position limit only.** The researcher read it locally with their own token (values and sha256 in §4.9). On CPU the same day: the repo id and table shape match the authors' model; transformers 4.46.0 and 5.18.0 implement `llama3`, and the logits gate passes with it (`tests/test_llama3_rope_gate.py`). What it does not cover is L7. |
+| L7 | The Llama stop rule (added 2026-10-03 from the researcher's pre-lock list): `generation_config.json`'s stop ids recorded in §4.9; the Llama caps measured with the Llama tokenizer and committed to `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS`; `text.json` re-counted with the Llama tokenizer (G9 step 3, done early) | **pending, with the researcher.** The tokenizer is gated, and only `config.json` is in the local cache. The code is ready (`measure_answer_lengths.py --model … --revision …`). |
 | L6 | Banked rows flagged for positions past 32,768 (§4.9) | **done.** `scripts/flag_positions_over_limit.py` → `results/positions_over_limit/`: 1,638 / 34,582 rows, plus the per-band sizing deltas. The root cause is sizing on example 0 (`ruler.py` docstring fixed). The script is committed. Its output sits in gitignored `results/` and is regenerated by the script. |
 
 **Settled 2026-10-03, no longer open:** §0.1 records the researcher's
@@ -1558,37 +1720,15 @@ sentence "the fallback selects the same blocks". G2 tests it.
 
 ## 13. Changes since the first draft (2026-10-03)
 
-| area | first draft | now |
-|
-**Third draft (2026-10-03):**
+*(Until 2026-10-03 each later table had been inserted inside the previous
+table's separator row, so the tables rendered nested and out of order. They
+are now in draft order. Their contents are unchanged, except that the first
+table's "now" column is labelled "second draft".)*
 
-| area | second draft | third draft |
-|
-**Fourth draft (2026-10-03):**
+**Second draft (2026-10-03):**
 
-| area | third draft | fourth draft |
+| area | first draft | second draft |
 |---|---|---|
-| Permission | placeholders for a verbatim scope, date and sender | the researcher's summary (not a quote), 2026-10-03, "XAttention authors"; the email stays private; `backends/xattention.py` is approved and left as is, so the call-site merge is dropped (§4.4, gate G1b) |
-| Gate | a publication rule | a binding permission gate (§0.2, §8.6): default NOT PERMITTED, asked per exact action, never inferred, logged outside the repository |
-| Cap | ₹10,000, open decision | **₹12,000**, confirmed by the researcher; worst case about ₹11,900 |
-| cuDNN | the H100 record corrected in §4.6 | also corrected in 6 places across docs and code; the probe runs **last**, isolated, `CUDA_LAUNCH_BLOCKING=1`, after sync; cuDNN is never an H100 candidate above 8192 |
-| 32K band | T4 prompts kept | the capped band 32768c (budget = 32,768 − `token_cap`), never pooled with banked 32768; the replication alone keeps T4's prompts (X-rep, ★); gate G11 |
-| Sizing | 12 prompts at 32,769 noted | root cause (example-0 sizing for UUID/number-needle tasks), measured overshoot at every band (up to +82 at 16384), `ruler.py` docstring fixed |
-| Docs | — | 32K-positions caveat on every 32768 accuracy citation in `claims.md`; A100 baseline caveat in README, `writeup_input.md` and `limitations.md` |
-
----|---|---|
-| Permission | a request drafted | written permission received; verbatim scope, date and sender to be pasted (§0.1); the professor's-guidance note superseded |
-| Publication | a sentence in §14 | a binding rule, §0.2 and §8.6: no waiting window; it cannot be loosened after any result; met only for the quoted scope; the public `origin` already carries T4 XA results (F22) |
-| Fallback | none | §0.3: what survives without XA; "our implementation of the published algorithm" named as an option, not used until the professor is consulted |
-| SL arm | none | sink + local window, the zero-cost anchor (§4.2); its extrinsic arm is cuttable (0c) |
-| cuDNN on H100 | "never tested" | a record exists in 6 H100 files, but it is guard-written (`gates.py` returns before `run_once`); the probe now bypasses the guard explicitly; two docs flagged as wrong about these rows |
-| A100 baseline | a §4.6 note | a tested caveat in `claims.md` (`tests/test_a100_baseline_caveat.py`, break-tested); run D plans the same-session dense-kernel comparison at the real geometry |
-| Positions past 32,768 | the XA pilot dense file only | all banked rows flagged (1,638 / 34,582; 12 rows with a 32,769-token prompt) |
-| Cost | the cap, the cut order | DP1 and DP2 re-bracketing points with a leak guard; S_res storage reserve; replicate escalation made cuttable (0a, 0b); worst-case core + storage + one rerun ≈ ₹11,600 against a ₹10,000 cap (open decision) |
-| XA share | — | 28–29% of the core (₹490–2,710 of ₹1,720–9,360) |
-| Lock | gated on all §11 items, held for the authors | the hold lifted; gated on L1–L6 only (§11.1); L4 and L6 done |
-
----|---|---|
 | Sequence | unspecified | T4 amendments, then lock, then T4, then this study (§0) |
 | XA native on Qwen 1.5B | a new calibration in run C | a replication of T4 `authors`, identical settings, table by digest, with P-T4 and R1–R4 pre-stated (§3.9, §4.3) |
 | Selector rule | free blocks counted inside the budget, which would have failed G3 by construction | the era-3 rule, per head; registered as **era 4** with a row-level `mask_selector` (§2.1, §4.5) |
@@ -1604,11 +1744,56 @@ sentence "the fallback selects the same blocks". G2 tests it.
 | Licence | policy only | a permission request drafted (§14) |
 | Hypotheses | H1–H6 | plus H7 and H8; H5 restated for n = 300 |
 
+**Third draft (2026-10-03):**
+
+| area | second draft | third draft |
+|---|---|---|
+| Permission | a request drafted | written permission received; verbatim scope, date and sender to be pasted (§0.1); the professor's-guidance note superseded |
+| Publication | a sentence in §14 | a binding rule, §0.2 and §8.6: no waiting window; it cannot be loosened after any result; met only for the quoted scope; the public `origin` already carries T4 XA results (F22) |
+| Fallback | none | §0.3: what survives without XA; "our implementation of the published algorithm" named as an option, not used until the professor is consulted |
+| SL arm | none | sink + local window, the zero-cost anchor (§4.2); its extrinsic arm is cuttable (0c) |
+| cuDNN on H100 | "never tested" | a record exists in 6 H100 files, but it is guard-written (`gates.py` returns before `run_once`); the probe now bypasses the guard explicitly; two docs flagged as wrong about these rows |
+| A100 baseline | a §4.6 note | a tested caveat in `claims.md` (`tests/test_a100_baseline_caveat.py`, break-tested); run D plans the same-session dense-kernel comparison at the real geometry |
+| Positions past 32,768 | the XA pilot dense file only | all banked rows flagged (1,638 / 34,582; 12 rows with a 32,769-token prompt) |
+| Cost | the cap, the cut order | DP1 and DP2 re-bracketing points with a leak guard; S_res storage reserve; replicate escalation made cuttable (0a, 0b); worst-case core + storage + one rerun ≈ ₹11,600 against a ₹10,000 cap (open decision) |
+| XA share | — | 28–29% of the core (₹490–2,710 of ₹1,720–9,360) |
+| Lock | gated on all §11 items, held for the authors | the hold lifted; gated on L1–L6 only (§11.1); L4 and L6 done |
+
+**Fourth draft (2026-10-03):**
+
+| area | third draft | fourth draft |
+|---|---|---|
+| Permission | placeholders for a verbatim scope, date and sender | the researcher's summary (not a quote), 2026-10-03, "XAttention authors"; the email stays private; `backends/xattention.py` is approved and left as is, so the call-site merge is dropped (§4.4, gate G1b) |
+| Gate | a publication rule | a binding permission gate (§0.2, §8.6): default NOT PERMITTED, asked per exact action, never inferred, logged outside the repository |
+| Cap | ₹10,000, open decision | **₹12,000**, confirmed by the researcher; worst case about ₹11,900 |
+| cuDNN | the H100 record corrected in §4.6 | also corrected in 6 places across docs and code; the probe runs **last**, isolated, `CUDA_LAUNCH_BLOCKING=1`, after sync; cuDNN is never an H100 candidate above 8192 |
+| 32K band | T4 prompts kept | the capped band 32768c (budget = 32,768 − `token_cap`), never pooled with banked 32768; the replication alone keeps T4's prompts (X-rep, ★); gate G11 |
+| Sizing | 12 prompts at 32,769 noted | root cause (example-0 sizing for UUID/number-needle tasks), measured overshoot at every band (up to +82 at 16384), `ruler.py` docstring fixed |
+| Docs | — | 32K-positions caveat on every 32768 accuracy citation in `claims.md`; A100 baseline caveat in README, `writeup_input.md` and `limitations.md` |
+
+**Fifth draft (2026-10-03):**
+
+| area | fourth draft | fifth draft |
+|---|---|---|
+| G9 (L5) | pending with the researcher | **passed for the position limit only** (values and `config.json` sha256 in §4.9); repo id and the 32 × 32 (layers × query heads) table shape match the authors' model; the revision they used is unknown |
+| RoPE `llama3` | unchecked | implemented in transformers 4.46.0 and 5.18.0; logits gate re-run with triggering llama3 scaling (`tests/test_llama3_rope_gate.py`, break-tested); 4.46.0's silent `rope_parameters` trap; G9 step 4 on the instance |
+| Llama bands | 16384, 32768, 65536, uncapped | 16384, 32768c, 65536c (band − Llama cap); no 128K band |
+| Llama sizing | example-0 sizing possible for a task outside `_PER_EXAMPLE_FIT` | `per_example_fit=True` on every Llama generation (code and tests, break-tested); G11 extended |
+| Llama stop rule | Qwen's caps by default | its own caps, measured with the Llama tokenizer; lookups raise until measured (break-tested); stop ids from `generation_config.json` (pending); lock gate **L7** |
+| Llama oracle-pass cost | FLOP split × assumed μ (lower 2.0) and an assumed 1.6× | the measured 1.5B A100 oracle pass × config ratios 3.048–5.327 (`scripts/derive_llama_oracle_cost.py`); core ₹1,842–9,526; worst case about ₹11,780 |
+| Visibility | unstated | §3: H2c, H2d and H5a were written with the A100 crossover estimates visible, and are reported as anchored priors |
+| H100 baseline | not caveated | labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`); run D in I3 measures it |
+| Licence request | a draft in `docs/` (untracked) | moved out of the repository; only the request date (2026-10-03) is recorded (§0.1, §14) |
+| Sizing wording | "token-exact", "never above" | corrected in `limitations.md`, `writeup_input.md`, `sizing.py`, `ruler.py` and `reestimate_stage3.py`; 182 distinct over-budget examples (655 file-example pairs) |
+| §4.6 | "Neither is corrected here"; "four machines" | stale: the docs were corrected in `3f8a884`, and three Xid 31 events are banked |
+| §13 | later drafts' tables nested inside earlier tables' separator rows | repaired, in draft order |
+
 ---
 
 ## 14. Licence and provenance request to the XAttention authors
 
-- **The request.** Drafted as `docs/xattention_licence_request_draft.md`.
+- **The request.** Dated 2026-10-03 (§0.1). Its text is not kept in the
+  repository (moved out 2026-10-03, never committed).
 - **The reply.** Dated 2026-10-03, from the XAttention authors. It is
   recorded only as the researcher's summary (§0.1). The email is private and
   is not quoted anywhere in the project.
