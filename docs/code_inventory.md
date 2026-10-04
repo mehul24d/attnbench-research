@@ -1,6 +1,6 @@
 # Code inventory for the new direction (task T0.4)
 
-**Status:** first pass, 4 October 2026. Each decision was proposed from the module's docstring, its imports and the plan in `docs/RESEARCH_PLAN.md`. Nothing is moved or deleted until the researcher confirms a row (T0.4) and the pre-pivot tag exists (T0.3).
+**Status:** confirmed by the researcher on 4 October 2026 (T0.4). Each decision was proposed from the module's docstring, its imports and the plan in `docs/RESEARCH_PLAN.md`. Rows marked **Check** are decided by reading the code during T0.5. Nothing is moved until the pre-pivot tag `pre-pivot-2026-10-04` is on origin (T0.3).
 
 **Decisions.**
 

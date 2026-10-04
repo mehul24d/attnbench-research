@@ -260,8 +260,8 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 |---|---|---|---|---|---|
 | T0.1 | Commit this plan, its PDF, `CLAUDE.md` and the build tool | Code | | On `main` | In progress (on branch; merge pending) |
 | T0.2 | Brief Claude chat: upload the PDF to the project, remove superseded plan PDFs, paste the handover note | R | T0.1 | Chat answers a test question from the plan correctly | Not started |
-| T0.3 | Tag the pre-pivot state (`pre-pivot-2026-10-04`) so every banked result stays reproducible | Code (R approves push) | | Tag on origin | Not started |
-| T0.4 | Review `docs/code_inventory.md`: confirm keep / adapt / archive for every module and script | R + Chat decide; Code verifies by reading the code | T0.1 | Every row has a confirmed decision | Not started |
+| T0.3 | Tag the pre-pivot state (`pre-pivot-2026-10-04`) so every banked result stays reproducible | Code (R approves push) | | Tag on origin | Blocked: approved 4 Oct 2026 and created at `7bf2a01`, but this coding session cannot push tags; the researcher pushes it from their Mac |
+| T0.4 | Review `docs/code_inventory.md`: confirm keep / adapt / archive for every module and script | R + Chat decide; Code verifies by reading the code | T0.1 | Every row has a confirmed decision | Done (4 Oct 2026; "Check" rows are resolved by reading the code during T0.5) |
 | T0.5 | Move archived code and its tests to `legacy/` (not deleted), fix imports, keep the suite green | Code | T0.3, T0.4 | Suite green; no live module imports `legacy/` | Not started |
 | T0.6 | Move superseded docs to `docs/archive/` unchanged; update test references to their paths | Code | T0.3 | Suite green | Not started |
 | T0.7 | Rewrite `README.md` for the new question; remove claims that break rule 1 | Code | T0.1 | README matches Sections 1 and 2 | Not started |
@@ -421,6 +421,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 - **4 Oct 2026.** Launch-queue sensitivity is relative to measured Q (0.25x to 4x, and none).
 - **4 Oct 2026.** SparKV withdrawn by its authors; not cited.
 - **4 Oct 2026.** This document replaces the Estimator Frontier plan as the single source of truth.
+- **4 Oct 2026.** Code inventory (`docs/code_inventory.md`) confirmed by the researcher as proposed; pre-pivot tag approved.
 
 ## Appendix B. Glossary
 
