@@ -8,6 +8,26 @@ per-head block mask on q's device, and calls Block-Sparse-Attention's
 
 Gate G1b (CUDA, `tests/test_kernels.py`): on the same q, k, v and per-head
 mask this and the XAttention backend's kernel invocation are bitwise equal.
+
+Where the argument list comes from (checked 2026-10-04 against
+Block-Sparse-Attention at 49d6c39, the commit the images install):
+
+- **Names and order: BSA's own signature.** `block_sparse_attn_func(q, k, v,
+  cu_seqlens_q, cu_seqlens_k, head_mask_type, streaming_info, base_blockmask,
+  max_seqlen_q_, max_seqlen_k_, p_dropout, deterministic=False,
+  softmax_scale=None, is_causal=False, exact_streaming=False,
+  return_attn_probs=False)`, in `block_sparse_attn_interface.py`.
+- **Layout and most values: this repository's earlier call,**
+  `backends/block_sparse.py` (era 3): q, k and v as (S, H, D), the two
+  `cu_seqlens`, `head_mask_type` all ones, `streaming_info=None`, no
+  dropout, `is_causal=True`, `exact_streaming=False`. What differs from it is
+  the mask, which is one pattern per head here and one broadcast pattern
+  there.
+- **One value from the XAttention backend's call: `deterministic=True`.**
+  The era-3 call leaves it at BSA's default, False. Sec. 4.4 sets it to
+  what `backends/xattention.py` passes, so that G1b can hold. That file's
+  call is the x-attention authors' call. No line of their file is copied
+  here: the value of one keyword is matched to it, on purpose.
 """
 from __future__ import annotations
 
