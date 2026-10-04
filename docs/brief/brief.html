@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sparse Prefill Research Brief</title>
+<style>
+  @page { size: A4; margin: 18mm 18mm 20mm 18mm; }
+  :root { --ink:#1a1a1a; --muted:#666; --rule:#bdbdbd; --head:#e8e8e8; }
+  body { font-family: "DejaVu Sans", Arial, sans-serif; color: var(--ink); background:#fff;
+         font-size: 9.8pt; line-height: 1.45; margin: 0; }
+  h1 { font-size: 18pt; line-height: 1.22; margin: 0 0 5pt; font-weight: 700; }
+  .byline { color: var(--muted); font-size: 9pt; margin-bottom: 14pt; }
+  h2 { font-size: 13.5pt; margin: 17pt 0 6pt; font-weight: 700; page-break-after: avoid; }
+  h3 { font-size: 11pt; margin: 11pt 0 4pt; font-weight: 700; page-break-after: avoid; }
+  p { margin: 0 0 7pt; }
+  ul, ol { margin: 0 0 8pt; padding-left: 18pt; }
+  li { margin: 0 0 3pt; }
+  table { border-collapse: collapse; width: 100%; margin: 4pt 0 10pt; font-size: 8.4pt; line-height: 1.35; }
+  th, td { border: 0.6pt solid var(--rule); padding: 4pt 5pt; vertical-align: top; text-align: left; }
+  th { background: var(--head); font-weight: 700; }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  thead tr { break-after: avoid; }
+  code { font-family: "DejaVu Sans Mono", monospace; font-size: 8.5pt; }
+  .eq { font-family: "DejaVu Sans Mono", monospace; font-size: 9pt; margin: 4pt 0 8pt 16pt; line-height: 1.6; }
+  .box { border: 0.6pt solid var(--rule); background: #f6f6f6; padding: 7pt 9pt; margin: 4pt 0 10pt; }
+  .note { color: var(--muted); font-size: 8.6pt; }
+</style>
+</head>
+<body>
+
+<h1>Predicting When Training-Free Sparse Prefill Pays on Real Host-GPU Pairings: Research Gaps, Contributions, Methodology and Closest Prior Work</h1>
+<div class="byline">Mehul Dahiya · Research proposal brief · 4 October 2026</div>
+
+<div class="box">
+<b>Research question.</b> Can the end-to-end prefill time of training-free block-sparse attention be predicted for host-GPU pairings on which the workload has not been run, using component measurements alone, and where does the prediction fail? Accuracy is not predicted. It is measured once, and the study tests whether attention recall can stand in for it.
+</div>
+
+<p><b>Background.</b> Block-sparse prefill skips attention blocks judged unimportant by an estimator. Papers usually report a kernel speedup on one machine. Our earlier measurements show that this kernel speedup often does not survive end to end: on an A100 the sparse kernel was 1.28x to 1.96x faster than PyTorch's SDPA flash kernel (which we have not shown to be the fastest correct dense kernel on that card), yet end-to-end prefill became slower (0.63x to 0.75x) because the host CPU built the masks on the critical path. The same configuration was faster on an L4, whose slower GPU hid the host work. Whether sparse prefill pays therefore depends on the host, the GPU and how their work overlaps, not on the kernel alone. This matters more on each new GPU: kernel-launch latency is almost flat across generations (about 6.1 microseconds on a V100, 6.0 on an A100 and 4.15 on an H100, IEEE LANMAN 2026) while attention kernels keep getting faster, and recent work reports sparse methods running slower than dense under chunked prefill (CompactAttention).</p>
+
+<h2>1. Research gaps</h2>
+
+<table>
+  <tr><th style="width:6%">Gap</th><th style="width:47%">What is missing</th><th>Closest work and what it leaves open</th></tr>
+  <tr><td><b>G1</b></td>
+      <td>End-to-end latency on unseen CPU-GPU pairs can already be predicted with a learned model from host, transfer and device micro-benchmarks (CTFusion). It has not been tested whether an explicit host-GPU critical-path model predicts data-dependent sparse prefill on unseen pairings better than such a learned predictor, especially when only a few hardware systems are available for training.</td>
+      <td>CTFusion (IEEE FLTA 2025) predicts object-detection latency on unseen CPU-GPU pairs (17.6% error) with gradient-boosted trees trained on 20 systems; its host side is input preprocessing and the host-GPU interaction is learned, not modelled. nn-Meter, HELP and CloserToMe predict model latency on unseen devices, treating each device as one unit. KernelSight-LM assumes its host costs do not depend on the GPU but does not test this. None models data-dependent work and synchronisation inside a forward pass.</td></tr>
+  <tr><td><b>G2</b></td>
+      <td>No lightweight model represents data-dependent mask generation and its GPU-to-CPU synchronisations inside a prefill step, which decide how much host time is exposed.</td>
+      <td>TaxBreak's HDBI is a ratio of sums and TKLQT an aggregate; KernelSight-LM uses one maximum per step plus a serial tail; LLMServingSim 2.0 models synchronisation between devices, using profiles of each model and device. None follows where data-dependent host work and synchronisations fall within a prefill step, and TaxBreak notes its replay method can be imperfect for synchronisation-heavy kernels.</td></tr>
+  <tr><td><b>G3</b></td>
+      <td>It is untested whether attention recall (the share of the true attention mass the kept blocks capture) is a sufficient proxy for task accuracy across different estimators.</td>
+      <td>VSPrefill shows accuracy rising with recall on one dataset, and compares recall, not accuracy at the same recall, across selection methods. Less Is More treats recall as necessary but not sufficient in long decoding. The Sparse Frontier names the question as open. An oracle-guided prefill report (entry 26) lists a related check, how much of the oracle's choice a learned selector recovers, as future work. Whether two different estimators at the same recall give the same accuracy has not been tested.</td></tr>
+</table>
+<p class="note"><b>Where the novelty lies.</b> G2 and G3 are the main gaps. G1 is narrower: the problem of predicting latency on unseen pairs is already addressed by CTFusion, so G1 is kept as the validation question, whether an explicit model helps when only a few hardware systems are available for training.</p>
+
+<h2>2. Contributions</h2>
+<p>Each contribution addresses one or more gaps. All predictions are written down before the measurements that test them, and failures will be reported as failures.</p>
+<ol>
+  <li><b>A component-composed critical-path model for sparse prefill (G1, G2).</b> The model splits every operation into a host cost, a device cost and a link cost, and composes them in execution order with the synchronisation points of each estimator. It is compared against four alternatives built from the same measurements: an overlap-free sum; a fitted sum, in which the host, link and device totals each get one constant fitted on the other pairings; the step form of KernelSight-LM (an overlap floor plus a serial tail for synchronisations); and a learned predictor in the style of CTFusion (gradient-boosted trees on micro-benchmark features). The fitted sum is the fair test, because it uses the same inputs with almost no fitting and no structure. If a fitted alternative does better on unseen pairings, that is reported.</li>
+  <li><b>Validation on physically distinct hardware without running the workload first (G1).</b> Seven real host-GPU pairings across two cloud providers, with five GPUs and four host CPU platforms. For each pairing the prediction is computed from component measurements, hashed and saved before the end-to-end workload is run. One pairing (H100 on an AMD host) is predicted entirely from components measured on other pairings, and one host platform (Sapphire Rapids) is held out as a forecast.</li>
+  <li><b>A separability test for host and device costs (G1).</b> A direct test of whether host costs measured with one GPU carry over to another GPU on the same host platform, and whether device costs carry over between host platforms for the same GPU. This decides when component costs can be reused across hardware. The same measurements test how the crossover point moves as the GPU gets faster relative to the host.</li>
+  <li><b>A test of recall as an estimator-independent proxy for accuracy (G3).</b> Several estimators are compared at matched recall, matched layer by layer, at block sizes 32, 64 and 128, with results also reported for shallow, middle and deep layers. If recall is sufficient, cheap recall measurement can replace expensive accuracy runs; if not, the result locates where dropped attention mass matters.</li>
+</ol>
+
+<h3>What is already in place</h3>
+<table>
+  <tr><th style="width:34%">Item</th><th>Status</th></tr>
+  <tr><td>Earlier study on L4, A100 and H100</td><td>Done. Host-side mask building explains why kernel speedup does not survive end to end. Two of three predictions registered before the H100 run passed.</td></tr>
+  <tr><td>Accuracy pilots on the L4 (Qwen2.5-1.5B, 16K and 32K tokens)</td><td>Done. With oracle masks, accuracy is non-inferior to dense only at 50% density, and only in two of the tested cells. The mean-pool estimator and XAttention with a single threshold were not non-inferior in any cell; XAttention with calibrated per-head thresholds is built and not yet run.</td></tr>
+  <tr><td>Measurement harness</td><td>Built and tested: one shared block selector and kernel for all estimators, commit-stamped rows, exact statistical analysis.</td></tr>
+  <tr><td>Component profilers, cost model, AWS tooling</td><td>To be built.</td></tr>
+</table>
+
+<h2>3. Methodology</h2>
+
+<h3>3.1 Hardware pairings</h3>
+<p>Google Cloud fixes the host CPU by machine type, so the design crosses two providers. Three GPUs share one AMD host platform, and the L4 and the H100 each appear on two different hosts.</p>
+<table>
+  <tr><th style="width:12%">Pairing</th><th style="width:22%">Host CPU</th><th style="width:8%">GPU</th><th style="width:15%">Provider</th><th>Purpose</th></tr>
+  <tr><td>P1</td><td>Intel Cascade Lake</td><td>L4</td><td>GCP G2</td><td>Development pairing: the model is tuned and checked here, so it is not counted as a test.</td></tr>
+  <tr><td>P2</td><td>Intel Cascade Lake</td><td>A100</td><td>GCP A2</td><td>Same host platform as P1, different GPU.</td></tr>
+  <tr><td>P4</td><td>Intel Sapphire Rapids</td><td>H100</td><td>GCP A3</td><td>Host platform used nowhere else: forecast.</td></tr>
+  <tr><td>P3</td><td>AMD EPYC (3rd gen)</td><td>L4</td><td>AWS G6</td><td>Same GPU as P1, different host platform.</td></tr>
+  <tr><td>P5</td><td>AMD EPYC (3rd gen)</td><td>L40S</td><td>AWS G6e</td><td>Second GPU on the AMD host; faster GPU, same host.</td></tr>
+  <tr><td>P6</td><td>AMD EPYC (3rd gen)</td><td>H100</td><td>AWS p5.4xlarge</td><td>Same GPU as P4 on another host; predicted only from other pairings' components. Run last.</td></tr>
+  <tr><td>P7 (optional)</td><td>AMD EPYC (2nd gen)</td><td>A10G</td><td>AWS G5</td><td>Another host generation, if time allows.</td></tr>
+</table>
+<p>Run order: P1, P2, P4, then P3, P5, P6 and P7. Every reused component still exists before the pairing that uses it. The Google Cloud pairings run first because Google Cloud sessions must start by 22 November 2026.</p>
+
+<h3>3.2 Measurement protocol for each pairing</h3>
+<ol>
+  <li><b>Environment.</b> The same container image on both providers; driver, CPU model, PCIe link, NUMA layout and clock state recorded on every row; threads pinned to the CPU node closest to the GPU; CPU frequency sampled throughout.</li>
+  <li><b>Link costs.</b> Short microbenchmarks: host-device bandwidth from pinned and from pageable memory, 1-byte copy, synchronisation round trip, and the depth of the GPU launch queue.</li>
+  <li><b>Host costs.</b> Each estimator's operation sequence with device work replaced by empty kernels, plus host-side computation (such as CPU mask building) run directly at the target size.</li>
+  <li><b>Device costs.</b> Each operation replayed on its own on the GPU under Nsight Systems, with the masks recorded for each prompt. The same method is used for every estimator. Because TaxBreak warns that replay can be imperfect for synchronisation-heavy kernels, replayed kernel names and durations are first compared with the same kernels in a traced run on P1.</li>
+  <li><b>Prediction saved.</b> Predicted end-to-end time computed, hashed and synced to storage before step 6.</li>
+  <li><b>Ground truth.</b> Untraced end-to-end prefill for every estimator, length and batch size (1 and 4), with a dense control in every session.</li>
+</ol>
+
+<h3>3.3 Cost model</h3>
+<p>For operation <i>i</i>, h<sub>i</sub> is its host cost, d<sub>i</sub> its GPU execution time and l<sub>i</sub> its link cost (host-device copy time, zero for a kernel); s is the measured cost of one synchronisation round trip. Only device costs are carried between hosts; link costs are always measured on the target pairing. H<sub>i</sub> is when the host has issued the operation and D<sub>i</sub> is when the GPU finishes it:</p>
+<div class="eq">H<sub>i</sub> = H<sub>i-1</sub> + h<sub>i</sub><br>if the launch queue is full (Q pending): H<sub>i</sub> = max(H<sub>i</sub>, D<sub>i-Q</sub>)<br>at a synchronisation point: H<sub>i</sub> = max(H<sub>i</sub>, D<sub>i-1</sub>) + s<br>D<sub>i</sub> = max(H<sub>i</sub>, D<sub>i-1</sub>) + l<sub>i</sub> + d<sub>i</sub><br>predicted end-to-end time = D<sub>N</sub></div>
+<p>The model covers one GPU stream, where copies and kernels run one after another, so it does not assume they overlap. Every trace is checked for copies running at the same time as kernels; where that happens, the slowdown is measured on that pairing and added as data, never fitted. The three baselines use the same measurements: sum = &Sigma;h + &Sigma;l + &Sigma;d (no overlap), KernelSight-style = max(&Sigma;h, &Sigma;l + &Sigma;d) per layer plus every synchronisation cost added at the end, and a CTFusion-style learned predictor trained with one pairing left out at a time. The KernelSight-style form uses the same synchronisation costs as our model but ignores where they fall, so beating it tests G2; beating the learned predictor tests G1. Stated in advance: on dense prefill, which has no synchronisation inside the step, our model and the KernelSight-style form should agree; an advantage is expected only for estimators with synchronisations. HDBI is reported alongside as a diagnostic.</p>
+<p><b>Ablation.</b> Each estimator is also run with its masks computed in advance and preloaded on the GPU. The difference from the live run separates the estimator's own cost and synchronisations from the kernel.</p>
+
+<h3>3.4 Hypotheses</h3>
+<table>
+  <tr><th style="width:6%">#</th><th style="width:46%">Hypothesis</th><th>How it is tested</th></tr>
+  <tr><td>H0</td><td>Separability: host costs carry over between GPUs on the same host platform; device costs carry over between host platforms for the same GPU. (KernelSight-LM assumes the host half of this without testing it.)</td><td>Host side: P1 with P2, and P3 with P5 and P6. Device side: P1 with P3 (L4) and P4 with P6 (H100). Per operation, within a tolerance fixed in advance.</td></tr>
+  <tr><td>H1</td><td>Composition: on every test pairing (P2 to P7) the recursion predicts end-to-end time within tolerance, and on unseen pairings better than all four alternatives. P1 is reported separately.</td><td>Relative error per pairing; sparse-versus-dense direction correct.</td></tr>
+  <tr><td>H2</td><td>Transfer: predictions stay within tolerance when components come from other pairings, including P6, where both host and device costs come from other pairings.</td><td>Same statistic as H1; tested only if H0 holds.</td></tr>
+  <tr><td>H3</td><td>Forecast: on P4 the context length at which each estimator beats dense falls inside the band predicted before P4 is run.</td><td>Predicted band against measured crossover with bootstrap intervals.</td></tr>
+  <tr><td>H4</td><td>Recall sufficiency: at matched recall in every layer, accuracy does not depend on the estimator, at block sizes 32, 64 and 128.</td><td>Paired comparison against an equivalence bound fixed in advance; also reported separately for retrieval-like and local heads, and for the first, middle and last thirds of layers. The number of examples is set in advance from a power calculation; a result without enough power is reported as inconclusive.</td></tr>
+  <tr><td>H5</td><td>Direction (secondary): on a fixed host, a faster GPU moves the crossover to longer contexts for estimators with host-side steps, less so for estimators that run fully on the GPU; on a fixed GPU, the cheaper host gives the earlier crossover.</td><td>Directions predicted from measured cost ratios before data (L4, L40S and H100 on the AMD host; the L4 and the H100 each on two hosts).</td></tr>
+</table>
+<p><b>Extension.</b> On P5, prefill is also run in chunks (as serving systems do) for two estimators, and the extra selection cost per chunk is predicted before the run.</p>
+
+<h3>3.5 Estimators and accuracy evaluation</h3>
+<ul>
+  <li><b>Estimators:</b> oracle (exact attention mass; a reference, not a guaranteed quality ceiling, since the mask that keeps the most attention need not be best for the task), sink-plus-local window (zero-cost floor), mean-pool (MInference style), vertical-slash style, XAttention with per-head calibrated thresholds, and DuoAttention-style head masks where the authors released patterns. Dense attention uses the fastest correct kernel on each GPU.</li>
+  <li><b>Recall:</b> at each layer, the share of that layer's dense attention mass, computed from its actual inputs in the same forward pass, that the kept blocks capture. Recall against a separate dense pass is reported as a second measure.</li>
+  <li><b>Models and tasks:</b> Qwen2.5-1.5B (primary), Qwen2.5-7B (recall and cost), Llama-3.1-8B (held out of all fitting); RULER tasks at 16K and 32K tokens, with a real-text haystack version planned.</li>
+  <li><b>Where quality is measured:</b> once, on the primary GPU, with the dense control repeated on a second GPU.</li>
+  <li><b>Accuracy test (proposed; confirmed when the plan is locked):</b> an exact paired non-inferiority test (union-bound Clopper-Pearson), margin 10 percentage points, one-sided alpha 0.025, the same test used in the completed pilots. A cell counts only if dense accuracy is above a floor fixed in advance.</li>
+</ul>
+
+<h3>3.6 Controls</h3>
+<table>
+  <tr><th style="width:32%">Risk</th><th>Control</th></tr>
+  <tr><td>Different CPUs, caches, memory, PCIe</td><td>Host and link costs are measured on each real pairing, never simulated.</td></tr>
+  <tr><td>Boost clocks and virtual-machine noise</td><td>Cloud VMs cannot fix, and often cannot read, the CPU clock, and CPU frequency can change CPU-GPU timing in a non-monotonic way (Elango et al., IEEE INFOCOM 2026). So host speed is measured directly: a fixed CPU loop and a burst of empty GPU launches are timed at the start, middle and end of every session. A session is used only if this probe is stable within a bound, and costs are carried between sessions only if their probe results agree within a bound; both bounds are fixed in advance from repeat sessions. Threads pinned, warm-up, interleaved runs.</td></tr>
+  <tr><td>CPU mask building competing with copies for host memory</td><td>Copy bandwidth also measured while the CPU runs a mask-sized load; copies that overlap host-side estimator work use the loaded figure.</td></tr>
+  <tr><td>Differences between cloud providers</td><td>Same container image; before H2 is read, the same dense workload is run on P1 and P3 to measure provider-level variance, and H0 tolerances account for it.</td></tr>
+  <tr><td>Fitting the model to its own results</td><td>Predictions hashed and saved before the workload they predict is run.</td></tr>
+  <tr><td>Profiler overhead</td><td>Ground truth is always untraced; traced-versus-untraced difference reported.</td></tr>
+  <tr><td>CPU-GPU placement and host memory type</td><td>Threads pinned to the GPU-local CPU node; pinned and pageable copies measured separately; any unified-memory page fault flags the row.</td></tr>
+  <tr><td>GPU launch queue filling up</td><td>Queue depth measured per pairing and included in the model; every prediction is also recomputed with the depth at one quarter to four times the measured value, and without the queue term, to show how much it matters.</td></tr>
+</table>
+<p class="note"><b>Limits stated in advance.</b> Seven pairings is still a small number, so results are reported per pairing and the claim covers only the measured hosts and GPUs. The main claim is predicting time at a given density: in the pilots no deployable estimator matched dense accuracy at any tested density, so profitability for those estimators may turn out to be empty, and that will be reported. Models that need several GPUs (70B parameters and above) are out of scope. Replaying operations one at a time may miss some interactions between neighbouring operations; the error in H1 measures how much this matters.</p>
+
+<h2>4. Closest prior work</h2>
+<p>Ordered from closest to our contributions to more distant, with three further recent preprints at the end. "Preprint" means not yet published in a peer-reviewed venue at the time of writing.</p>
+<table>
+  <thead><tr><th style="width:4%">#</th><th style="width:31%">Paper</th><th style="width:20%">Venue</th><th style="width:7%">Year</th><th>Relation to this work</th></tr></thead>
+    <tr><td>1</td><td>A Holistic Model for End-to-End Latency Prediction of Deep Learning Tasks on Heterogeneous Systems, CTFusion (Gennai, Ohsita and Shimonishi)</td><td>IEEE FLTA (Int. Conf. on Federated Learning Technologies and Applications)</td><td>2025</td><td>Predicts end-to-end latency on unseen CPU-GPU pairs from host, transfer and device micro-benchmarks with gradient-boosted trees. Closest to G1; our learned baseline follows it. Its workload is object detection with a preprocessing host side, not data-dependent work inside a forward pass.</td></tr>
+<tr><td>2</td><td>TaxBreak: Unmasking the Hidden Costs of LLM Inference Through Overhead Decomposition (Vellaisamy et al.)</td><td>IEEE ISPASS</td><td>2026</td><td>Splits host overhead per kernel into framework, library and launch costs, using isolated replay, and defines HDBI; two H100/H200 systems. Closest to G2; does not model where synchronisations fall or predict across pairings. Our host-cost method follows it.</td></tr>
+  <tr><td>3</td><td>KernelSight-LM: A Kernel-Level LLM Inference Simulator</td><td>arXiv preprint (2606.28565)</td><td>2026</td><td>Predicts serving latency on an unseen GPU; host constants measured per host and combined with GPU time as an overlap floor plus a serial tail. Closest to G1 and G2; dense attention only, no data-dependent work inside a step, and the host constants are assumed not to depend on the GPU. One of our baselines.</td></tr>
+  <tr><td>4</td><td>APEX: Asynchronous Parallel CPU-GPU Execution for Online LLM Inference on Constrained GPUs (Fan et al.)</td><td>IEEE IPDPS (Int. Parallel and Distributed Processing Symposium)</td><td>2026</td><td>Uses offline profiles to decide when CPU-offloaded decode attention should overlap GPU work, on two machines. Shows that moving a synchronisation point changes exposed time, which supports G2's premise; it schedules on profiled hardware and does not predict time on an unmeasured pairing.</td></tr>
+  <tr><td>5</td><td>nn-Meter: Towards Accurate Latency Prediction of Deep-Learning Model Inference on Diverse Edge Devices (Zhang et al.)</td><td>ACM MobiSys</td><td>2021</td><td>Kernel-level latency prediction on unseen edge devices. Closest learned-prediction precedent for G1; fixed model graphs, host and device as one unit.</td></tr>
+  <tr><td>6</td><td>HELP: Hardware-Adaptive Efficient Latency Prediction for NAS via Meta-Learning (Lee et al.)</td><td>NeurIPS</td><td>2021</td><td>Predicts latency on an unseen device from about 10 measurements. Related to G1.</td></tr>
+  <tr><td>7</td><td>CloserToMe: A Unified Framework for Accurate and Transferable Latency Prediction Across Heterogeneous Devices</td><td>AAAI</td><td>2026</td><td>Predicts latency of small benchmark networks on unseen GPUs, FPGAs and mobile chips from a hardware description and a few probe runs on the target. Related to G1; each device is one unit, with no host-GPU split.</td></tr>
+  <tr><td>8</td><td>LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure (Cho et al.)</td><td>IEEE ISPASS</td><td>2026</td><td>Serving simulator whose execution graphs include synchronisation between devices, built from profiles of each model and device. Related to G2; models serving systems, not data-dependent host work inside a prefill step, and does not predict an unprofiled pairing.</td></tr>
+  <tr><td>9</td><td>VSPrefill: Vertical-Slash Sparse Attention with Lightweight Indexing for Long-Context Prefilling</td><td>arXiv preprint (2603.04460)</td><td>2026</td><td>Accuracy rises with recall on one dataset; recall, not accuracy, compared across selection methods. Closest to G3.</td></tr>
+  <tr><td>10</td><td>Less Is More: Fast and Accurate Reasoning with Cross-Head Unified Sparse Attention (Yang et al.)</td><td>arXiv preprint (2508.07101)</td><td>2026</td><td>Treats recall as necessary but not sufficient in long reasoning decodes; on one problem, higher-recall settings still fail. Compares recall across methods, not accuracy at the same recall, and studies decoding, not prefill. Related to G3.</td></tr>
+  <tr><td>11</td><td>CompactAttention: Accelerating Chunked Prefill with Block-Union KV Selection</td><td>arXiv preprint (2605.16839)</td><td>2026</td><td>Under chunked prefill on two GPUs, XAttention's end-to-end time is 0.68x to 0.84x of dense speed, because of short query chunks and per-chunk mask search. An external reference for our chunked-prefill extension. Accuracy is compared at settings chosen per method, not at the same recall.</td></tr>
+  <tr><td>12</td><td>Characterizing and Optimizing LLM Inference Workloads on CPU-GPU Coupled Architectures (Vellaisamy et al.)</td><td>arXiv preprint (2504.11750)</td><td>2025</td><td>Three host-GPU systems. TKLQT adds up launch and queueing time per kernel to find where prefill stops being CPU-bound as batch size grows; host single-thread speed dominates at small batches. Host and GPU change together across its systems, and it does not predict time. Its Sapphire Rapids plus H100 launch figure (2.37 microseconds) is a second reference for our P4 check.</td></tr>
+  <tr><td>13</td><td>Vidur: A Large-Scale Simulation Framework for LLM Inference (Agrawal et al.)</td><td>MLSys</td><td>2024</td><td>Profile-based inference simulator, under 9% error, on the profiled GPU. Related to G1.</td></tr>
+  <tr><td>14</td><td>Hardware-Assisted Cross-Generation Prediction of GPUs Under Design</td><td>IEEE Transactions on Computer-Aided Design (TCAD)</td><td>2019</td><td>Predicts next-generation GPU performance. Prediction across hardware, but for GPU design, not host-GPU pairing.</td></tr>
+  <tr><td>15</td><td>The Framework Tax: Disparities Between Inference Efficiency in NLP Research and Deployment (Fernandez et al.)</td><td>EMNLP</td><td>2023</td><td>Shows that operation-count savings do not become wall-clock savings. The premise of this work.</td></tr>
+  <tr><td>16</td><td>The Sparse Frontier: Sparse Attention Trade-offs in Transformer LLMs (Nawrot et al.)</td><td>arXiv preprint (2504.17768); ACL Findings 2026 reported, not shown in the paper</td><td>2026</td><td>Estimation cost limits sparse prefill. Reports FLOPs, not wall-clock time, and names as unknown how close a recall-maximising mask is to a task-optimal one, which is the G3 question. No host-device model.</td></tr>
+  <tr><td>17</td><td>MInference 1.0: Accelerating Pre-filling for Long-Context LLMs via Dynamic Sparse Attention (Jiang et al.)</td><td>NeurIPS</td><td>2024</td><td>Source of the mean-pool and vertical-slash estimators; reports 5% to 30% of time spent building indices on one A100.</td></tr>
+  <tr><td>18</td><td>XAttention: Block Sparse Attention with Antidiagonal Scoring (Xu et al.)</td><td>ICML</td><td>2025</td><td>Calibrated-threshold estimator used as a baseline.</td></tr>
+  <tr><td>19</td><td>DuoAttention: Efficient Long-Context LLM Inference with Retrieval and Streaming Heads (Xiao et al.)</td><td>ICLR</td><td>2025</td><td>Head-differentiated attention; used as a baseline for H4.</td></tr>
+  <tr><td>20</td><td>FlexPrefill: A Context-Aware Sparse Attention Mechanism for Efficient Long-Sequence Inference (Lai et al.)</td><td>ICLR</td><td>2025</td><td>Adapts sparsity per head and prompt; shows adaptive estimators are not new.</td></tr>
+  <tr><td>21</td><td>Twilight: Adaptive Attention Sparsity with Hierarchical Top-p Pruning (Lin et al.)</td><td>NeurIPS</td><td>2025</td><td>Adaptive sparsity budgets; related estimator design.</td></tr>
+  <tr><td>22</td><td>Improving the Performance of LLM Inference: Understanding the Role of CUDA Graphs (Franco et al.)</td><td>IEEE LANMAN</td><td>2026</td><td>Measures how CUDA Graphs remove launch overhead. Relevant to our device-cost measurement.</td></tr>
+  <tr><td>23</td><td>I/O-Aware PIM Acceleration for Long-Sequence LLM Inference with Hybrid Sparse Attention, PILOT (Lu et al.)</td><td>IEEE IPDPS</td><td>2026</td><td>Hardware for sparse prefill and decode. Orthogonal: new hardware, not host-GPU modelling.</td></tr>
+  <tr><td>24</td><td>iMLBench: A Machine Learning Benchmark Suite for CPU-GPU Integrated Architectures (Zhang et al.)</td><td>IEEE Transactions on Parallel and Distributed Systems (TPDS)</td><td>2021</td><td>CPU-GPU co-execution on integrated chips; our pairings are discrete PCIe systems.</td></tr>
+  <tr><td>25</td><td>Producing Wrong Data Without Doing Anything Obviously Wrong! (Mytkowicz et al.)</td><td>ASPLOS</td><td>2009</td><td>Measurement bias in systems evaluation; motivates our pre-registered protocol.</td></tr>
+  <tr><td>26</td><td>How Much Dense Attention is Necessary? Oracle-Guided Sparse Prefill for Full/GQA Layers in Hybrid Long-Context Models (Wang et al.)</td><td>arXiv preprint (2606.07703)</td><td>2026</td><td>Uses an attention-mass oracle as a reference and states it is not a global optimum. The per-query oracle stays within 1 point of dense on Qwen models, but support shared by 64 queries collapses at small budgets. Oracle masks are a premise, not our contribution. Data and code not released.</td></tr>
+  <tr><td>27</td><td>AB-Sparse: Sparse Attention with Adaptive Block Size for Accurate and Efficient Long-Context Inference</td><td>arXiv preprint (2605.12110)</td><td>2026</td><td>Decoding, not prefill. Recall against block size (16 to 64) differs by head and is stable across inputs; accuracy improves with recall at a fixed budget, but accuracy at the same recall is not tested. Block size is therefore a control in our study.</td></tr>
+  <tr><td>28</td><td>Token Sparse Attention: Efficient Long-Context Inference with Interleaved Token Selection</td><td>ICML</td><td>2026</td><td>Reports prefill latency on two GPUs (A100, A6000); an example of single-paper, two-machine evidence.</td></tr>
+  <tr><td>29</td><td>APEX: An Extensible and Dynamism-Aware Simulator for Automated Parallel Execution in LLM Serving (Lin et al.)</td><td>arXiv preprint (2411.17651)</td><td>2025</td><td>Serving simulator built from per-device operation profiles. Predicts speedups between parallel plans (10.7% average error), but its absolute per-token time is consistently below measured, which the authors attribute to leaving out operations other than the key ones. No host-side term. Supports G1; not used as a baseline.</td></tr>
+</table>
+<p class="note"><b>Also read in full and judged distant</b> (supplied by the researcher): Kohli et al., IEEE HPEC 2025 (CPU, GPU and NPU benchmarking on one integrated edge chip); HyGIN, IEEE Computer Architecture Letters 2026 (CPU- versus GPU-initiated communication for multi-GPU training); Elango et al., IEEE INFOCOM 2026 (CPU-GPU frequency interaction in a 5G stack, used above as a confounder reference); PLA, IEEE TCAD 2026 (an accelerator with token pruning for point-cloud LLMs; its finding that attention concentrates with depth is why recall is also reported by layer depth); LLMEdger, IEEE ICFEC 2026 (pipeline and tensor parallelism scheduling for an encoder-decoder model on CPU-only edge nodes).</p>
+<p class="note"><b>Withdrawn.</b> SparKV (arXiv 2604.21231), listed in earlier drafts, has been withdrawn by its authors and is no longer cited.</p>
+<p class="note"><b>How each entry was checked.</b> Entries 1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 16, 26, 27 and 29 were read in full. Entry 29, a serving simulator also called APEX, is a different paper from entry 4. The others are described from their abstracts only. Each is being re-checked against its abstract, and all will be read in full before the related-work section is written. Venues and years were checked by web search on 4 October 2026. Preprints (marked as such) whose peer-reviewed venue, if any, should be re-checked before submission. A search of IEEE Xplore and Scopus will follow before the related-work section is written.</p>
+
+</body>
+</html>

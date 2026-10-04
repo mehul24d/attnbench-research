@@ -25,7 +25,7 @@
 
 **When does training-free block-sparse prefill actually pay end to end on a given host CPU and GPU, and can that be predicted before running the workload there?**
 
-Papers report sparse attention kernel speedups on one or two machines. Our own measurements show the kernel speedup often does not survive end to end: on an A100 the sparse kernel was 1.28x to 1.96x faster than FlashAttention, yet prefill became slower (0.63x to 0.75x) because the host CPU built masks on the critical path. The same configuration was faster on an L4, whose slower GPU hid the host work. Whether sparse prefill pays therefore depends on the host, the GPU and how their work overlaps, and also on whether the sparse masks keep accuracy.
+Papers report sparse attention kernel speedups on one or two machines. Our own measurements show the kernel speedup often does not survive end to end: on an A100 the sparse kernel was 1.28x to 1.96x faster than PyTorch's SDPA flash kernel (which was not shown to be the fastest correct dense kernel on that card), yet prefill became slower (0.63x to 0.75x) because the host CPU built masks on the critical path. The same configuration was faster on an L4, whose slower GPU hid the host work. Whether sparse prefill pays therefore depends on the host, the GPU and how their work overlaps, and also on whether the sparse masks keep accuracy.
 
 **Contributions, in order of weight.**
 
@@ -45,7 +45,7 @@ These results exist and are commit-stamped. They motivate the study; they are no
 
 | Finding | Evidence and caveat |
 |---|---|
-| Kernel speedup does not survive end to end | A100, sparsity 0.75: kernel 1.28x (8192 tokens) and 1.96x (16384) faster than flash; end-to-end prefill with the reference mask builder 0.75x and 0.63x. |
+| Kernel speedup does not survive end to end | A100, sparsity 0.75: kernel 1.28x (8192 tokens) and 1.96x (16384) faster than PyTorch's SDPA flash kernel, measured at the model's own head layout; that kernel was not shown to be the fastest correct dense kernel on the A100 (K2). End-to-end prefill with the reference mask builder 0.75x and 0.63x. |
 | The sign depends on the card | 32768 tokens, sparsity 0.75: about 1.3x on an L4, about 0.48x on an A100 with the reference builder. |
 | The cause is host-side mask construction | L4 and A100 hosts share a CPU platform; builder costs within about 3%. A vectorised builder turned the A100 result into a speedup at 16384. |
 | The mechanism held on a third card | Of three predictions registered before the H100 run, two passed and one failed (7 of 9 cells). |
@@ -63,7 +63,7 @@ These results exist and are commit-stamped. They motivate the study; they are no
 | Estimator cost depends on the code path | On the L4's torch fallback, XAttention's estimate costs more than dense attention (19.5 vs 14.5 ms at 16384). |
 | Calibrated XAttention | Built and pre-registered; not run (task T1.1). |
 
-**Standing caveats.** Some A100 dense baselines were estimated; some 32768-token rows exceed the position limit; results span three mask-rule eras that must not be pooled; the pilots cover one model, one card and synthetic tasks.
+**Standing caveats.** An earlier plan listed "some A100 dense baselines were estimated"; no source for it has been found in the audit record, so it is to be verified (T0.12); some 32768-token rows exceed the position limit; results span three mask-rule eras that must not be pooled; the pilots cover one model, one card and synthetic tasks.
 
 ---
 
@@ -86,10 +86,10 @@ Each has a statistic and a tolerance fixed at lock (marked **[lock]**). Failures
 | # | Hypothesis | Test and falsifier |
 |---|---|---|
 | H0 | **Separability.** Host components measured with one GPU equal those measured with another GPU on the same host platform; device components measured on one host equal those on another host for the same GPU. Link components are pairing-specific. | Host side: P1 vs P2, and P3 vs P5 vs P6. Device side: P1 vs P3 (L4), P4 vs P6 (H100). Per-operation differences within **[lock]**, after provider-level variance from the dense workload. If H0 fails, H2 is not tested and scope narrows to components measured on the target pairing. |
-| H1 | **Composition.** On every pairing, the recursion over measured components predicts untraced end-to-end prefill within tolerance, and on held-out pairings beats the sum, the KernelSight-style step form and the learned predictor. Stated in advance: on dense arms (no synchronisation inside the step) the recursion and the step form should agree; an advantage is predicted only on arms with data-dependent synchronisations. | Absolute relative error within **[lock]**; sparse-vs-dense sign correct outside the resolution floor; recursion error below all three baselines on held-out pairings, reported separately for dense and synchronising arms. A large advantage on dense arms points to a baseline bug, not support for G2. If the learned predictor wins, that is reported. |
+| H1 | **Composition.** On every confirmatory pairing (P2 to P7), the recursion over measured components predicts untraced end-to-end prefill within tolerance, and on held-out pairings beats the sum, the fitted sum, the KernelSight-style step form and the learned predictor. P1 is the development pairing: Gate A and the probe bounds are set on it, so its results are reported separately and never counted as a test. Stated in advance: on dense arms (no synchronisation inside the step) the recursion and the step form should agree; an advantage is predicted only on arms with data-dependent synchronisations. | Absolute relative error within **[lock]**; sparse-vs-dense sign correct outside the resolution floor; recursion error below all four baselines on held-out pairings, reported separately for dense and synchronising arms. A large advantage on dense arms points to a baseline bug, not support for G2. If the learned predictor wins, that is reported. |
 | H2 | **Transfer.** Predictions stay within tolerance when components come from other pairings: host components for P2 (from P1) and P5 (from P3); device components for P3 (from P1); both for P6 (host from P3 and P5, device from P4). | Same statistic as H1. P6 is the full-transfer test: only its link microbenchmarks are measured before its prediction is committed. Conditional on H0. |
 | H3 | **Forecast.** On P4 (a host platform used nowhere else), the crossover context length per estimator falls inside the band predicted before P4's workload runs. | Predicted band vs measured crossover with bootstrap intervals. |
-| H4 | **Recall sufficiency.** At matched per-layer recall, accuracy does not depend on which estimator chose the blocks, at block sizes 32, 64 and 128. | Paired comparison at matched per-layer recall, or the estimator coefficient in a pre-registered model, against an equivalence bound **[lock]**. Also by depth third and by head type. Either outcome is reported. |
+| H4 | **Recall sufficiency.** At matched per-layer recall, accuracy does not depend on which estimator chose the blocks, at block sizes 32, 64 and 128. | Paired comparison at matched per-layer recall, or the estimator coefficient in a pre-registered model, against an equivalence bound **[lock]**. Also by depth third and by head type. The sample size comes from a power rule fixed before lock (Section 5.7); a result below that power is reported as inconclusive. Either outcome is reported. |
 | H5 | **Crossover direction (secondary).** (a) On a fixed host, a faster GPU moves the crossover to longer contexts for estimators with host-side steps (AMD: L4, L40S, H100). (b) The shift is smaller for an estimator whose selection runs entirely on the GPU. (c) On a fixed GPU, the host with lower measured host cost gives the shorter crossover. | Signs predicted from measured component ratios before data, with tolerance stated on the input ratio. Consequences of H1, reported separately. |
 
 ---
@@ -111,15 +111,27 @@ Each has a statistic and a tolerance fixed at lock (marked **[lock]**). Failures
 
 | Pairing | Host platform | GPU | Provider | Role |
 |---|---|---|---|---|
-| P1 | Intel Cascade Lake | L4 | GCP G2 | Anchor; source of transferred components |
+| P1 | Intel Cascade Lake | L4 | GCP G2 | Development pairing (not a confirmatory test of H1); source of transferred components |
 | P2 | Intel Cascade Lake | A100 | GCP A2 | Host-side H0; host transfer (H2) |
+| P4 | Intel Sapphire Rapids | H100 | GCP A3 | Held-out host platform: forecast (H3) |
 | P3 | AMD EPYC 3rd gen | L4 | AWS G6 | Device-side H0; device transfer (H2) |
 | P5 | AMD EPYC 3rd gen | L40S | AWS G6e | Host-side H0; host transfer; GPU-speed axis (H5a) |
-| P4 | Intel Sapphire Rapids | H100 | GCP A3 | Held-out host platform: forecast (H3) |
 | P6 | AMD EPYC 3rd gen (7R13) | H100 | AWS p5.4xlarge | Device-side H0; full transfer (H2); H5a, H5c. Run last |
 | P7 (optional) | AMD EPYC 2nd gen | A10G | AWS G5 | Extra held-out point if time allows |
 
-Run order: P1, P2, P3, P5, P4, P6, then P7, so every transferred component exists before it is used. "Same platform" is not the same SKU: CPU model string, core count, SMT state and observed frequency are recorded on every row and compared before H0 is read.
+**Run order:** P1, P2, P4, then P3, P5, P6 and P7. Every transferred component still exists before it is used: P4 needs only its own components and P1's operation sequence, and P6 needs P3, P4 and P5. The GCP pairings go first because GCP sessions have a last launch date (Section 6, rule 14) and the AWS tooling (T5.1) is the likeliest delay.
+
+**Pinned GCP machines and zones.** The machine series fixes the host platform.
+
+| Pairing | Machine type | Zone | Why this zone |
+|---|---|---|---|
+| P1 | `g2-standard-8` + 1 L4 | `asia-northeast1-a` (fallback `asia-northeast1-c`) | Used by the pilots; the plan's L4 zone |
+| P2 | `a2-ultragpu-1g` (A100 80GB) | `asia-southeast1-c` | The only zone offering this machine when re-verified on 16 Sep 2026; same machine as the earlier A100 evidence |
+| P4 | `a3-highgpu-1g` (H100 80GB, DWS flex-start) | `us-central1-a` (fallback `asia-southeast1`) | Launch-script default; both regions priced on file |
+
+Never an Australia region. Availability and rates are re-checked from the researcher's Mac before each session.
+
+ "Same platform" is not the same SKU: CPU model string, core count, SMT state and observed frequency are recorded on every row and compared before H0 is read.
 
 ### 5.3 Per-pairing session protocol
 
@@ -149,6 +161,7 @@ Only device costs transfer between hosts (H2); link costs are always measured on
 **Baselines from the same components.**
 
 - **Sum:** sum(h) + sum(l) + sum(d), no overlap.
+- **Fitted sum:** a·sum(h) + b·sum(l) + c·sum(d), with a, b, c ≥ 0 fitted leave-one-pairing-out on the same rows as the learned baseline. It uses the recursion's inputs with minimal fitting and no structure, so it is the fair test of G1: beating only LightGBM, which trains on at most six pairings, would not show that the structure helps.
 - **KernelSight-style step form:** max(sum h, sum l + sum d) per layer, plus every synchronisation cost as a serial tail. It differs from the recursion only through operation order, synchronisation positions and the queue term, so the gap between the two isolates G2.
 - **Learned (CTFusion-style LightGBM):** task features (context length, density, batch, operation and synchronisation counts), hardware microbenchmark features (host, link, device costs; pinned and pageable bandwidth) and bottleneck ratios (arithmetic intensity per operation class, host-to-device time ratio, transfer demand relative to link bandwidth, synchronisations per operation); trained leave-one-pairing-out; features and hyperparameters fixed at lock. Tests whether the structure adds anything over regression (G1).
 - **HDBI** reported as a diagnostic only.
@@ -200,7 +213,8 @@ All arms use one per-head selector and one block-sparse kernel. A bitwise gate r
 - **Accuracy test (proposed, confirm at lock):** exact paired non-inferiority (union-bound Clopper-Pearson), margin 10 percentage points, one-sided alpha 0.025, as used in the pilots. The dense arm must reproduce exactly in every run.
 - **Recall:** both references (Section 5.1), per layer, on the very masks that produced each accuracy row; also by head type (retrieval-like vs local, criterion fixed at lock) and by depth third.
 - **Intrinsic recall:** budgets 0.50, 0.25, 0.10, 0.05; null scorer as a floor; budget selection on 32 examples per task.
-- **H4 across block sizes:** on the primary cell (`qa_1`/16384, n = 100), block sizes 32, 64 and 128 through an untimed reference masked-attention path; block 16 only if that path supports it.
+- **H4 across block sizes:** on the primary cell (`qa_1`/16384; n from the power rule below, at least 100), block sizes 32, 64 and 128 through an untimed reference masked-attention path; block 16 only if that path supports it.
+- **H4 power rule (fixed at lock):** n is set before lock from the rate at which two estimators disagree on an example, measured on the banked pilot rows (T1.5), so that the equivalence test reaches the power fixed at lock with the multiplicity of the planned comparisons. A rough guide: at a +/-10-point bound, 90% power and a true difference of zero, n is about 1,080 times the disagreement rate (about 110 at 10%, 220 at 20%), and the exact test needs more. An H4 result below the fixed power is reported as inconclusive, never as support or refutation.
 - **Where measured:** once, on the primary GPU, with the dense control repeated on a second GPU.
 - **Dense floor (K7)** and **critical density** (lowest non-inferior oracle density; descriptive only).
 
@@ -233,6 +247,11 @@ On P5, with inline mean-pool and calibrated XAttention, prefill also runs in chu
 11. Launch sequence: cleanup check, cost cap, hard-delete limit, stale-results quarantine, deploy the clean commit, preflight, run, teardown through the teardown script (which writes `session_cost.txt`). Update `docs/spend_ledger.md` from that file.
 12. L4 zone `asia-northeast1-a` (fallback zones as in the launch scripts). Never an Australia region.
 13. AWS sessions only after the AWS tooling meets the same guarantees and passes tests against a fake CLI (task T5.1).
+14. No GCP session launches after **22 November 2026** (India time; the date itself is allowed). The launch scripts refuse later launches (`scripts/_launch_policy.sh`). GCP work (T1.1, T3.1, T3.2, T6.1, T6.4) is planned to finish before then.
+
+**Permissions**
+
+15. Any use of results that needs the researcher's permission is recorded in `docs/permission_log.md` before the use. A use not in the log is not approved.
 
 **Writing for the professor:** plain language, short sentences, no em dashes.
 
@@ -246,6 +265,7 @@ On P5, with inline mean-pool and calibrated XAttention, prefill also runs in chu
 | Gate B: lock | All **[lock]** values fixed, two adversarial reads done, lock commit tagged (T4.x) | No confirmatory pairing runs |
 | Gate C: AWS | AWS tooling passes fake-CLI tests; quotas granted; each pairing costed | No AWS launch |
 | Gate D: H0 | Separability holds | H2 not tested; scope narrows to per-pairing composition |
+| Last GCP launch | Every GCP session launches by 22 Nov 2026 | No GCP launch after the date; re-plan the remaining GCP work with the researcher |
 | Budget | Each session within its cap | Cut in an order fixed at lock (proposed: P7 first, then the chunked extension); the cut order never removes ground-truth timing, H1 or H4 |
 
 ---
@@ -259,7 +279,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | ID | Task | Owner | Depends | Done when | Status |
 |---|---|---|---|---|---|
 | T0.1 | Commit this plan, its PDF, `CLAUDE.md` and the build tool | Code | | On `main` | In progress (on branch; merge pending) |
-| T0.2 | Brief Claude chat: upload the PDF to the project, remove superseded plan PDFs, paste the handover note | R | T0.1 | Chat answers a test question from the plan correctly | Not started |
+| T0.2 | Brief Claude chat: upload the PDF to the project, remove superseded plan PDFs, paste the handover note | R | T0.1 | Chat answers a test question from the plan correctly | Done (4 Oct 2026) |
 | T0.3 | Tag the pre-pivot state (`pre-pivot-2026-10-04`) so every banked result stays reproducible | Code (R approves push) | | Tag on origin | Blocked: approved 4 Oct 2026 and created at `7bf2a01`, but this coding session cannot push tags; the researcher pushes it from their Mac |
 | T0.4 | Review `docs/code_inventory.md`: confirm keep / adapt / archive for every module and script | R + Chat decide; Code verifies by reading the code | T0.1 | Every row has a confirmed decision | Done (4 Oct 2026; "Check" rows are resolved by reading the code during T0.5) |
 | T0.5 | Move archived code and its tests to `legacy/` (not deleted), fix imports, keep the suite green | Code | T0.3, T0.4 | Suite green; no live module imports `legacy/` | Not started |
@@ -268,16 +288,21 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | T0.8 | Point `.github/copilot-instructions.md` at this plan | Code | T0.1 | Done | Not started |
 | T0.9 | Carried-over housekeeping: `ledger-updates` branch at `b00019f`, spend ledger brought up to date, audit addenda | Code | | Confirmed with R and done | Decision (scope to confirm) |
 | T0.10 | Archive the last Estimator Frontier plan (with referee responses) and the professor brief in `docs/archive/` and `docs/` | Code | T0.1 | Files committed | Done |
+| T0.11 | Bring the GCP launch scripts in line with the plan: pinned default zones, refusal of Australia regions and of launches after the last GCP launch date; re-check rates | Code | | Tests pass; rates confirmed by R | In progress (zones and refusals done; rates to re-check before the next session) |
+| T0.12 | Find the source of the caveat "some A100 dense baselines were estimated"; keep it with its source, or drop it with a dated note | Code | | Recorded here | Not started |
+| T0.13 | Keep the professor brief's source in the repo (`docs/brief/`) with a build script | Code | | Brief rebuilt from source | Done |
+| T0.14 | Check every related-work entry not read in full against its abstract; rewrite any description taken from a search summary | Chat (R supplies abstracts or PDFs) | | Each entry marked "read in full" or "from abstract" | Not started |
+| T0.15 | Retire the earlier Claude Doc and point it at this plan | Code | | Doc shows only the retirement notice and links | Done |
 
 ### Phase 1: Quality evidence (G3) on existing infrastructure
 
 | ID | Task | Owner | Depends | Done when | Status |
 |---|---|---|---|---|---|
-| T1.1 | Run calibrated XAttention sessions A and B as pre-registered (`docs/t4_xattention_calibrated.md`) | Code prepares; R runs | | Rows banked, analysis written | Built, not run |
+| T1.1 | Run calibrated XAttention sessions A and B as pre-registered (`docs/t4_xattention_calibrated.md`); GCP, launch by 22 Nov 2026 | Code prepares; R runs | | Rows banked, analysis written | Built, not run |
 | T1.2 | Recall with both references, per layer, by head type and depth third, on accuracy rows | Code | | Tested on CPU fixtures; GPU check at 16384 | Partly built (intrinsic recall pass exists) |
 | T1.3 | Fix the head-type criterion (retrieval-like vs local) | Chat decides; Code implements | | Criterion in code and here | Decision |
 | T1.4 | Wire the reference masked path (`backends/block_masked.py`) into H4 runs at block sizes 32 and 64 | Code | | Accuracy rows at 32, 64, 128 on a dry run | Partly built |
-| T1.5 | H4 dry analysis on banked pilot rows plus recall (exploratory, not confirmatory) | Code | T1.2 | Report written, marked exploratory | Not started |
+| T1.5 | H4 dry analysis on banked pilot rows plus recall (exploratory, not confirmatory); measure the estimator disagreement rate for the H4 power rule | Code | T1.2 | Report written, marked exploratory | Not started |
 | T1.6 | Cost the real-text haystack swap on the primary model; decide | Code costs; R decides | | Decision recorded | Not started |
 | T1.7 | Build the window and vertical-slash arms; check DuoAttention patterns and licence | Code | | Arms pass the selector gate | Not started |
 
@@ -293,7 +318,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | T2.6 | Launch-queue depth probe | Code | | Q measured on the L4 | Not started |
 | T2.7 | Trace checks: copy-kernel concurrency, unified-memory faults | Code | | Flags tested on synthetic traces | Not started |
 | T2.8 | The recursion, with hand-computed unit tests | Code | | Tests pass | Not started |
-| T2.9 | Sum and KernelSight-style baselines; HDBI diagnostic | Code | T2.8 | Tests pass | Not started |
+| T2.9 | Sum, fitted sum and KernelSight-style baselines; HDBI diagnostic | Code | T2.8 | Tests pass | Not started |
 | T2.10 | Learned LightGBM baseline, leave-one-pairing-out | Code | T2.8 | Features frozen in code | Not started |
 | T2.11 | Prediction commit: hash, sync, analysis refuses late predictions (K9) | Code | T2.8 | Refusal tested | Not started |
 | T2.12 | Precomputed-mask ablation arm | Code | | Passes selector gate | Not started |
@@ -305,15 +330,15 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 
 | ID | Task | Owner | Depends | Done when | Status |
 |---|---|---|---|---|---|
-| T3.1 | P1 session: components, committed prediction, ground truth | Code prepares; R runs | Phase 2 | Rows banked | Not started |
-| T3.2 | P1 repeat sessions for between-session floors; set probe bounds | Code + R | T3.1 | Bounds proposed for lock | Not started |
+| T3.1 | P1 session: components, committed prediction, ground truth; GCP, launch by 22 Nov 2026 | Code prepares; R runs | Phase 2 | Rows banked | Not started |
+| T3.2 | P1 repeat sessions for between-session floors; set probe bounds; GCP, launch by 22 Nov 2026 | Code + R | T3.1 | Bounds proposed for lock | Not started |
 | T3.3 | Gate A decision | Chat + R | T3.1 | Recorded in Appendix A | Not started |
 
 ### Phase 4: Pre-registration lock
 
 | ID | Task | Owner | Depends | Done when | Status |
 |---|---|---|---|---|---|
-| T4.1 | Fix every **[lock]** value: H0 to H3 tolerances, H4 equivalence bound, probe bounds, resolution floor, budget cut order | Chat + R | T3.2 | Values written here | Not started |
+| T4.1 | Fix every **[lock]** value: H0 to H3 tolerances, H4 equivalence bound, H4 power target and n, probe bounds, resolution floor, budget cut order | Chat + R | T3.2 | Values written here | Not started |
 | T4.2 | Confirm the accuracy test and the dense floor (K7) | Chat + R | | Written here | Decision |
 | T4.3 | Two independent adversarial reads of plan and scoring code | R arranges | T4.1 | Findings resolved | Not started |
 | T4.4 | Tagged lock commit | Code | T4.3 | Tag on origin | Not started |
@@ -326,14 +351,14 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | T5.2 | Service quotas for G6, G6e, p5.4xlarge, G5; regional availability | R | | Quotas granted | Not started |
 | T5.3 | Cost every pairing session | Code | T5.1 | Table in `docs/spend_ledger.md` | Not started |
 
-### Phase 6: Pairings (each with its prediction committed first)
+### Phase 6: Pairings (each with its prediction committed first; rows in run order)
 
 | ID | Task | Owner | Depends | Status |
 |---|---|---|---|---|
-| T6.1 | P2 (Cascade Lake + A100): H0, H1, H2 | Code prepares; R runs | Gate B | Not started |
+| T6.1 | P2 (Cascade Lake + A100): H0, H1, H2; GCP, launch by 22 Nov 2026 | Code prepares; R runs | Gate B | Not started |
+| T6.4 | P4 (Sapphire Rapids + H100): H1, H3; GCP, launch by 22 Nov 2026 | Code; R | Gate B | Not started |
 | T6.2 | P3 (AMD + L4): H0, H1, H2 | Code; R | Gates B, C | Not started |
 | T6.3 | P5 (AMD + L40S): H0, H1, H2, H5; chunked extension | Code; R | Gates B, C | Not started |
-| T6.4 | P4 (Sapphire Rapids + H100): H1, H3 | Code; R | Gate B | Not started |
 | T6.5 | P6 (AMD + H100): H0, H1, full transfer, H5 | Code; R | T6.2 to T6.4 | Not started |
 | T6.6 | P7 (AMD 2nd gen + A10G), optional | Code; R | Budget | Not started |
 
@@ -355,7 +380,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 - **Separability may fail** (Gate D).
 - **Component profiling may misstate composed behaviour.** Null kernels can understate host cost; isolated replay removes cache and queue interactions; TaxBreak notes replay is imperfect for synchronisation-heavy kernels, which describes our sparse arms. H1's error on real pairings measures how much this matters.
 - **Profitability may be empty for deployable estimators.** In the pilots none was non-inferior at any tested density. The primary claim is time prediction at a given density.
-- **The learned baseline may win.** It has at most six training pairings per held-out test. Both outcomes are reported, on held-out pairings only.
+- **A fitted baseline may win.** The fitted sum and LightGBM each train on at most six pairings per held-out test. Either result is reported, on held-out pairings only.
 - **G3 may be partly pre-empted.** Oracle-guided sparse prefill plans to measure recall of oracle support by its learned indexer. H4 is the cross-estimator test; that is how it is positioned if their follow-up appears first.
 - **H4 may fail.** That is a result.
 - **Cloud hosts are not controllable.** A frequency difference between sessions is the first candidate explanation for any H0 failure.
@@ -401,6 +426,9 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | `docs/research_brief.pdf` | Short brief for the professor, with the related-work table |
 | `docs/code_inventory.md` | Keep / adapt / archive review of the existing code (task T0.4) |
 | `docs/spend_ledger.md` | Cloud spend, from teardown-written `session_cost.txt` files |
+| `docs/permission_log.md` | Uses of results the researcher has approved (rule 15) |
+| `docs/brief/` | Source of the professor brief; `tools/build_brief_pdf.py` renders `docs/research_brief.pdf` |
+| `scripts/_launch_policy.sh` | Last-launch-date and no-Australia checks used by every GCP launch script |
 | `docs/limitations.md`, `docs/claims.md`, `docs/withdrawn_figures.md`, `docs/silent_failure_patterns.md` | Audit history of the banked evidence; annotate, never rewrite |
 | `docs/archive/` | Superseded plans and their referee responses |
 | `attnbench/` | Harness: provenance, timing, masks, backends, accuracy pipeline, analysis |
@@ -422,6 +450,14 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 - **4 Oct 2026.** SparKV withdrawn by its authors; not cited.
 - **4 Oct 2026.** This document replaces the Estimator Frontier plan as the single source of truth.
 - **4 Oct 2026.** Code inventory (`docs/code_inventory.md`) confirmed by the researcher as proposed; pre-pivot tag approved.
+- **4 Oct 2026.** P1 is a development pairing; H1's confirmatory pairings are P2 to P7.
+- **4 Oct 2026.** Fitted-sum baseline (a·sum h + b·sum l + c·sum d, coefficients ≥ 0, leave-one-pairing-out) added beside LightGBM as the fair test of G1.
+- **4 Oct 2026.** Run order P1, P2, P4, then P3, P5, P6, P7. Last GCP launch date 22 Nov 2026, enforced in the launch scripts.
+- **4 Oct 2026.** H4 sample size set before lock from a power rule; an underpowered result is reported as inconclusive.
+- **4 Oct 2026.** GCP machine types and zones pinned for P1, P2 and P4 (Section 5.2).
+- **4 Oct 2026.** Researcher approved using the XAttention pilot results in the brief and this plan (`docs/permission_log.md`).
+- **4 Oct 2026.** The earlier Claude Doc on this project retired; it now only points here.
+- **4 Oct 2026.** A100 kernel ratios restated against PyTorch's SDPA flash kernel; the "estimated A100 baselines" caveat marked unverified (T0.12).
 
 ## Appendix B. Glossary
 
