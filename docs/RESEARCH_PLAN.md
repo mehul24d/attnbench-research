@@ -289,7 +289,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 
 | ID | Task | Owner | Depends | Done when | Status |
 |---|---|---|---|---|---|
-| T0.1 | Commit this plan, its PDF, `CLAUDE.md` and the build tool | Code | | On `main` | In progress (on branch; merge pending) |
+| T0.1 | Commit this plan, its PDF, `CLAUDE.md` and the build tool | Code | | On `main` | Done (merged to `main` 4 Oct 2026) |
 | T0.2 | Brief Claude chat: upload the PDF to the project, remove superseded plan PDFs, paste the handover note | R | T0.1 | Chat answers a test question from the plan correctly | Done (4 Oct 2026) |
 | T0.3 | Tag the pre-pivot state (`pre-pivot-2026-10-04`) so every banked result stays reproducible | Code (R approves push) | | Tag on origin | Blocked: approved 4 Oct 2026 and created at `7bf2a01`, but this coding session cannot push tags; the researcher pushes it from their Mac |
 | T0.4 | Review `docs/code_inventory.md`: confirm keep / adapt / archive for every module and script | R + Chat decide; Code verifies by reading the code | T0.1 | Every row has a confirmed decision | Done (4 Oct 2026; "Check" rows are resolved by reading the code during T0.5) |
