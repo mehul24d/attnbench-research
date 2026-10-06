@@ -105,6 +105,9 @@ def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = "", **extra_e
         FAKE_DISK_IMAGE_JSON='{"status": "READY", "diskSizeGb": "200"}',
         GCP_ZONE_FALLBACKS=zones,
         GCP_PROJECT="test-project",
+        # Inside the GCP launch window, so these tests do not start failing
+        # once the real last-launch date passes (scripts/_launch_policy.sh).
+        ATTNBENCH_TODAY="2026-10-04",
     )
     env.update({k: str(v) for k, v in extra_env.items()})
     proc = subprocess.run(["bash", str(SCRIPT), "test-instance"], input="launch\n",

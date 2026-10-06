@@ -36,7 +36,9 @@
 set -euo pipefail
 
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-ZONE="${GCP_ZONE:-asia-southeast1-c}"
+ZONE="${GCP_ZONE:-asia-southeast1-c}"   # plan Section 5.2: P2 pinned zone
+source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
+launch_policy_check "$ZONE"
 MACHINE_TYPE="a2-ultragpu-1g"
 ACCELERATOR="type=nvidia-a100-80gb,count=1"
 # Overridable so a freshly captured image can be put to work instead of
