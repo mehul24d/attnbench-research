@@ -30,6 +30,7 @@ from attnbench import masks  # noqa: E402
 from attnbench.accuracy.model import SwappableAttentionModel  # noqa: E402
 from attnbench.backends.impls import NaiveAttention  # noqa: E402
 from attnbench.config import AttnConfig  # noqa: E402
+from _sdpa_env import xfail_without_cpu_flash_gqa  # noqa: E402
 
 SEQ, BLOCK = 64, 8
 
@@ -74,6 +75,7 @@ def _wrapped(model, score_source="dense_softmax_fp32"):
                                    finest_block_size=BLOCK, score_source=score_source)
 
 
+@xfail_without_cpu_flash_gqa
 def test_layer_zero_matches_the_two_pass_cheap_arm(tmp_path):
     model, ids, cfg = _model(), _ids(), _cfg()
     two_pass = _wrapped(model, "minference_meanpool")
@@ -101,6 +103,7 @@ def test_every_layer_mask_is_the_reference_rule_on_its_own_scores():
         assert torch.equal(ref.active, mask.active.cpu()), layer
 
 
+@xfail_without_cpu_flash_gqa
 def test_later_layers_see_sparse_inputs_not_the_cached_scores(tmp_path):
     model, ids, cfg = _model(), _ids(), _cfg(sparsity=0.9)
     w = _wrapped(model, "minference_meanpool")

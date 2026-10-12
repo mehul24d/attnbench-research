@@ -21,7 +21,7 @@ The study: **predicting when training-free block-sparse prefill pays end to end 
 4. Never delete or rewrite historical audit findings (`docs/limitations.md`, `claims.md`, `withdrawn_figures.md`, `silent_failure_patterns.md`, `audit_register.md`). Annotate instead.
 5. Cite only papers read in full. If a paper is needed, ask the researcher for the PDF.
 6. Write and hash predictions before the data they predict.
-7. Run the focused tests for what you changed, and keep the full suite green (`python -m pytest -q`). In a CPU-only container, 5 tests in `test_generation_wiring.py`, `test_inline_estimator.py` and `test_swappable_attention_model.py` fail because SDPA's flash kernel is unavailable. This is a known environment limitation, not a regression.
+7. Run the focused tests for what you changed, and keep the full suite green (`python -m pytest -q`). In a CPU-only container, 5 tests in `test_generation_wiring.py`, `test_inline_estimator.py` and `test_swappable_attention_model.py` report as xfail: PyTorch's CPU flash SDPA kernel rejects grouped-query attention shapes. The mark is conditional on a probe of that call and strict (`tests/_sdpa_env.py`), so any other failure in those tests still fails the suite.
 8. No unrelated changes in a commit. Third-party code is installed and called, never copied.
 9. No model identifiers in research artifacts.
 10. Any use of results that needs the researcher's permission must be in `docs/permission_log.md` before the use. If it is not in the log, it is not approved.

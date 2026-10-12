@@ -36,6 +36,7 @@ import attnbench.accuracy.model as _model_mod  # noqa: E402
 from attnbench.accuracy import score_cache  # noqa: E402
 from attnbench.backends.impls import NaiveAttention, SDPABackend  # noqa: E402
 from attnbench.config import AttnConfig  # noqa: E402
+from _sdpa_env import xfail_without_cpu_flash_gqa  # noqa: E402
 
 
 def _toy_model(seed: int = 0, num_key_value_heads: int = 2):
@@ -484,6 +485,7 @@ def test_compute_importance_scores_rejects_batch_greater_than_one():
             batched_input, task="niah_single", example_id="ex0", cache_dir="/tmp")
 
 
+@xfail_without_cpu_flash_gqa
 def test_cheap_scoring_pass_propagates_faithful_hidden_states(tmp_path):
     """The cheap (minference_meanpool) scoring branch must emit a REAL
     attention output, not zeros.
