@@ -1,6 +1,6 @@
 # Sparse Prefill Prediction: Research Plan and Task List
 
-**Status:** active, single source of truth. **Last updated:** 12 October 2026.
+**Status:** active, single source of truth. **Last updated:** 18 October 2026.
 **Supersedes:** every earlier plan, including all versions of the "Estimator Frontier" plan. Their reasoning and referee responses are kept, unedited, in `docs/archive/` for traceability; nothing in them overrides this file.
 
 ---
@@ -17,7 +17,7 @@
 4. A new decision gets a body change **and** one dated line in Appendix A. No version numbers.
 5. Direction changes (gaps, hypotheses, pairings, arms, budget) are decided in Claude chat with the researcher, then written here. Claude Code implements what is written here and asks before changing scope.
 
-**Status words.** *Done*: built, tested, used. *Built*: code and tests exist, not yet used for the study. *Partly built*: some pieces exist (named). *Not started*. *Blocked* (reason given). *Decision*: needs the researcher.
+**Status words.** *Done*: built, tested, used. *Built*: code and tests exist, not yet used for the study. *Partly built*: some pieces exist (named). *In progress*: started, nothing usable yet; the finished and remaining pieces are named. *Not started*. *Blocked* (reason given). *Decision*: needs the researcher.
 
 ---
 
@@ -57,9 +57,9 @@ These results exist and are commit-stamped. They motivate the study; they are no
 
 | Finding | Evidence and caveat |
 |---|---|
-| Kernel speedup does not survive end to end | A100, sparsity 0.75: kernel 1.28x (8192 tokens) and 1.96x (16384) faster than PyTorch's SDPA flash kernel, measured at the model's own head layout. End-to-end prefill with the reference mask builder 0.75x and 0.63x. Flash is not the fastest correct dense kernel on that card: cuDNN SDPA is 25.8% faster at 8192 and FA2 6.0% faster at 16384 (cuDNN faults above 8192). Against them the kernel ratios become 0.95x and 1.84x. |
+| Kernel speedup does not survive end to end | A100, sparsity 0.75: kernel 1.28x (8192 tokens) and 1.96x (16384) faster than PyTorch's SDPA flash kernel, measured at the model's own head layout. End-to-end prefill with the reference mask builder 0.75x and 0.63x. Flash is not the fastest correct dense kernel on that card: cuDNN SDPA is 25.8% faster at 8192 and FA2 6.0% faster at 16384 (cuDNN faults above 8192). Against them the kernel ratios are 0.95x (a loss) and 1.84x, recomputed from measured per-layer kernel times in the same sweep at the model's (12,2) head layout (`results/s7_sweep_hl122/sweep.parquet`, commit `c324515`). |
 | The sign depends on the card | 32768 tokens, sparsity 0.75: about 1.3x on an L4, about 0.48x on an A100 with the reference builder. |
-| The cause is host-side mask construction | L4 and A100 hosts share a CPU platform; builder costs within about 3%. About 91% of the reference builder's cost is Python overhead in an unvectorised loop, so this is a finding about one implementation. A vectorised builder turned the A100 result into a speedup at 16384: 1.20x against flash, an estimated 1.18x against FA2. At 8192 it reaches 1.02x against flash and an estimated 0.96x (a loss) against cuDNN. The estimates subtract the per-layer kernel difference from the measured dense prefill; they are arithmetic, not measurements. |
+| The cause is host-side mask construction | L4 and A100 hosts share a CPU platform; builder costs within about 3%. About 91% of the reference builder's cost is Python overhead in an unvectorised loop, so this is a finding about one implementation. A vectorised builder turned the A100 result into a speedup at 16384: 1.20x against flash, an estimated 1.18x against FA2. At 8192 it reaches 1.02x against flash and an estimated 0.96x (a loss) against cuDNN. The estimates subtract 28 layers times the per-layer kernel difference from the measured dense prefill (`results/s8_vec_endtoend/vec_endtoend.parquet`, commit `ae736b4`); they are arithmetic, not measurements, and assume the dense prefill is GPU-bound. |
 | The mechanism held on a third card | Of three predictions registered before the H100 run, two passed and one failed (7 of 9 cells). |
 | The oracle is expensive | Scoring costs about 35x the latency the sparsity saves at 32768 on an L4. |
 | A cheap estimator trails the oracle | Mean-pool trails the oracle by 32 to 40 points at 1.5B and 39 to 76 at 7B on multi-key retrieval at 16384. |
@@ -75,7 +75,7 @@ These results exist and are commit-stamped. They motivate the study; they are no
 | Estimator cost depends on the code path | On the L4's torch fallback, XAttention's estimate costs more than dense attention (19.5 vs 14.5 ms at 16384). |
 | Calibrated XAttention | Built and pre-registered; not run (task T1.1). |
 
-**Standing caveats.** the A100 figures against the fastest correct dense kernel are estimates (source: the baseline-strength caveat in `docs/claims.md` dated 3 Oct 2026, on branch `frontier-prereg-2026-10-03`, not yet on `main`, T0.16), to be replaced by measurements (T2.16); some 32768-token rows exceed the position limit; results span three mask-rule eras that must not be pooled; the pilots cover one model, one card and synthetic tasks.
+**Standing caveats.** Of the A100 figures against the fastest correct dense kernel, the kernel ratios are recomputed from measured kernel times and the end-to-end restatements are arithmetic, not measurements (source: the baseline-strength caveat in `docs/claims.md` dated 3 Oct 2026, on branch `frontier-prereg-2026-10-03`, not yet on `main`, T0.16); both are to be replaced by same-session measurements (T2.16); at 32768 no faster kernel was measured at the (12,2) layout, so the A100 figures there are against flash only; some 32768-token rows exceed the position limit; results span three mask-rule eras that must not be pooled; the pilots cover one model, one card and synthetic tasks.
 
 ---
 
@@ -147,7 +147,7 @@ Each has a statistic and a tolerance fixed at lock (marked **[lock]**). Failures
 
 Never an Australia region. Availability and rates are re-checked from the researcher's Mac before each session.
 
- "Same platform" is not the same SKU: CPU model string, core count, SMT state, observed frequency, CPU microcode version and the provider's instance generation are recorded on every row (providers change hardware without notice) and compared before H0 is read.
+ "Same platform" is not the same SKU: CPU model string, core count, SMT state, observed frequency, CPU microcode version, the provider's instance generation and the provisioning model (on-demand, spot, DWS flex-start or reserved) are recorded on every row (providers change hardware without notice) and compared before H0 is read.
 
 ### 5.3 Per-pairing session protocol
 
@@ -339,15 +339,15 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 |---|---|---|---|---|---|
 | T0.1 | Commit this plan, its PDF, `CLAUDE.md` and the build tool | Code | | On `main` | Done (merged to `main` 4 Oct 2026) |
 | T0.2 | Brief Claude chat: upload the PDF to the project, remove superseded plan PDFs, paste the handover note | R | T0.1 | Chat answers a test question from the plan correctly | Done (4 Oct 2026) |
-| T0.3 | Tag the pre-pivot state (`pre-pivot-2026-10-04`) so every banked result stays reproducible | Code (R approves push) | | Tag on origin | Blocked: approved 4 Oct 2026 and created at `7bf2a01`, but this coding session cannot push tags; the researcher pushes it from their Mac |
+| T0.3 | Tag the pre-pivot state (`pre-pivot-2026-10-04`) so every banked result stays reproducible | Code (R approves push) | | Tag on origin | Done (18 Oct 2026): `pre-pivot-2026-10-04` confirmed on origin at `7bf2a01` (`git ls-remote --tags`) |
 | T0.4 | Review `docs/code_inventory.md`: confirm keep / adapt / archive for every module and script | R + Chat decide; Code verifies by reading the code | T0.1 | Every row has a confirmed decision | Done (4 Oct 2026; "Check" rows are resolved by reading the code during T0.5) |
 | T0.5 | Move archived code and its tests to `legacy/` (not deleted), fix imports, keep the suite green | Code | T0.3, T0.4 | Suite green; no live module imports `legacy/` | Not started |
 | T0.6 | Move superseded docs to `docs/archive/` unchanged; update test references to their paths | Code | T0.3 | Suite green | Not started |
 | T0.7 | Rewrite `README.md` for the new question; remove claims that break rule 1 | Code | T0.1 | README matches Sections 1 and 2 | Not started |
 | T0.8 | Point `.github/copilot-instructions.md` at this plan | Code | T0.1 | Done | Not started |
-| T0.9 | Carried-over housekeeping: `ledger-updates` branch at `b00019f`, spend ledger brought up to date, audit addenda | Code | | Confirmed with R and done | Decision (scope to confirm) |
+| T0.9 | Carried-over housekeeping: `ledger-updates` branch at `b00019f`, spend ledger brought up to date, audit addenda | Code | | Confirmed with R and done | Decision (scope to confirm). On 18 Oct 2026 the sessions table in `docs/spend_ledger.md` had no row for 15 sessions that have a `session_cost.txt`: the seven Stage 2 segments of 4 Sep 2026 (one now under `results/_discarded/`), segment 3 of 5 Sep, Stage 5b of 7 Sep, and six T4 sessions of 1 and 2 Oct (dense probe, selected pilot, sparse canary, 32768 sparse pilot, XAttention canary, XAttention pilot). The 32768 pilot's cost file is pasted below the table, and `ledger-updates` (`b00019f`) pastes the two XAttention ones; none is a table row. The 2 Oct 16384 sparse pilot session has no cost file |
 | T0.10 | Archive the last Estimator Frontier plan (with referee responses) and the professor brief in `docs/archive/` and `docs/` | Code | T0.1 | Files committed | Done |
-| T0.11 | Bring the GCP launch scripts in line with the plan: pinned default zones, refusal of Australia regions and of launches after the last GCP launch date; re-check rates | Code | | Tests pass; rates confirmed by R | In progress (zones and refusals done; rates to re-check before the next session) |
+| T0.11 | Bring the GCP launch scripts in line with the plan: pinned default zones, refusal of Australia regions and of launches after the last GCP launch date; re-check rates | Code | | Tests pass; rates confirmed by R | Partly built (zones and refusals done and tested; rate re-check not done) |
 | T0.12 | Find the source of the caveat "some A100 dense baselines were estimated"; keep it with its source, or drop it with a dated note | Code | | Recorded here | Done (5 Oct 2026): the baseline-strength caveat in `docs/claims.md` (3 Oct 2026) on branch `frontier-prereg-2026-10-03`; figures carried into Section 2; reaches `main` with T0.16 |
 | T0.13 | Keep the professor brief's source in the repo (`docs/brief/`) with a build script | Code | | Brief rebuilt from source | Done |
 | T0.14 | Check every related-work entry not read in full against its abstract; rewrite any description taken from a search summary | Chat (R supplies abstracts or PDFs) | | Each entry marked "read in full" or "from abstract" | Not started |
@@ -358,8 +358,8 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 
 | ID | Task | Owner | Depends | Done when | Status |
 |---|---|---|---|---|---|
-| T1.1 | Run calibrated XAttention sessions A and B as pre-registered (`docs/t4_xattention_calibrated.md`); GCP, launch by 22 Nov 2026 | Code prepares; R runs | | Rows banked, analysis written | Built, not run |
-| T1.2 | Recall with both references, per layer, by head type and depth third, on accuracy rows | Code | | Tested on CPU fixtures; GPU check at 16384 | Partly built (intrinsic recall pass exists) |
+| T1.1 | Run calibrated XAttention sessions A and B as pre-registered (`docs/t4_xattention_calibrated.md`); GCP, launch by 22 Nov 2026 | Code prepares; R runs | | Rows banked, analysis written | Built, not run (amendments A1 to A7 to its pre-registration, and the matching calibration-script changes, are on branch `frontier-prereg-2026-10-03`, not on `main` until T0.16) |
+| T1.2 | Recall with both references, per layer, by head type and depth third, on accuracy rows | Code | | Tested on CPU fixtures; GPU check at 16384 | Partly built (intrinsic recall pass exists, on branch `frontier-prereg-2026-10-03`, not on `main` until T0.16) |
 | T1.3 | Fix the head-type criterion (retrieval-like vs local) | Chat decides; Code implements | | Criterion in code and here | Decision |
 | T1.4 | Wire the reference masked path (`backends/block_masked.py`) into H4 runs at block sizes 32 and 64 | Code | | Accuracy rows at 32, 64, 128 on a dry run | Partly built |
 | T1.5 | H4 dry analysis on banked pilot rows plus recall (exploratory, not confirmatory); measure the estimator disagreement rate for the H4 power rule; price n at 10-point and 5-point bounds | Code | T1.2 | Report written, marked exploratory | Not started |
@@ -391,12 +391,13 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | T2.17 | XAttention arm with Python asserts removed: module-scoped import hook compiling only the authors' `xattn` package with `optimize=1`, never reading or writing the bytecode cache; per-session check that the default arm still carries its asserts, that the stripped code differs only in assert sequences and `__debug__` blocks, and that the hook's log of compiled modules matches the `xattn` package with `sys.flags.optimize` at 0; confirm no harness safety check relies on `assert` (none in `attnbench/`; three scripts use it); bitwise mask and output gate against the shipped arm | Code | | Hook, cache rule and both checks tested on CPU; gate passes on the L4 | Not started |
 | T2.18 | Structural probe: each arm at 2048 and 4096 tokens under the profiler, order kept and durations discarded, extended by the chunking rule | Code | T2.3 | Tested on the L4 against a full trace | Not started |
 | T2.19 | Constant-host-cost and nearest-measured-pairing baselines; decision error, crossover error and bootstrap prediction intervals; crossover bracket rule (primary) and quadratic fit with residual (secondary) | Code | T2.8 | Tests pass | Not started |
-| T2.20 | Provenance on every row: CPU microcode version and instance generation; `sys.flags.optimize`; mask density and executed density | Code | | Fields present and tested | Not started |
+| T2.20 | Provenance on every row: CPU microcode version and instance generation; provisioning model (on-demand, spot, DWS flex-start or reserved); `sys.flags.optimize`; mask density and executed density | Code | | Fields present and tested | Not started |
 | T2.21 | Compiled variants: wrap each arm in `torch.compile` (default settings, and with the capture options); graph-break report per layer on CPU; mask agreement with the eager arm; compile time and recompile counts kept outside timed blocks | Code | T2.3 | Graph-break report on CPU; L4 dry run | Not started (the four patterns in Section 1 checked on CPU, 6 Oct 2026) |
 | T2.22 | Dispatcher and its comparators (kernel-speedup rule, always dense, best-kernel sparse arm, nearest pairing); regret and decision errors, with and without the Holm-corrected admissible set; margin-against-speedup frontier; choice written into the hashed prediction file | Code | T2.8, T2.11, T2.19 | Tests pass on synthetic grids | Not started |
 | T2.23 | Mask gate on P2: run XAttention's Triton and PyTorch paths on the same recorded prompts through `use_triton`; per-layer mask agreement and density difference against P1's masks | Code | T2.3 | Tested on CPU fixtures; run in the P2 session | Not started |
 | T2.24 | Mask comparison of P4's recorded Triton masks against P2's; decides whether P6 inherits P4's masks | Code | T2.23 | Comparison code tested; run after P4 | Not started |
 | T2.25 | Delay-injection slope check for Gate A: inject each synchronisation mechanism separately into the dense arm, where the GPU is busy and where it is idle; one predicted-over-measured slope per mechanism | Code | T2.8 | Tested on CPU; L4 run in T3.1 | Not started |
+| T2.26 | GPU variants of the five GQA tests named in `tests/_sdpa_env.py`, with the device taken from the environment, called from the session preflight; wire `scripts/gpu_suite_record.sh` into the launch scripts. The five tests pin `device="cpu"`, so as written they check nothing on a GPU instance | Code | | Variants tested on CPU; each launch script runs the suite record before measuring; variants pass on the L4 in the T3.1 preflight | Not started |
 
 ### Phase 3: P1 gate
 
@@ -439,7 +440,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | ID | Task | Owner | Depends | Status |
 |---|---|---|---|---|
 | T7.1 | H0 to H5 analyses per pairing; residuals by arm and synchronisation count | Code | Phase 6 | Not started |
-| T7.2 | Read in full the related work still known only from abstracts (Token Sparse Attention, nn-Meter, HELP, Twilight, FlexPrefill, others in the brief), and papers raised by reviewers (Janus, MOMO; DFSAttn and HiSparse read in full on 5 Oct 2026) | Chat (R supplies PDFs) | | In progress |
+| T7.2 | Read in full the related work still known only from abstracts (Token Sparse Attention, nn-Meter, HELP, Twilight, FlexPrefill, others in the brief), and papers raised by reviewers (Janus, MOMO; DFSAttn and HiSparse read in full on 5 Oct 2026) | Chat (R supplies PDFs) | | In progress (finished: DFSAttn and HiSparse, read in full 5 Oct 2026; remaining: Janus and MOMO, and the brief entries known from abstracts only: nn-Meter, HELP, Vidur, the cross-generation GPU prediction paper (TCAD 2019), The Framework Tax, MInference, XAttention, DuoAttention, FlexPrefill, Twilight, the CUDA Graphs study (LANMAN 2026), PILOT, iMLBench, Mytkowicz et al. and Token Sparse Attention) |
 | T7.3 | IEEE Xplore and Scopus search; related-work section | Chat + R | T7.2 | Not started |
 | T7.4 | Venue choice (Section 11) | R with professor | | Not started |
 | T7.5 | Paper draft; professor review | R + Chat | T7.1 | Not started |
@@ -573,6 +574,10 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 - **12 Oct 2026.** (12) Timed short lengths cost like any other cell. (13) Context grid 2048, 4096, 8192, 16384 and 32768 for every arm (researcher's decision: a balanced grid, since dropping 65536 removes nearly all the extra cost and the short end is where G2's contrast is largest); 2048 and 4096 are model-validation points, not operating points; 65536 dropped (Qwen2.5 stops at 32768; Llama-3.1-8B does not fit there on an L4); cost controlled on the arm-and-density cross; if lengths must be cut, the full grid stays with the synchronising arms and their controls. (14) Crossover reported as a grid bracket widened by bootstrap intervals; H3 predicts a grid interval; the quadratic fit is secondary, with its residual. (15) H6 scored at 16384 and 32768.
 - **12 Oct 2026.** (16) The L4 is the accuracy GPU and the A100 the cross-card dense control, accepted on a task-score bound with the exact-match rate reported. (17) K2's correctness reference is float64, following the code, with the cross-backend fallback named per cell. (18) One limitation for the code-path mismatch (thresholds, admissibility and replayed masks from the L4 PyTorch path; Triton on the A100 and H100). (19) Primary accuracy statement is the achieved lower bound; sensitivity at 5 and 10 points; no 2-point column. (20) Margin-against-speedup frontier. (21) Primary cell n = max(200, H4 power rule) (researcher's decision: 200). (22) The union-bound test stays pre-registered; a replacement only if a simulation shows coverage, power secondary. (23) Admissibility is a decision input; its Holm family declared at lock; regret reported with and without the correction.
 - **12 Oct 2026.** (24) RQ1, Section 1 and the abstract say the workload has not been timed on the target rather than not run, since the structural probe already runs each arm there at short contexts under the profiler with all durations discarded; Section 5.1 lists what may run on the target. (25) The host-cost method is credited as adapting TaxBreak's null-kernel protocol, which uses null kernels for the launch path, to the whole operation sequence, with host-side compute measured directly at target sizes; the adaptation is not claimed as a contribution. (26) The baseline is named the KernelSight-style step form in the brief as well as the plan; KernelSight-LM's Eq. 4 is named only when describing their paper, so a comparator's performance is never read as a result about their work. (27) Section 9 states what carries the isolation of the asserts-removed arm without the `-O` control: construction, verified every session (hook log, bytecode check, default-arm check).
+- **18 Oct 2026.** New status word *In progress*: started, nothing usable yet, with the finished and remaining pieces named. T7.2 uses it; T0.11 becomes Partly built.
+- **18 Oct 2026.** The A100 figures against the fastest correct dense kernel are stated as two kinds of number (Section 2, T0.12): the kernel ratios (0.95x at 8192, 1.84x at 16384) are recomputed from measured per-layer kernel times at the model's head layout, and the end-to-end restatements are arithmetic, not measurements. For the kernel ratios this replaces "as estimates" in the 5 Oct line.
+- **18 Oct 2026.** The provisioning model (on-demand, spot, DWS flex-start or reserved) is recorded on every row (Section 5.2, T2.20).
+- **18 Oct 2026.** New task T2.26: GPU variants of the five GQA tests, called from the session preflight, with `scripts/gpu_suite_record.sh` wired into the launch scripts. The five tests pin the CPU, so they check nothing on a GPU instance.
 
 ## Appendix B. Glossary
 
