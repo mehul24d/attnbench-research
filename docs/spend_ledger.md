@@ -96,6 +96,25 @@ authority is the billing console.
 | 2026-10-02 | `attnbench-l4-xattn-pilot-20261002-2059`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **201** | **268** | `session_cost.txt` (`results/t4_xattn_pilot_session_20261003/`) |
 | 2026-10-02 | `attnbench-l4-t4pilot-16384-20261002-0312`; row added 18 Oct 2026, date from the instance name | no cost file | no cost file | no cost file (`results/t4_sparse_pilot_session_16384_20261002/` has none) |
 
+**Notes on the table (18 Oct 2026).**
+
+- **Dates.** Rows added on 18 Oct 2026 are dated by the instance's own boot
+  clock, in UTC. Earlier rows are not all UTC. Instance names carry India
+  time: `attnbench-l4-t4canary-20261002-0214` booted at 20:44 UTC on 1 Oct.
+  So `attnbench-l4-s1a2-20260920-0437` started on 19 Sep UTC, and its row
+  says 20 Sep. Earlier dates are left as they were.
+- **`attnbench-decode-unconfound`, 2026-09-08: two figures.** Its
+  `session_cost.txt` (`results/gpu_session_20260908/`) gives boot 05:08:00
+  and teardown 05:40:38Z: 33 minutes, ₹44. The row's 59 minutes and ₹77 come
+  from the audit log, from the successful insert to the terminating event
+  (`b856d41`); those two timestamps were not banked. The session log
+  (`unconfound.log`) armed teardown at 05:37:39Z and scheduled a shutdown for
+  05:52:39Z, 12 minutes after the cost file's teardown stamp. That can
+  account for part of the 26-minute gap, not all of it. The gap is
+  unexplained, so the row and the totals keep the higher figure. The
+  `serial_console.log` in that directory is from `attnbench-band32768`, not
+  this instance.
+
 ### The 2026-09-20 S7 session: 83 minutes of work, 132 minutes billed
 
 Boot 16:28:38Z, last phase ended **17:51:19Z**, in-guest halt fired
