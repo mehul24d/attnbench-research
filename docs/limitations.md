@@ -2436,6 +2436,7 @@ assignment is per file:
 | **1. pre-sink** | kv block 0 is an ordinary candidate; only the diagonal is free | `stage3_s1`, `stage3_s1b`, `stage3_16384`, `stage3_32768`, `stage3_flashdecode`, and the `gpu_session_2026090[678]*` copies of each |
 | **2. forced-sink** | kv block 0 granted free (`37675a0`, 2026-09-16); jitter drawn **after** the budget check | `accuracy_forced_sink`, `accuracy_forced_sink_cheap`, `s7_7b_16384`, `s9_7b_cheap_16384`, `s1a/accuracy_band2048`, `s1a/accuracy_bands2`, `s1a/accuracy_all_bands`, `sink_control` (`importance_randfree`) |
 | **3. post-jitter** | as era 2, plus jitter drawn unconditionally (instance 45, 2026-09-20) | `s7_jitter` — 16384, `niah_single` and `niah_multikey` only, n=100. **Supersedes the same cells of `accuracy_forced_sink`.** That file's `vt` cells at 16384, and every other band, remain era 2. |
+| **3. post-jitter (T4 dense probe, registered 18 Oct 2026)** | as era 2, plus unconditional jitter: the rule at commit `822a4dd`, which descends from both `37675a0` and `5cc3a40` (`eras.era_from_git` gives 3) | `t4_dense_probe_20261001`. The T4 dense-only probe of 1 Oct 2026. Its rows are dense and carry no mask, so the era holds by commit ancestry only. The other T4 files are not yet in this table. |
 
 **One file is era 3, and it is a partial band.** `s7_jitter` covers 16384 at
 `niah_single` and `niah_multikey`; `vt` was deliberately excluded, because its
