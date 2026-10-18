@@ -105,10 +105,10 @@ task family** (RULER-style NIAH and variable tracking), **batch 1**,
 **prefill-only sparsity**, **inference only**. Context tops out at **32768
 tokens**, which is a hardware ceiling, not a design choice.
 
-Total rented GPU time: **₹8,409 itemised** (≈ US$96 at the ₹88/$ the ledger
-prices its own audit-log rows at), across 38 priced sessions in
+Total rented GPU time: **₹9,736 itemised** (≈ US$111 at the ₹88/$ the ledger
+prices its own audit-log rows at), across 53 priced sessions in
 [`docs/spend_ledger.md`](docs/spend_ledger.md), plus one early validation
-session recorded only in prose. The figure is summed from the ledger's table,
+session recorded only in prose and one 2 Oct 2026 pilot session with no cost file. The figure is summed from the ledger's table,
 not restated here — this line previously said "roughly ₹6,000, of which ₹2,413
 is itemised", and by 2026-09-19 the itemised part exceeded the total it was
 said to be part of. The ledger says which rows come from an instance's own
