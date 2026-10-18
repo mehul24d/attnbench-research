@@ -297,7 +297,7 @@ On P5, with inline mean-pool and calibrated XAttention, prefill also runs in chu
 **Code**
 
 7. Run the focused tests for anything changed before committing; keep the full suite green.
-8. Do not commit unrelated changes. Third-party code is installed and called, never copied.
+8. Do not commit unrelated changes. Third-party code is installed and called, never copied, except as listed in `docs/vendor_register.md`. Each entry names the upstream, the commit, the licence, which lines are verbatim or adapted, the licence and notice that travel with it, why it cannot be installed and called, and the date the researcher approved it. Code from a repository with no licence is never vendored. Its lines are reproduced only under a written permission recorded in `docs/permission_log.md`.
 9. No model identifiers or assistant attribution in research artifacts beyond the commit trailers the tooling adds.
 
 **Cloud sessions (GCP now, AWS later)**
@@ -520,6 +520,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | `docs/spend_ledger.md` | Cloud spend, from teardown-written `session_cost.txt` files |
 | `docs/permission_log.md` | Uses of results the researcher has approved (rule 15) |
 | `docs/brief/` | Source of the professor brief; `tools/build_brief_pdf.py` renders `docs/research_brief.pdf` |
+| `docs/vendor_register.md` | Third-party code copied into the repository, and lines reproduced under permission (rule 8) |
 | `scripts/_launch_policy.sh` | Last-launch-date and no-Australia checks used by every GCP launch script |
 | `docs/limitations.md`, `docs/claims.md`, `docs/withdrawn_figures.md`, `docs/silent_failure_patterns.md` | Audit history of the banked evidence; annotate, never rewrite |
 | `docs/archive/` | Superseded plans and their referee responses |
@@ -582,6 +583,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 - **18 Oct 2026.** The provisioning model (on-demand, spot, DWS flex-start or reserved) is recorded on every row (Section 5.2, T2.20).
 - **18 Oct 2026.** The fitted sum and the learned predictor make committed predictions trained only on the pairings banked before each prediction, hashed with the recursion's (K9, T2.11); in the planned run order P2's are trained on P1 alone, and each prediction file records its training set. H1 scores these. Full leave-one-pairing-out fits are a labelled retrospective secondary. Gate A stays at the sum and the step form, because P1 has no other pairing to train on.
 - **18 Oct 2026.** New task T0.17: GCP quota and availability for the P2 and P4 machines in their pinned zones, from the Cloud Quotas API, and whether a DWS flex-start request or the VM start counts as the launch under `scripts/_launch_policy.sh`. Code prepares the commands; the researcher runs them.
+- **18 Oct 2026.** Rule 8 amended: third-party code may be copied only as listed in `docs/vendor_register.md`, each entry with its upstream, commit, licence, verbatim or adapted lines, licence and notice, reason, and approval date. Code from a repository with no licence is never vendored; its lines are reproduced only under a permission in `docs/permission_log.md`. Register drafted; approval dates and the `backends/xattention.py` entry are pending.
 - **18 Oct 2026.** New task T2.26: GPU variants of the five GQA tests, called from the session preflight, with `scripts/gpu_suite_record.sh` wired into the launch scripts. The five tests pin the CPU, so they check nothing on a GPU instance.
 
 ## Appendix B. Glossary
