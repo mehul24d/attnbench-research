@@ -355,6 +355,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | T0.14 | Check every related-work entry not read in full against its abstract; rewrite any description taken from a search summary | Chat (R supplies abstracts or PDFs) | | Each entry marked "read in full" or "from abstract" | Not started |
 | T0.15 | Retire the earlier Claude Doc and point it at this plan | Code | | Doc shows only the retirement notice and links | Done |
 | T0.16 | Decide what happens to branch `frontier-prereg-2026-10-03` (34 unmerged commits: the A100 baseline caveat, audit annotations, the recall pass, the per-head selector, Llama fixes, the superseded pre-registration and its budget gate) | R decides; Code carries out | | Decision recorded and carried out | Decision |
+| T0.17 | GCP quota and availability for `a2-ultragpu-1g` (P2, `asia-southeast1-c`) and `a3-highgpu-1g` (P4, `us-central1-a`, fallback `asia-southeast1`) in the pinned zones, from the Cloud Quotas API; and whether `scripts/_launch_policy.sh` counts a DWS flex-start request or the VM start as the launch | Code prepares the commands; R runs them | | Quota and availability per pinned zone, and the launch definition, recorded here | Not started |
 
 ### Phase 1: Quality evidence (G3) on existing infrastructure
 
@@ -580,6 +581,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 - **18 Oct 2026.** The A100 figures against the fastest correct dense kernel are stated as two kinds of number (Section 2, T0.12): the kernel ratios (0.95x at 8192, 1.84x at 16384) are recomputed from measured per-layer kernel times at the model's head layout, and the end-to-end restatements are arithmetic, not measurements. For the kernel ratios this replaces "as estimates" in the 5 Oct line.
 - **18 Oct 2026.** The provisioning model (on-demand, spot, DWS flex-start or reserved) is recorded on every row (Section 5.2, T2.20).
 - **18 Oct 2026.** The fitted sum and the learned predictor make committed predictions trained only on the pairings banked before each prediction, hashed with the recursion's (K9, T2.11); in the planned run order P2's are trained on P1 alone, and each prediction file records its training set. H1 scores these. Full leave-one-pairing-out fits are a labelled retrospective secondary. Gate A stays at the sum and the step form, because P1 has no other pairing to train on.
+- **18 Oct 2026.** New task T0.17: GCP quota and availability for the P2 and P4 machines in their pinned zones, from the Cloud Quotas API, and whether a DWS flex-start request or the VM start counts as the launch under `scripts/_launch_policy.sh`. Code prepares the commands; the researcher runs them.
 - **18 Oct 2026.** New task T2.26: GPU variants of the five GQA tests, called from the session preflight, with `scripts/gpu_suite_record.sh` wired into the launch scripts. The five tests pin the CPU, so they check nothing on a GPU instance.
 
 ## Appendix B. Glossary
