@@ -235,7 +235,9 @@ model's geometry), but in CPU-side mask construction, ~91% of which is Python
 interpreter overhead. Replacing that one function turns 0.633× into 1.201× at
 16384/0.75 with bitwise-identical outputs. **The work explains a known negative
 rather than discovering one**, which is the more accurate framing and the more
-defensible.
+defensible. *(~91%: restated 19 Oct 2026; see plan Appendix A. The profile's own
+figures give (0.212 − 0.013) / 0.212 = 93.9%, about 94% of the builder's
+loop time, from a laptop profile that was not banked.)*
 
 **The mechanism has prior art; the location and size are what is new.**
 Fernandez et al., *The Framework Tax* (arXiv:2302.06117, EMNLP 2023), showed

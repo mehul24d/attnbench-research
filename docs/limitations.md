@@ -357,6 +357,9 @@ kvs[j]] = True` — roughly 8,000 scalar tensor assignments per mask at 32768.
 Vectorising to a single batched top-k and one scatter would collapse it. A
 reader should take this as "the available implementation is CPU- and
 interpreter-bound", not "block-sparse attention is inherently CPU-bound".
+*(~91%: restated 19 Oct 2026; see plan Appendix A. The figures above give
+(0.212 − 0.013) / 0.212 = 93.9%, about 94% of the builder's loop time. This
+profile ran on a laptop, not on the A100 host, and was not banked.)*
 
 **The counterfactual, measured rather than predicted.** A minimal
 vectorisation of `importance_block_mask` — one masked `argsort`, one
