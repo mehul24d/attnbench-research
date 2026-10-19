@@ -22,11 +22,11 @@ Status on 18 Oct 2026: drafted. No approval dates yet.
 own files. `VENDORED.md` records file by file what is verbatim and what is
 adapted.
 
-## Reproduced lines under written permission (no licence)
+## Reproduced lines from repositories with no licence
 
 | Path | Upstream | Commit | What is reproduced | Permission |
 |---|---|---|---|---|
-| `attnbench/backends/xattention.py` | | | | |
+| `attnbench/backends/xattention.py` | `mit-han-lab/x-attention` | `e379887` | Reproduced lines from upstream commit `e379887`; upstream has no licence | Not yet recorded in `docs/permission_log.md` |
 
 ## Pending
 
