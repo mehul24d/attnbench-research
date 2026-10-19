@@ -38,7 +38,9 @@ pattern matches something innocuous is a bad entry, and
 `test_registry_patterns_are_specific` says so rather than leaving the guard to
 be disabled later for crying wolf.
 
-**Scope.** `docs/*.md`, `README.md`, the professor brief's source
+**Scope.** `docs/*.md` (including `docs/development.md`, which holds the
+developer notes moved out of the README on 2026-10-19), `README.md`, the
+professor brief's source
 (`docs/brief/brief.html`, added 2026-10-19: the restated builder-overhead
 figure had to be changed there by hand, and nothing would have caught a missed
 copy), and the source of `attnbench/` and `scripts/`. Code comments are in scope because the first thing this test
@@ -362,7 +364,7 @@ def test_files_in_scope_are_actually_found():
     names = {path for path, _ in files}
     assert len(files) > 60, f"only {len(files)} files in scope"
     for required in ("docs/claims.md", "docs/limitations.md", "README.md",
-                     "docs/brief/brief.html",
+                     "docs/development.md", "docs/brief/brief.html",
                      "attnbench/accuracy/grid_configs.py"):
         assert required in names, f"{required} is not being scanned"
 

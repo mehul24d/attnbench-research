@@ -1,0 +1,235 @@
+{
+  "provenance": {
+    "timestamp": 1792416766.862141,
+    "host": "researcher-laptop",
+    "python": "3.12.1",
+    "platform": "macOS-15.5-arm64-arm-64bit",
+    "cpu_model": "Apple M2",
+    "cpu_count": 8,
+    "torch": "2.8.0",
+    "torch_cuda": null,
+    "cudnn": null,
+    "triton": null,
+    "flash_attn": null,
+    "flashinfer": null,
+    "xformers": null,
+    "fla": null,
+    "driver": null,
+    "gpu_name": null,
+    "compute_capability": null,
+    "gpu_memory_gb": null,
+    "gpu_count": 0,
+    "clocks_locked": false,
+    "sm_clock_mhz_at_capture": null,
+    "mem_clock_mhz": null,
+    "persistence_mode": null,
+    "git_commit": "1a6f99529db391c4b77eaab44e8424728e4891b2",
+    "git_dirty": false,
+    "host_is_label": true
+  },
+  "device": "cpu",
+  "input_shape": [
+    4,
+    64
+  ],
+  "dynamo_defaults": {
+    "capture_scalar_outputs": false,
+    "capture_dynamic_output_shape_ops": false,
+    "rewrite_assert_with_torch_assert": true
+  },
+  "patterns": {
+    "a1_assert_tensor": {
+      "default_compile": {
+        "graphs": 1,
+        "break_reasons": [],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 1,
+        "breaks": 0,
+        "break_reasons": []
+      },
+      "fullgraph_eager": {
+        "raised": false
+      },
+      "split": false,
+      "methods_agree": true,
+      "plan_says_split": true,
+      "agrees_with_plan": false
+    },
+    "a2_assert_tensor_with_message": {
+      "default_compile": {
+        "graphs": 1,
+        "break_reasons": [],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 1,
+        "breaks": 0,
+        "break_reasons": []
+      },
+      "fullgraph_eager": {
+        "raised": false
+      },
+      "split": false,
+      "methods_agree": true,
+      "plan_says_split": true,
+      "agrees_with_plan": false
+    },
+    "a3_assert_not_tensor": {
+      "default_compile": {
+        "graphs": 2,
+        "break_reasons": [],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 2,
+        "breaks": 1,
+        "break_reasons": [
+          "generic_jump TensorVariable()"
+        ]
+      },
+      "fullgraph_eager": {
+        "raised": true,
+        "error": "Unsupported: Data-dependent branching"
+      },
+      "split": true,
+      "methods_agree": true,
+      "plan_says_split": true,
+      "agrees_with_plan": true
+    },
+    "a4_assert_bool_of_tensor": {
+      "default_compile": {
+        "graphs": 2,
+        "break_reasons": [
+          "Failed to trace builtin operator\n  Explanation: Dynamo does not know how to trace builtin operator `bool` with argument types ['Tensor'] (has_kwargs False)\n  Hint: Avoid calling builtin `bool` with argument types ['Tensor']. Consider using an equivalent alternative function/method to `bool`.\n  Hint: If you are attempting to call a logging function (e.g. `print`), you can try adding it to `torch._dynamo.config.reorderable_logging_functions`.\n  Hint: Please report an issue to PyTorch.\n\n  Developer debug context: builtin bool [<class 'torch._dynamo.variables.tensor.TensorVariable'>] False\n"
+        ],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 2,
+        "breaks": 1,
+        "break_reasons": [
+          "Failed to trace builtin operator"
+        ]
+      },
+      "fullgraph_eager": {
+        "raised": true,
+        "error": "Unsupported: Failed to trace builtin operator"
+      },
+      "split": true,
+      "methods_agree": true,
+      "plan_says_split": true,
+      "agrees_with_plan": true
+    },
+    "b_item": {
+      "default_compile": {
+        "graphs": 2,
+        "break_reasons": [
+          "Unsupported Tensor.item() call with capture_scalar_outputs=False\n  Explanation: Dynamo does not support tracing `Tensor.item()` with config.capture_scalar_outputs=False.\n  Hint: Set `torch._dynamo.config.capture_scalar_outputs = True` or `export TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1` to include these operations in the captured graph.\n\n  Developer debug context: call_method TensorVariable() item () {}\n"
+        ],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 2,
+        "breaks": 1,
+        "break_reasons": [
+          "Unsupported Tensor.item() call with capture_scalar_outputs=False"
+        ]
+      },
+      "fullgraph_eager": {
+        "raised": true,
+        "error": "Unsupported: Unsupported Tensor.item() call with capture_scalar_outputs=False"
+      },
+      "split": true,
+      "methods_agree": true,
+      "plan_says_split": true,
+      "agrees_with_plan": true
+    },
+    "c_nonzero": {
+      "default_compile": {
+        "graphs": 2,
+        "break_reasons": [
+          "Dynamic shape operator\n  Explanation: Operator `aten.nonzero.default`'s output shape depends on input Tensor data.\n  Hint: Enable tracing of dynamic shape operators with `torch._dynamo.config.capture_dynamic_output_shape_ops = True`\n\n  Developer debug context: aten.nonzero.default\n"
+        ],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 2,
+        "breaks": 1,
+        "break_reasons": [
+          "Dynamic shape operator"
+        ]
+      },
+      "fullgraph_eager": {
+        "raised": true,
+        "error": "Unsupported: Dynamic shape operator"
+      },
+      "split": true,
+      "methods_agree": true,
+      "plan_says_split": true,
+      "agrees_with_plan": true
+    },
+    "d_fixed_size_topk": {
+      "default_compile": {
+        "graphs": 1,
+        "break_reasons": [],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 1,
+        "breaks": 0,
+        "break_reasons": []
+      },
+      "fullgraph_eager": {
+        "raised": false
+      },
+      "split": false,
+      "methods_agree": true,
+      "plan_says_split": false,
+      "agrees_with_plan": true
+    },
+    "e_assert_tensor_in_try_except": {
+      "default_compile": {
+        "graphs": 1,
+        "break_reasons": [],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 1,
+        "breaks": 0,
+        "break_reasons": []
+      },
+      "fullgraph_eager": {
+        "raised": false
+      },
+      "split": false,
+      "methods_agree": true,
+      "plan_says_split": true,
+      "agrees_with_plan": false
+    },
+    "f_assert_tensor_and_tensor": {
+      "default_compile": {
+        "graphs": 2,
+        "break_reasons": [],
+        "matches_eager": true
+      },
+      "explain": {
+        "graphs": 2,
+        "breaks": 1,
+        "break_reasons": [
+          "generic_jump TensorVariable()"
+        ]
+      },
+      "fullgraph_eager": {
+        "raised": true,
+        "error": "Unsupported: Data-dependent branching"
+      },
+      "split": true,
+      "methods_agree": true,
+      "plan_says_split": true,
+      "agrees_with_plan": true
+    }
+  },
+  "all_agree_with_plan": false
+}
