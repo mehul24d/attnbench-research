@@ -33,7 +33,9 @@
 set -euo pipefail
 
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-ZONE="${GCP_ZONE:-us-central1-a}"
+ZONE="${GCP_ZONE:-asia-northeast1-a}"   # plan Section 5.2: P1 pinned zone
+source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
+launch_policy_check "$ZONE"
 MACHINE_TYPE="g2-standard-8"
 ACCELERATOR="type=nvidia-l4,count=1"
 IMAGE="${ATTNBENCH_IMAGE:-attnbench-env-v5-20260905}"   # the project env, not a stock ML image

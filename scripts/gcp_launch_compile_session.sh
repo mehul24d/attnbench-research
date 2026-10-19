@@ -32,7 +32,7 @@
 set -euo pipefail
 
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-ZONE="${GCP_ZONE:-asia-south1-b}"
+ZONE="${GCP_ZONE:-asia-northeast1-a}"   # plan Section 5.2: P1 pinned zone
 MACHINE_TYPE="${GCP_MACHINE_TYPE:-g2-standard-8}"
 # v4, not v3. A stale default is not a harmless one: on 2026-09-05 a launch
 # that set GCP_ZONE and the instance name but left this alone booted the v3
@@ -48,6 +48,8 @@ INSTANCE_NAME="${1:-attnbench-l4-compile-$(date +%Y%m%d-%H%M)}"
 # a duplicate-instance bug lives, hence the break-on-success below and the
 # preflight after it. Both are required; neither alone is sufficient.
 ZONE_FALLBACKS="${GCP_ZONE_FALLBACKS:-$ZONE}"
+source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
+launch_policy_check "$ZONE_FALLBACKS"
 
 # STANDARD (on-demand) by default -- see the header: preemption 70 minutes
 # into a compile wastes far more than spot saves.

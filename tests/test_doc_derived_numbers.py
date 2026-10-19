@@ -79,24 +79,19 @@ def test_the_ledger_table_is_parseable():
         "session); the parser is probably reading the wrong column")
 
 
-def test_the_readme_spend_total_matches_the_ledger():
-    rows = ledger_rows()
-    total = sum(v for _, v in rows if v is not None)
-    priced = sum(1 for _, v in rows if v is not None)
-
+def test_the_readme_does_not_restate_the_spend_total():
+    """This test used to check the README's ₹ total against the ledger. The
+    README rewritten around the current study (2026-10-19, T0.7) states no
+    cost at all, so that check had nothing left to read. The drift it guarded
+    against is restating the ledger in prose, so the guard is now that the
+    README does not: a total that comes back must come back with a check
+    against `ledger_rows()`, as `writeup_input.md`'s does below."""
     text = README.read_text()
-    m = re.search(r"Total rented GPU time:\s*\*\*₹([\d,]+) itemised\*\*", text)
-    assert m, "README no longer states a total in the expected form"
-    stated = int(m.group(1).replace(",", ""))
-    assert stated == total, (
-        f"README says ₹{stated:,}; docs/spend_ledger.md sums to ₹{total:,}. "
-        f"The README's own sentence says the figure is 'summed from the "
-        f"ledger's table, not restated here' -- restate it from the table.")
-
-    m = re.search(r"across (\d+) priced sessions", text)
-    assert m, "README no longer states a session count in the expected form"
-    assert int(m.group(1)) == priced, (
-        f"README says {m.group(1)} priced sessions; the ledger has {priced}.")
+    assert "₹" not in text, (
+        "README states a rupee figure again. Restate it from "
+        "docs/spend_ledger.md and check it here, or link the ledger instead.")
+    assert not re.search(r"priced sessions", text), (
+        "README restates the ledger's priced-session count; see above.")
 
 
 def test_the_writeup_spend_total_matches_the_ledger():

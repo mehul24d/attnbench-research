@@ -79,12 +79,25 @@ exit 0
 """
 
 
+# Answers the launch policy's `date +%F` with a fixed day and passes every
+# other call to the real date.
+FAKE_DATE = """#!/bin/bash
+if [[ "$*" == "+%F" ]]; then echo {today}; else exec /bin/date "$@"; fi
+"""
+
+
 def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = "", **extra_env):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "gcloud"
     fake.write_text(FAKE_GCLOUD)
     fake.chmod(0o755)
+    # Inside the GCP launch window, so these tests do not start failing once
+    # the real last-launch date passes. scripts/_launch_policy.sh reads the
+    # date only from `date`, so it is pinned the way gcloud is replaced.
+    fake_date = bin_dir / "date"
+    fake_date.write_text(FAKE_DATE.format(today="2026-10-04"))
+    fake_date.chmod(0o755)
 
     attempts = tmp_path / "attempts.txt"
     attempts.write_text("")

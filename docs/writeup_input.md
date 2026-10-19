@@ -235,7 +235,9 @@ model's geometry), but in CPU-side mask construction, ~91% of which is Python
 interpreter overhead. Replacing that one function turns 0.633× into 1.201× at
 16384/0.75 with bitwise-identical outputs. **The work explains a known negative
 rather than discovering one**, which is the more accurate framing and the more
-defensible.
+defensible. *(~91%: restated 19 Oct 2026; see plan Appendix A. The profile's own
+figures give (0.212 − 0.013) / 0.212 = 93.9%, about 94% of the builder's
+loop time, from a laptop profile that was not banked.)*
 
 **The mechanism has prior art; the location and size are what is new.**
 Fernandez et al., *The Framework Tax* (arXiv:2302.06117, EMNLP 2023), showed
@@ -311,7 +313,7 @@ Pareto-optimal against 45+ models claiming greater efficiency.
 | **Regime** | **batch 1**, inference only, no backward pass |
 | **n** | 300 per arm per (band, task) on the three-task grid at 2048–8192; 100 for `niah_single` at 2048–16384; 50 at 32768 |
 | **Masks** | Oracle: importance derived from a full dense attention pass (`score_source=dense_softmax_fp32` on every row) |
-| **Cost** | ₹8,409 itemised across 38 priced sessions in `docs/spend_ledger.md` (≈ US$96), summed from the ledger's table. *(This row read "≈₹6,000 (~US$70) … ₹2,413 itemised" until 2026-10-01, a figure the README had withdrawn on 2026-09-19.)* |
+| **Cost** | ₹9,736 itemised across 53 priced sessions in `docs/spend_ledger.md` (≈ US$111), summed from the ledger's table. *(This row read "≈₹6,000 (~US$70) … ₹2,413 itemised" until 2026-10-01, a figure the README had withdrawn on 2026-09-19.)* |
 
 Eight stages. Stages 0–1 gate capability and correctness against a float64
 reference; Stage 2 is kernel microbenchmarks on synthetic tensors with

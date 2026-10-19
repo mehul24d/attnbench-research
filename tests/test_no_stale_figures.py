@@ -38,8 +38,10 @@ pattern matches something innocuous is a bad entry, and
 `test_registry_patterns_are_specific` says so rather than leaving the guard to
 be disabled later for crying wolf.
 
-**Scope.** `docs/*.md`, `README.md`, and the source of `attnbench/` and
-`scripts/`. Code comments are in scope because the first thing this test
+**Scope.** `docs/*.md`, `README.md`, the professor brief's source
+(`docs/brief/brief.html`, added 2026-10-19: the restated builder-overhead
+figure had to be changed there by hand, and nothing would have caught a missed
+copy), and the source of `attnbench/` and `scripts/`. Code comments are in scope because the first thing this test
 caught was one: `accuracy/grid_configs.py` still carried the pre-S1a
 dominance counts that `claims.md` had corrected on 2026-09-20.
 
@@ -345,6 +347,7 @@ def files_in_scope() -> list[tuple[str, str]]:
     paths += sorted(p for p in (REPO / "docs").glob("*.md")
                     if p.name != REGISTRY_PATH.name)
     paths += [REPO / "README.md"]
+    paths += [REPO / "docs" / "brief" / "brief.html"]
     paths += sorted((REPO / "attnbench").rglob("*.py"))
     paths += sorted((REPO / "scripts").glob("*.py"))
     paths += sorted((REPO / "scripts").glob("*.sh"))
@@ -359,6 +362,7 @@ def test_files_in_scope_are_actually_found():
     names = {path for path, _ in files}
     assert len(files) > 60, f"only {len(files)} files in scope"
     for required in ("docs/claims.md", "docs/limitations.md", "README.md",
+                     "docs/brief/brief.html",
                      "attnbench/accuracy/grid_configs.py"):
         assert required in names, f"{required} is not being scanned"
 

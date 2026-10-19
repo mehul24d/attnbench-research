@@ -41,7 +41,9 @@
 set -euo pipefail
 
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-ZONE="${GCP_ZONE:-us-central1-a}"
+ZONE="${GCP_ZONE:-us-central1-a}"   # plan Section 5.2: P4 pinned zone
+source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
+launch_policy_check "$ZONE"
 MACHINE_TYPE="a3-highgpu-1g"
 ACCELERATOR="type=nvidia-h100-80gb,count=1"
 IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"

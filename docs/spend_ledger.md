@@ -46,12 +46,21 @@ authority is the billing console.
 | 2026-09-03 | Stage 2 segment 1 — aborted attempt | ~12 | ~16 | prose only |
 | 2026-09-03 | Stage 2 segment 1 | ~67 | ~90 | prose only |
 | 2026-09-04 | flex recheck diagnostic | **6** | **8** | `session_cost.txt` |
+| 2026-09-04 | `attnbench-stage2-seg2-20260904-0625`, asia-south1-b, ₹80/h; row added 18 Oct 2026 from its cost file | **72** | **96** | `session_cost.txt` (`results/stage2/seg2_aborted_20260904/`) |
+| 2026-09-04 | `attnbench-stage2-seg2b-1049`, asia-south1-c, ₹80/h; row added 18 Oct 2026 from its cost file | **26** | **35** | `session_cost.txt` (`results/stage2/seg2b_20260904/`) |
+| 2026-09-04 | `attnbench-seg2c-1134`, asia-south1-c, ₹80/h; row added 18 Oct 2026 from its cost file | **27** | **36** | `session_cost.txt` (`results/stage2/seg2c_20260904/`) |
+| 2026-09-04 | `attnbench-seg2d-1253`, asia-south1-b, ₹80/h; row added 18 Oct 2026 from its cost file | **31** | **41** | `session_cost.txt` (`results/stage2/seg2d_20260904/`) |
+| 2026-09-04 | `attnbench-seg2e-1413`, asia-south1-c, ₹80/h; row added 18 Oct 2026 from its cost file | **30** | **40** | `session_cost.txt` (`results/_discarded/seg2e_20260904/`) |
+| 2026-09-04 | `attnbench-seg2f-2033`, asia-south1-b, ₹80/h; row added 18 Oct 2026 from its cost file | **29** | **39** | `session_cost.txt` (`results/stage2/seg2f_20260904/`) |
+| 2026-09-04 | `attnbench-seg2-sweep-2124`, asia-south1-b, ₹80/h; row added 18 Oct 2026 from its cost file | **37** | **49** | `session_cost.txt` (`results/stage2/seg2sweep_20260904/`) |
 | 2026-09-05 | `test-instance` ×4 — **test suite side effect** | **162** | **218** | audit log |
 | 2026-09-05 | `attnbench-a100-20260905-1014`, `-1038` — insert **refused** (NVMe disk interface unsupported on a2) | **0** | **0** | audit log |
 | 2026-09-05 | `attnbench-a100-20260905-1111` — Ampere confirmation, Stage 0/1 (543 rows @ `d2d8ceb`), **Spot** | **166** | **~888** | audit log; rate see note |
+| 2026-09-05 | `attnbench-seg3-0754`, asia-south1-b, ₹80/h; row added 18 Oct 2026 from its cost file | **36** | **48** | `session_cost.txt` (`results/stage2/seg3_20260905/`) |
 | 2026-09-06 | `attnbench-stage3-s1` — Stage 3 S1, band 2048 | **651** | **868** | instance boot clock |
 | 2026-09-07 | `attnbench-stage3-s1b` — bands 4096 + 8192 | **341** | **455** | boot→guestTerminate |
 | 2026-09-07 | `attnbench-recover-1628` — e2-medium data recovery | **~25** | **~5** | CPU-only, no GPU |
+| 2026-09-07 | `attnbench-stage5b-20260907-2233`, asia-south1-c, ₹80/h; row added 18 Oct 2026 from its cost file | **2** | **3** | `session_cost.txt` (`results/gpu_session_20260907/`) |
 | 2026-09-08 | `attnbench-decode-unconfound` — L4, asia-south1-c | **59** | **77** | audit log |
 | 2026-09-08 | `attnbench-band16384` — L4, asia-south1-c | **65** | **84** | audit log |
 | 2026-09-08 | `attnbench-band16384` — **idle, halt→delete** | **162** | **0** | audit log |
@@ -79,6 +88,32 @@ authority is the billing console.
 | 2026-10-01 | `attnbench-a100-hostcpu-1001-1150` — same, paired, builders interleaved per rep (`746abd1`), **Flex Start** | **10** | **45** | `gcp_session_elapsed.sh` |
 | 2026-10-01 | `attnbench-l4-rerun16k-1001-1201` — 16384 rerun, interleaved, per-rep samples | **7** | **9** | `gcp_session_elapsed.sh` |
 | 2026-10-01 | `attnbench-h100-hostcpu-1001-1317` — pre-registered H100 overlap test (`597a7a9`), **Flex Start**, Sapphire Rapids host | **7** | **50** | `gcp_session_elapsed.sh` |
+| 2026-10-01 | `attnbench-t4-dense-pilot-20261001-r8`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **41** | **55** | `session_cost.txt` (`results/t4_dense_probe_session_20261001/`) |
+| 2026-10-01 | `attnbench-t4-selected-pilot-20261001`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **43** | **57** | `session_cost.txt` (`results/t4_selected_pilot_session_20261001/`) |
+| 2026-10-01 | `attnbench-l4-t4canary-20261002-0214`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **43** | **57** | `session_cost.txt` (`results/t4_sparse_canary_session_20261002/`) |
+| 2026-10-02 | `attnbench-l4-t4pilot-32768-20261002-1305`, asia-northeast1-c, ₹80/h; row added 18 Oct 2026 from its cost file | **342** | **456** | `session_cost.txt` (`results/t4_sparse_pilot_session_32768_20261002/`) |
+| 2026-10-02 | `attnbench-l4-xattn-canary-20261002-2016`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **35** | **47** | `session_cost.txt` (`results/t4_xattn_canary_session_20261002/`) |
+| 2026-10-02 | `attnbench-l4-xattn-pilot-20261002-2059`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **201** | **268** | `session_cost.txt` (`results/t4_xattn_pilot_session_20261003/`) |
+| 2026-10-02 | `attnbench-l4-t4pilot-16384-20261002-0312`; row added 18 Oct 2026, date from the instance name | no cost file | no cost file | no cost file (`results/t4_sparse_pilot_session_16384_20261002/` has none) |
+
+**Notes on the table (18 Oct 2026).**
+
+- **Dates.** Rows added on 18 Oct 2026 are dated by the instance's own boot
+  clock, in UTC. Earlier rows are not all UTC. Instance names carry India
+  time: `attnbench-l4-t4canary-20261002-0214` booted at 20:44 UTC on 1 Oct.
+  So `attnbench-l4-s1a2-20260920-0437` started on 19 Sep UTC, and its row
+  says 20 Sep. Earlier dates are left as they were.
+- **`attnbench-decode-unconfound`, 2026-09-08: two figures.** Its
+  `session_cost.txt` (`results/gpu_session_20260908/`) gives boot 05:08:00
+  and teardown 05:40:38Z: 33 minutes, ₹44. The row's 59 minutes and ₹77 come
+  from the audit log, from the successful insert to the terminating event
+  (`b856d41`); those two timestamps were not banked. The session log
+  (`unconfound.log`) armed teardown at 05:37:39Z and scheduled a shutdown for
+  05:52:39Z, 12 minutes after the cost file's teardown stamp. That can
+  account for part of the 26-minute gap, not all of it. The gap is
+  unexplained, so the row and the totals keep the higher figure. The
+  `serial_console.log` in that directory is from `attnbench-band32768`, not
+  this instance.
 
 ### The 2026-09-20 S7 session: 83 minutes of work, 132 minutes billed
 
@@ -492,3 +527,19 @@ teardown: 2026-10-02T13:18:16Z
 minutes: 342
 rate_inr_hr: 80
 est_inr: 456
+
+instance: attnbench-l4-xattn-canary-20261002-2016
+zone: asia-northeast1-a
+boot: 2026-10-02 14:46:49
+teardown: 2026-10-02T15:21:10Z
+minutes: 35
+rate_inr_hr: 80
+est_inr: 47
+
+instance: attnbench-l4-xattn-pilot-20261002-2059
+zone: asia-northeast1-a
+boot: 2026-10-02 15:30:30
+teardown: 2026-10-02T18:51:25Z
+minutes: 201
+rate_inr_hr: 80
+est_inr: 268
