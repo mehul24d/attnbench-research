@@ -9,8 +9,8 @@ that be predicted before the workload is timed there?
 This README summarises the research plan,
 [`docs/RESEARCH_PLAN.md`](docs/RESEARCH_PLAN.md)
 ([PDF](docs/research_plan.pdf)). The plan is the source of truth and wins
-wherever the two differ. `attnbench` is the name of the measurement harness
-(the `attnbench/` package) that the study is built on.
+wherever the two differ. `attnbench` remains the name of the measurement
+harness (the `attnbench/` package, and this repository).
 
 ## Why a faster kernel does not mean a faster prefill
 
@@ -59,15 +59,15 @@ microbenchmarks on the target, plus a short order-only probe when its code
 path is new. Predictions are hashed before the ground-truth run that tests
 them.*
 
-BUNGA has two parts.
+BUNGA is made of the G2 critical-path model (components defined in plan
+Section 5.1, the recursion in Section 5.4) and the profitability dispatcher
+(Section 5.9), as named in Section 1 of the plan.
 
-- **The critical-path model** (plan Sections 1 and 5.4) predicts end-to-end
-  prefill time from measured components. It follows the host and the GPU
-  through the prefill step, operation by operation, and keeps the order and
-  position of each estimator's data-dependent host work and GPU-to-CPU
-  synchronisations.
-- **The dispatcher** (the plan's profitability dispatcher, Section 5.9)
-  chooses, for each pairing, context length and batch, one configuration:
+- **The critical-path model** predicts end-to-end prefill time from measured
+  components. It follows the host and the GPU through the prefill step,
+  operation by operation, and keeps the order and position of each
+  estimator's data-dependent host work and GPU-to-CPU synchronisations.
+- **The profitability dispatcher** chooses, for each pairing, context length and batch, one configuration:
   dense, or a sparse arm (eager or compiled) at one of its admissible
   densities. It picks the admissible configuration with the shortest
   predicted time, and stays dense unless a sparse configuration is predicted
@@ -248,22 +248,25 @@ October 2026). Nothing below is a result.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1376 passed, 67 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1375 passed, 68 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import
 `transformers` at collection time. The suite runs on CPU and needs no GPU, no
 model download and no credentials.
 
-The 67 skips are the honest part, and they split four ways: **14** need CUDA,
+The 68 skips are the honest part, and they split five ways: **14** need CUDA,
 **45** read banked result files that `results/` keeps out of git, **4** are
 scripts `test_script_call_sites.py` has nothing to check because they import
-nothing from `attnbench`, and **4** are the same scripts skipped again by
-`test_import_resolution.py`. Each skip names the file or device it wanted.
+nothing from `attnbench`, **4** are the same scripts skipped again by
+`test_import_resolution.py`, and **1** needs the pinned RULER data directory
+(`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
+`~/.cache/attnbench/ruler_data`). Each skip names the file or device it wanted.
 
-Those counts are for a fresh clone. **With `results/` present the suite
-reads 1421 passed, 22 skipped**, because the 45 banked-file tests run instead
-of skipping. Both totals are 1443, which is what `pytest --collect-only`
+Those counts are for a fresh clone on a machine without the RULER data.
+**With `results/` present the suite reads 1421 passed, 22 skipped**, because
+the 45 banked-file tests run instead of skipping and, on a machine with the
+RULER data directory, the data test runs too. Both totals are 1443, which is what `pytest --collect-only`
 reports, and `test_the_readme_suite_counts_match_the_collected_suite` asserts
 it. At this commit, with the full `results/` tree present, one of those tests
 fails: `tests/test_eras.py::test_the_register_agrees_with_the_documented_era_table`,
