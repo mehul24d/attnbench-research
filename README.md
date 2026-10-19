@@ -14,12 +14,16 @@ harness (the `attnbench/` package, and this repository).
 
 ## Why a faster kernel does not mean a faster prefill
 
-Papers report sparse attention kernel speedups on one or two machines. The
-earlier study in this repository found that the kernel speedup often does not
-survive end to end. On an A100 with the study's reference mask builder, the
-whole prefill became slower although the sparse kernel beat PyTorch's SDPA
-flash kernel, and most of the builder's cost was Python overhead. For the
-figures, see the research plan (Section 2). Host-side cost is therefore not
+Papers report sparse attention kernel speedups on one or two machines. Our
+own measurements show the kernel speedup often does not survive end to end.
+On an A100 with our reference mask builder, prefill became slower (0.63x to
+0.75x) although the sparse kernel beat PyTorch's SDPA flash kernel. These are
+end-to-end prefill ratios against flash at sparsity 0.75, 0.75x at 8192
+tokens and 0.63x at 16384, from one A100 run on 17 Sep 2026 at commit
+`ae736b4` (plan Sections 1 and 2). Flash is not the fastest correct dense
+kernel on that card; the plan gives the figures against faster kernels too.
+Most of that builder's cost was Python overhead in an unvectorised loop, so
+this is a finding about one implementation. Host-side cost is therefore not
 fixed: it depends on how an estimator is implemented.
 
 The deeper cause is that sparse attention keeps different blocks for every
