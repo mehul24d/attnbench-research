@@ -9,16 +9,21 @@
 #     researcher's time zone; the date itself is inclusive);
 #   - any zone in an Australia region.
 #
-# ATTNBENCH_TODAY (YYYY-MM-DD) overrides today's date. It exists so tests can
-# exercise both sides of the cutoff without depending on when they run. It is
-# not a way to launch after the date: changing the date is a plan decision,
-# made by editing LAST_GCP_LAUNCH_DATE here and the plan in the same commit.
+# Today's date comes only from `date`, called through `command` so that a
+# shell function named `date` (exported, or defined by BASH_ENV) cannot stand
+# in for it. No environment variable changes it. This guards against an
+# accidental override, such as a test setting left in a shell. It does not
+# stop deliberate circumvention: a fake `date` placed first on PATH still
+# changes the result, and that is how the tests pin the date, the same way
+# they replace gcloud. Changing the last date is a plan decision, made by
+# editing LAST_GCP_LAUNCH_DATE here and the plan in the same commit.
 
 LAST_GCP_LAUNCH_DATE="2026-11-22"
 
 launch_policy_check() {
   local zones="$*"
-  local today="${ATTNBENCH_TODAY:-$(TZ=Asia/Kolkata date +%F)}"
+  local today
+  today="$(TZ=Asia/Kolkata command date +%F)"
 
   if [[ ! "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
     echo "REFUSING TO LAUNCH -- cannot read today's date ('$today')." >&2
