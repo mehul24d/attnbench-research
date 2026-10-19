@@ -1,330 +1,311 @@
-# attnbench
+# BUNGA
 
-**Do sparse attention kernels' speedups survive to end-to-end latency at
-matched accuracy?** A measured answer, and the failure patterns found getting
-there.
+**Block-sparse Utility Navigator for GPU Attention**
 
-Published sparse-attention speedups are kernel numbers. This study measures
-what happens to them when the kernel is put inside a real model, on real
-long-context tasks, at operating points that preserve accuracy — and prices
-the thing every such speedup leaves out.
+Does training-free block-sparse prefill make the whole prefill faster on a
+given host CPU and GPU, at accuracy non-inferior to dense attention, and can
+that be predicted before the workload is timed there?
 
-## The result, and its ceiling
+This README summarises the research plan,
+[`docs/RESEARCH_PLAN.md`](docs/RESEARCH_PLAN.md)
+([PDF](docs/research_plan.pdf)). The plan is the source of truth and wins
+wherever the two differ. `attnbench` is the name of the measurement harness
+(the `attnbench/` package) that the study is built on.
 
-> **On an NVIDIA A100, training-free block-sparse prefill beats `sdpa_flash`
-> at 16384 context — 1.201× at 0.75 sparsity, 1.282× at 0.9 — but only with a
-> vectorised mask builder in place of this harness's own reference builder**
-> (`masks.importance_block_mask` — attnbench code, not an upstream
-> implementation). At 8192 the vectorised builder reaches parity; at 32768,
-> measured 2026-10-01 in one session, it wins by 1.250–1.666×. With the reference builder the same
-> configurations run at 0.633× and 0.956×. The model's outputs are bitwise
-> identical under both builders; the difference is one function, ~91% of whose
-> cost is Python interpreter overhead.
+## Why a faster kernel does not mean a faster prefill
 
-That is the fifth version of this sentence. The first four each fell to a
-second point on an axis the previous version had sampled once — card, model
-scale, kernel mechanism, and a disjunctive "weak baseline or fast builder" —
-and [`docs/writeup_input.md`](docs/writeup_input.md) leads with that history
-because it is the reason to trust version five.
+Papers report sparse attention kernel speedups on one or two machines. The
+earlier study in this repository found that the kernel speedup often does not
+survive end to end. On an A100 with the study's reference mask builder, the
+whole prefill became slower although the sparse kernel beat PyTorch's SDPA
+flash kernel, and most of the builder's cost was Python overhead. For the
+figures, see the research plan (Section 2). Host-side cost is therefore not
+fixed: it depends on how an estimator is implemented.
 
-**The ceiling is someone else's, and it is high.** Native Sparse Attention
-([arXiv:2502.11089](https://arxiv.org/abs/2502.11089)) reports 9.0× forward
-and 6.0× backward against FlashAttention-2 at 64k on A100. Any reading of this
-repo as "sparse attention doesn't pay" is wrong. NSA is natively trainable;
-everything here is training-free, applied to weights trained for dense
-attention. This study sits between *The Efficiency Misnomer*
-([arXiv:2110.12894](https://arxiv.org/abs/2110.12894)), which established that
-theoretical and realised efficiency diverge, and NSA's ceiling — and locates
-the divergence for one family: not in the kernel, but in mask construction.
+The deeper cause is that sparse attention keeps different blocks for every
+input. An implementation then has three choices. It can read sizes or checks
+back to the host, which makes the CPU wait for the GPU (a synchronisation). It
+can pad to a worst case, which wastes GPU work. Or it can work in fixed-size
+buffers, which fixes the number of blocks. Released research code still reads
+GPU values from Python: XAttention runs `assert` checks on GPU tensors in every
+layer, and the FlexPrefill implementation bundled with it sizes index tensors
+with `.max().item()`. Compilation does not remove these by default. Under
+`torch.compile` with default settings, an `assert` on a GPU tensor, `.item()`
+and `nonzero()` each break the graph, while a fixed-size `topk` does not
+(checked on CPU with PyTorch 2.8, 6 Oct 2026).
 
-**The oracle is still the binding constraint.** Every accuracy number above
-uses a dense-softmax importance oracle that costs ~35× the latency it saves.
-The deployable alternative was measured — MInference's mean-pool estimator
-([arXiv:2407.02490](https://arxiv.org/abs/2407.02490), Algorithm 3) — and on
-multi-key retrieval at 16384 it trails the oracle by **+32 / +40 points** at
-0.5 / 0.75 sparsity on Qwen2.5-1.5B, and by **+39 / +67** on Qwen2.5-7B. The
-gap *widens* with scale. So the speedup is real, available with a small
-engineering fix, and bought with a mask nobody has yet shown how to afford.
+So whether sparse prefill pays depends on the host, the GPU, how their work
+overlaps, which synchronisations an implementation makes, and whether the
+sparse masks keep accuracy.
 
-**On an L4 with the reference builder**, the same pipeline reaches **1.321×
-end-to-end at 32K context at zero accuracy cost** (100.0 vs 100.0):
+## How BUNGA works
 
-| context | best speedup at no accuracy cost | oracle cost ÷ saving |
+![Pipeline diagram. Two inputs, "Estimator, model, task" and "Host-GPU
+pairing", feed three processes: a structural probe and compiler check (order
+only), giving the operation order and positions of synchronisations;
+microbenchmarks on the target, giving host, device and link costs and the
+launch queue Q; and accuracy and recall runs, done once on the primary GPU,
+giving the admissible density per estimator. Order and costs feed the BUNGA
+model, a recursion over H_i and D_i, which outputs a predicted time D_N per
+setting, hashed first. The BUNGA dispatcher combines the predicted time with
+the admissible density and outputs the chosen setting: dense, or an estimator
+and density. A separate validation path, never an input, scores the
+prediction against an untraced ground-truth run made after the
+hash.](docs/images/bunga.png)
+
+*Figure 1. The BUNGA pipeline. Accuracy is measured once, on the primary GPU,
+and is not re-measured per pairing. Each prediction needs only seconds of
+microbenchmarks on the target, plus a short order-only probe when its code
+path is new. Predictions are hashed before the ground-truth run that tests
+them.*
+
+BUNGA has two parts.
+
+- **The critical-path model** (plan Sections 1 and 5.4) predicts end-to-end
+  prefill time from measured components. It follows the host and the GPU
+  through the prefill step, operation by operation, and keeps the order and
+  position of each estimator's data-dependent host work and GPU-to-CPU
+  synchronisations.
+- **The dispatcher** (the plan's profitability dispatcher, Section 5.9)
+  chooses, for each pairing, context length and batch, one configuration:
+  dense, or a sparse arm (eager or compiled) at one of its admissible
+  densities. It picks the admissible configuration with the shortest
+  predicted time, and stays dense unless a sparse configuration is predicted
+  faster by more than the resolution floor. The choice is written into the
+  same hashed prediction file as the time prediction, before the workload
+  runs. It is an offline decision, not a runtime scheduler.
+
+### The recursion
+
+For one CUDA stream, operation *i* has host cost h_i = c_host(i), device cost
+d_i = c_dev(i) (GPU execution only) and link cost l_i = c_link(i) (copy time;
+zero for a kernel). H_i is when the host has issued operation *i*; D_i is when
+the device finishes it.
+
+```
+H_i = H_(i-1) + h_i
+if Q launches are pending:   H_i = max(H_i, D_(i-Q))          (finite launch queue, Q measured per pairing)
+if operation i is a synchronisation:  H_i = max(H_i, D_(i-1)) + s_0(m_i, payload_i);  D_i = H_i   (l_i = d_i = 0)
+otherwise:  D_i = max(H_i, D_(i-1)) + l_i + d_i                  (l_i at the loaded bandwidth where the operation sequence puts a copy alongside host-side estimator work)
+end-to-end prefill time = D_N
+```
+
+The definitions, from plan Section 5.1:
+
+- **Host component** c_host(i): host time to issue operation *i* (framework
+  dispatch, library front end, launch floor) plus host-side compute such as
+  CPU mask building. Measured by adapting TaxBreak's null-kernel protocol to
+  the whole operation sequence, and by running host-side compute directly at
+  target sizes. The adaptation is not claimed as a contribution.
+- **Device component** c_dev(i): GPU execution time of operation *i*, from
+  replaying the arm's whole kernel sequence in order on the target GPU as a
+  CUDA graph. Isolated per-operation replay is the cross-check.
+- **Link component** c_link(i): copy time of a non-synchronising operation,
+  from microbenchmarks on the pairing.
+- **Synchronisation**: any point where the host waits for the GPU (an explicit
+  synchronise, a copy to the host, or Python reading a GPU value). Each is one
+  operation, costed once by its mechanism m:
+  s_0(m, payload) = s_fixed(m) + payload / B, where s_fixed(m) is measured at
+  the smallest payload with the device idle and B is the measured copy
+  bandwidth. The wait itself is never a measured constant: the recursion
+  produces it.
+- **Q** is the launch-queue depth, measured per pairing. The host runs up to Q
+  launches ahead of the GPU and waits only at synchronisations.
+
+Only device costs transfer between hosts. Link and synchronisation costs are
+always measured on the target pairing. Letting the host run ahead of the
+device up to a queue limit is a standard form of host-device overlap and is
+not claimed as new. What is new is placing data-dependent synchronisations
+within the step and predicting their cost on pairings where the workload has
+not been timed.
+
+## What the project tests
+
+These are hypotheses and plans, not results. Each test's tolerance is fixed at
+a pre-registration lock that has not happened yet. Failures will be reported
+as failures.
+
+- **Prediction where the workload has not been timed** (RQ1; H1, H2, H3).
+  Can component measurements predict end-to-end prefill time, and the
+  sparse-versus-dense crossover, on a pairing on which the workload has not
+  been timed? The inputs are seconds of microbenchmarks on the target, plus
+  the operation sequence and the estimator's selection recorded per code path
+  with every duration discarded. Each prediction is hashed and synced before
+  the workload is timed. P1 is the development pairing; P2 to P7 are the
+  confirmatory ones. H2 builds predictions from components measured on other
+  pairings (P6 is the full-transfer test), and H3 forecasts the crossover on a
+  host platform used nowhere else (P4).
+- **What order and position add** (RQ2, H1). The model is compared with the
+  committed predictions of the **fitted sum** (the primary comparison), the
+  **sum**, the **KernelSight-style step form** (a per-layer step formula in
+  the style of KernelSight-LM) and a **CTFusion-style LightGBM** predictor
+  (in the style of CTFusion; secondary). The fitted sum and LightGBM are
+  trained only on pairings already run when each prediction is committed. The
+  step form differs from the recursion only through operation order,
+  synchronisation positions and the queue term, so the gap between the two
+  measures what placing synchronisations adds. On arms with no
+  synchronisation inside the step, the two should agree. A paired test runs
+  the same XAttention estimator as shipped and with its Python `assert`
+  checks removed, and the model predicts the time difference on each pairing
+  before it is measured.
+- **Whether host and device costs carry over between machines** (H0,
+  separability). Are host components measured with one GPU equal to those
+  measured with another GPU on the same host platform? Are device components
+  measured on one host equal to those on another host for the same GPU? If
+  not, transfer (H2) is not tested and the scope narrows to components
+  measured on the target pairing.
+- **What the compiler removes.** Each arm also runs under `torch.compile`,
+  with default settings and with the capture options for scalar outputs and
+  data-dependent shapes. Graph breaks per layer and the waits that remain on
+  the GPU are recorded, and the compiled variants are predicted the same way.
+  On variants with no wait left, the model should add nothing over simpler
+  forms.
+- **Whether recall can stand in for accuracy** (RQ3, H4). At matched
+  per-layer recall, does accuracy depend on which estimator chose the blocks?
+  Tested at block sizes 32, 64 and 128, with a random-selection control held
+  to the same recall. Recall is matched only through each estimator's own
+  budget settings, never by editing masks. The sample size comes from a power
+  rule fixed before the lock, and a result below that power is reported as
+  inconclusive. If H4 holds, the lowest admissible density can be read from
+  recall, which is cheap to measure and does not depend on the hardware.
+- **Whether the dispatcher beats the kernel-speedup rule** (RQ4, H6). The
+  kernel-speedup rule is the decision a practitioner would make from
+  published results: use an estimator at its admissible density wherever its
+  sparse kernel alone beats the selected dense kernel on that GPU. On
+  held-out pairings, at 16384 and 32768 tokens, the dispatcher is scored by
+  regret against the best measured admissible choice, and is also compared
+  with always dense, always the sparse arm with the best kernel speedup, and
+  the best choice on the nearest measured pairing.
+
+**If sparse prefill never pays.** The set of profitable configurations may be
+empty, on some pairings or on all of them. That is stated in advance as a
+possible result, not a failure. The dispatcher can then at best tie always
+dense, and its test becomes whether it avoids the kernel-speedup rule's
+losses. The other claims stand: predicted against measured time per pairing
+and arm, which operations and synchronisations keep each arm from paying, and
+the recall result.
+
+## Status
+
+Copied from the task statuses in Section 8 of the plan (last updated 18
+October 2026). Nothing below is a result.
+
+| Part | Plan task | Status in the plan |
 |---|---|---|
-| 2048 | 0.984× (sparsity loses) | undefined — nothing is faster |
-| 4096 | 0.997× | undefined |
-| 8192 | 1.044× | **49×** |
-| 16384 | 1.186× | **36×** |
-| 32768 | **1.321×** | **35×** |
+| Earlier oracle-mask study and pilots | Section 2 | Banked evidence; motivates the study, not its confirmatory evidence |
+| One selector and kernel for every arm | Control K1 | Partly built (per-head selector not yet merged) |
+| Calibrated XAttention sessions | T1.1 | Built, not run |
+| Recall with both references | T1.2 | Partly built (intrinsic recall pass exists, not yet merged) |
+| Reference masked path for block sizes 32 and 64 | T1.4 | Partly built |
+| H4 dry analysis, recall matching, random control | T1.5, T1.8, T1.9 | Not started |
+| Window and vertical-slash arms | T1.7 | Not started |
+| Host-speed probe | T2.1 | Partly built |
+| Link microbenchmarks | T2.5 | Partly built (launch, sync, 1-byte copy) |
+| Untraced ground-truth harness | T2.13 | Partly built |
+| Dense-baseline selection | T2.16 | Partly built (kernel sweep from the earlier study) |
+| Host-component profiler, synchronisation map, device replay, queue depth, structural probe | T2.2, T2.3, T2.4, T2.6, T2.18 | Not started |
+| The recursion (the critical-path model) | T2.8 | Not started |
+| Sum, fitted sum and KernelSight-style baselines | T2.9 | Not started |
+| LightGBM baseline | T2.10 | Not started |
+| Prediction commit and hashing | T2.11 | Not started |
+| XAttention arm with Python asserts removed | T2.17 | Not started |
+| Compiled variants | T2.21 | Not started (the four graph-break patterns checked on CPU, 6 Oct 2026) |
+| Dispatcher and its comparators | T2.22 | Not started |
+| P1 session, repeat sessions, Gate A | T3.1 to T3.3 | Not started |
+| Pre-registration lock | T4.1 to T4.4 | Not started (T4.2: Decision) |
+| AWS tooling | T5.1 to T5.3 | Not started |
+| Pairings P2 to P7 | T6.1 to T6.6 | Not started |
+| Related work read in full | T7.2 | In progress |
+| Analyses, predicted profitability, dispatcher evaluation | T7.1, T7.6, T7.7 | Not started |
 
-The oracle ratio flattens near 35 rather than heading toward 1. That shape is
-expected: scoring and the saving are both quadratic in context, and an oracle
-that computes dense attention costs more than the attention it saves by
-construction. The level, ~35, is set by this harness's fp32 chunked scoring
-pass (11× a dense prefill at 32768); a one-dense-prefill oracle would sit near
-3×. *(This paragraph ended "the gap is structural, not a small-scale artefact"
-until 2026-10-01.)*
+## Scope and limits
 
-*The 2048 row read "0.993× (sparsity loses)" until 2026-09-21. That is the 0.75-sparsity cell,
-which scores 99.0 — so it is the best speedup at a SMALL accuracy cost, in a
-column headed "at no accuracy cost". The only 2048 cell at 100.0 is 0.5
-sparsity, at 0.984×. Forcing the sink does not change which cell qualifies:
-the 0.90 row moves from 62.0 to 97.0 and still does not reach 100. The
-correction makes the row worse and the column's own rule is what requires it.*
+- One GPU, one CUDA stream per forward pass, batch sizes 1 and 4, PyTorch
+  eager and compiled, cloud machines. Claims do not extend to multi-GPU,
+  continuous batching or multi-stream serving engines.
+- Context lengths 2048 to 32768 tokens. 2048 and 4096 are model-validation
+  points, not operating points; the dispatcher is scored only at 16384 and
+  32768.
+- Seven pairings is a small panel, and claims are limited to the measured
+  host platforms and GPUs. There is no bare-metal control; the cloud noise
+  floor is measured and reported as a number instead.
+- Accuracy is reported as non-inferiority against dense at a stated margin,
+  never as "no accuracy loss".
+- Sparse prefill may never pay on some pairings. That is a stated possible
+  result.
 
-## The five gaps this targets
+| Pairing | Host platform | GPU | Provider | Role |
+|---|---|---|---|---|
+| P1 | Intel Cascade Lake | L4 | GCP G2 | Development pairing; source of transferred components |
+| P2 | Intel Cascade Lake | A100 | GCP A2 | Host-side separability; host transfer |
+| P4 | Intel Sapphire Rapids | H100 | GCP A3 | Held-out host platform: forecast |
+| P3 | AMD EPYC 3rd gen | L4 | AWS G6 | Device-side separability; device transfer |
+| P5 | AMD EPYC 3rd gen | L40S | AWS G6e | Host-side separability; host transfer; GPU speed |
+| P6 | AMD EPYC 3rd gen (7R13) | H100 | AWS p5.4xlarge | Device-side separability; full transfer |
+| P7 (optional) | AMD EPYC 2nd gen | A10G | AWS G5 | Extra held-out point if time allows |
 
-1. **Kernel speedup vs end-to-end speedup.** On the L4: 1.24–1.26× as a
-   whole-model prefill ratio at 16384/0.9, 1.186× end-to-end at the same
-   cell, and ≤1.06× and usually <1.0× end-to-end at accuracy-matched points
-   at 8K and below. The kernel at the model's `(12,2)` geometry was measured
-   on the A100 only. *(This item called 1.24× a kernel figure, with "both ends
-   measured, on the same hardware", until 2026-10-01; it is a prefill ratio.)*
-2. **Random masks vs importance-derived masks.** Timing under a random mask
-   says nothing about accuracy. Stage 2 uses random masks to isolate the
-   kernel; Stage 3 uses real importance-derived ones. Every row records which.
-3. **The estimator's cost, which kernel benchmarks exclude.** Priced here as
-   a first-class result rather than a limitation. Training-free prefill
-   methods such as MInference and XAttention already count theirs. *(This
-   item said "which published speedups exclude" until 2026-10-01.)*
-4. **Accuracy and latency measured apart vs at matched accuracy.** A speedup
-   at an operating point that loses accuracy is not a speedup — and on two of
-   three tasks the honest comparison turns out to be unreachable at any
-   affordable sample size, which is a finding in its own right.
-5. **One card vs two architectures.** Every ratio is remeasured against a
-   baseline on the same machine; nothing is carried across hosts.
-
-## Scope and cost, stated up front
-
-Measured on **rented NVIDIA L4 (24 GB) and A100-SXM4 (80 GB)** instances —
-two architectures, not a survey. H100 sessions also appear in the spend
-ledger (kernel-level Stage 0–2, and one session lost entirely), but no row
-in `docs/claims.md` rests on them. **One model family at two sizes**
-(Qwen2.5-1.5B-Instruct throughout; 7B for the accuracy arms at 16384), **one
-task family** (RULER-style NIAH and variable tracking), **batch 1**,
-**prefill-only sparsity**, **inference only**. Context tops out at **32768
-tokens**, which is a hardware ceiling, not a design choice.
-
-Total rented GPU time: **₹9,736 itemised** (≈ US$111 at the ₹88/$ the ledger
-prices its own audit-log rows at), across 53 priced sessions in
-[`docs/spend_ledger.md`](docs/spend_ledger.md), plus one early validation
-session recorded only in prose and one 2 Oct 2026 pilot session with no cost file. The figure is summed from the ledger's table,
-not restated here — this line previously said "roughly ₹6,000, of which ₹2,413
-is itemised", and by 2026-09-19 the itemised part exceeded the total it was
-said to be part of. The ledger says which rows come from an instance's own
-boot clock or the audit log and which are reconstructed, and records ₹218 that
-a green test spent by creating real instances on every suite run.
-
-[`docs/limitations.md`](docs/limitations.md) is over 2,300 lines and is not
-decoration. Two of this study's questions are **permanently unanswerable on
-this hardware**, and it says which and why.
-
----
-
-## Stages
-
-| Stage | What it produces | Hardware |
-|---|---|---|
-| 0 | Capability matrix: what each backend *claims* vs actually supports (the claimed/actual split follows CAB, [arXiv:2210.07661](https://arxiv.org/abs/2210.07661)) | any CUDA GPU |
-| 1 | Correctness gate vs a float64 reference | any CUDA GPU |
-| 2 | Kernel microbenchmarks (synthetic, random masks) | locked clocks, exclusive |
-| 3 | End-to-end accuracy on RULER-style tasks | 24 GB+ |
-| 4 | Matched-accuracy operating points (non-inferiority + bootstrap) | derived |
-| 5 | Phase decomposition: prefill, decode step, scoring | locked clocks, exclusive |
-| 6 | Pareto frontiers per grid cell | CPU only |
-| 7 | Decision map | CPU only |
-
-*Stages 4, 6 and 7 were rebuilt on 2026-09-20 from forced-sink accuracy
-(audit item S1a) and now occupy `results/stage4|6|7`. The versions published
-before that date are correct measurements of a mask the current code does not
-build, and are kept under `results/_superseded/` — see `docs/claims.md`, "The
-derived stages rebuilt on forced-sink accuracy".*
-
-Only Stages 2 and 5 need rented, clock-locked, exclusive GPUs. Everything
-else runs on free-tier hardware or a laptop.
-
-## Quick start
+## Running the tests
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1375 passed, 68 skipped, ~60s, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1376 passed, 67 skipped, no GPU
 ```
 
-The `[dev,eval]` extras are required, not optional: four test modules import
-`transformers` at collection time, so a bare `pip install -e .` cannot even
-collect the suite. The `kernels` extra is deliberately separate — those
-compile from source and are architecture-gated, and the harness must import
-on a machine where a kernel is unavailable.
+The `[dev,eval]` extras are required: four test modules import
+`transformers` at collection time. The suite runs on CPU and needs no GPU, no
+model download and no credentials.
 
-The suite runs on CPU and needs no GPU, no model download, and no
-credentials. Verified from a clean clone into a fresh virtualenv on
-2026-09-12, resolving dependencies from scratch.
+The 67 skips are the honest part, and they split four ways: **14** need CUDA,
+**45** read banked result files that `results/` keeps out of git, **4** are
+scripts `test_script_call_sites.py` has nothing to check because they import
+nothing from `attnbench`, and **4** are the same scripts skipped again by
+`test_import_resolution.py`. Each skip names the file or device it wanted.
 
-The 68 skips are the honest part, and they split five ways: **14** need CUDA,
-**45** read banked result files that `results/` correctly keeps out of git,
-**4** are scripts `test_script_call_sites.py` has nothing to check because
-they import nothing from `attnbench`, and **4** are the same scripts skipped
-again by `test_import_resolution.py`, which only has something to say about a
-script that imports the package, and **1** needs the pinned RULER data
-directory (`scripts/fetch_ruler_data.py`; the essays and QA sets are not
-committed). The 45 validate real measured data —
-including the check that the cross-arm decode guard actually fires on the
-confounded Stage 3 rows, and the check that the two comparison scripts refuse
-the banked era-2/era-3 pair, and the check that segment 1's 2026-09-03 probe
-still carries the eager-flex fingerprint, and the fourteen that recompute audit
-item S11's published tax percentages from the parquets they are derived from,
-and the four that derive the mask builder's sparsity-dependent cost and the
-L4-host bound in `limitations.md` —
-so a fresh clone is green **without** running
-them. Each skips with a message naming the file it wanted, rather than passing
-silently.
+Those counts are for a fresh clone. **With `results/` present the suite
+reads 1421 passed, 22 skipped**, because the 45 banked-file tests run instead
+of skipping. Both totals are 1443, which is what `pytest --collect-only`
+reports, and `test_the_readme_suite_counts_match_the_collected_suite` asserts
+it. At this commit, with the full `results/` tree present, one of those tests
+fails: `tests/test_eras.py::test_the_register_agrees_with_the_documented_era_table`,
+because an era listed in `docs/limitations.md` is not yet registered in
+`attnbench/analysis/eras.py`.
 
-*That second number was 24 until 2026-09-23. Fourteen of the seventeen added
-are `tests/test_s11_tax_derivation.py`, which exists because S11's disposition
-was written from the figures its measurement script printed rather than the
-columns it banked — see `silent_failure_patterns.md` #54.*
+## Earlier work in this repository
 
-*That third number was 6 until 2026-09-21. It is 4 now because
-`run_scale_comparison.py` and `run_scorer_comparison.py` acquired the mask-era
-check and therefore import `attnbench` for the first time — two scripts moved
-out of the "nothing to check" bucket by being given something to check.*
+The repository started as a benchmark of sparse attention speedups at matched
+accuracy, with oracle masks, on L4, A100 and H100 machines. That work is
+banked, commit-stamped evidence that motivates this study; it is not the
+study's confirmatory evidence. Its audit history is kept and annotated in
+place, never rewritten:
 
-Those counts are for a fresh clone. **With `results/` present the suite reads
-1421 passed, 22 skipped**, because the 45 banked-file tests run instead of
-skipping (and, on a workstation with the RULER data directory, the data
-test runs too). Both totals are 1443, which is what `pytest --collect-only` reports —
-asserted, not transcribed, by
-`test_the_readme_suite_counts_match_the_collected_suite`.
+- [`docs/claims.md`](docs/claims.md): one row per claim the earlier
+  measurements support, with the paraphrase each must not become.
+- [`docs/limitations.md`](docs/limitations.md) is over 2,700 lines: what the
+  earlier measurements cannot answer, and the mask-rule eras that must not be
+  pooled.
+- [`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md):
+  56 confirmed incidents of a plausible number produced by machinery that
+  looked like it was working, each with how it was detected.
+- [`docs/withdrawn_figures.md`](docs/withdrawn_figures.md) and
+  [`docs/audit_register.md`](docs/audit_register.md): withdrawn figures and
+  audit dispositions.
 
-*Cross-version equality was measured once, on 2026-09-21, against the suite as
-it stood that day: transformers 5.17.0 and 4.46.0 agreed test for test. It has
-not been re-measured since, so treat it as a result about that suite on those
-two versions rather than a standing property of this one. The project
-virtualenv on this workstation runs **5.17.0**, the version it was measured
-at. *(This sentence said the workstation "now runs 5.16.1" until 2026-10-01;
-that is the system `python3`, which the suite does not use — register item
-D1.)* Reproducing 4.46.0 needs a Linux container and this host
-has no container runtime — it is the one item on the audit register's
-could-not-verify list that is still open.* *(This paragraph said "The 11 skips … 2 need CUDA, and 9 read banked
-result files" against a code block saying 10 skipped, while the real numbers
-were 23 and 9. Three figures for one quantity, none of them measured. The
-PASSED figures then went stale on their own: they read 1109 and 1133 from
-2026-09-21 until 2026-09-23, three short, because two later commits added
-tests and one of them recorded the correct 1136 in its own commit message while
-editing this file for something else. `tests/test_doc_derived_numbers.py`
-asserts the skip counts agree with each other and with their own breakdown, and
-now also that both passed+skipped totals equal the number of tests pytest
-actually collects -- which is the check that was missing, since internal
-consistency held while both halves were wrong.)*
+## References
 
-Then, on any CUDA GPU:
+Works the plan names as nearest work, baselines or arms. Full entries are in
+[`docs/research_brief.pdf`](docs/research_brief.pdf). Works the plan records
+as known from the abstract only are marked so.
 
-```bash
-.venv/bin/python scripts/run_probe.py --out results/probe   # Stages 0 and 1
-```
-
-## The documents that matter
-
-- **[`docs/claims.md`](docs/claims.md)** — the ledger every write-up is
-  drafted from. One row per claim, pairing the sentence the data supports
-  with the near-paraphrase it must not become. If a sentence is not in the
-  supported column, this study does not license it.
-- **[`docs/limitations.md`](docs/limitations.md)** — what the measurements
-  cannot answer, including two questions that are permanently out of reach on
-  this hardware and the variance calculation proving it.
-- **[`docs/writeup_input.md`](docs/writeup_input.md)** — what was measured,
-  on what, and what each number licenses, organised by the five gaps. Drafted
-  from `claims.md` with every claim's boundary attached.
-- **[`docs/silent_failure_patterns.md`](docs/silent_failure_patterns.md)** —
-  56 confirmed incidents, each one a plausible number produced by machinery
-  that looked like it was working. No crash, no failed test. Several changed
-  a published figure. Each entry records the detection method, which is the
-  transferable part. #45 is the first found by someone who did not write the
-  code, and it had survived the full suite plus a diagnostic written to test
-  the exact property it broke.
-- **[`docs/withdrawn_figures.md`](docs/withdrawn_figures.md)** — every
-  figure this study has withdrawn or superseded, paired with what replaced it.
-  `tests/test_no_stale_figures.py` reads it and fails if one of them appears
-  anywhere as a live statement. Added 2026-09-21 because five separate defects
-  in that audit were one defect: a correction applied in `claims.md` and
-  propagated nowhere else.
-- **[`docs/audit_register.md`](docs/audit_register.md)** — one row per audit
-  item: the question, the evidence, the disposition. Added 2026-09-20 because
-  items were cited by number in three documents with no list of what they
-  were, which meant a reader could not tell an item that was examined and
-  cleared from one that was never run. Two rows in it record dispositions
-  that did not survive being re-derived.
-
-Also: [`docs/hardware_constraints.md`](docs/hardware_constraints.md),
-[`results/stage3_s1/INVALID_ROWS.md`](results/stage3_s1/INVALID_ROWS.md).
-
-## Measurement discipline
-
-- No result row is written without a provenance stamp. Measured rows carry
-  the GPU, driver, clock state and commit; derived rows carry `analysis_*`
-  fields naming the tool and checkout that produced them. The two are
-  deliberately not the same columns.
-- **Clocks locked on every Stage 5 run; NOT on any Stage 2 run.** This line
-  previously claimed both, and the provenance column said otherwise on every
-  row: `clocks_locked` is `True` for all Stage 5 data (L4 1740 MHz, A100
-  1200 MHz — 85% of each card's maximum, by policy) and `False` for every
-  Stage 2 sweep ever run, on all three cards, because `run_sweep.py` has no
-  clock-lock flag. Stage 2 ratios are within-host and the canary bounds the
-  variance, so the data stands; the claim did not. GPU exclusivity is verified
-  for both.
-- Speedups are recomputed against a baseline **remeasured on the same
-  machine**. Ratios are never carried across hosts.
-- **Replication on the same architecture confirms a measurement and says
-  nothing about its scope.** The headline configuration (32768/0.75) was
-  replicated on a second L4 — prefill 1.373× to within 0.01% — and that
-  replication was *structurally incapable* of detecting that the claim was
-  L4-specific, which Stage 5 on an A100 later showed it was (0.475×
-  prefill-only at the same configuration). *(This said "The 1.321× headline
-  was replicated … to within 0.19%" until 2026-10-01; 1.321× is end-to-end and
-  was not the replicated quantity.)* Two measurements agreeing
-  is evidence about precision, not generality, and the tighter the agreement
-  the more confident the wrong conclusion looks. A result is scoped by the
-  axes it was **varied** across, never by the number of times it was repeated
-  along one.
-- Grid cells run in randomised order, so thermal drift cannot correlate with
-  backend identity.
-- Repeats live in separate sessions, not separate loops in one process.
-- A backend that cannot run a config raises `UnsupportedConfig`. Nothing
-  silently falls back to another implementation.
-- Qualifiers travel as columns, not prose: `haystack_mode`, `score_source`,
-  `gate_source`, `decode_backend`, `clocks_locked`. A summary drops a caveat;
-  a column does not.
-
-## Two things worth knowing before comparing these numbers to anything
-
-**Absolute accuracy here is not comparable to published RULER or Sparse
-Frontier numbers.** Stage 3 uses RULER's task-construction algorithm with a
-dependency-free filler-text haystack in place of real prose, and numeric/UUID
-needles rather than word needles; the scoring is also more permissive.
-Filler text is measurably easier to search, so these numbers read high. They
-remain valid for what the study does — comparing backends against each other
-on identical inputs. Every row records `haystack_mode` so the substitution
-travels with the data. See [`NOTICE`](NOTICE) and
-`attnbench/_vendor/ruler/VENDORED.md`.
-
-**The masks are an oracle.** Importance scores come from a full dense
-attention pass, so accuracy figures are an upper bound and the estimator's
-cost is excluded from every latency number — the same methodological move
-this study criticises elsewhere, made deliberately to isolate the kernel, and
-priced in the table above rather than left implicit. Every row records
-`score_source`.
-
-## Adding a backend
-
-Subclass `AttentionBackend`, declare a `Capability`, implement `forward`, and
-decorate with `@register`. Inputs and outputs are always
-`(batch, n_heads, seq_len, head_dim)`. Any transposition or KV expansion the
-kernel needs happens inside `forward`, and its cost counts toward that
-backend — deliberate: a kernel with no native GQA path genuinely does cost
-more on a GQA workload.
+- Host and device costs, and latency prediction: TaxBreak; KernelSight-LM;
+  CTFusion; SKIP (TKLQT); CloserToMe; LLMServingSim 2.0; APEX (Fan et al.);
+  APEX simulator (Lin et al.); HiSparse; nn-Meter (from abstract); HELP (from
+  abstract).
+- Sparse prefill and recall: VSPrefill; The Sparse Frontier; Less Is More;
+  oracle-guided sparse prefill; AB-Sparse; CompactAttention; DFSAttn;
+  XAttention (from abstract); MInference (from abstract); FlexPrefill (from
+  abstract); DuoAttention (from abstract).
 
 ## Licence
 
-Apache 2.0 — see [`LICENSE`](LICENSE). Third-party code and adopted
-approaches, with commits and modifications, are recorded in
-[`NOTICE`](NOTICE).
+Apache 2.0, see [`LICENSE`](LICENSE). Third-party code and adopted approaches
+are recorded in [`NOTICE`](NOTICE).

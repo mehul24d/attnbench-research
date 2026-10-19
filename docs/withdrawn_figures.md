@@ -313,7 +313,8 @@ replacement, and nothing here will say so.
       "pattern": "0\\.993\u00d7 \\(sparsity loses\\)",
       "was": "the README's 2048 row in the 'best speedup at no accuracy cost' table",
       "replacement": "0\\.984\u00d7",
-      "note": "0.993x is the 0.75-sparsity cell at 2048, which scores 99.0. The column requires 100.0, and the only 2048 cell that reaches it is 0.5 sparsity at 0.984x. Registered with the parenthetical in the pattern because 0.993 on its own is a correct measurement in the claims.md grid and a registry entry that fires on a correct statement is a bad entry."
+      "retired": true,
+      "note": "0.993x is the 0.75-sparsity cell at 2048, which scores 99.0. The column requires 100.0, and the only 2048 cell that reaches it is 0.5 sparsity at 0.984x. Registered with the parenthetical in the pattern because 0.993 on its own is a correct measurement in the claims.md grid and a registry entry that fires on a correct statement is a bad entry. RETIRED 2026-10-19: the README was rewritten around the current study (T0.7) and no longer has the 'best speedup at no accuracy cost' table, or any accuracy-cost column, so the only quote of the withdrawn row (the README's own correction note) went with it. The figure was wrong only in that table's context, which no longer exists."
     },
     {
       "id": "era-2-3-split-on-date-only",
