@@ -448,6 +448,13 @@ replacement, and nothing here will say so.
       "was": "Gap 3 as 'the estimator's cost, which published speedups exclude'",
       "replacement": "kernel benchmarks",
       "note": "Narrowed 2026-10-01 (audit C5 / Part 18). MInference (arXiv:2407.02490) and XAttention (arXiv:2503.16428) build their indices on GPU during inference and report latency with them; the exclusion holds for kernel benchmarks, not for training-free prefill methods."
+    },
+    {
+      "id": "builder-python-overhead-91pct",
+      "pattern": "(?:[Aa]bout|~)\\s*91\\s*%",
+      "was": "the reference mask builder's Python-overhead share, stated as about 91% of the builder's cost and placed beside the A100 result",
+      "replacement": "94\\s*%",
+      "note": "Restated 19 Oct 2026 (plan Appendix A). limitations.md's profile of importance_block_mask at 32768 tokens gives 0.212 s of Python loop body and 0.013 s of torch operations per 10 calls, so (0.212 - 0.013) / 0.212 = 93.9%; no reading of those figures gives 91%. The profile ran on a laptop CPU, not the A100 host, and was never banked; T2.2 re-measures it on the target host. Registered as a phrase (about / ~ 91%) because a bare 91 is everywhere. A measurement, so the entry stays live: claims.md, limitations.md and writeup_input.md keep the old figure beside a note that states 94%."
     }
   ]
 }
