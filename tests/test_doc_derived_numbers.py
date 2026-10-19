@@ -38,6 +38,10 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 README = REPO / "README.md"
+# The suite counts, the skip breakdown, the limitations.md line count and the
+# incident count moved from README.md to docs/development.md on 2026-10-19,
+# when the README was rewritten for a public reader. The checks follow them.
+DEV = REPO / "docs" / "development.md"
 LEDGER = REPO / "docs" / "spend_ledger.md"
 LIMITATIONS = REPO / "docs" / "limitations.md"
 PATTERNS = REPO / "docs" / "silent_failure_patterns.md"
@@ -46,7 +50,7 @@ WRITEUP = REPO / "docs" / "writeup_input.md"
 
 def test_the_documents_exist():
     """Anti-vacuity: every check below reads one of these."""
-    for p in (README, LEDGER, LIMITATIONS, PATTERNS):
+    for p in (README, DEV, LEDGER, LIMITATIONS, PATTERNS):
         assert p.exists(), p
 
 
@@ -79,19 +83,22 @@ def test_the_ledger_table_is_parseable():
         "session); the parser is probably reading the wrong column")
 
 
-def test_the_readme_does_not_restate_the_spend_total():
+def test_the_readme_and_dev_notes_do_not_restate_the_spend_total():
     """This test used to check the README's ₹ total against the ledger. The
     README rewritten around the current study (2026-10-19, T0.7) states no
     cost at all, so that check had nothing left to read. The drift it guarded
     against is restating the ledger in prose, so the guard is now that the
-    README does not: a total that comes back must come back with a check
+    README does not -- and neither do the developer notes the README's
+    counts moved to: a total that comes back must come back with a check
     against `ledger_rows()`, as `writeup_input.md`'s does below."""
-    text = README.read_text()
-    assert "₹" not in text, (
-        "README states a rupee figure again. Restate it from "
-        "docs/spend_ledger.md and check it here, or link the ledger instead.")
-    assert not re.search(r"priced sessions", text), (
-        "README restates the ledger's priced-session count; see above.")
+    for doc in (README, DEV):
+        text = doc.read_text()
+        assert "₹" not in text, (
+            f"{doc.name} states a rupee figure again. Restate it from "
+            f"docs/spend_ledger.md and check it here, or link the ledger "
+            f"instead.")
+        assert not re.search(r"priced sessions", text), (
+            f"{doc.name} restates the ledger's priced-session count; see above.")
 
 
 def test_the_writeup_spend_total_matches_the_ledger():
@@ -129,17 +136,19 @@ def test_the_day_total_for_20260917_matches_its_own_rows():
 
 # --- counts over files ------------------------------------------------------
 
-def test_the_readme_line_count_for_limitations_is_not_stale():
+def test_the_dev_notes_line_count_for_limitations_is_not_stale():
     """Stated as 'over N lines'. The claim is a floor, so it only has to be
-    true -- but it went from honest to absurd as the file grew past 2x N."""
+    true -- but it went from honest to absurd as the file grew past 2x N.
+    Read from docs/development.md since 2026-10-19 (it was the README's)."""
     n = len(LIMITATIONS.read_text().splitlines())
     m = re.search(r"limitations\.md.{0,40}?is over (\d[\d,]*) lines",
-                  README.read_text(), re.S)
-    assert m, "README no longer states a line count for limitations.md"
+                  DEV.read_text(), re.S)
+    assert m, "docs/development.md no longer states a line count for limitations.md"
     stated = int(m.group(1).replace(",", ""))
-    assert stated <= n, f"README claims over {stated} lines; the file has {n}"
+    assert stated <= n, (
+        f"docs/development.md claims over {stated} lines; the file has {n}")
     assert n < stated * 1.5, (
-        f"README says 'over {stated} lines' for a file of {n}. True, and "
+        f"docs/development.md says 'over {stated} lines' for a file of {n}. True, and "
         f"uninformative by a factor of {n / stated:.1f}.")
 
 
@@ -158,17 +167,18 @@ def numbered_instances() -> list[int]:
 def test_the_instance_count_agrees_in_three_places():
     """`silent_failure_patterns.md` states its own count in prose, numbers its
     sections, and is counted again by the README. All three moved apart: the
-    file said forty-eight, the headings ran to 48, the README said 46."""
+    file said forty-eight, the headings ran to 48, the README said 46. The
+    third count is in docs/development.md since 2026-10-19."""
     numbers = numbered_instances()
     assert numbers, "no numbered instance headings found"
     assert numbers == list(range(1, len(numbers) + 1)), (
         f"instance numbering has a gap or duplicate: {numbers}")
     highest = numbers[-1]
 
-    m = re.search(r"(\d+) confirmed incidents", README.read_text())
-    assert m, "README no longer states an incident count"
+    m = re.search(r"(\d+) confirmed incidents", DEV.read_text())
+    assert m, "docs/development.md no longer states an incident count"
     assert int(m.group(1)) == highest, (
-        f"README says {m.group(1)} confirmed incidents; "
+        f"docs/development.md says {m.group(1)} confirmed incidents; "
         f"silent_failure_patterns.md numbers {highest}.")
 
 
@@ -183,7 +193,7 @@ def test_every_restated_instance_count_agrees():
     nothing read either of them."""
     highest = numbered_instances()[-1]
     stale = []
-    for doc in (README, WRITEUP):
+    for doc in (README, DEV, WRITEUP):
         for m in re.finditer(r"(\d+)\s+confirmed\s+incidents", doc.read_text()):
             if int(m.group(1)) != highest:
                 line = doc.read_text().count("\n", 0, m.start()) + 1
@@ -193,7 +203,7 @@ def test_every_restated_instance_count_agrees():
         + "; ".join(stale))
 
 
-def test_the_readme_suite_counts_are_internally_consistent():
+def test_the_suite_counts_are_internally_consistent():
     """Not a check that the numbers are right -- a check that there is only
     ONE of them.
 
@@ -203,9 +213,10 @@ def test_the_readme_suite_counts_are_internally_consistent():
     the breakdown. The real number was 23. No test can run the suite from
     inside the suite, but a document that disagrees with itself about a count
     can be caught without running anything, and that is the version of this
-    failure that shipped.
+    failure that shipped. The counts live in docs/development.md since
+    2026-10-19.
     """
-    text = README.read_text()
+    text = DEV.read_text()
 
     block = re.search(r"pytest tests/ -q\s*#\s*(\d+) passed, (\d+) skipped", text)
     assert block, "the quick-start block no longer reports passed/skipped"
@@ -252,18 +263,19 @@ def _collected_test_count() -> int:
     return int(m.group(1))
 
 
-def test_the_readme_suite_counts_match_the_collected_suite():
+def test_the_suite_counts_match_the_collected_suite():
     """The check that was missing, and the reason F3 survived a pass.
 
-    `test_the_readme_suite_counts_are_internally_consistent` pins the SKIP
+    `test_the_suite_counts_are_internally_consistent` pins the SKIP
     count three ways and the PASSED count nowhere, so when two commits added
     three tests both README totals went stale together -- 1109+35 and 1133+11
     both summed to 1144 while the suite collected 1147, and internal
     consistency held the whole time. A document can only be wrong about its own
-    size in one way that matters: disagreeing with the suite.
+    size in one way that matters: disagreeing with the suite. The counts live
+    in docs/development.md since 2026-10-19.
     """
     total = _collected_test_count()
-    text = README.read_text()
+    text = DEV.read_text()
 
     block = re.search(r"pytest tests/ -q\s*#\s*(\d+) passed, (\d+) skipped", text)
     assert block, "the quick-start block no longer reports passed/skipped"
@@ -279,7 +291,7 @@ def test_the_readme_suite_counts_match_the_collected_suite():
             f"{label} says {passed} passed + {skipped} skipped = "
             f"{passed + skipped}, but pytest collects {total} tests from "
             f"tests/. Every collected test either passes, skips or fails, and "
-            f"the README documents a green run, so these must be equal. "
+            f"docs/development.md documents a green run, so these must be equal. "
             f"Difference: {total - passed - skipped:+d}.")
 
 
