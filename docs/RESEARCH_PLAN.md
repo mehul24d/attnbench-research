@@ -1,6 +1,6 @@
 # Sparse Prefill Prediction: Research Plan and Task List
 
-**Status:** active, single source of truth. **Last updated:** 18 October 2026.
+**Status:** active, single source of truth. **Last updated:** 19 October 2026.
 **Supersedes:** every earlier plan, including all versions of the "Estimator Frontier" plan. Their reasoning and referee responses are kept, unedited, in `docs/archive/` for traceability; nothing in them overrides this file.
 
 ---
@@ -38,6 +38,8 @@ Papers report sparse attention kernel speedups on one or two machines. Our own m
 - **G3 (lead).** A test of whether attention recall is an estimator-independent proxy for accuracy: at matched per-layer recall, does accuracy depend on which estimator chose the blocks? This is tested, not assumed. Prior evidence points both ways: within its own indexer, VSPrefill finds accuracy indistinguishable from full attention above 90% recall and calls recall "a faithful surrogate objective"; in decoding, Less Is More argues that which tokens are kept (a stable recency window) matters. Either outcome of H4 is reported.
 - **Application: a profitability dispatcher (RQ4, H6).** For each pairing, context length and batch, the dispatcher uses the predicted time and the admissible density to choose dense or a sparse arm at a density, before the workload is timed on that pairing (Section 5.9). It is scored by regret against the best measured choice and compared with the decision suggested by kernel speedups. It answers the question a practitioner faces on a given host and GPU: should sparse prefill be switched on at all?
 - **G1 (validation question).** Whether this explicit model predicts end-to-end time on real, physically distinct host-GPU pairings better than a learned predictor when only a few hardware systems are available for training. Cross-device latency prediction itself is not new (CTFusion), so G1 is not claimed as a new problem. The fitted sum (Section 5.4) is the primary comparison for G1; the learned predictor is secondary.
+
+**Name.** The method is named BUNGA (Block-sparse Utility Navigator for GPU Attention), made of the G2 critical-path model (components defined in Section 5.1, the recursion in Section 5.4) and the profitability dispatcher (Section 5.9), while `attnbench` remains the name of the measurement harness.
 
 **Scope.** One GPU, one CUDA stream per forward pass, batch 1 and 4, PyTorch eager and compiled. Claims do not extend to multi-GPU, continuous batching or multi-stream serving engines; the abstract states this.
 
@@ -345,7 +347,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | T0.4 | Review `docs/code_inventory.md`: confirm keep / adapt / archive for every module and script | R + Chat decide; Code verifies by reading the code | T0.1 | Every row has a confirmed decision | Done (4 Oct 2026; "Check" rows are resolved by reading the code during T0.5) |
 | T0.5 | Move archived code and its tests to `legacy/` (not deleted), fix imports, keep the suite green | Code | T0.3, T0.4 | Suite green; no live module imports `legacy/` | Not started |
 | T0.6 | Move superseded docs to `docs/archive/` unchanged; update test references to their paths | Code | T0.3 | Suite green | Not started |
-| T0.7 | Rewrite `README.md` for the new question; remove claims that break rule 1 | Code | T0.1 | README matches Sections 1 and 2 | Not started |
+| T0.7 | Rewrite `README.md` for the new question; remove claims that break rule 1 | Code | T0.1 | README matches Sections 1 and 2 | Partly built (19 Oct 2026: README rewritten around BUNGA to match Section 1, rule-1 claims removed; Section 2's A100 figures not yet in it, pending the researcher; the pipeline figure's "workload not run" label awaits the researcher's replacement image) |
 | T0.8 | Point `.github/copilot-instructions.md` at this plan | Code | T0.1 | Done | Not started |
 | T0.9 | Carried-over housekeeping: `ledger-updates` branch at `b00019f`, spend ledger brought up to date, audit addenda | Code | | Confirmed with R and done | Decision (scope to confirm). On 18 Oct 2026 the sessions table in `docs/spend_ledger.md` had no row for 15 sessions that have a `session_cost.txt`: the seven Stage 2 segments of 4 Sep 2026 (one now under `results/_discarded/`), segment 3 of 5 Sep, Stage 5b of 7 Sep, and six T4 sessions of 1 and 2 Oct (dense probe, selected pilot, sparse canary, 32768 sparse pilot, XAttention canary, XAttention pilot). The 32768 pilot's cost file is pasted below the table, and `ledger-updates` (`b00019f`) pastes the two XAttention ones; none is a table row. The 2 Oct 16384 sparse pilot session has no cost file |
 | T0.10 | Archive the last Estimator Frontier plan (with referee responses) and the professor brief in `docs/archive/` and `docs/` | Code | T0.1 | Files committed | Done |
@@ -586,6 +588,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 - **18 Oct 2026.** Rule 8 amended: third-party code may be copied only as listed in `docs/vendor_register.md`, each entry with its upstream, commit, licence, verbatim or adapted lines, licence and notice, reason, and approval date. Code from a repository with no licence is never vendored; its lines are reproduced only under a permission in `docs/permission_log.md`. Register drafted; approval dates and the `backends/xattention.py` entry are pending.
 - **18 Oct 2026.** T0.17 also re-checks the P2 and P4 rates and records the flex-start queue wait, since the launch scripts do not pass `--request-valid-for-duration`.
 - **18 Oct 2026.** New task T2.26: GPU variants of the five GQA tests, called from the session preflight, with `scripts/gpu_suite_record.sh` wired into the launch scripts. The five tests pin the CPU, so they check nothing on a GPU instance.
+- **19 Oct 2026.** The method (the G2 critical-path model and the profitability dispatcher) is named BUNGA, Block-sparse Utility Navigator for GPU Attention (Section 1). The package and repository keep the name `attnbench`, the measurement harness. `README.md` was rewritten around it (T0.7).
 
 ## Appendix B. Glossary
 
