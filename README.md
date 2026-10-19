@@ -56,10 +56,10 @@ for example, runs Python `assert` checks on GPU tensors, at least two for each
 chunk of the prompt, in every layer. In a
 [CPU check](results/compile_graph_breaks_cpu/), `torch.compile` with default
 settings split the compiled graph at `.item()`, at `nonzero()` and at some
-forms of `assert`, but not at a fixed-size `topk`. Whether XAttention's own
-checks split the graph has not been tested yet, and
-which waits remain on a GPU after compilation is one of the things this
-project measures.
+forms of `assert`, but not at a fixed-size `topk`. XAttention's prefill
+checks are of the plain kind, which did not split the graph in that check,
+and whether the compiled code still makes the GPU wait for them is one of the
+things this project measures.
 
 So whether sparse prefill pays depends on the host, the GPU, how their work
 overlaps, which waits the code makes, and whether the sparse masks keep
