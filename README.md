@@ -63,14 +63,22 @@ baselines, and regret against the best measured admissible choice, with the
 kernel-speedup rule as comparator.](docs/images/bunga.png)
 
 *Figure 1. The BUNGA pipeline. A short structural probe records the operation
-sequence when a code path is new, and the estimator's selection is recorded at
-the grid lengths, untimed. Device costs come from replaying the kernel sequence
-as a CUDA graph with those masks; host, link and synchronisation costs and the
-launch queue come from seconds of microbenchmarks on the target, with the
-workload not timed. Accuracy is measured once, on the primary GPU, and is not
-re-measured per pairing. Admissibility carries over to another code path only
-if the mask gate passes. Predicted times and the dispatcher's choice are hashed
-and synced before the timed run that tests them.*
+sequence, and the estimator's selection is recorded at the grid lengths,
+untimed. Both run once per new code path, not on every pairing: a traced code
+path is reused, and masks are recorded on the target only for the first card
+of a new code path, and only if the mask gate fails. Device costs come from
+replaying the kernel sequence as a CUDA graph with those masks; host, link and
+synchronisation costs and the launch queue come from seconds of
+microbenchmarks on the target, with the workload not timed. Each
+synchronisation's cost s_0 is computed from its mechanism's fixed cost s_fixed
+and the copy bandwidth B, which the microbenchmarks give. In the transfer tests
+(H2), host components come from another pairing on the same host platform and
+device components from another pairing with the same GPU; link and
+synchronisation costs are always measured on the target. Accuracy is measured
+once, on the primary GPU, and is not re-measured per pairing. Admissibility
+carries over to another code path only if the mask gate passes. Predicted
+times and the dispatcher's choice are hashed and synced before the timed run
+that tests them.*
 
 BUNGA is made of the G2 critical-path model (components defined in plan
 Section 5.1, the recursion in Section 5.4) and the profitability dispatcher
