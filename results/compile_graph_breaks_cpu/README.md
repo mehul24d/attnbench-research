@@ -55,3 +55,6 @@ CPU. Whether a wait on the GPU remains after compilation, and what a
 rewritten `torch._assert` costs there, are for the compiled arms to measure
 (T2.21). The `host` field in each file is a label, not the machine's network
 name (`host_is_label` is true).
+
+`tests/test_compile_graph_breaks.py` checks the pattern table above against
+the files.
