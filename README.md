@@ -45,23 +45,32 @@ sparse masks keep accuracy.
 ## How BUNGA works
 
 ![Pipeline diagram. Two inputs, "Estimator, model, task" and "Host-GPU
-pairing", feed three processes: a structural probe and compiler check (order
-only), giving the operation order and positions of synchronisations;
-microbenchmarks on the target, giving host, device and link costs and the
-launch queue Q; and accuracy and recall runs, done once on the primary GPU,
-giving the admissible density per estimator. Order and costs feed the BUNGA
-model, a recursion over H_i and D_i, which outputs a predicted time D_N per
-setting, hashed first. The BUNGA dispatcher combines the predicted time with
-the admissible density and outputs the chosen setting: dense, or an estimator
-and density. A separate validation path, never an input, scores the
-prediction against an untraced ground-truth run made after the
-hash.](docs/images/bunga.png)
+pairing", feed five processes. A structural probe (2048 and 4096 tokens,
+durations discarded) gives the operation sequence and synchronisation map.
+Selection recording (grid lengths, untimed) gives the estimator's selection,
+its masks per code path. Kernel replay (a CUDA graph using the recorded masks)
+gives device costs. Microbenchmarks on the target (seconds, workload not
+timed) give host components, link costs, s_0 and the launch queue Q. Accuracy
+and recall runs (once, primary GPU) give admissible densities per estimator,
+from recall if H_4 holds. The first four feed the BUNGA model, a recursion over
+H_i and D_i, which gives a predicted time D_N per setting. The BUNGA dispatcher
+combines it with the admissible densities. Predicted times and the chosen
+setting go into a hashed and synced prediction file before the timed run, and
+the output is the chosen setting: dense, or a sparse arm (eager or compiled) at
+an admissible density. A validation path, never an input, scores the file
+against an untraced ground-truth run made after the hash: error against
+baselines, and regret against the best measured admissible choice, with the
+kernel-speedup rule as comparator.](docs/images/bunga.png)
 
-*Figure 1. The BUNGA pipeline. Accuracy is measured once, on the primary GPU,
-and is not re-measured per pairing. Each prediction needs only seconds of
-microbenchmarks on the target, plus a short order-only probe when its code
-path is new. Predictions are hashed before the ground-truth run that tests
-them.*
+*Figure 1. The BUNGA pipeline. A short structural probe records the operation
+sequence when a code path is new, and the estimator's selection is recorded at
+the grid lengths, untimed. Device costs come from replaying the kernel sequence
+as a CUDA graph with those masks; host, link and synchronisation costs and the
+launch queue come from seconds of microbenchmarks on the target, with the
+workload not timed. Accuracy is measured once, on the primary GPU, and is not
+re-measured per pairing. Admissibility carries over to another code path only
+if the mask gate passes. Predicted times and the dispatcher's choice are hashed
+and synced before the timed run that tests them.*
 
 BUNGA is made of the G2 critical-path model (components defined in plan
 Section 5.1, the recursion in Section 5.4) and the profitability dispatcher
