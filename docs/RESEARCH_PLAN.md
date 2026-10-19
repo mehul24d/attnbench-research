@@ -347,7 +347,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | T0.4 | Review `docs/code_inventory.md`: confirm keep / adapt / archive for every module and script | R + Chat decide; Code verifies by reading the code | T0.1 | Every row has a confirmed decision | Done (4 Oct 2026; "Check" rows are resolved by reading the code during T0.5) |
 | T0.5 | Move archived code and its tests to `legacy/` (not deleted), fix imports, keep the suite green | Code | T0.3, T0.4 | Suite green; no live module imports `legacy/` | Not started |
 | T0.6 | Move superseded docs to `docs/archive/` unchanged; update test references to their paths | Code | T0.3 | Suite green | Not started |
-| T0.7 | Rewrite `README.md` for the new question; remove claims that break rule 1 | Code | T0.1 | README matches Sections 1 and 2 | Done (19 Oct 2026): README on main at `b410822` |
+| T0.7 | Rewrite `README.md` for the new question; remove claims that break rule 1 | Code | T0.1 | README matches Sections 1 and 2 | Done (19 Oct 2026): README on main; rewritten for public readers |
 | T0.8 | Point `.github/copilot-instructions.md` at this plan | Code | T0.1 | Done | Not started |
 | T0.9 | Carried-over housekeeping: `ledger-updates` work at `dc707e3` (cherry-pick of the local-only `b00019f`), spend ledger brought up to date, audit addenda | Code | | Confirmed with R and done | Decision (scope to confirm). On 18 Oct 2026 the sessions table in `docs/spend_ledger.md` had no row for 15 sessions that have a `session_cost.txt`: the seven Stage 2 segments of 4 Sep 2026 (one now under `results/_discarded/`), segment 3 of 5 Sep, Stage 5b of 7 Sep, and six T4 sessions of 1 and 2 Oct (dense probe, selected pilot, sparse canary, 32768 sparse pilot, XAttention canary, XAttention pilot). The 32768 pilot's cost file is pasted below the table, and `dc707e3` (cherry-pick of the local-only `b00019f`) pastes the two XAttention ones; none is a table row. The 2 Oct 16384 sparse pilot session has no cost file |
 | T0.10 | Archive the last Estimator Frontier plan (with referee responses) and the professor brief in `docs/archive/` and `docs/` | Code | T0.1 | Files committed | Done |
@@ -519,6 +519,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | `docs/RESEARCH_PLAN.md` | This plan (source); `docs/research_plan.pdf` is generated from it |
 | `docs/research_brief.pdf` | Short brief for the professor, with the related-work table |
 | `docs/code_inventory.md` | Keep / adapt / archive review of the existing code (task T0.4) |
+| `docs/development.md` | Developer notes: test-suite counts and skips, and the earlier study's audit documents; its numbers are checked by `tests/test_doc_derived_numbers.py` |
 | `docs/spend_ledger.md` | Cloud spend, from teardown-written `session_cost.txt` files |
 | `docs/permission_log.md` | Uses of results the researcher has approved (rule 15) |
 | `docs/brief/` | Source of the professor brief; `tools/build_brief_pdf.py` renders `docs/research_brief.pdf` |
