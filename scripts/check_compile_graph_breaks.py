@@ -11,12 +11,14 @@ It uses PyTorch only. No estimator's code is imported or copied: each pattern
 is a short function written here, with work on both sides of the pattern so
 that a split leaves two graphs.
 
-**`assert` is checked in four forms**, because whether it splits depends on
+**`assert` is checked in six forms**, because whether it splits depends on
 the form. Dynamo rewrites `assert <tensor>` into `torch._assert` by default
 (`rewrite_assert_with_torch_assert`), which stays in the graph; an assert
-whose condition first turns the tensor into a Python bool (`not`, `bool()`)
-cannot be rewritten that way. Which form a given library uses is not
-something this script knows.
+whose condition first turns the tensor into a Python bool (`not`, `bool()`,
+or `a and b`, which tests `a` in Python) cannot be rewritten that way.
+Patterns (e) and (f), added 19 Oct 2026, are the plain form inside a
+`try`/`except AssertionError`, and two tensor conditions joined by `and`.
+Which form a given library uses is not something this script knows.
 
 **How a split is counted, two ways, which must agree:**
 
@@ -31,9 +33,14 @@ whether it raises is kept: `fullgraph=True` is not a default setting, and
 later PyTorch versions trace some patterns under it that they split by
 default.
 
-**What would falsify the plan's statement:** any of patterns (a) to (c)
-compiling to one graph, or pattern (d) compiling to more than one. The script
+**What would falsify the 6 Oct statement:** any of patterns (a) to (c), (e)
+or (f) compiling to one graph, or pattern (d) compiling to more than one.
+`plan_says_split` in the output records that statement as made on 6 Oct
+(any `assert` on a tensor splits), not the plan's later wording. The script
 records the outcome; it does not fail on a disagreement.
+
+Each output file is named for the PyTorch version and the commit that wrote
+it, so a rerun at a later commit adds files instead of replacing banked ones.
 
 Usage (from the repo root, CPU only):
     python3 scripts/check_compile_graph_breaks.py --out results/compile_graph_breaks_cpu
@@ -77,6 +84,21 @@ def assert_bool_of_tensor(x):
     return y + 1
 
 
+def assert_tensor_in_try_except(x):
+    y = x * 2
+    try:
+        assert (y >= 0).all()
+    except AssertionError:
+        y = y.clamp(min=0)
+    return y + 1
+
+
+def assert_tensor_and_tensor(x):
+    y = x * 2
+    assert (y >= 0).all() and (y <= 2).all()
+    return y + 1
+
+
 def item(x):
     y = x * 2
     s = y.sum().item()
@@ -104,6 +126,8 @@ PATTERNS = (
     ("b_item", item, True),
     ("c_nonzero", nonzero, True),
     ("d_fixed_size_topk", fixed_size_topk, False),
+    ("e_assert_tensor_in_try_except", assert_tensor_in_try_except, True),
+    ("f_assert_tensor_and_tensor", assert_tensor_and_tensor, True),
 )
 
 
@@ -197,7 +221,8 @@ def main() -> int:
     stamp["host_is_label"] = bool(args.host_label)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"torch-{torch.__version__.split('+')[0]}_cpu.json"
+    commit = (stamp.get("git_commit") or "nocommit")[:7]
+    path = out / f"torch-{torch.__version__.split('+')[0]}_cpu_{commit}.json"
     path.write_text(json.dumps({
         "provenance": stamp,
         "device": "cpu",
