@@ -58,6 +58,11 @@ ACCELERATOR="type=nvidia-h100-80gb,count=1"
 IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
+# How long a FLEX_START request may wait for capacity before it fails
+# (--request-valid-for-duration). Compute Engine accepts 90 s to 2 h for a
+# request pinned to one zone (0 s takes only capacity that is free at once).
+# A waiting request counts as launched when it is submitted (plan T0.17).
+FLEX_REQUEST_VALID_FOR="2h"
 # Overridable, like the A100 and L4 launchers, so a short job is not launched
 # under a ceiling sized for a full session (silent_failure_patterns #40).
 MAX_RUN="${GCP_MAX_RUN:-5h}"
@@ -112,6 +117,7 @@ gcloud compute instances create "$INSTANCE_NAME" \
   --boot-disk-type="$BOOT_DISK_TYPE" \
   --maintenance-policy=TERMINATE \
   --provisioning-model=FLEX_START \
+  --request-valid-for-duration="$FLEX_REQUEST_VALID_FOR" \
   --instance-termination-action=DELETE \
   --max-run-duration="$MAX_RUN" \
   --reservation-affinity=none \
