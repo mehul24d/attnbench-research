@@ -79,9 +79,9 @@ echo "  machine-type : $MACHINE_TYPE  (12 vCPU, 170GB, 1x A100 80GB)"
 echo "  image        : $IMAGE  (plain DISK image -- no accelerator binding)"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 echo "  provisioning : FLEX_START attempted first, SPOT on refusal"
-echo "  rate         : Rs ~284/h on DWS, Rs 321/h on Spot (pinned 2026-09-16)"
+echo "  rate         : Rs ~297/h on DWS, Rs ~350/h on Spot (planning rate, all-in, 2026-10-20)"
 echo "  in-guest halt: +${HALT_MINUTES} min"
-echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 1,278 ceiling)"
+echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 1,339 on DWS, Rs 1,576 on Spot at the default 4h30m)"
 echo "  recovery win : ~1h between halt and DELETE"
 echo
 
@@ -105,12 +105,12 @@ create_with() {
     --metadata-from-file=startup-script="$STARTUP_SCRIPT" "$@"
 }
 
-echo "=== attempt 1: FLEX_START (DWS, \$2.277654/h GPU, non-preemptible) ==="
+echo "=== attempt 1: FLEX_START (DWS, Rs ~297/h all-in, non-preemptible) ==="
 if create_with FLEX_START; then
   MODEL_USED="FLEX_START"
 else
   echo
-  echo "FLEX_START refused. Falling back to SPOT (\$2.648100/h GPU, preemptible)."
+  echo "FLEX_START refused. Falling back to SPOT (Rs ~350/h all-in, preemptible)."
   echo "Per-band sync means a preemption costs at most one band."
   echo
   echo "=== attempt 2: SPOT ==="
