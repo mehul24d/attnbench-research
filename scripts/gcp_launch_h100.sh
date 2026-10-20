@@ -82,13 +82,13 @@ echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 # below is computed at 425. Printing the zone's own rate keeps the two
 # consistent; an unrecognised zone says so rather than guessing.
 case "$ZONE" in
-  asia-southeast1-*) RATE_LINE="Rs 417/h all-in (asia-southeast1, 2026-09-13)" ;;
-  us-central1-*)     RATE_LINE="Rs 425/h all-in (us-central1, 2026-09-15)" ;;
+  asia-southeast1-*) RATE_LINE="Rs ~463/h all-in (asia-southeast1, planning rate 2026-10-20)" ;;
+  us-central1-*)     RATE_LINE="Rs ~462/h all-in (us-central1, planning rate 2026-10-20)" ;;
   *)                 RATE_LINE="rate NOT PRICED for $ZONE -- confirm before proceeding" ;;
 esac
 echo "  provisioning : FLEX_START (DWS)  -- $RATE_LINE"
 echo "  in-guest halt: +${HALT_MINUTES} min -- GPU billing stops, disk survives"
-echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 425/h up to the cap)"
+echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs ~462/h in us-central1, Rs ~463/h in asia-southeast1, up to the cap)"
 echo
 
 gcloud compute instances create "$INSTANCE_NAME" \
