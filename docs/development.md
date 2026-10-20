@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 1409 passed, 68 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 1418 passed, 68 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -29,9 +29,9 @@ nothing from `attnbench`, **4** are the same scripts skipped again by
 `~/.cache/attnbench/ruler_data`). Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data.
-**With `results/` present the suite reads 1455 passed, 22 skipped**, because
+**With `results/` present the suite reads 1464 passed, 22 skipped**, because
 the 45 banked-file tests run instead of skipping and, on a machine with the
-RULER data directory, the data test runs too. Both totals are 1477, which is
+RULER data directory, the data test runs too. Both totals are 1486, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. At this commit,
 with the full `results/` tree present, one of those tests fails:
