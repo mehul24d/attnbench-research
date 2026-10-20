@@ -2,15 +2,21 @@
 # Launch the A100-80GB (sm80) Stage 5 instance: DWS Flex Start first, Spot as
 # fallback.
 #
-# Creates a BILLABLE resource. Rates pinned from the Cloud Billing catalog,
-# asia-southeast1, verified 2026-09-16:
+# Creates a BILLABLE resource. GPU rates from the Cloud Billing catalog,
+# asia-southeast1, checked 2026-10-20 (plan Section 5.2):
 #
 #   DWS Defined Duration A100 80GB   $2.277654/h   <- attempted first
-#   Spot A100 80GB                   $2.648100/h   <- fallback
+#   Spot A100 80GB                   $2.780500/h   <- fallback
 #   on-demand A100 80GB              $4.846072/h   <- quota is 0, unusable
 #
-# All-in on Spot = GPU + 12 x $0.023340 core + 170 x $0.003128 RAM
-#                = $3.4599/h ~= Rs 321/h.
+# Planning rate, all-in = GPU + 12 cores + 170 GiB RAM + the 200 GB balanced
+# boot disk + the one bundled local-SSD partition (375 GiB assumed):
+#   DWS  = $2.277654 + 12 x $0.021449 + 170 x $0.002874 + disks
+#        = $3.0990/h ~= Rs 297.47/h
+#   Spot = $2.780500 + 12 x $0.023340 + 170 x $0.003128 + disks
+#        = $3.6477/h ~= Rs 350.14/h
+# (Superseded: Spot GPU $2.648100/h and Spot all-in $3.4599/h, Rs 321/h,
+# GPU + cores + RAM only, pinned 2026-09-16.)
 #
 # DWS is both CHEAPER than Spot and non-preemptible. That inversion was first
 # recorded for H100 Flex Start (41% under Spot) and holds on a second
