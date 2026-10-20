@@ -149,15 +149,17 @@ Each has a statistic and a tolerance fixed at lock (marked **[lock]**). Failures
 
 Never an Australia region. Availability and rates are re-checked from the researcher's Mac before each session.
 
-**Rates on 20 Oct 2026 (T0.17).** All-in per hour from the Cloud Billing catalogue: GPU, plus vCPUs times the core rate, plus GiB of RAM times the RAM rate. Rupee figures are the catalogue's INR prices (₹95.99 per US dollar). Boot disk and local SSD are not included; `a3-highgpu-1g` bundles two local-SSD partitions, and each launch script adds a 200 GB balanced boot disk.
+**Rates on 20 Oct 2026 (T0.17).** Per hour from the Cloud Billing catalogue. The USD/h and ₹/h columns are the GPU, plus vCPUs times the core rate, plus GiB of RAM times the RAM rate, with no disks. The planning rate, all-in, adds the 200 GB balanced boot disk that each launch script creates and the local SSD that the machine type bundles: one partition for `a2-ultragpu-1g`, two for `a3-highgpu-1g`, none for `g2-standard-8`. Disks are priced per GiB-month at the SKU for the region and provisioning model: balanced PD `16D2-FC49-A127` (`asia-southeast1`), `6AE1-525F-8B80` (`us-central1`) and `6D8C-DF09-314D` (`asia-northeast1`); local SSD `80AE-FFEA-2D34` (flex-start, `asia-southeast1`), `9F7C-3C75-F39B` (Spot, `asia-southeast1`) and `2303-1D6A-9C08` (flex-start, `us-central1`). Two inputs are assumptions, not read from the catalogue: 730 hours per month, and 375 GiB per local-SSD partition. Rupee figures are the catalogue's INR prices (₹95.99 per US dollar).
 
-| Pairing | Model | Region | GPU SKU | Core SKU | RAM SKU | USD/h | ₹/h |
-|---|---|---|---|---|---|---|---|
-| P2 (A100) | Flex-start | `asia-southeast1` | `293E-F9AA-0457` | `416B-7055-D3FE` | `B392-5C03-B893` | 3.0236 | 290.23 |
-| P2 (A100) | Spot | `asia-southeast1` | `36BB-6DC9-2245` | `960A-A3F4-7AD1` | `7AF9-D5F3-1235` | 3.5923 | 344.82 |
-| P4 (H100) | Flex-start | `us-central1` | `341A-49A5-0C07` | `9A32-36B2-7FBC` | `ED19-A584-4A84` | 4.7078 | 451.90 |
-| P4 (H100) | Flex-start | `asia-southeast1` | `7CF8-F592-DE2C` | `4529-B360-744E` | `EF4B-260A-DD01` | 4.7078 | 451.90 |
-| P1 (L4) | On-demand | `asia-northeast1` | `FDE8-86D4-B581` | `ECDA-3E53-7A9E` | `68F1-6598-F513` | 1.0962 | 105.23 |
+| Pairing | Model | Region | GPU SKU | Core SKU | RAM SKU | USD/h | ₹/h | Planning rate, all-in, ₹/h (USD/h) |
+|---|---|---|---|---|---|---|---|---|
+| P2 (A100) | Flex-start | `asia-southeast1` | `293E-F9AA-0457` | `416B-7055-D3FE` | `B392-5C03-B893` | 3.0236 | 290.23 | 297.47 (3.0990) |
+| P2 (A100) | Spot | `asia-southeast1` | `36BB-6DC9-2245` | `960A-A3F4-7AD1` | `7AF9-D5F3-1235` | 3.5923 | 344.82 | 350.14 (3.6477) |
+| P4 (H100) | Flex-start | `us-central1` | `341A-49A5-0C07` | `9A32-36B2-7FBC` | `ED19-A584-4A84` | 4.7078 | 451.90 | 462.42 (4.8174) |
+| P4 (H100) | Flex-start | `asia-southeast1` | `7CF8-F592-DE2C` | `4529-B360-744E` | `EF4B-260A-DD01` | 4.7078 | 451.90 | 463.47 (4.8284) |
+| P1 (L4) | On-demand | `asia-northeast1` | `FDE8-86D4-B581` | `ECDA-3E53-7A9E` | `68F1-6598-F513` | 1.0962 | 105.23 | 108.64 (1.1318) |
+
+Each session's cost cap (rule 10), and the rate given to the teardown script from which `docs/spend_ledger.md` is updated (rule 11), use the planning rate, all-in. On 20 Oct 2026 two places still hold September figures: the teardown script's default rate (₹80 per hour, the L4's) and the frontier budget gate's rate table on the `t11-run` branch (₹284, ₹321, ₹425 and ₹80 per hour).
 
  "Same platform" is not the same SKU: CPU model string, core count, SMT state, observed frequency, CPU microcode version, the provider's instance generation and the provisioning model (on-demand, spot, DWS flex-start or reserved) are recorded on every row (providers change hardware without notice) and compared before H0 is read.
 
@@ -605,6 +607,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 - **19 Oct 2026.** XAttention's assert forms were read from its upstream source (commit `e379887`, `xattn/src/utils.py`; read only, nothing copied). Its prefill path makes two plain asserts on a tensor per query chunk, one inside a `try`/`except`; that form did not split the graph on a CPU. The assert joining two tensor conditions with `and`, which splits, is on the decoding path only. Both forms were added to the banked check (`results/compile_graph_breaks_cpu/`). Whether the compiled code still makes the GPU wait for them is measured under T2.21. Section 1 updated.
 - **19 Oct 2026.** The H1 row adds that, if XAttention's plain asserts stay inside the compiled graph on the GPU pairings as they did in the CPU check, the compiled XAttention pair may show only a small gap, and that BUNGA's prediction of that gap, made before it is measured, is a direct test of how it prices a wait that compilation leaves in place (researcher's wording).
 - **20 Oct 2026.** T0.17 done from the researcher's Mac with read-only commands: quotas, the outcome of three quota requests (preemptible CPUs raised to 26 in `asia-southeast1` and `us-central1`; GPUs across all regions kept at 1), zone availability, rates with SKU IDs (Section 5.2), the flex-start wait and when `--max-run-duration` starts counting. Facts only; the launch definition is recorded separately.
+- **20 Oct 2026.** Section 5.2's rates table gains a planning rate, all-in: GPU, cores and RAM, plus the 200 GB balanced boot disk and the bundled local SSD. Session cost caps and the spend ledger use it (researcher's decision). Hours per month (730) and local-SSD partition size (375 GiB) are assumptions.
 
 ## Appendix B. Glossary
 
