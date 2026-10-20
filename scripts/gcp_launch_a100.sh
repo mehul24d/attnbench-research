@@ -54,6 +54,11 @@ ACCELERATOR="type=nvidia-a100-80gb,count=1"
 IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
+# How long a FLEX_START request may wait for capacity before it fails
+# (--request-valid-for-duration). Compute Engine accepts 90 s to 2 h for a
+# request pinned to one zone (0 s takes only capacity that is free at once).
+# A waiting request counts as launched when it is submitted (plan T0.17).
+FLEX_REQUEST_VALID_FOR="15m"
 # Overridable, and they SHOULD be overridden for short work. These defaults
 # size a full multi-band session; a 35-minute job launched under them has a
 # 4h30m ceiling, and on 2026-09-17 a session that finished its useful work in
@@ -93,6 +98,10 @@ echo
 
 create_with() {
   local model="$1"; shift
+  # Launch definition (plan T0.17): every create request, the Spot fallback
+  # included, must be submitted by the end of the last GCP launch date,
+  # India time, so the date is checked again before each attempt.
+  launch_policy_check "$ZONE"
   gcloud compute instances create "$INSTANCE_NAME" \
     --project="$PROJECT" \
     --zone="$ZONE" \
@@ -112,7 +121,7 @@ create_with() {
 }
 
 echo "=== attempt 1: FLEX_START (DWS, Rs ~297/h all-in, non-preemptible) ==="
-if create_with FLEX_START; then
+if create_with FLEX_START --request-valid-for-duration="$FLEX_REQUEST_VALID_FOR"; then
   MODEL_USED="FLEX_START"
 else
   echo
