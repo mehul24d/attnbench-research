@@ -357,6 +357,10 @@ CREATED_ZONE=""
 for Z in $ZONE_FALLBACKS; do
   echo
   echo ">> attempting $Z"
+  # Launch definition (plan T0.17): every create request, each zone retry
+  # included, must be submitted by the end of the last GCP launch date,
+  # India time, so the date is checked again before each attempt.
+  launch_policy_check "$Z"
   # macOS ships bash 3.2, where "${ARR[@]}" on an EMPTY array is an unbound
   # variable under `set -u` -- so the plain form aborts every launch from this
   # laptop before gcloud is ever called. The ${ARR[@]+...} guard is the 3.2-safe
