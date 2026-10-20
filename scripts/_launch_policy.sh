@@ -9,6 +9,12 @@
 #     researcher's time zone; the date itself is inclusive);
 #   - any zone in an Australia region.
 #
+# A launch is a submitted instance-create request (`compute instances
+# create`; plan T0.17). Every request, a retry or a fallback included, must
+# be submitted by the end of the last date, so a script that tries more than
+# once calls launch_policy_check again before each attempt. A request that
+# waits for capacity counts as launched when it is submitted.
+#
 # Today's date comes only from `date`, called through `command` so that a
 # shell function named `date` (exported, or defined by BASH_ENV) cannot stand
 # in for it. No environment variable changes it. This guards against an
