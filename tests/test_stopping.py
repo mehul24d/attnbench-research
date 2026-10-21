@@ -79,7 +79,7 @@ def test_every_llama_cap_is_twice_its_documented_measured_max(task):
     from pathlib import Path
     from attnbench.accuracy import stopping
     doc = (Path(__file__).resolve().parents[1] / "docs"
-           / "estimator_frontier_preregistration.md").read_text()
+           / "archive" / "estimator_frontier_preregistration.md").read_text()
     m = re.search(rf"\| `{task}` \| 200 \|[^|]*\|[^|]*\|[^|]*\| (\d+) \| \*\*(\d+)\*\* \| Llama \|", doc)
     assert m, f"{task} missing from the Llama measured table"
     assert token_cap(task, stopping.LLAMA_31_8B) == 2 * int(m.group(1)) == int(m.group(2))

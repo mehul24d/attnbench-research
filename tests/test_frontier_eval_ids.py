@@ -4,8 +4,8 @@ pre-registration sec. 5; added 2026-10-03).
 The evaluation split must use example indices no banked run has used, for
 that task at any band, because RULER QA picks its question by index alone.
 `splits_and_budgets.BANKED_INDEX_RANGES` is the registry; these tests re-derive
-it from the parquets on disk. The pure half is in
-`tests/test_frontier_prereg_plan.py` and runs everywhere.
+it from the parquets on disk. The pure half was in
+`tests/test_frontier_prereg_plan.py`, in `docs/archive/` since 21 Oct 2026.
 
 Also here: the six L4-A100 cells of H1 are out of sample, which needs no
 banked estimator timing from any card but the L4.
