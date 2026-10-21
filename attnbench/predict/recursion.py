@@ -29,6 +29,9 @@ What this module refuses, because each one would charge a physical event
 twice or put the model outside its stated scope:
 
   - a synchronisation that carries device or link cost (l_i = d_i = 0);
+  - a synchronisation that carries host cost: s_fixed(m) is already "the
+    host cost of issuing and completing mechanism m", so h_i = 0 there and
+    the recursion's H_(i-1) + h_i adds nothing a second time;
   - a composite mechanism (an `assert` on a GPU tensor, sizing from
     `nonzero()`), which must arrive already split into a kernel followed by
     a synchronisation;
@@ -41,7 +44,18 @@ twice or put the model outside its stated scope:
 Units are seconds and bytes per second. Host-side compute such as CPU mask
 building has no operation of its own: it is part of c_host of the operation
 it precedes (Section 5.1), so every operation is a kernel, a copy or a
-synchronisation.
+synchronisation. With host cost refused at a synchronisation, host work
+issued after the last launch and before a synchronisation has nowhere to
+sit; it is charged to the next operation after the synchronisation.
+
+**The closing synchronise.** The ground-truth timer (T2.13, adapting
+`accuracy.phase_timing.time_repeated`) synchronises before reading the
+clock, so the timed interval ends when the host returns from that
+synchronise, not when the device finishes. A prefill sequence therefore
+ends with one explicit synchronise, `closing_sync_op()`, appended by
+`close_prefill`. D_N is then that operation's D_i = H_i. It applies only
+while the timer reads a host clock; a timer on CUDA events would end at the
+last device operation and the closing synchronise would not belong.
 
 The interface for the baselines is `price`: it turns operations into the
 per-operation h, l, d and s_0 arrays that the recursion reads, so the sum,
@@ -122,10 +136,33 @@ def copy_op(host: float, link: float, **kw) -> Operation:
     return Operation(OpKind.COPY, host=host, link=link, **kw)
 
 
-def sync_op(mechanism: str, *, host: float = 0.0, payload_bytes: int = 0,
-         loaded: bool = False, **kw) -> Operation:
-    return Operation(OpKind.SYNC, host=host, mechanism=mechanism,
+def sync_op(mechanism: str, *, payload_bytes: int = 0, loaded: bool = False,
+            **kw) -> Operation:
+    """A synchronisation. Its host cost is s_fixed, so h_i is 0."""
+    return Operation(OpKind.SYNC, host=0.0, mechanism=mechanism,
                      payload_bytes=payload_bytes, loaded=loaded, **kw)
+
+
+CLOSING_SYNC_LABEL = "closing synchronize"
+
+
+def closing_sync_op() -> Operation:
+    """The explicit synchronise that ends the timed interval (module doc)."""
+    return sync_op("synchronize", label=CLOSING_SYNC_LABEL)
+
+
+def is_closing_sync(op: Operation) -> bool:
+    return op.kind is OpKind.SYNC and op.label == CLOSING_SYNC_LABEL
+
+
+def close_prefill(ops: Iterable[Operation]) -> list[Operation]:
+    """The arm's operations followed by the closing synchronise."""
+    ops = list(ops)
+    if any(is_closing_sync(op) for op in ops):
+        raise CostModelError(
+            "this sequence already has a closing synchronise; a prefill has "
+            "exactly one, as its last operation")
+    return ops + [closing_sync_op()]
 
 
 @dataclass(frozen=True)
@@ -199,6 +236,7 @@ class Timeline:
     queue_stall: tuple[float, ...]
     sync_wait: tuple[float, ...]
     queue_depth: Optional[int]
+    sync_dependency: bool = True
 
     @property
     def end_to_end(self) -> float:
@@ -239,6 +277,13 @@ def _check_operation(op: Operation, i: int) -> None:
                 f"a synchronisation carries no device or link cost{where}: "
                 f"got device={op.device}, link={op.link}. Split it into a "
                 f"kernel or copy followed by the synchronisation")
+        if op.host != 0:
+            raise CostModelError(
+                f"a synchronisation carries no host cost{where}: got "
+                f"host={op.host}. s_fixed(m) already holds the host cost of "
+                f"issuing and completing it, so charging h_i too would cost "
+                f"it twice; host work before it belongs to the next "
+                f"operation")
         if op.mechanism in COMPOSITE_MECHANISMS:
             raise CostModelError(
                 f"{op.mechanism!r} is a composite mechanism{where}: "
@@ -285,6 +330,13 @@ def price(ops: Iterable[Operation], sync_costs: SyncCosts) -> PricedSequence:
             f"recursion models one stream, and claims do not extend to arms "
             f"that spread a forward pass over several (Section 5.4)")
 
+    closing = [i for i, op in enumerate(ops) if is_closing_sync(op)]
+    if closing and closing != [len(ops) - 1]:
+        raise CostModelError(
+            f"a closing synchronise must be the last operation and appear "
+            f"once; found at operations {[i + 1 for i in closing]} of "
+            f"{len(ops)}")
+
     sync_cost = []
     for i, op in enumerate(ops):
         _check_operation(op, i)
@@ -310,12 +362,21 @@ def price(ops: Iterable[Operation], sync_costs: SyncCosts) -> PricedSequence:
     )
 
 
-def recurse(priced: PricedSequence, queue_depth: Optional[int]) -> Timeline:
+def recurse(priced: PricedSequence, queue_depth: Optional[int], *,
+            sync_wait: bool = True) -> Timeline:
     """Run the recursion over priced components.
 
     `queue_depth` is Q, measured per pairing (T2.6), or None for "no queue
     term" (the queue sensitivity, Section 5.4). T2.15 and T2.19 call this
     directly to re-run one priced sequence at other Q or resampled costs.
+
+    `sync_wait=False` is the `ablations.no_sync_wait` model: a
+    synchronisation still costs the host s_0 but no longer waits for the
+    device. Its D_i is then max(D_(i-1), H_i), which never delays later
+    device work, and the queue counts launches only. With the wait in place
+    the two queue counts agree (a synchronisation drains the queue), so the
+    full model keeps the plan's D_(i-Q) as written; without it they do not,
+    and a synchronisation is not a launch.
     """
     _check_queue_depth(queue_depth)
     n = len(priced)
@@ -329,21 +390,34 @@ def recurse(priced: PricedSequence, queue_depth: Optional[int]) -> Timeline:
     D = [0.0] * n
     stall = [0.0] * n
     wait = [0.0] * n
+    launches: list[float] = []   # D of kernels and copies, in order
     H_prev = 0.0
     D_prev = 0.0
     for k in range(n):
         t = H_prev + h[k]
-        # D_(i-Q) with i = k + 1 is D[k - Q]; it exists once k >= Q.
-        if Q is not None and k >= Q and D[k - Q] > t:
-            stall[k] = D[k - Q] - t
-            t = D[k - Q]
+        # Without the wait a synchronisation enqueues nothing, so the queue
+        # never holds it back.
+        if Q is not None and (sync_wait or not is_sync[k]):
+            if sync_wait:
+                # D_(i-Q) with i = k + 1 is D[k - Q]; it exists once k >= Q.
+                bound = D[k - Q] if k >= Q else None
+            else:
+                bound = launches[-Q] if len(launches) >= Q else None
+            if bound is not None and bound > t:
+                stall[k] = bound - t
+                t = bound
         if is_sync[k]:
-            start = D_prev if D_prev > t else t
-            wait[k] = start - t
-            t = start + s[k]
-            D_k = t
+            if sync_wait:
+                start = D_prev if D_prev > t else t
+                wait[k] = start - t
+                t = start + s[k]
+                D_k = t
+            else:
+                t = t + s[k]
+                D_k = D_prev if D_prev > t else t
         else:
             D_k = (D_prev if D_prev > t else t) + l[k] + d[k]
+            launches.append(D_k)
         H[k] = t
         D[k] = D_k
         H_prev = t
@@ -351,7 +425,7 @@ def recurse(priced: PricedSequence, queue_depth: Optional[int]) -> Timeline:
 
     return Timeline(host_issued=tuple(H), device_done=tuple(D),
                     queue_stall=tuple(stall), sync_wait=tuple(wait),
-                    queue_depth=Q)
+                    queue_depth=Q, sync_dependency=sync_wait)
 
 
 def simulate(ops: Sequence[Operation], sync_costs: SyncCosts,

@@ -15,18 +15,20 @@ import pytest
 
 from attnbench.predict.recursion import (
     COMPOSITE_MECHANISMS, SYNC_MECHANISMS, CostModelError, MechanismCost,
-    OpKind, Operation, copy_op, kernel_op, predict_prefill, price, recurse,
-    s0, simulate, sync_op)
+    OpKind, Operation, close_prefill, closing_sync_op, copy_op,
+    is_closing_sync, kernel_op, predict_prefill, price, recurse, s0, simulate,
+    sync_op)
 
-# s_fixed and bandwidths chosen so every s_0 below is an integer.
+# Bandwidths are powers of two so every s_0 is exact in binary floating
+# point, and every comparison below can be exact.
 COSTS = {
     "synchronize": MechanismCost(s_fixed=1),
     "item": MechanismCost(s_fixed=1, bandwidth=4, loaded_bandwidth=2),
     "bool": MechanismCost(s_fixed=2, bandwidth=4, loaded_bandwidth=2),
-    "copy_to_host_pinned": MechanismCost(s_fixed=1, bandwidth=1000,
-                                         loaded_bandwidth=500),
-    "copy_to_host_pageable": MechanismCost(s_fixed=3, bandwidth=100,
-                                           loaded_bandwidth=50),
+    "copy_to_host_pinned": MechanismCost(s_fixed=1, bandwidth=1024,
+                                         loaded_bandwidth=512),
+    "copy_to_host_pageable": MechanismCost(s_fixed=3, bandwidth=128,
+                                           loaded_bandwidth=64),
 }
 
 
@@ -71,28 +73,58 @@ def test_synchronisation_waits_for_the_device_then_pays_s0():
     assert t.sync_wait == (0, 10, 0)
 
 
-def test_synchronisation_on_an_idle_device_does_not_wait_but_pays_its_host_cost():
-    # K(h1,d1): H1 = 1, D1 = 2.
-    # S(synchronize, h3): t = 1+3 = 4; max(4, 2) = 4, no wait; H2 = 4+1 = 5 = D2.
-    t = run([kernel_op(1, 1), sync_op("synchronize", host=3)])
-    assert t.host_issued == (1, 5)
-    assert t.device_done == (2, 5)
-    assert t.sync_wait == (0, 0)
+def test_synchronisation_on_an_idle_device_does_not_wait_but_pays_s0():
+    # K(h1,d1):          H1 = 1, D1 = 2.
+    # S(synchronize, 1): t = 1, max(1, 2) = 2 (wait 1), H2 = 3 = D2.
+    # S(synchronize, 1): t = 3, max(3, 3) = 3 (no wait), H3 = 4 = D3.
+    t = run([kernel_op(1, 1), sync_op("synchronize"), sync_op("synchronize")])
+    assert t.host_issued == (1, 3, 4)
+    assert t.device_done == (2, 3, 4)
+    assert t.sync_wait == (0, 1, 0)
+
+
+def test_a_synchronisation_with_host_cost_is_refused():
+    # s_fixed already holds the host cost of issuing and completing it.
+    with pytest.raises(CostModelError, match="no host cost"):
+        run([kernel_op(1, 1),
+             Operation(OpKind.SYNC, host=3, mechanism="synchronize")])
+
+
+def test_closing_synchronise_ends_the_timed_interval():
+    # K(h1,d5): H1 = 1, D1 = 6.
+    # closing synchronise, s_fixed 1: t = 1, waits to 6, H2 = D2 = 7.
+    ops = close_prefill([kernel_op(1, 5)])
+    assert is_closing_sync(ops[-1]) and ops[-1].mechanism == "synchronize"
+    t = run(ops)
+    assert t.device_done == (6, 7)
+    assert t.end_to_end == 7
+
+
+def test_closing_synchronise_appears_once_and_last():
+    ops = close_prefill([kernel_op(1, 5)])
+    with pytest.raises(CostModelError, match="already has a closing"):
+        close_prefill(ops)
+    with pytest.raises(CostModelError, match="must be the last operation"):
+        run([closing_sync_op(), kernel_op(1, 1)])
+    with pytest.raises(CostModelError, match="must be the last operation"):
+        run([kernel_op(1, 1), closing_sync_op(), closing_sync_op()])
+    # An ordinary synchronise anywhere is still fine.
+    run([sync_op("synchronize"), kernel_op(1, 1), closing_sync_op()])
 
 
 def test_loaded_bandwidth_inflates_only_the_payload_term():
-    # pinned copy to host, 1000 bytes: unloaded 1 + 1000/1000 = 2,
-    # loaded 1 + 1000/500 = 3.  s_fixed is the same in both.
+    # pinned copy to host, 1024 bytes: unloaded 1 + 1024/1024 = 2,
+    # loaded 1 + 1024/512 = 3.  s_fixed is the same in both.
     c = COSTS["copy_to_host_pinned"]
-    assert s0(c, 1000, loaded=False) == 2
-    assert s0(c, 1000, loaded=True) == 3
+    assert s0(c, 1024, loaded=False) == 2
+    assert s0(c, 1024, loaded=True) == 3
     assert s0(c, 0, loaded=True) == 1
     # In the recursion: K(h1,d1) then the copy.  D1 = 2; t = 1, waits to 2,
     # H2 = 2 + s0.
     assert run([kernel_op(1, 1), sync_op("copy_to_host_pinned",
-                                         payload_bytes=1000)]).end_to_end == 4
+                                         payload_bytes=1024)]).end_to_end == 4
     assert run([kernel_op(1, 1), sync_op("copy_to_host_pinned",
-                                         payload_bytes=1000,
+                                         payload_bytes=1024,
                                          loaded=True)]).end_to_end == 5
 
 
@@ -308,9 +340,11 @@ def random_ops(rng, n):
             ops.append(copy_op(rng.randint(0, 4), rng.randint(0, 6)))
         else:
             m = rng.choice(SYNC_MECHANISMS)
-            payload = 0 if m == "synchronize" else rng.choice([0, 4, 8, 400])
-            ops.append(sync_op(m, host=rng.randint(0, 2), payload_bytes=payload,
+            payload = 0 if m == "synchronize" else rng.choice([0, 4, 8, 512])
+            ops.append(sync_op(m, payload_bytes=payload,
                                loaded=rng.random() < 0.5))
+    if rng.random() < 0.5:
+        ops = close_prefill(ops)
     return ops
 
 
@@ -361,15 +395,17 @@ def test_raising_any_one_cost_never_shortens_the_prediction(seed):
     ops = random_ops(rng, rng.randint(1, 25))
     Q = rng.choice([None, 1, 2, 4])
     base = simulate(ops, COSTS, Q).end_to_end
-    k = rng.randrange(len(ops))
-    op = ops[k]
-    field = {"kernel": "device", "copy": "link", "sync": "host"}[op.kind.value]
-    bumped = list(ops)
-    bumped[k] = Operation(**{**op.__dict__, field: getattr(op, field) + 3})
-    bumped_host = list(ops)
-    bumped_host[k] = Operation(**{**op.__dict__, "host": op.host + 3})
-    assert simulate(bumped, COSTS, Q).end_to_end >= base
-    assert simulate(bumped_host, COSTS, Q).end_to_end >= base
+    launches = [k for k, op in enumerate(ops) if op.kind is not OpKind.SYNC]
+    if launches:
+        k = rng.choice(launches)
+        op = ops[k]
+        field = {"kernel": "device", "copy": "link"}[op.kind.value]
+        bumped = list(ops)
+        bumped[k] = Operation(**{**op.__dict__, field: getattr(op, field) + 3})
+        bumped_host = list(ops)
+        bumped_host[k] = Operation(**{**op.__dict__, "host": op.host + 3})
+        assert simulate(bumped, COSTS, Q).end_to_end >= base
+        assert simulate(bumped_host, COSTS, Q).end_to_end >= base
     slower = {m: MechanismCost(c.s_fixed + 1, c.bandwidth, c.loaded_bandwidth)
               for m, c in COSTS.items()}
     assert simulate(ops, slower, Q).end_to_end >= base
