@@ -13,6 +13,10 @@ Status on 21 Oct 2026: every row states its licence status and a credit line
 by the researcher on that date. The reproduced-lines table has no approval
 column, and its permission column is unchanged.
 
+Later on 21 Oct 2026 (researcher's decision): the `xattention.py` row's
+permission cell points to the researcher's approval of 21 Oct 2026 in
+`docs/permission_log.md`.
+
 ## Vendored code
 
 | Path | Upstream file | Commit | Licence | Credit | Verbatim or adapted | Licence and notice | Why not installed and called | Approved |
@@ -31,7 +35,7 @@ adapted.
 
 | Path | Upstream | Commit | Licence | Credit | What is reproduced | Permission |
 |---|---|---|---|---|---|---|
-| `attnbench/backends/xattention.py` | `mit-han-lab/x-attention` | `e379887` | None (upstream has no licence) | Xu et al., "XAttention: Block Sparse Attention with Antidiagonal Scoring", ICML 2025 (arXiv:2503.16428); code at github.com/mit-han-lab/x-attention | Reproduced lines from upstream commit `e379887`; upstream has no licence | Not yet recorded in `docs/permission_log.md` |
+| `attnbench/backends/xattention.py` | `mit-han-lab/x-attention` | `e379887` | None (upstream has no licence) | Xu et al., "XAttention: Block Sparse Attention with Antidiagonal Scoring", ICML 2025 (arXiv:2503.16428); code at github.com/mit-han-lab/x-attention | Reproduced lines from upstream commit `e379887`; upstream has no licence | Researcher's approval recorded in `docs/permission_log.md`, 21 Oct 2026 |
 
 ## Pending
 
