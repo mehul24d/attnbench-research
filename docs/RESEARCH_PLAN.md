@@ -377,7 +377,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 
 | ID | Task | Owner | Depends | Done when | Status |
 |---|---|---|---|---|---|
-| T1.1 | Run calibrated XAttention sessions A and B as pre-registered (`docs/t4_xattention_calibrated.md`); GCP, launch by 9 Dec 2026 | Code prepares; R runs | | Rows banked, analysis written | Built, not run (amendments A1 to A9 to its pre-registration and the matching calibration-script changes on `main` since T0.16; A6 carries a dated note that its replication link points to an archived study) |
+| T1.1 | Run calibrated XAttention sessions A and B as pre-registered (`docs/t4_xattention_calibrated.md`); GCP, launch by 9 Dec 2026 | Code prepares; R runs | | Rows banked, analysis written | Session A done (22 Oct 2026, A100 Flex Start, 55 min, ₹273): the `authors`, `authors_full` and `ruler_heldout` tables are in `configs/xattn_thresholds/`, made at `9c39048` on the Triton path. Session B not run. Amendments A1 to A9 and the calibration-script changes on `main` since T0.16; A6 carries a dated note that its replication link points to an archived study |
 | T1.2 | Recall with both references, per layer, by head type and depth third, on accuracy rows | Code | | Tested on CPU fixtures; GPU check at 16384 | Partly built (intrinsic recall pass exists, on `main` since T0.16) |
 | T1.3 | Fix the head-type criterion (retrieval-like vs local) | Chat decides; Code implements | | Criterion in code and here | Decision |
 | T1.4 | Wire the reference masked path (`backends/block_masked.py`) into H4 runs at block sizes 32 and 64 | Code | | Accuracy rows at 32, 64, 128 on a dry run | Partly built |
