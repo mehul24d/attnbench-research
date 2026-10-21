@@ -2,15 +2,21 @@
 # Launch the A100-80GB (sm80) Stage 5 instance: DWS Flex Start first, Spot as
 # fallback.
 #
-# Creates a BILLABLE resource. Rates pinned from the Cloud Billing catalog,
-# asia-southeast1, verified 2026-09-16:
+# Creates a BILLABLE resource. GPU rates from the Cloud Billing catalog,
+# asia-southeast1, checked 2026-10-20 (plan Section 5.2):
 #
 #   DWS Defined Duration A100 80GB   $2.277654/h   <- attempted first
-#   Spot A100 80GB                   $2.648100/h   <- fallback
+#   Spot A100 80GB                   $2.780500/h   <- fallback
 #   on-demand A100 80GB              $4.846072/h   <- quota is 0, unusable
 #
-# All-in on Spot = GPU + 12 x $0.023340 core + 170 x $0.003128 RAM
-#                = $3.4599/h ~= Rs 321/h.
+# Planning rate, all-in = GPU + 12 cores + 170 GiB RAM + the 200 GB balanced
+# boot disk + the one bundled local-SSD partition (375 GiB assumed):
+#   DWS  = $2.277654 + 12 x $0.021449 + 170 x $0.002874 + disks
+#        = $3.0990/h ~= Rs 297.47/h
+#   Spot = $2.780500 + 12 x $0.023340 + 170 x $0.003128 + disks
+#        = $3.6477/h ~= Rs 350.14/h
+# (Superseded: Spot GPU $2.648100/h and Spot all-in $3.4599/h, Rs 321/h,
+# GPU + cores + RAM only, pinned 2026-09-16.)
 #
 # DWS is both CHEAPER than Spot and non-preemptible. That inversion was first
 # recorded for H100 Flex Start (41% under Spot) and holds on a second
@@ -48,6 +54,11 @@ ACCELERATOR="type=nvidia-a100-80gb,count=1"
 IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
+# How long a FLEX_START request may wait for capacity before it fails
+# (--request-valid-for-duration). Compute Engine accepts 90 s to 2 h for a
+# request pinned to one zone (0 s takes only capacity that is free at once).
+# A waiting request counts as launched when it is submitted (plan T0.17).
+FLEX_REQUEST_VALID_FOR="15m"
 # Overridable, and they SHOULD be overridden for short work. These defaults
 # size a full multi-band session; a 35-minute job launched under them has a
 # 4h30m ceiling, and on 2026-09-17 a session that finished its useful work in
@@ -79,14 +90,18 @@ echo "  machine-type : $MACHINE_TYPE  (12 vCPU, 170GB, 1x A100 80GB)"
 echo "  image        : $IMAGE  (plain DISK image -- no accelerator binding)"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 echo "  provisioning : FLEX_START attempted first, SPOT on refusal"
-echo "  rate         : Rs ~284/h on DWS, Rs 321/h on Spot (pinned 2026-09-16)"
+echo "  rate         : Rs ~297/h on DWS, Rs ~350/h on Spot (planning rate, all-in, 2026-10-20)"
 echo "  in-guest halt: +${HALT_MINUTES} min"
-echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 1,278 ceiling)"
+echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 1,339 on DWS, Rs 1,576 on Spot at the default 4h30m)"
 echo "  recovery win : ~1h between halt and DELETE"
 echo
 
 create_with() {
   local model="$1"; shift
+  # Launch definition (plan T0.17): every create request, the Spot fallback
+  # included, must be submitted by the end of the last GCP launch date,
+  # India time, so the date is checked again before each attempt.
+  launch_policy_check "$ZONE"
   gcloud compute instances create "$INSTANCE_NAME" \
     --project="$PROJECT" \
     --zone="$ZONE" \
@@ -105,12 +120,12 @@ create_with() {
     --metadata-from-file=startup-script="$STARTUP_SCRIPT" "$@"
 }
 
-echo "=== attempt 1: FLEX_START (DWS, \$2.277654/h GPU, non-preemptible) ==="
-if create_with FLEX_START; then
+echo "=== attempt 1: FLEX_START (DWS, Rs ~297/h all-in, non-preemptible) ==="
+if create_with FLEX_START --request-valid-for-duration="$FLEX_REQUEST_VALID_FOR"; then
   MODEL_USED="FLEX_START"
 else
   echo
-  echo "FLEX_START refused. Falling back to SPOT (\$2.648100/h GPU, preemptible)."
+  echo "FLEX_START refused. Falling back to SPOT (Rs ~350/h all-in, preemptible)."
   echo "Per-band sync means a preemption costs at most one band."
   echo
   echo "=== attempt 2: SPOT ==="

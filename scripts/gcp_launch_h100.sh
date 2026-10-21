@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
 # Launch the H100 (sm90) measurement instance on DWS Flex Start.
 #
-# Creates a BILLABLE resource. Rates pinned from the Cloud Billing catalog:
+# Creates a BILLABLE resource. Planning rates, all-in, from the Cloud Billing
+# catalog on 2026-10-20 (plan Section 5.2): GPU + 26 cores + 234 GiB RAM + the
+# 200 GB balanced boot disk + the two bundled local-SSD partitions (375 GiB
+# each assumed):
 #
-#   asia-southeast1 (2026-09-13)  -> $4.7380/h -> Rs 417/h all-in
-#   us-central1     (2026-09-15)  -> $4.8237/h -> Rs 425/h all-in
+#   asia-southeast1  -> $4.8284/h -> Rs 463.47/h
+#   us-central1      -> $4.8174/h -> Rs 462.42/h
+#
+# (Superseded: $4.7380/h, Rs 417/h, asia-southeast1, 2026-09-13; $4.8237/h,
+# Rs 425/h, us-central1, 2026-09-15.)
 #
 # The DWS Flex Start H100 GPU SKU is globally FLAT at $4.200761/h -- Americas,
 # Netherlands and Singapore are identical to six decimal places -- while the
 # on-demand H100 SKU varies $9.80-$12.74 across the same regions. Only the
-# vCPU/RAM/local-SSD lines move regionally, which is the whole Rs 8/h spread
-# above. Flex Start is also 41% CHEAPER than Spot for H100.
+# vCPU/RAM/local-SSD lines move regionally. On 2026-10-20 the core and RAM
+# lines were also equal in these two regions, and only the disk lines differ,
+# which is the whole Rs ~1/h spread above. Flex Start is also 41% CHEAPER than Spot for H100.
 #
 # Approved bracket (us-central1): expected 3h30m = Rs 1,488 ; cap 5h = Rs 2,125.
+# Those were approved at Rs 425/h. At the 2026-10-20 planning rate, Rs 462.42/h,
+# the same durations are Rs 1,618 and Rs 2,312.
 #
 # Non-negotiables baked in:
 #   - --provisioning-model=FLEX_START: a bounded window with no preemption
@@ -49,6 +58,11 @@ ACCELERATOR="type=nvidia-h100-80gb,count=1"
 IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
+# How long a FLEX_START request may wait for capacity before it fails
+# (--request-valid-for-duration). Compute Engine accepts 90 s to 2 h for a
+# request pinned to one zone (0 s takes only capacity that is free at once).
+# A waiting request counts as launched when it is submitted (plan T0.17).
+FLEX_REQUEST_VALID_FOR="2h"
 # Overridable, like the A100 and L4 launchers, so a short job is not launched
 # under a ceiling sized for a full session (silent_failure_patterns #40).
 MAX_RUN="${GCP_MAX_RUN:-5h}"
@@ -76,19 +90,20 @@ echo "  machine-type : $MACHINE_TYPE"
 echo "  accelerator  : $ACCELERATOR"
 echo "  image        : $IMAGE"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
-# Priced per zone: asia-southeast1 Rs 417/h, us-central1 Rs 425/h (header).
+# Priced per zone: asia-southeast1 Rs ~463/h, us-central1 Rs ~462/h (header,
+# planning rates of 2026-10-20; Rs 417/h and Rs 425/h until then).
 # ZONE is overridable and defaults to us-central1-a, so a fixed "Rs 417/h"
 # here understated the rate for the default zone -- and the Rs 2,125 ceiling
 # below is computed at 425. Printing the zone's own rate keeps the two
 # consistent; an unrecognised zone says so rather than guessing.
 case "$ZONE" in
-  asia-southeast1-*) RATE_LINE="Rs 417/h all-in (asia-southeast1, 2026-09-13)" ;;
-  us-central1-*)     RATE_LINE="Rs 425/h all-in (us-central1, 2026-09-15)" ;;
+  asia-southeast1-*) RATE_LINE="Rs ~463/h all-in (asia-southeast1, planning rate 2026-10-20)" ;;
+  us-central1-*)     RATE_LINE="Rs ~462/h all-in (us-central1, planning rate 2026-10-20)" ;;
   *)                 RATE_LINE="rate NOT PRICED for $ZONE -- confirm before proceeding" ;;
 esac
 echo "  provisioning : FLEX_START (DWS)  -- $RATE_LINE"
 echo "  in-guest halt: +${HALT_MINUTES} min -- GPU billing stops, disk survives"
-echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 425/h up to the cap)"
+echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs ~462/h in us-central1, Rs ~463/h in asia-southeast1, up to the cap)"
 echo
 
 gcloud compute instances create "$INSTANCE_NAME" \
@@ -102,6 +117,7 @@ gcloud compute instances create "$INSTANCE_NAME" \
   --boot-disk-type="$BOOT_DISK_TYPE" \
   --maintenance-policy=TERMINATE \
   --provisioning-model=FLEX_START \
+  --request-valid-for-duration="$FLEX_REQUEST_VALID_FOR" \
   --instance-termination-action=DELETE \
   --max-run-duration="$MAX_RUN" \
   --reservation-affinity=none \

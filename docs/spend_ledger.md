@@ -36,6 +36,8 @@ g2-standard-8 + 1× L4 on-demand in asia-south1), not billed cost. It ignores
 disk, egress, and machine-image storage, which are small but not zero. The
 authority is the billing console.
 
+*Note added 20 Oct 2026 (T0.17).* From 20 Oct 2026 the rate given as `GCP_RATE_INR_HR` is the planning rate, all-in, in plan Section 5.2, which includes the 200 GB boot disk and any local SSD the machine type bundles. Egress and image storage are still not included, and the teardown script's default of 80 is unchanged. The billing console is the authority.
+
 ## Sessions
 
 | date | session | minutes | est ₹ | source |
@@ -153,11 +155,19 @@ billing console is the authority. **A ledger assembled from sessions someone
 remembered to write down is a ledger with the same failure as a total
 maintained by restating it**; the audit log is the source.
 
+*Note added 20 Oct 2026 (T0.17), on ₹321/h.* The Spot A100 GPU SKU (`36BB-6DC9-2245`, asia-southeast1) was $2.7805/h in the 20 Oct 2026 catalogue, not the $2.648100 pinned on 2026-09-16. Spot GPU, cores and RAM then come to $3.5923/h (₹344.82/h), and to ₹350.14/h with the boot disk and the bundled local SSD. The 2026-09-05 row is not recomputed. The billing console is the authority.
+
 A100 `a2-ultragpu-1g` DWS Flex Start ₹284/h all-in (asia-southeast1, verified
 2026-09-16: GPU $2.277654 + 12 × $0.023340 core + 170 × $0.003128 RAM).
 Rates: H100 `a3-highgpu-1g` DWS Flex Start ₹425/h (us-central1, pinned
 2026-09-16); L4 `g2-standard-8` ₹78/h. The 2026-09-07 row implies ~₹80/h for
 L4 in asia-south1, so the 2026-09-08 rows are within ±3% of that.
+
+*Note added 20 Oct 2026 (T0.17), on ₹284/h.* The formula above adds the Spot core and RAM rates ($0.023340 and $0.003128; SKUs `960A-A3F4-7AD1` and `7AF9-D5F3-1235`) to the DWS GPU rate. The DWS core and RAM SKUs are `416B-7055-D3FE` and `B392-5C03-B893`, at $0.021449 and $0.002874 in the 20 Oct 2026 catalogue. With those, GPU, cores and RAM come to $3.0236/h instead of $3.0895/h, which is 2.1% lower: about ₹278/h at the ₹91.92 per dollar that ₹284/h implies. That assumes the DWS core and RAM prices on 2026-09-16 were the same as on 20 Oct 2026, which was not checked. Rows and sections costed at ₹284/h are not recomputed. The billing console is the authority.
+
+*Note added 20 Oct 2026 (T0.17), on ₹425/h.* ₹425/h ($4.8237/h, us-central1, from the H100 launch script's header) could not be reproduced from the 20 Oct 2026 catalogue. GPU, cores and RAM come to $4.7078/h. Adding the 200 GB balanced boot disk gives $4.7352/h, and adding two 375 GiB local-SSD partitions as well gives $4.8174/h, still $0.0063/h short. The same header's asia-southeast1 figure, $4.7380/h (₹417/h), is matched by GPU, cores, RAM and boot disk without local SSD. Both sides of the 2026-09-15 check in the next paragraph use ₹425/h, so that check confirms the minutes, not the rate. The planning rate on 20 Oct 2026 is ₹462.42/h in us-central1. The billing console is the authority.
+
+*Note added 20 Oct 2026 (T0.17), on the L4 rate.* The L4 launch script labels ₹78/h as `us-central1`, where GPU, cores and RAM were $0.8536/h in the 20 Oct 2026 catalogue. P1 runs in `asia-northeast1` (Tokyo), where they were $1.0962/h (₹105.23/h), and the planning rate with the boot disk is ₹108.64/h. The six rows of 2026-10-01 and 2026-10-02 in `asia-northeast1` are costed at ₹80/h, the teardown script's default; at ₹108.64/h they would be about 36% higher, if Tokyo prices then were those of 20 Oct 2026, which was not checked. The `asia-south1` rows at ₹80/h were not checked against the catalogue. None of these rows is recomputed. The billing console is the authority.
 
 Every row from 2026-09-08 on is reconstructed from
 `gcloud logging read protoPayload.methodName=…instances.insert/delete/
@@ -373,6 +383,8 @@ ran, and the session was **non-preemptible at ₹284/h instead of preemptible at
 | A100 80GB | $2.277654 | $2.648100 | $4.846072 | **14% cheaper** |
 | L4 | $0.560040 | — | $0.560040 | **identical** |
 
+*Note added 20 Oct 2026 (T0.17).* In the 20 Oct 2026 catalogue the A100 Spot GPU was $2.7805/h (`36BB-6DC9-2245`), so DWS was 18% cheaper on the GPU line, not 14%. The L4 row is the `us-central1` price (`67E2-6600-34C2` DWS, `A88A-5A60-E821` on-demand). In `asia-northeast1`, where P1 runs, both were $0.7192037/h (`AF0B-B809-7246` DWS, `FDE8-86D4-B581` on-demand), so the L4 row's conclusion holds there too. The billing console is the authority.
+
 Two accelerators where the bounded-window product is cheaper *and* stronger
 than the preemptible one, and one where it is neither. **The rule is "price the
 SKU per accelerator", not "DWS is always cheaper"** — the L4 row is what stops
@@ -386,6 +398,8 @@ the lever is a warmer image, not a faster card.
 ---
 
 ## Session 10 — 2026-09-17, A100 (`attnbench-a100-20260917-1248`), DWS Flex Start, ₹284/h
+
+*Note added 20 Oct 2026 (T0.17).* ₹284/h used the Spot core and RAM rates; see the note on ₹284/h under the rates paragraph near the top. Not recomputed; the billing console is the authority.
 
 **₹1,005 for 3.54 h, of which roughly ₹540 — 54% — was an idle GPU.** That is
 the headline and it is a process failure, not a hardware one.
@@ -463,6 +477,8 @@ tighter than the L4 numbers they are compared against.
 
 ## Session 11 — 2026-09-17, A100 (`attnbench-a100-20260917-item4`), DWS Flex Start, ₹284/h
 
+*Note added 20 Oct 2026 (T0.17).* ₹284/h used the Spot core and RAM rates; see the note on ₹284/h under the rates paragraph near the top. Not recomputed; the billing console is the authority.
+
 **₹49 for 10 minutes.** Boot 12:16:18Z, deleted 12:26:44Z. Launched with
 `GCP_MAX_RUN=1h30m` / `GCP_HALT_MINUTES=55` rather than the 4h30m/3h30m
 defaults — the cap sized to the work, which is the correction session 10
@@ -493,6 +509,8 @@ appearing in the script itself.
 ---
 
 ## Session 12 — 2026-09-17, A100 (`attnbench-a100-20260917-cheap7b`), DWS Flex Start, ₹284/h
+
+*Note added 20 Oct 2026 (T0.17).* ₹284/h used the Spot core and RAM rates; see the note on ₹284/h under the rates paragraph near the top. Not recomputed; the billing console is the authority.
 
 **₹249 for 53 minutes.** Boot 13:33:59Z, deleted 14:26:29Z. First session to
 boot the **v6** image, with `GCP_MAX_RUN=1h45m` / `GCP_HALT_MINUTES=75`.

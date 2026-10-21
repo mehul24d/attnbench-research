@@ -81,8 +81,8 @@ echo "  image        : $IMAGE"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 echo "  provisioning : STANDARD (on-demand, not spot)"
 echo "  in-guest halt: +${HALT_MINUTES} min -- GPU billing stops, disk survives"
-echo "  hard cap     : --max-run-duration=$MAX_RUN action=DELETE (at Rs 78/h)"
-echo "  rate         : Rs 78/h (g2-standard-8 + 1x L4, us-central1, pinned 2026-09-16)"
+echo "  hard cap     : --max-run-duration=$MAX_RUN action=DELETE (at Rs ~109/h)"
+echo "  rate         : Rs ~109/h all-in (g2-standard-8 + 1x L4, asia-northeast1, planning rate 2026-10-20)"
 echo
 read -r -p "Type 'launch' to proceed, anything else to abort: " CONFIRM
 if [[ "$CONFIRM" != "launch" ]]; then

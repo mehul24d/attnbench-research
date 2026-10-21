@@ -22,6 +22,8 @@ set -euo pipefail
 
 IMAGE="${1:?usage: gcp_boot_test_image.sh IMAGE [ZONE] [MACHINE_TYPE]}"
 ZONE="${2:-asia-southeast1-c}"
+source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
+launch_policy_check "$ZONE"
 MACHINE="${3:-e2-medium}"
 PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 # Unique per run: a reused name made gcp_session_elapsed.sh pair one run's
