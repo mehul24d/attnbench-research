@@ -3,8 +3,9 @@
 Third-party code is installed and called, never copied (plan rule 8), except
 the entries below. An entry counts only once the researcher has approved it
 and its date is in the "Approved" column. Code from a repository with no
-licence is never vendored; its lines are reproduced only under a written
-permission recorded in `docs/permission_log.md`.
+licence is never vendored; its lines are reproduced only where
+`docs/vendor_register.md` lists them and the researcher's approval is
+recorded in `docs/permission_log.md`.
 
 Status on 18 Oct 2026: drafted. No approval dates yet.
 
