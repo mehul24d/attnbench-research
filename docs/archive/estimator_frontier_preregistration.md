@@ -16,98 +16,11 @@ is marked **assumed**.
 
 ### 0.1 Permission to use XAttention's code (recorded 2026-10-03)
 
-**Written permission received, dated 2026-10-03, from the XAttention
-authors.** *(The permission date was typed by the researcher on 2026-10-03 as
-"3/10/26", read day-first.)* The sender is not named, at the researcher's choice. The email
-is private: it stays outside the repository, and no file quotes it.
-
-**Scope, as the researcher's summary, not a quote.** The authors have
-permitted:
-
-- using their code;
-- reproducing results;
-- publishing results and figures;
-- reproducing their kernel lines, including those in
-  `attnbench/backends/xattention.py` in the public repository. The authors
-  were informed of that file and approved it. It is left as it is, and the
-  earlier plan to rewrite it (§4.4) is dropped.
-
-This summary is the only record of the scope in the project. Anything beyond
-it is not permitted (§0.2).
-
-**The researcher's note on scope, in their own words** (typed in the chat on
-2026-10-04): "Permission granted for fair use of the work". It is the
-researcher's wording, not a quote of the email. It sits beside the summary
-above and widens nothing.
-
-**The summary above remains the stated basis for the gate** (the
-researcher, 2026-10-04). They confirmed that the permission covers
-publishing XAttention results and reproducing the authors' kernel lines.
-Every act still goes through §0.2.
-
-**Superseded.** The professor's guidance ("researcher-reported institutional
-guidance, no written artifact yet") is superseded by this written permission.
-It was never the authors' permission.
-
-**Use is not a licence.** These stay prohibited:
-
-- vendoring, or copying their repository;
-- redistribution;
-- baking their code into an image.
-
-The pinned commit is cloned at run time. The repository still has no
-licence (§4.1).
-
-**Request date: 2026-10-03.** *(Typed by the researcher on 2026-10-04 as
-"3/10/2026", read day-first, as the permission date was. Earlier the same
-day they had typed "3/6/2026", which was recorded here as 2026-06-03 and
-pushed in `dc21dec`. This entry corrects it.)* Nothing else about the
-request is kept in the repository.
-
-**Two questions remain unanswered.** Both were asked in that request:
-
-1. the provenance of the shipped `llama_fuse_*` thresholds;
-2. whether the Triton and torch paths select the same blocks.
-
-There is no waiting window. Threshold provenance stays unknown. H6b and R1
-answer both questions empirically, so §4.3 and R1 do not change on the basis
-of silence. A later reply that contradicts the plan is handled as a dated
-amendment **before any affected run**, never after its results.
+*(Omitted from this archived copy on 21 Oct 2026, T0.16. The full text is in this file's history on branch `frontier-prereg-2026-10-03`, at `459c892`.)*
 
 ### 0.2 Permission gate and publication rule (binding; §8.6)
 
-**The default is NOT PERMITTED.** Every action that depends on the authors'
-permission is NOT PERMITTED until the researcher explicitly says yes, in
-this conversation, to that exact action.
-
-- **Asking.** Claude Code asks each time, naming the exact action: the files
-  or results involved, and the destination.
-- **No inference.** A yes is never inferred from an earlier yes, from the
-  §0.1 summary, or from silence. **No reply means no.**
-
-The actions that need a yes include, and are not limited to:
-
-1. pushing any file that contains their code lines, including
-   `attnbench/backends/xattention.py`, and any file reproducing a line of
-   x-attention;
-2. putting any XAttention-arm result or figure (native, calibrated, or any
-   arm running their selector, estimator or thresholds) into a paper,
-   report, PDF, slide or any other document that leaves the project;
-3. any use beyond the §0.1 summary;
-4. vendoring or copying their repository, or baking it into an image. **These
-   are not permitted at all; a yes cannot make them so here**;
-5. any use of their code in a new context, or by someone else.
-
-**This file itself is gated for pushing.** It reproduces lines of x-attention: the authors' RULER call `Xattention_prefill(q, k, v, stride, norm=1, threshold=table[layer_idx], use_triton=True)` in §4.1, and settings copied from their code. Committing it locally is not gated. **Pushing it is action 1 above**, and needs a logged yes.
-
-**The permission log.** Every answer is logged with its date and the exact
-action in `/Users/mehuldahiya/Desktop/research/xattention_permission_log.md`,
-outside the repository. Claude Code reads the log before any gated action,
-and never writes any quote of the email into it.
-
-**The publication rule** (no XAttention result leaves the project without
-permission) holds alongside the gate. The §0.1 summary covers publication in
-principle, but each act still needs its own logged yes.
+*(Omitted from this archived copy on 21 Oct 2026, T0.16. The full text is in this file's history on branch `frontier-prereg-2026-10-03`, at `459c892`.)*
 
 ### 0.3 Fallback if XAttention results are withheld
 
@@ -150,10 +63,7 @@ That is selective reporting. It is closed as follows:
 2. **A no is a no for everything.** If the answer is no, the XA arms still
    run, but this section's fallback applies to all of them, whatever they
    show.
-3. **After a yes, only the authors can withhold.** Results are then withheld
-   only if the authors narrow or withdraw their permission **in writing**.
-   The researcher's later per-act answers (§0.2 still asks for each push and
-   each document) do not depend on what a result shows.
+3. *(Omitted from this archived copy on 21 Oct 2026; full text at `459c892`.)*
 4. **Any withholding is itself published:** the date, the reason, which
    hypotheses were withheld, and whether their results existed at the time.
 5. **The fallback adds no test.** Every hypothesis in the table above keeps
@@ -2236,7 +2146,7 @@ sessions.
 | item | measured size | cost |
 |---|---|---|
 | custom images `attnbench-env-v5-20260905`, `attnbench-env-v6-20260917` | 22.0 GiB archive each | about ₹194/month, billed whether or not a session runs |
-| results bucket `gs://attnbench-results-research-507316` | 5.19 GiB, about 10 GiB after the study | about ₹18/month |
+| results bucket `gs://attnbench-results-<project>` | 5.19 GiB, about 10 GiB after the study | about ₹18/month |
 | 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹23–69 over the core, ₹70–173 over the full plan |
 | FA3 wheel build | — | already a ★ line above (₹130–325) |
 
@@ -2595,44 +2505,7 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 
 ### 8.6 Permission gate and publication rule (binding; cannot be amended after any result is seen)
 
-§0.2 is part of the plan, and both halves are binding.
-
-- **The gate.** Every action that depends on the authors' permission is
-  **NOT PERMITTED** until the researcher says yes explicitly, in
-  conversation, to that exact action.
-  - Claude Code asks each time, naming the action.
-  - A yes is never inferred.
-  - Each answer is logged with its date in
-    `/Users/mehuldahiya/Desktop/research/xattention_permission_log.md`,
-    outside the repository. The log never contains a quote of the email.
-- **The publication rule.** No result produced with XAttention code leaves
-  the project — native, calibrated, or any arm running their selector,
-  estimator or thresholds — except under the §0.1 scope **and** a logged yes
-  for that act.
-- **Status 2026-10-03.** Written permission was received, and the
-  researcher's summary (§0.1) covers using the code, reproducing results,
-  publishing results and figures, and reproducing their kernel lines,
-  including `backends/xattention.py`. *(Corrected 2026-10-03, eighth draft: this
-  said "No gated action has been approved yet. The log has no entries.")*
-  Three gated actions, all pushes of this branch, have been approved and
-  logged. No publication of any result has been approved. The decision on
-  publishing XAttention results is taken before the first XA row (§0.3).
-- **Never permitted here,** whatever the answer: vendoring or copying their
-  repository, redistribution, and baking their code into an image.
-- **When it can change.** Only by a dated amendment committed before any
-  XAttention result exists in the project. T4's XAttention pilot results
-  already exist, so this section **cannot be loosened** under this
-  pre-registration.
-- **What is already public.** `mehul24d/attnbench-research` is a public
-  repository. Since 2026-10-02 (`fdeae62`) it has carried T4's XAttention
-  results (`docs/t4_xattention_pilot.md`, `docs/claims.md`) and
-  `attnbench/backends/xattention.py`.
-  - The researcher reports that the authors were informed of the file and
-    approved it.
-  - Those pushes predate this gate. Any **further** push of files containing
-    XAttention results or code lines is a gated action.
-
----
+*(Omitted from this archived copy on 21 Oct 2026, T0.16. The full text is in this file's history on branch `frontier-prereg-2026-10-03`, at `459c892`.)*
 
 ## 9. Fatal-flaw review: the plan, read as a hostile referee
 
@@ -2652,7 +2525,7 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 | F10 | *"Toy model, one family."* | **P** | Llama-3.1-8B accuracy (H8), 7B intrinsic. **Open:** no Qwen 7B accuracy, and Llama accuracy is cuttable (item 11). |
 | F11 | *"Block 128 and a non-MInference VS."* | **P** | Intrinsic recall at b = 16–128 (H7). **Open:** cost and profitability exist only at 128, and VS is VS-style. |
 | F12 | *"A big grid guarantees a hit."* | **P** | Fixed hypotheses with count rules. The frontier is descriptive. Everything is reported, and withholding cannot follow a result (§0.3). **Open:** the count rules carry no error rate, except H1's. |
-| F13 | *"Unlicensed code."* | **P** | Written permission, 2026-10-03, from the XAttention authors, recorded as the researcher's summary, not a quote (§0.1). Every dependent action sits behind the §0.2 gate: default no, asked each time, logged outside the repository. The code is called, never redistributed. **Open:** still no licence, so third-party reproduction depends on upstream staying up. |
+| F13 | *(omitted)* | | |
 | F14 | *"It stops below where sparsity pays."* | **P** | Llama accuracy at 65536. **Open:** it is cut first, there is no Llama end-to-end timing beyond 32K, and the L4 is off XA's curve. |
 | F15 | *"One machine type per card."* | **L** | Recorded, not varied. |
 | F16 | *"Batch 1, prefill only, HuggingFace stack."* | **L** | Audit items 8 and 10 stay open. |
@@ -2661,7 +2534,7 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 | F19 | *"Decode at 32768 runs past Qwen's position limit."* | **P** | All banked rows are flagged: 1,638 of 34,582 have P + gen > 32,768, 1,636 with a forward at a position ≥ 32,768, and 12 era-1 rows with a 32,769-token prompt (§4.9). `positions_over_limit` goes on every new row, with a subset analysis. **Open:** the replication keeps T4's prompts on purpose. |
 | F20 | *"Different dense kernels for speed and for accuracy."* | **C** | On purpose (§2.4). The accuracy reference is fixed for identity with T4. The timing baseline is the fastest correct kernel. Both are named on every row. |
 | F21 | *"The cost stop will quietly drop whatever fails."* | **C** | Cuts come only from the reservation check, in a fixed order, never after a result. Uncut ★ items run first. Every cut item is reported as "not run (cost stop)". What each cut does to each hypothesis is fixed in §8.4. |
-| F22 | *"You published results from code you had no permission to use."* | **P** | T4's XA results and `backends/xattention.py` were public on `origin` from 2026-10-02, before permission arrived. The authors have since permitted publishing results and reproducing their kernel lines, and were informed of that file and approved it (researcher's summary, §0.1). From now on every push or external use is gated (§0.2). **Open:** the record of that approval is the researcher's summary, not a citable document. |
+| F22 | *(omitted)* | | |
 
 ---
 
@@ -2713,8 +2586,7 @@ budget selection, committed. Then X0. Then X. Then XL0. Then XL.
 
 ### 11.1 Lock gates (only these; set 2026-10-03 by the researcher)
 
-The hold on the authors' answers is lifted (§0.1). The file locks when all
-seven of these are met and committed with it (L7 added 2026-10-03):
+*(Omitted from this archived copy on 21 Oct 2026; full text at `459c892`.)*
 
 | # | gate | status 2026-10-03 |
 |---|---|---|
@@ -2883,7 +2755,7 @@ table's "now" column is labelled "second draft".)*
 
 | area | third draft | fourth draft |
 |---|---|---|
-| Permission | placeholders for a verbatim scope, date and sender | the researcher's summary (not a quote), 2026-10-03, "XAttention authors"; the email stays private; `backends/xattention.py` is approved and left as is, so the call-site merge is dropped (§4.4, gate G1b) |
+| Permission | *(omitted, see above)* | |
 | Gate | a publication rule | a binding permission gate (§0.2, §8.6): default NOT PERMITTED, asked per exact action, never inferred, logged outside the repository |
 | Cap | ₹10,000, open decision | **₹12,000**, confirmed by the researcher; worst case about ₹11,900 |
 | cuDNN | the H100 record corrected in §4.6 | also corrected in 6 places across docs and code; the probe runs **last**, isolated, `CUDA_LAUNCH_BLOCKING=1`, after sync; cuDNN is never an H100 candidate above 8192 |
@@ -3054,18 +2926,9 @@ the first four blocking findings.
 | Built | selector, gate, G12, recall rows | also `bsa_prefill`, per-head mean-pool, the recall pass, DP1 from timing rows |
 | Push | `d71efc8` | README `a343917`, then the build commits `236bcd0`, each with the researcher's logged yes |
 
-## 14. Licence and provenance request to the XAttention authors
+## 14. (Omitted)
 
-- **The request.** Dated 2026-10-03 (§0.1). Its text is not kept in the
-  repository (moved out 2026-10-03, never committed).
-- **The reply.** Dated 2026-10-03, from the XAttention authors. It is
-  recorded only as the researcher's summary (§0.1). The email is private and
-  is not quoted anywhere in the project.
-- **Unanswered:** threshold provenance, and Triton-versus-torch block
-  selection. Both are in §0.1, with no waiting window.
-- **Every dependent action** is gated by §0.2 and §8.6.
-
----
+*(Omitted from this archived copy on 21 Oct 2026, T0.16. The full text is in this file's history on branch `frontier-prereg-2026-10-03`, at `459c892`.)*
 
 ## Results
 
