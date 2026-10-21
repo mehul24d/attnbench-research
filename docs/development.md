@@ -33,11 +33,7 @@ Those counts are for a fresh clone on a machine without the RULER data.
 the 45 banked-file tests run instead of skipping and, on a machine with the
 RULER data directory, the data test runs too. Both totals are 1490, which is
 what `pytest --collect-only` reports, and
-`test_the_suite_counts_match_the_collected_suite` asserts it. At this commit,
-with the full `results/` tree present, one of those tests fails:
-`tests/test_eras.py::test_the_register_agrees_with_the_documented_era_table`,
-because an era listed in `docs/limitations.md` is not yet registered in
-`attnbench/analysis/eras.py`.
+`test_the_suite_counts_match_the_collected_suite` asserts it.
 
 To measure the fresh-clone count on a machine that has the RULER data, point
 `ATTNBENCH_RULER_DATA` at an empty directory. An empty string is not the same

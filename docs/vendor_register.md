@@ -42,4 +42,6 @@ adapted.
 
 - `attnbench/_vendor/minference/` (microsoft/MInference, MIT) is on branch
   `frontier-prereg-2026-10-03`, not on this branch. Its entry is added when it
-  arrives (T0.16).
+  arrives (T0.16). *(21 Oct 2026, T0.16: it did not arrive. It is in commit
+  `ab94c81`, which exists only on the researcher's local copy of that branch
+  and was left out of the merge. Nothing from MInference is on `main`.)*
