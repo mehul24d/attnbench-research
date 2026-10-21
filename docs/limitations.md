@@ -2768,6 +2768,8 @@ licenses. These are its limits:
 
 ## XAttention runs with a scalar threshold, and on an L4 without Triton (2026-10-02)
 
+*Note added 21 Oct 2026: XAttention is Xu et al., "XAttention: Block Sparse Attention with Antidiagonal Scoring", ICML 2025 (arXiv:2503.16428); code at github.com/mit-han-lab/x-attention, used at commit `e379887`.*
+
 The XAttention phase (`docs/t4_xattention_pilot.md`) departs from the
 method's own evaluation in two pre-stated ways. Both bear on what its
 results can say about XAttention as published.

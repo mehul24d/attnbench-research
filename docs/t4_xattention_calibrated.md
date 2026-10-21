@@ -6,6 +6,8 @@ has run. The numbers are data in `attnbench/accuracy/t4_pilot.py`, and
 `tests/test_t4_xattention_calibrated_plan.py` holds this document to that
 module.
 
+*Credit, added 21 Oct 2026: XAttention is Xu et al., "XAttention: Block Sparse Attention with Antidiagonal Scoring", ICML 2025 (arXiv:2503.16428); code at github.com/mit-han-lab/x-attention, used at commit `e379887`.*
+
 **Why this phase exists, and when it was decided.** It was decided after
 the scalar phase (`docs/t4_xattention_pilot.md`) had certified nothing. That
 phase stated one deviation from the method: a scalar threshold where the
