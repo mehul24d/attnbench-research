@@ -220,7 +220,11 @@ cannot be caught.
    (**64 GiB** — predicted *not* to fit against a 29.6 GiB budget). A prediction that holds
    is worth as much as one that fails.
 3. **Does the cuDNN fault reproduce on Ampere?** Three L4 confirmations exist,
-   84 rows each, on three separate machines. `SDPABackend._CUDNN_FAULTS_ABOVE`
+   84 rows each, on three separate machines. *(Corrected 2026-10-03: 84-row
+   blocks recorded after `492b9b5` are written by the device-fault guard
+   without launching, so they are not confirmations. The banked serial logs
+   hold two L4 Xid 31 events, both on 2026-09-04. The fault is observed on L4
+   and A100; the H100 is untested above 8192. See `limitations.md`.)* `SDPABackend._CUDNN_FAULTS_ABOVE`
    excludes it above 8192; this deliberately lifts that for two configs at
    16384. **If sm_80 is clean, that is a strongly architecture-conditional
    result** — a shipping kernel that faults on Ada and not Ampere — and it is

@@ -17,7 +17,10 @@ from typing import Callable
 import pandas as pd
 
 from .. import provenance
+from .. import masks
 from ..checkpoint import append_checkpoint
+from .pins import require_pinned_transformers
+from .schema import normalise_accuracy_frame
 from ..config import AttnConfig
 from . import ruler
 from .schema import AccuracyResult, BackendRole, Generated
@@ -357,6 +360,7 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                   score_source: str = "dense_softmax_fp32",
                   xattn_threshold: "float | None" = None,
                   xattn_calibration: "str | None" = None,
+                  model_id: "str | None" = None,
                   ) -> AccuracyReport:
     """Stage 3 entry point.
 
@@ -427,6 +431,8 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
                 f"schema.Generated -- the (text, latency_ms) tuple contract "
                 f"was replaced when generation started carrying a stopping "
                 f"reason, and unpacking one here would discard it silently.")
+        if model_id is not None:
+            require_pinned_transformers(model_id)
         example_score = ruler.score(cell.task, gen.text, example.answer)
         role = backend_role(cell.backend_name, cell.cfg)
 
@@ -453,6 +459,14 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
             score=example_score,
             correct=example_score >= 100.0,
             stop_reason=gen.stop_reason,
+            stop_token_id=gen.stop_token_id,
+            positions_over_limit=gen.positions_over_limit,
+            xattn_path=gen.xattn_path,
+            # Every row from the introducing commit on (sec. 4.5): the era of a
+            # new row is read from this column first, then from its commit.
+            mask_selector=masks.mask_selector_for(
+                cell.backend_name, sparse=cell.cfg.mask == "block_sparse",
+                per_head=getattr(cell.cfg, "mask_selector", None) == "per_head"),
             n_generated=gen.n_generated,
             decode_backend=gen.decode_backend,
             decode_pinned=gen.decode_pinned,
@@ -470,9 +484,9 @@ def run_accuracy(cells: list[AccuracyCell], *, out_dir: Path,
         row = {**result.to_dict(), **prov.to_dict()}
         buffer.append(row)
         if len(buffer) >= checkpoint_every:
-            append_checkpoint(checkpoint_path, buffer)
+            append_checkpoint(checkpoint_path, buffer, normalise=normalise_accuracy_frame)
             buffer = []
     if buffer:
-        append_checkpoint(checkpoint_path, buffer)
+        append_checkpoint(checkpoint_path, buffer, normalise=normalise_accuracy_frame)
 
     return report

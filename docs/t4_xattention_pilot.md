@@ -221,6 +221,14 @@ device whose name lacks "100". It is not the method's official cost, and it
 enters no claim without that qualifier. The accuracy question the pilot
 pre-registers is unaffected, because the fallback selects the same blocks.
 
+*(Dated note, 2026-10-03: "the fallback selects the same blocks" was never
+tested. The two paths are numerically different code (exp2 against exp, a
+−1e6 mask fill, bf16 sums; estimator-frontier pre-registration §4.1), so
+equal selections are a hypothesis. That pre-registration's gate G2 tests it
+on the A100 at every block size: masks must disagree on ≤ 0.5% of causal
+blocks, and |ΔR| ≤ 0.005. Until G2 has run, this pilot's L4 XAttention rows
+are labelled torch-fallback selections, not the method's official ones.)*
+
 **Timing for the pilot.** Each 12-row phase took about 100 s, including the
 model load. At about 5 s per row, the pilot's 1600 rows come to roughly 3
 hours in one session covering both bands.

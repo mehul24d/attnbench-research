@@ -335,6 +335,23 @@ def minference_meanpool_scores_on_device(q: torch.Tensor, k: torch.Tensor, *,
     only, which would have put a device sync on every layer of an inline
     forward.)
     """
+    a_hat = meanpool_scores_per_head_on_device(q, k, n_heads_kv=n_heads_kv,
+                                               block_size=block_size)
+    n_heads_q, n_blocks = a_hat.shape[0], a_hat.shape[-1]
+    # Mean over the query heads within each KV group, as the oracle does.
+    return a_hat.view(n_heads_kv, n_heads_q // n_heads_kv, n_blocks, n_blocks).mean(dim=1)
+
+
+def meanpool_scores_per_head_on_device(q: torch.Tensor, k: torch.Tensor, *,
+                                       n_heads_kv: int, block_size: int) -> torch.Tensor:
+    """The MP arm's scorer for era 4 (estimator-frontier pre-registration
+    sec. 4.2): `minference_meanpool_scores_on_device` without the head
+    average. One score matrix per QUERY head, each from that head's own
+    pooled queries and its KV group's pooled keys.
+
+    Returns (n_heads_q, n_blocks, n_blocks) fp32 on q's device. The
+    head-uniform function above is this, averaged within each KV group, and
+    computes the same numbers it did before the split (2026-10-04)."""
     batch, n_heads_q, seq_len, head_dim = q.shape
     if batch != 1:
         raise ValueError(f"minference_meanpool_scores expects batch=1, got {batch}")
@@ -361,10 +378,7 @@ def minference_meanpool_scores_on_device(q: torch.Tensor, k: torch.Tensor, *,
     kv = torch.arange(n_blocks, device=q.device).unsqueeze(0)
     logits = logits.masked_fill(kv > qb, float("-inf"))
 
-    a_hat = torch.softmax(logits, dim=-1)
-    # Mean over the query heads within each KV group, as the oracle does.
-    a_hat = a_hat.view(batch, n_heads_kv, group_size, n_blocks, n_blocks).mean(dim=2)
-    return a_hat[0]
+    return torch.softmax(logits, dim=-1)[0]
 
 
 def pool_scores_to_block_size(scores_finest: torch.Tensor, *,
@@ -538,6 +552,42 @@ class SwappedAttention(nn.Module):
         return out, None
 
 
+from .pins import require_pinned_transformers  # noqa: E402
+
+
+# Models whose shipped generation_config samples, so every path through this
+# wrapper forces and then asserts greedy decoding (estimator-frontier
+# pre-registration, sec. 4.9, 2026-10-03).
+GREEDY_REQUIRED_MODELS = frozenset({"meta-llama/Llama-3.1-8B-Instruct"})
+_SAMPLING_FIELDS = ("temperature", "top_p", "top_k")
+
+
+def force_greedy(model) -> None:
+    """Set `model.generation_config` to greedy: do_sample False and every
+    sampling field None, so nothing of the shipped sampling setup survives."""
+    gc = getattr(model, "generation_config", None)
+    if gc is None:
+        return
+    gc.do_sample = False
+    for f in _SAMPLING_FIELDS:
+        setattr(gc, f, None)
+
+
+def assert_greedy(model) -> None:
+    """Refuse a generation_config that would sample, or that carries a
+    sampling parameter at all."""
+    gc = getattr(model, "generation_config", None)
+    if gc is None:
+        return
+    live = {f: getattr(gc, f, None) for f in _SAMPLING_FIELDS
+            if getattr(gc, f, None) is not None}
+    if getattr(gc, "do_sample", False) or live:
+        raise RuntimeError(
+            f"generation_config is not greedy (do_sample="
+            f"{getattr(gc, 'do_sample', None)}, {live}); this model's arms "
+            f"must decode greedily. Call force_greedy(model) first.")
+
+
 @dataclass(frozen=True)
 class GenerationResult:
     """What one greedy decode produced, and under what contract.
@@ -554,6 +604,7 @@ class GenerationResult:
     n_generated: int
     decode_backend: str
     prefill_backend: str
+    stop_token_id: Optional[int] = None   # the id that fired eos/newline
 
     @property
     def truncated(self) -> bool:
@@ -577,6 +628,12 @@ class SwappableAttentionModel:
                                   finest_block_size=finest_block_size,
                                   score_source=score_source)
         self._layers = _require_llama_family(model)
+        # Explicit greedy override (2026-10-03). This loop never reads
+        # generation_config -- it is argmax by construction -- but
+        # Llama-3.1-8B-Instruct ships do_sample=True, temperature 0.6, top_p
+        # 0.9, and any path that reached HF sampling would silently use them.
+        if model_id in GREEDY_REQUIRED_MODELS:
+            force_greedy(model)
         self._originals = [layer.self_attn for layer in self._layers]
         self.n_layers = len(self._layers)
         self.n_heads_kv = model.config.num_key_value_heads
@@ -735,6 +792,9 @@ class SwappableAttentionModel:
         accuracy/stopping.first_stop_index is the pure statement of this rule
         and tests hold the two to the same answer.
         """
+        if self.model_id in GREEDY_REQUIRED_MODELS:
+            assert_greedy(self.model)
+        require_pinned_transformers(self.model_id)
         if decode_backend is None:
             if not type(backend).supports_decode():
                 raise UnsupportedModelArchitecture(
@@ -752,6 +812,7 @@ class SwappableAttentionModel:
 
         generated: list[int] = []
         stop_reason = "cap"
+        stop_token_id: Optional[int] = None
         seen_content = False
         self._state.mode = "decode"
         # q_len=1 per step. The cfg the decode path sees keeps the prompt's
@@ -761,10 +822,10 @@ class SwappableAttentionModel:
             for step in range(max_new_tokens):
                 generated.append(next_id)
                 if next_id in eos_token_ids:
-                    stop_reason = "eos"
+                    stop_reason, stop_token_id = "eos", next_id
                     break
                 if next_id in newline_token_ids and seen_content:
-                    stop_reason = "newline"
+                    stop_reason, stop_token_id = "newline", next_id
                     break
                 if next_id not in newline_token_ids and next_id not in whitespace_token_ids:
                     seen_content = True
@@ -790,4 +851,5 @@ class SwappableAttentionModel:
         return GenerationResult(token_ids=generated, stop_reason=stop_reason,
                                 n_generated=len(generated),
                                 decode_backend=decode_backend.name,
-                                prefill_backend=backend.name)
+                                prefill_backend=backend.name,
+                                stop_token_id=stop_token_id)

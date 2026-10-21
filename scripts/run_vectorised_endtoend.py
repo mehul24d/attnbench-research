@@ -408,6 +408,9 @@ def main():
                     ms = sum(pf) / len(pf)
                     rows.append(dict(
                         band=band, builder=builder_name, backend=name,
+                        # era-4 column (pre-registration sec. 4.5)
+                        mask_selector=masks.mask_selector_for(
+                            name, sparse=sparsity is not None),
                         sparsity=sparsity, prefill_ms_mean=ms,
                         prefill_ms_min=min(pf), prefill_ms_max=max(pf),
                         prefill_ms_samples=list(pf),
