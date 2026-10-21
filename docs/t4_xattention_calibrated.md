@@ -176,3 +176,177 @@ done
 **Cost:** about 0.75 L4-hours for session A and 2.6 for session B, roughly
 INR 270 together. The cap, hard-delete limit and artifact paths are stated
 with each command before it launches.
+
+## Amendments, 2026-10-03 (before Session A)
+
+Session A has not run, so each of these is an amendment before data. They
+come from the estimator-frontier pre-registration
+(`docs/estimator_frontier_preregistration.md`, §12), which verified the
+sources they rest on. Nothing above is edited. Where an amendment and the
+text above disagree, the amendment governs. The code is in
+`attnbench/accuracy/t4_pilot.py`, `scripts/calibrate_xattn_thresholds.py`
+and `attnbench/accuracy/ruler.py`. `tests/test_t4_amendments.py`,
+`tests/test_xattn_calibration.py` and this document's plan test check it.
+
+**A1. `ruler_heldout` leaked `qa_1` questions.**
+
+- **What was wrong.** RULER QA picks the SQuAD question by the example's
+  **index**, not its seed (`ruler.py`, `index=i`). Seed-1 examples 0–7
+  therefore asked test questions 0–7 with other distractors. The old check
+  compared whole contexts, so it passed them.
+- **Change, part 1.** `ruler_heldout` is drawn from seed 1 at index offset
+  2000 (`XATTN_CALIBRATION_INDEX_OFFSET = 2000`). Its `qa_1` questions are
+  2000–2007 per band, and its NIAH examples come from seed 1 at those
+  indices.
+- **Change, part 2.** `assert_disjoint` now compares four identities:
+  - example id;
+  - context sha256;
+  - the task-qualified QA question index;
+  - NIAH answer values.
+
+  It refuses on any shared one.
+- **Break-test.** A shared `qa_1` question under another seed and context is
+  refused (`test_a1_a_shared_qa_question_under_another_seed_is_refused`). At
+  offset 2000 the same seed passes.
+- The table stays descriptive.
+
+**A2. Over-length texts are excluded.**
+
+- 35 of the 156 `authors` texts exceed Qwen2.5-1.5B's 32,768
+  `max_position_embeddings`, up to 91,574 tokens. The median is 16,025, so
+  "thousands of tokens, much shorter than the test bands" above is false.
+- **Change.** A text is used if its token count is ≤ the model's
+  `max_position_embeddings`, read from its config at run time. Longer texts
+  are excluded, never truncated. That leaves 121. The excluded indices and
+  their token counts are written into the table as `excluded`.
+
+**A3. The threshold statistic.**
+
+- **The table:** max over used texts, verbatim from the released profiler,
+  with no cap (`XATTN_CALIBRATION_STATISTIC`).
+- **Recorded, descriptive only, never used:**
+  - the p90 table;
+  - the number of entries where max − p90 > 0.05;
+  - for each entry, the text that sets the max (`descriptive`).
+
+**A4. The calibration card: Session A moves to the A100.**
+
+- The profiler's `use_triton=True` takes the Triton path only where the
+  device name contains "100". The script refuses any other card
+  (`XATTN_CALIBRATION_CARD = "A100"`), and the table records
+  `xattn_path="triton"`.
+- Session B stays on the L4. Every XAttention row now carries `xattn_path`,
+  which is `torch_fallback` there.
+- Session A's cost becomes 15–48 A100-minutes (₹70–230), in place of about
+  45 L4-minutes.
+
+**A5. Calibration provenance.**
+
+- The profiler is the authors' **released substitute** for the paper's
+  unreleased DP method (issue #13). The table records this as `procedure`.
+- This phase's claims read "calibrated by the authors' released profiler",
+  not "by the method's procedure".
+
+**A6. The replication link.** The estimator-frontier pre-registration's §3.9
+(P-T4, R1–R4) is committed before Session A. This phase's `authors`
+configuration is what that study replicates, and it is unchanged by it.
+
+**A7. Positions past the limit.**
+
+- 119 of the 200 dense rows at 32768 in the XA pilot decode past 32,768
+  positions.
+- New rows carry `positions_over_limit = max(0, prompt + generated −
+  max_position_embeddings)`.
+- No design change.
+
+## Amendment, 2026-10-04 (before Session A)
+
+Session A has still not run, and no table exists. This is an amendment
+before data, decided by the researcher on 2026-10-04. Nothing above is
+edited. Where it and the text above disagree, it governs.
+
+**A8. The authors' profiling set is a sample of RULER.**
+
+- **What was wrong.** The text above calls `text.json` "156 multi-document QA
+  prompts" and says `authors` "is disjoint from RULER, so nothing about the
+  test tasks tunes it". Both are false. Gate G12 of the estimator-frontier
+  pre-registration (§5, §6) was run on the file at `XATTN_COMMIT` on
+  2026-10-04 and found:
+  - its 156 texts are RULER prompts in RULER's own templates, 12 for each of
+    13 tasks: 96 needle texts, 12 `qa_1`, 12 `qa_2`, 12 variable-tracking and
+    24 word-frequency texts;
+  - its `qa_1` texts ask SQuAD questions 0 and 10, which are two of this
+    phase's 100 primary test questions;
+  - those 12 texts carry the gold document of every one of the 100 primary
+    test questions in their haystacks.
+- **Change, part 1: `authors` leaves out the 24 QA texts.** They are the 12
+  `qa_1` and 12 `qa_2` texts (file indices 0, 1, 18, 19, 26, 27, 44, 45, 52,
+  53, 70, 71, 78, 79, 96, 97, 104, 105, 106, 107, 130, 131, 148, 149).
+  - That leaves 132 texts. With A2's length rule, 104 are used (17 of the
+    QA texts were within the limit and 7 over it).
+  - `authors` still carries this phase's claims.
+  - The table records the excluded indices and its G12 record.
+- **Change, part 2: `authors_full` is added, descriptive.** It is the whole
+  set as first pre-registered: 156 texts, 121 used under A2. It is tested and
+  reported like `ruler_heldout`, and its `claim` is always false. Its table
+  records that G12 fails on it.
+
+  | calibration | source | role |
+  |---|---|---|
+  | `authors` | `text.json` at the pinned commit with its 24 QA texts left out | claim |
+  | `authors_full` | every text of `text.json` at the pinned commit | descriptive |
+  | `ruler_heldout` | unchanged (A1) | descriptive |
+
+- **G12 on `authors`: passes.**
+  - No test question and no gold document's opening occurs in the 132
+    texts.
+  - Every needle in the 96 needle texts (18,361 distinct) was compared with
+    every needle this harness generates for `niah_single`,
+    `niah_multikey_1`, `niah_multivalue` and `niah_multiquery`, at 16384 and
+    32768, for the test ids and the calibration ids. No (key, value) pair is
+    shared. Two 7-digit values recur under other keys among the test ids
+    (one is an answer of `niah_multiquery` at 32768, index 5), against 2.0
+    expected by chance.
+  - The calibration script refuses any other `text.json`.
+- **What `authors` still shares with the test.** Its needle texts use the
+  same templates as `niah_multivalue` and `niah_multiquery`. So `authors` is
+  profiled on the test tasks' format, though on none of their needles,
+  questions or documents. The sentence "disjoint from RULER" is withdrawn.
+  `authors` shares no question, gold document or needle with the test, and
+  that is all that is claimed for it.
+- **The claim reads** "calibrated by the authors' released profiler on their
+  profiling set with its 24 question-answering texts left out".
+- **Nothing banked used either table.** The six banked XAttention files are
+  the scalar phase (thresholds 0.8, 0.9 and 0.95). No calibrated table has
+  been made.
+- **Sessions.** Session A makes three tables, so its `authors` passes
+  roughly double: 30–96 A100-minutes (₹140–460), in place of A4's 15–48.
+  Session B runs three calibrations, 400 cells more: about 3.5 L4-hours
+  (about ₹280), in place of 2.6.
+
+```bash
+for SRC in authors authors_full ruler_heldout; do
+  python scripts/calibrate_xattn_thresholds.py --source ${SRC} \
+      --out results/xattn_calibration_${SRC}_<date>
+done
+for CAL in authors ruler_heldout authors_full; do
+  python scripts/run_accuracy.py --t4-xattn-pilot --only-backends xattention \
+      --xattn-calibration configs/xattn_thresholds/qwen2.5-1.5b-instruct_${CAL}_stride8.json \
+      --out results/t4_xattn_cal_${CAL}_<date>
+done
+```
+
+**A9. One test example whose answer value recurs in the profiling set
+(2026-10-04, before Session A).**
+
+- `niah_multiquery` at 32768, index 5: one of its four answer values also
+  occurs in an `authors` text, under another key. It is a 7-digit random
+  number, and two such coincidences are expected by chance among this
+  phase's test ids. No (key, value) pair is shared, which is the rule the
+  gate passes on (estimator-frontier pre-registration, §5, where the rule is
+  justified).
+- **It stays in the test.** n is not changed after the test was fixed.
+- **No claim rests on it.** Its cell is this phase's observational cell.
+- **Reporting.** That cell is reported on all 50 examples and with index 5
+  left out. Both are descriptive.
+- `niah_multikey` is not a task of this phase, so it was not compared.

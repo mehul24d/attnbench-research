@@ -1,0 +1,3072 @@
+# Estimator cost/quality frontier — pre-registration (DRAFT)
+
+Status: **unlocked draft, amended 2026-10-03 (eighth draft, after an independent referee read) and re-bracketed 2026-10-04 (§8.2). Not locked.** No GPU
+session has run for this study, and no row exists. §13 lists what changed in
+each draft.
+
+The draft becomes a pre-registration when the lock gates in §11.1 are met and
+committed **with** this file. Until then it can change without a dated
+amendment. After lock, nothing above "Results" changes, and corrections go in
+dated sections at the end.
+
+Every number from a banked artifact names its path. Every number that does not
+is marked **assumed**.
+
+## 0. Permission, publication, sequence
+
+### 0.1 Permission to use XAttention's code (recorded 2026-10-03)
+
+**Written permission received, dated 2026-10-03, from the XAttention
+authors.** *(The permission date was typed by the researcher on 2026-10-03 as
+"3/10/26", read day-first.)* The sender is not named, at the researcher's choice. The email
+is private: it stays outside the repository, and no file quotes it.
+
+**Scope, as the researcher's summary, not a quote.** The authors have
+permitted:
+
+- using their code;
+- reproducing results;
+- publishing results and figures;
+- reproducing their kernel lines, including those in
+  `attnbench/backends/xattention.py` in the public repository. The authors
+  were informed of that file and approved it. It is left as it is, and the
+  earlier plan to rewrite it (§4.4) is dropped.
+
+This summary is the only record of the scope in the project. Anything beyond
+it is not permitted (§0.2).
+
+**The researcher's note on scope, in their own words** (typed in the chat on
+2026-10-04): "Permission granted for fair use of the work". It is the
+researcher's wording, not a quote of the email. It sits beside the summary
+above and widens nothing.
+
+**The summary above remains the stated basis for the gate** (the
+researcher, 2026-10-04). They confirmed that the permission covers
+publishing XAttention results and reproducing the authors' kernel lines.
+Every act still goes through §0.2.
+
+**Superseded.** The professor's guidance ("researcher-reported institutional
+guidance, no written artifact yet") is superseded by this written permission.
+It was never the authors' permission.
+
+**Use is not a licence.** These stay prohibited:
+
+- vendoring, or copying their repository;
+- redistribution;
+- baking their code into an image.
+
+The pinned commit is cloned at run time. The repository still has no
+licence (§4.1).
+
+**Request date: 2026-10-03.** *(Typed by the researcher on 2026-10-04 as
+"3/10/2026", read day-first, as the permission date was. Earlier the same
+day they had typed "3/6/2026", which was recorded here as 2026-06-03 and
+pushed in `dc21dec`. This entry corrects it.)* Nothing else about the
+request is kept in the repository.
+
+**Two questions remain unanswered.** Both were asked in that request:
+
+1. the provenance of the shipped `llama_fuse_*` thresholds;
+2. whether the Triton and torch paths select the same blocks.
+
+There is no waiting window. Threshold provenance stays unknown. H6b and R1
+answer both questions empirically, so §4.3 and R1 do not change on the basis
+of silence. A later reply that contradicts the plan is handled as a dated
+amendment **before any affected run**, never after its results.
+
+### 0.2 Permission gate and publication rule (binding; §8.6)
+
+**The default is NOT PERMITTED.** Every action that depends on the authors'
+permission is NOT PERMITTED until the researcher explicitly says yes, in
+this conversation, to that exact action.
+
+- **Asking.** Claude Code asks each time, naming the exact action: the files
+  or results involved, and the destination.
+- **No inference.** A yes is never inferred from an earlier yes, from the
+  §0.1 summary, or from silence. **No reply means no.**
+
+The actions that need a yes include, and are not limited to:
+
+1. pushing any file that contains their code lines, including
+   `attnbench/backends/xattention.py`, and any file reproducing a line of
+   x-attention;
+2. putting any XAttention-arm result or figure (native, calibrated, or any
+   arm running their selector, estimator or thresholds) into a paper,
+   report, PDF, slide or any other document that leaves the project;
+3. any use beyond the §0.1 summary;
+4. vendoring or copying their repository, or baking it into an image. **These
+   are not permitted at all; a yes cannot make them so here**;
+5. any use of their code in a new context, or by someone else.
+
+**This file itself is gated for pushing.** It reproduces lines of x-attention: the authors' RULER call `Xattention_prefill(q, k, v, stride, norm=1, threshold=table[layer_idx], use_triton=True)` in §4.1, and settings copied from their code. Committing it locally is not gated. **Pushing it is action 1 above**, and needs a logged yes.
+
+**The permission log.** Every answer is logged with its date and the exact
+action in `/Users/mehuldahiya/Desktop/research/xattention_permission_log.md`,
+outside the repository. Claude Code reads the log before any gated action,
+and never writes any quote of the email into it.
+
+**The publication rule** (no XAttention result leaves the project without
+permission) holds alongside the gate. The §0.1 summary covers publication in
+principle, but each act still needs its own logged yes.
+
+### 0.3 Fallback if XAttention results are withheld
+
+If permission proves narrower than needed, the study publishes from the arms
+that run none of their code:
+
+- the oracle;
+- mean-pool (attnbench's implementation of MInference Alg. 3);
+- vertical-slash-style scoring (MIT-licensed MInference code);
+- sink + local window (SL, §4.2);
+- the era-4 selector;
+- Block-Sparse-Attention (BSD-3);
+- FA3 (BSD-3).
+
+**What the paper claims then:**
+
+| survives without XAttention | how it changes |
+|---|---|
+| H1 | runs on MP and the selector |
+| H2 | runs on MP, VS and SL |
+| H3 | not scored. VS against MP under one selector is reported **descriptively**, with no pass rule, because no direction or threshold was pre-stated for it |
+| H3b | runs over MP, VS and SL |
+| H4 | runs on the non-XA extrinsic arms |
+| H5 | counts non-XA arms only |
+| H7a | MP across block sizes |
+| the frontier | plotted without XA points |
+
+**Withheld:** H6, H7b, H8, R1–R4, P-T4, and every XA point and row.
+
+**Withholding cannot follow a result (added 2026-10-03, eighth draft; the
+researcher's decision).** As first written, this section let XAttention
+results be withheld by a permission decision taken after they had been seen.
+That is selective reporting. It is closed as follows:
+
+1. **The decision comes first.** Before the first XAttention row of T4
+   Session A or of this study exists, the researcher says yes or no, in the
+   chat, to publishing this study's XAttention results and T4 calibrated's.
+   The answer is logged with its date (§0.2). Claude Code asks for it before
+   that launch, and the launch is refused without a logged answer.
+2. **A no is a no for everything.** If the answer is no, the XA arms still
+   run, but this section's fallback applies to all of them, whatever they
+   show.
+3. **After a yes, only the authors can withhold.** Results are then withheld
+   only if the authors narrow or withdraw their permission **in writing**.
+   The researcher's later per-act answers (§0.2 still asks for each push and
+   each document) do not depend on what a result shows.
+4. **Any withholding is itself published:** the date, the reason, which
+   hypotheses were withheld, and whether their results existed at the time.
+5. **The fallback adds no test.** Every hypothesis in the table above keeps
+   its own pass rule on the arms that remain. Nothing gains a pass rule it did
+   not have before the results.
+
+**An option, not adopted.** A reimplementation of the published algorithm
+from the paper's description (antidiagonal scoring, mass-threshold
+selection), written without their code. If used, it is labelled **"our
+implementation of the published algorithm"**, never "XAttention".
+
+- Its results are not comparable to XAttention's official code until shown
+  equivalent.
+- **It is not to be used until the researcher has checked with the
+  professor.** Any such use is a dated amendment before its first run.
+
+### 0.4 Sequence (binding)
+
+1. **Dated T4 amendments.** Append §12's amendments to
+   `docs/t4_xattention_calibrated.md`, with the code they need and their
+   tests, and commit.
+2. **Lock this file.** The replication predictions in §3.9 and the T4 outcome
+   prediction P-T4 are therefore committed **before any T4 calibrated row
+   exists**.
+3. **Run T4 calibrated as amended.**
+   - Session A: calibration, on the A100 (§12 A4).
+   - Session B: the test, on the L4.
+   - Bank the results and score P-T4.
+4. **Run this study.**
+   - Its native-XAttention arm on Qwen2.5-1.5B is a **replication of T4's
+     `authors` configuration, identical in every setting** (§4.3).
+   - It loads T4's committed table by digest.
+
+No step starts before the one above it is committed.
+
+---
+
+## 1. Question
+
+> For training-free block-sparse prefill, take each importance estimator, run
+> on the GPU with the same selector, mask format and kernel. Where does it sit
+> on the plane of (estimator cost relative to the attention it saves) × (how
+> much of the true attention mass its mask keeps)?
+>
+> - Which points are faster than the fastest correct dense kernel, end to
+>   end?
+> - Does the plane move between GPU generations as a roofline account
+>   predicts?
+> - Does the mass a mask keeps predict whether the answer survives?
+> - Does XAttention reproduce, in a neutral harness, on its authors' own
+>   model and configuration?
+
+This is audit Part 16 item 3 and gap G2 (`peer_review_audit_2026-09-30.md`).
+It replaces the oracle-cost ratio, which is tautological (T2), with a
+saving-relative frontier.
+
+**What is already known, so that it is not the contribution.** XAttention
+reports its own selection time. Sparse Frontier v3 states the estimation-cost
+barrier qualitatively. "Estimator X costs a ms" is incremental on its own.
+
+The non-incremental parts are:
+
+- a component crossover model tested against end-to-end time (H2);
+- a mechanistic prediction of the shift across GPU generations (H1);
+- scorer quality separated from selector policy (H3);
+- the effect of block granularity on scorer quality (H7);
+- the intrinsic-to-extrinsic link (H4);
+- a neutral reproduction of the method in its authors' configuration (H8,
+  R1–R4).
+
+---
+
+## 2. Definitions
+
+**Geometry.**
+
+| model | layers L | query heads H_q | KV heads H_kv | head dim |
+|---|---:|---:|---:|---:|
+| Qwen2.5-1.5B-Instruct | 28 | 12 | 2 | 128 |
+| Qwen2.5-7B-Instruct | 28 | 28 | 4 | 128 |
+| Llama-3.1-8B-Instruct | 32 | 32 | 8 | 128 |
+
+Block size b = 128 for every timed arm. Intrinsic recall also runs at
+b ∈ {16, 32, 64} (§2.3). Query block i, key block j.
+
+### 2.1 Masks, density, era 4, cost
+
+**Era-4 selection rule (per-head common selector).** Per layer, **query head**
+h and row i:
+
+- **Free blocks:** the sink (j = 0) and the diagonal (j = i) are granted free,
+  outside the budget.
+- **Budget:** the candidates are 0 < j < i, so n_cand = i − 1. The budget is
+  round(d_nom · n_cand), half-to-even, filled by descending score of **head h's
+  own** scores.
+- **Ties:** the era-3 seeded 1e-9 jitter, identical across heads.
+
+**How the budget is computed (stated 2026-10-04, when the selector was
+built).** The era-3 code computes round((1 − sparsity)·n_cand) with
+sparsity = 1 − d_nom, and era 4 uses the same expression
+(`masks.era_budget`). In floating point that is not always
+round(d_nom·n_cand): 1 − 0.9 is 0.09999999999999998, so 15 candidates give 1,
+not 2. The two differ by one block in 6 of 128 rows at d_nom = 0.10 and in 3
+of 128 at 0.05, and in none at 0.50 or 0.25. Gate G3 needs the era-3
+expression, so every budget in the study, `kept_128` and the matched budgets
+included, goes through that one function. **This is a recorded deviation
+from the rule as worded above** ("round(d_nom · n_cand)"): one block, in
+6 of 128 rows at 0.10 and 3 of 128 at 0.05 (the researcher's decision,
+2026-10-04).
+
+That is the era-3 rule (`masks.importance_block_mask_device`) applied per head
+instead of to the head mean. With head-mean scores broadcast to every head, it
+reproduces era 3 bitwise (gate G3). The era is registered in §4.5.
+
+**Density:**
+
+- the nominal density d_nom ∈ {0.50, 0.25, 0.10, 0.05} sets the budget over
+  candidates;
+- the realised density d is (blocks kept, free blocks included) / (causally
+  valid blocks), over rows, heads and layers, as `realised_density` in
+  `backends/xattention.py`;
+- d is above d_nom, because the free blocks are extra. Over a prompt of N
+  blocks, d ≈ d_nom + 4(1 − d_nom)/N. That is 0.297 at 8192 and 0.262 at
+  32768 for d_nom = 0.25 and b = 128;
+- every comparison and plot uses the realised d.
+
+**Below b = 128, the budget is matched, not nominal** (added 2026-10-03,
+eighth draft). The free blocks are a fixed count, so at b = 16 they are a
+much smaller share of a row than at b = 128. Under the plain rule the
+realised density at b = 16 would be 0.69–0.96 of that at b = 128, by
+arithmetic. So at b ∈ {16, 32, 64}, for every arm:
+
+- row i has parent row p = ⌊i·b/128⌋ at b = 128;
+- its target density is the parent's: (2 + round(d_nom·(p − 1))) / (p + 1);
+- its budget is round(target·(i + 1)) − 2, half-to-even, clamped to
+  [0, i − 1], with the same two free blocks.
+
+`frontier_prereg.matched_budget` is that rule, and R* (§2.3) uses the same
+count. b = 128 is unchanged, so G3 is unaffected.
+
+**Per-layer component times.** CUDA-event medians, warm, 50 reps after 5
+warm-up calls, on selection-split prompts:
+
+- T_est: from (q, k) to scores, including any KV repetition the estimator
+  itself needs.
+- T_sel: from scores to the bool mask on the device.
+- T_bsa(d): the kernel on that arm's own mask, **including the KV repetition
+  the kernel needs** (`bsa_prefill` takes repeated K and V, §4.4). So the
+  repetition is charged to every sparse arm alike, and it is inside S_pred.
+  For native XA there is no single d: T_bsa is measured on its own masks.
+- T_dense: the **timing baseline** of §4.6.
+
+The prompts are `qa_1` selection-split examples 1000 and 1001 at each band
+(§5).
+
+Two ratios follow:
+
+- c = (T_est + T_sel) / T_dense
+- m = (T_est + T_sel + T_bsa) / T_dense
+
+### 2.2 Profitable
+
+A point is a (model, card, band, estimator, selector, budget). It is
+**profitable** if and only if the speedup s = T_dense^e2e / T_arm^e2e
+satisfies:
+
+    one-sided 97.5% lower bound on s  >  1 + f
+
+where f is the resolution floor (§7.4). It is **unprofitable** if the upper
+bound is below 1 − f. Otherwise it is **unresolved**.
+
+- **End-to-end prefill** is one forward at batch 1 over the whole prompt,
+  through every layer, with the estimator, selection, mask build and kernel
+  running inline on the device. The clock runs between device
+  synchronisations, from the embedding's first kernel to the logits' last.
+  Tokenisation and decode are excluded.
+- **The dense arm uses the timing baseline (§4.6).** It runs in the same
+  session and commit, interleaved per rep, and twice per rep as an A/A
+  control.
+
+- **The bound on s** (stated 2026-10-03, eighth draft):
+  - **one session:** the one-sided 97.5% t-bound over the 40 per-rep paired
+    ratios (20 reps × 2 prompts). It measures within-session noise only.
+    The two prompts are the only variation in the masks, so for
+    data-dependent masks the reps are **pseudo-replicates**: this bound says
+    nothing about other prompts or other hosts;
+  - **k ≥ 2 sessions** (the replicate sessions, §7.3): the one-sided 97.5%
+    t-bound over the k session means, k − 1 degrees of freedom. This bound
+    replaces the single-session one for that cell.
+- **A single-session cell** is therefore labelled "one session" wherever it
+  is called profitable or unprofitable.
+
+Profitable is never asserted from components.
+
+### 2.5 Terms used in the hypotheses
+
+| term | meaning |
+|---|---|
+| **deployable** | an arm whose scorer never reads exact attention: MP, XA (era 4 or native), VS and SL. The oracle O is not deployable. |
+| **certified** | non-inferior to dense under §2.4: the exact one-sided 97.5% lower bound on the paired accuracy difference is above −10 points (`frontier_prereg.certified`). |
+| **claim / no-claim** (R4) | certified / not certified, under T4's own test at n = 100. |
+| **failed session** | a session that ends before every one of its phases has `rc=0` and is synced: preemption, stock-out, a crash, a halt, or a failed health check. |
+| **largest ★ session** | the ★ line with the highest upper-bound cost U in §8.2. Today that is X primary, whose rerun unit is one band: the 32768 band, the costlier of the two (§8.3). |
+| **marginal** | a point-estimate rule whose 95% interval contains its threshold. The verdict stands, and the label is printed beside it (§7.5). |
+
+### 2.3 Intrinsic quality: attention-mass recall
+
+For layer ℓ, query head h, row i and block size b:
+
+    M_b(i, j) = (1/|B_i|) · Σ_{q ∈ B_i} Σ_{k ∈ B_j, k ≤ q} softmax_q(q·k/√d)[k]
+
+- It is computed in fp32 from the dense forward's post-RoPE bf16 q and k, so it
+  is teacher-forced (limitation F5).
+- Each row sums to 1.
+- M at b = 16 is computed once per chunk and summed into 32, 64 and 128.
+
+Let S be the selected set and F ⊂ S the free blocks. Then:
+
+- **Raw recall:** R = Σ_{j∈S} M(i, j).
+- **Normalised recall:** R̃ = R / R*. R* is the largest mass of F plus the
+  same number of non-free blocks, which is the oracle's top-k under the era-4
+  rule.
+
+**Aggregation:**
+
+- rows i < 2 are excluded, because the free blocks fill them;
+- **primary:** the per-example unweighted mean of R̃ over (ℓ, h, i), then the
+  mean over examples, with a 95% percentile bootstrap over examples
+  (B = 10,000, seed 20261003);
+- **secondary, untested:** the per-example 5th percentile, per-layer curves,
+  and raw R.
+
+**Block sizes.** b = 128 carries H3, H4 and H5. b ∈ {16, 32, 64} is
+**intrinsic only**: no kernel at those sizes is the same kernel, so there is no
+cost or profitability there. It carries H7.
+
+### 2.4 Extrinsic quality: task accuracy
+
+- **Outcome:** per-example `correct` (score = 100). Decode is greedy, prefill
+  sparse, decode dense, with the decode kernel matched across arms.
+- **Test:** paired against the **accuracy reference** on the same ids, with
+  the exact paired bound in `attnbench/analysis/exact_noninferiority.py`.
+  Margin 10 points, one-sided alpha 0.025.
+- **The accuracy reference is `sdpa_flash` dense, fixed.** That keeps it
+  identical to T4 and to every banked dense prediction. The timing baseline
+  (§4.6) may be a different kernel. Kernel choice can change bf16 rounding
+  and therefore greedy outputs, so the reference used for accuracy is not
+  allowed to vary with the speed contest.
+
+---
+
+## 3. Hypotheses and pre-stated predictions
+
+Each one states its prediction, its **input ratio**, the tolerance on that
+ratio, how a cell inside the tolerance is scored, and its pass rule. That is
+the lesson of H100 P2, which failed at input-ratio differences of 2.6% and
+6.8% with no tolerance stated.
+
+**Tolerances, from banked spread.** Four L4 sessions measured the same
+components (`results/t4_{sparse,xattn}_{canary,pilot}_session_*/…/estimator_cost.parquet`):
+
+- the medians varied by 0.1–3.6%, except the 0.5 ms mask build at 6.1%;
+- the ratios used here varied less: mean-pool/dense 3.2%; block-sparse/dense
+  1.4% at 16384 and 1.6% at 32768.
+
+So the **kernel-level tolerance is τ_k = 0.05**. The **end-to-end tolerance is
+τ_e = 0.07**, which covers P2's 6.8% miss.
+
+**Where the thresholds come from, stated plainly (2026-10-03, eighth
+draft).**
+
+- **τ_e was fitted to a past miss.** It was set to cover P2's 6.8%. It is a
+  choice made after seeing that number, not a derived quantity.
+- **These have no derivation and are conventions:** H1's band [0.75, 1.33]
+  (±33%); H2a's 90% and H2b's 80% and 20%; H3's +0.05 and 16 of 24; H3b's
+  0.95; H4's 2.0×; H6b's ρ ≥ 0.80; H7a's 0.75; R1's 5% and 90%; R2's 90%;
+  R3's 85% and 5 points.
+- **These have a stated basis:** τ_k (banked spread, above); H6a's 0.85 (the
+  profiler's 0.90 target less 0.05); the margin of 10 points and alpha of
+  0.025 (T4's, unchanged); n = 300 (§5).
+- **Count rules have no error rate**, except H1's, which is worked out under
+  H1. A rule such as "16 of 24" is a threshold on a count of cells that
+  share models, prompts and sessions. No false-pass or false-fail rate is
+  claimed for any of them.
+- **Point-estimate rules.** H3b, H6a, H6b, H7a, H7b, H4's ratio and R1–R3
+  are scored on point estimates. Each is reported with its 95% interval, and
+  labelled **marginal** when the interval contains the threshold (§2.5).
+
+**What was visible when these predictions were written (stated 2026-10-03).**
+The A100 crossover estimates were in view while H2 and H5 were drafted and
+amended:
+
+- the per-layer A100 kernels at (12, 2) (`results/s7_sweep_hl122`):
+  cuDNN 1.165 ms against flash 1.570 at 8192, fa2 4.167 against 4.434 at
+  16384, and block-sparse at each sparsity;
+- the banked A100 end-to-end speedups against `sdpa_flash`
+  (`results/s8_vec_endtoend`, `results/s12_a100_vec_endtoend`), including
+  1.48× and 1.67× at 32768;
+- the baseline-strength estimates in `claims.md`: at 8192 against cuDNN,
+  0.962–0.995×, below 1 at every sparsity; at 16384 against fa2, 1.072–1.260×.
+
+- T4's deployable cells, which H5b quotes (XA τ = 0.95 on `qa_1` at 32768);
+- the n = 100 bound that makes P-T4 close to certain (§3.9).
+
+H2c (no profitable point at 8192), H2d (A100 32768 in [1.25, 1.80]), H5a
+(none at 16384) and H5b (at most one at 32768) were written with these
+numbers in view, and quote them. *(H5b was missing from this list until the
+eighth draft.)* They
+are **priors anchored on visible data**, not blind predictions of the A100
+crossover. What they test is whether the new arms (era-4 selector, per-head
+MP, XA through `bsa_prefill`) behave as the banked arms predict. Each is
+reported with this label. The H100 half of H2c is the same: the banked H100
+figures at 8192 (0.923–1.036× against `sdpa_flash`, `limitations.md`) were
+also visible. The predictions not anchored on banked crossover data are H1's
+card ratios, H2a/H2b's per-cell model, H3, H4, H6, H7 and H8.
+
+**H5 is partly structural.** Extrinsic arms run only at d_nom = 0.25 and at
+b\* (§7.2), and profitability at 16384 needs d ≲ 0.25. So few points can be
+both, by design. H5 is a count of what the design allows, not a discovery.
+
+### H1: estimator cost moves across cards as the roofline predicts
+
+*(Rewritten 2026-10-03, eighth draft. As first written, a third of H1's
+cells passed whether or not H1 was true.)*
+
+- **Inputs:** D = T_dense^card1 / T_dense^card2, the timing baseline, and
+  W = the bandwidth ratio card2/card1 from a 1 GiB device copy. Both are
+  measured in each session. Under the null, c is independent of the card.
+- **Prediction:** Q = (c^card2 / c^card1) / (D/W) ∈ [0.75, 1.33]. It applies to
+  the per-head mean-pool scorer and the era-4 selector, at 3 bands.
+- **Tolerance:** D and W are each ±τ_k, and the band on Q widens by
+  ×/÷ 1.05², to [0.680, 1.466].
+- **Card pairs.** Only the two independent pairs are scored: **L4–A100** and
+  **A100–H100**, 6 cells each. L4–H100 is the product of the other two, so it
+  is reported descriptively and never counted.
+- **Discrimination guard.** Under the null, Q = 1/(D/W). A pair is
+  **determinate** only if that value lies outside the widened band **by a
+  further factor of 1.10**: D/W < 0.620 or D/W > 1.617. Otherwise its cells
+  would pass under the null, and they are **indeterminate**.
+  - Expected D/W is ≈ 0.49 for L4–A100, so the null's Q is 2.04 and the pair
+    is determinate.
+  - Expected D/W is ≈ 1.34 for A100–H100, so the null's Q is 0.75, **inside**
+    the band. That pair is expected to be indeterminate. *(The old guard,
+    |ln(D/W)| < 2 ln 1.05, let it through: ln 1.34 = 0.29 against 0.098.)*
+  - The guard uses the D and W measured in the session, not these
+    expectations.
+- **So H1 is expected to rest on the six L4–A100 cells.** I4 (L4 components)
+  is therefore **never cut** (§8.4).
+- **Pass:** at least 5 of every 6 determinate cells (83%) in band: 5 of 6, or
+  10 of 12 if both pairs are determinate. With fewer than 6 determinate cells,
+  H1 is **unresolved**. Otherwise, with too few in band, it **fails**.
+- **False-pass rate of the 5-of-6 rule.**
+  - A null cell is in band only if its measured Q is off by the guard margin
+    or more. Take the log-SD of a measured Q as **σ_Q = 0.035** (assumed:
+    Q has four measured factors; the largest banked spread of such a ratio
+    is 3.2% across four sessions, taken as ±1.6% each, combined in
+    quadrature and rounded up). Then at the guard's edge a null cell passes with
+    probability P(Z > ln 1.10 / 0.035) = **0.32%**.
+  - The six cells share W and, per band, D. So they are not independent. If
+    they were, 5 of 6 would pass with probability about 2 × 10⁻¹². If they
+    are fully correlated, the rate is the single-cell rate, **0.32%**. The
+    truth is between the two.
+  - At the expected D/W of 0.49 the null is 39% outside the band, and the
+    rate is negligible under either assumption.
+  - **Without the margin** the rate at the band's edge would be 11%
+    (independent) and **up to 50%** (correlated). That is why the guard has
+    one.
+  - **What this does not cover.** σ_Q comes from L4 sessions only. The
+    replicate sessions (§7.3) measure it on the A100 and H100. If the
+    measured SD exceeds 0.035, the rate is recomputed and reported; the
+    verdict does not change. The rate is against the stated null only. Any
+    other mechanism that puts Q in the band also passes.
+- **The six L4–A100 cells are out of sample** for the null and for the
+  model's parameters (checked 2026-10-03):
+  - **No estimator cost has been measured off the L4.** The four banked
+    `estimator_cost.parquet` files are all L4 sessions
+    (`tests/test_frontier_eval_ids.py` fails if one from another card
+    appears). So no cross-card c ratio exists.
+  - **The two arms do not exist yet.** The banked L4 figure is head-mean
+    mean-pool. The cells use per-head mean-pool and the era-4 selector
+    (§11.2).
+  - **D and W are measured in the new sessions.** The null has no fitted
+    parameter. The band, the guard and the pass rule are fixed here.
+  - **What was in view:** the L4 head-mean c, the banked dense kernels behind
+    D ≈ 3.3, and W from the specification. They set the expectation that the
+    pair is determinate. They do not set the outcome, which is c on the
+    A100.
+- **Anchor (illustrative, not scored):**
+  - c_MP(L4, 32768) = 0.0437 (pilot session, head-mean);
+  - D ≈ 3.3 (A100 4.434 against L4 14.689 ms per layer at 16384, both
+    `sdpa_flash`; `results/s7_sweep_hl122/sweep.parquet` and the pilot). The
+    scored D uses the §4.6 baseline on each card, which on the A100 at 16384
+    is fa2 at 4.167;
+  - W ≈ 6.8 (specification);
+  - so c_MP(A100, 32768) ≈ 0.021, band [0.016, 0.028].
+- **XAttention is excluded.** Its L4 rows are the torch fallback and never
+  enter a cross-card ratio (§4.9). Its A100–H100 ratio is reported
+  descriptively.
+
+### H2: the component crossover model predicts end-to-end profitability
+
+    S_pred = L · (T_dense − T_est − T_sel − T_bsa(d))  −  n_sync · t_sync
+
+- n_sync is the arm's device-to-host syncs per forward. It is 0 except for
+  official XA (§4.1).
+- t_sync is the host's measured sync floor (§4.8).
+- The input ratio is m.
+- **S_meas** is the measured saving, T_dense^e2e − T_arm^e2e, in ms, from the
+  same session.
+- **Cells (enumerated 2026-10-03, eighth draft).** Qwen2.5-1.5B, on the A100
+  and the H100, at 8192, 16384 and 32768c. Per (card, band) there are 14
+  deployable end-to-end points: MP, XA₈ and VS under era 4 at each of the
+  four d_nom (12), SL at 0.25, and XA native. That is **84 cells**. The
+  oracle point is timed but is not an H2 cell. 7B cells (I2b, cuttable) are
+  reported separately and are in no denominator, so no cut changes this set.
+- **Near-parity:** a cell with |1 − m| ≤ 0.07 is not scored in H2a or H2b and
+  goes to replicates (§7.3). The denominators below are the cells left.
+
+**Predictions:**
+
+- **H2a, sign:**
+  - profitable versus unprofitable matches the sign of 1 − m in at least 90%
+    of determinate cells;
+  - no wrong sign where |1 − m| > 0.15;
+  - an unresolved determinate cell counts as a miss.
+- **H2b, magnitude:** |S_meas − S_pred| ≤ max(0.20·|S_pred|, f·T_dense^e2e) in
+  at least 80% of determinate cells.
+- **H2c, prior:** **no** deployable point is profitable at 8192 on the A100 or
+  the H100.
+  - An unresolved point is not profitable. But a noisy session must not pass
+    this by resolving nothing: if **more than half** the points are
+    unresolved, H2c is **unresolved**.
+  - The banked kernel times below stop at sparsity 0.9. Nothing is banked at
+    d_nom = 0.05, so the "0.03 ms" ceiling does not cover that budget.
+  - On the A100 the 8192 timing baseline is cuDNN at 1.165 ms per layer
+    (§4.6). Block-sparse is 1.544 / 1.230 / 1.133 ms at sparsity 0.5 / 0.75 /
+    0.9 (`s7_sweep_hl122`), so the most any estimator could save is 0.03 ms
+    per layer.
+- **H2d, prior:** for Qwen2.5-1.5B on the A100 at the 32K band (32768c,
+  §4.9), per-head mean-pool at d_nom ∈ {0.25, 0.10} is profitable, with
+  point speedups in [1.25, 1.80]. The interval is the tolerance: it is not
+  widened further.
+  - The vectorised CPU-builder arm measured 1.48× and 1.67× against
+    `sdpa_flash` (`results/s12_a100_vec_endtoend`).
+  - The faster fa2 baseline (§4.6) lowers this by an estimated 2–3%. Removing
+    host exposure raises it.
+
+### H3: under one selector, antidiagonal scores beat mean-pool scores
+
+The T4 descriptive XAttention-over-mean-pool result crosses scorer with
+selector:
+
+- XAttention selects per head by mass;
+- the T4 mean-pool arm uses one head-uniform top-k mask.
+
+H3 holds the selector fixed at era 4.
+
+- **Prediction:** at b = 128, the mean per-example R̃_XA8 − R̃_MP ≥ +0.05, with
+  the one-sided 97.5% bootstrap lower bound above 0.
+- **Cells:** d_nom ∈ {0.25, 0.10} × {1.5B, 7B} × 3 tasks (`qa_1`,
+  `niah_multivalue`, `niah_multiquery`) × 2 bands (16384 and 32768c) = 24,
+  on the evaluation split.
+- **Pass:** at least 16 of 24. **And at least 6 of the twelve 7B cells**
+  (added 2026-10-03, eighth draft), so the T4-informed 1.5B cells cannot
+  carry it alone.
+- **Input ratio:** the realised-density ratio of the two arms, 1 ± 0.01,
+  enforced by gate G7.
+- **H3b:** the best deployable R̃ at d_nom = 0.10 is below 0.95 in at least
+  2/3 of (model × task × band) cells, which is 8 of 12. It is scored on the
+  point estimate (§3, "Point-estimate rules").
+- **Caveat:** the 1.5B direction was informed by T4. From the eighth draft
+  the 1.5B cells run on examples T4 never used (§5), so what T4 informed is
+  the direction, not the examples. The 7B cells are a fresh replication.
+
+### H4: intrinsic recall predicts extrinsic accuracy
+
+- **Population:** pooled over the 1.5B deployable extrinsic arms, stratified
+  by (arm, task, band).
+- **Groups:** per-example R̃ terciles, within each stratum.
+- **Prediction:** the loss rate P(sparse wrong | dense right) in the lowest
+  tercile is ≥ 2.0× that in the highest.
+- **Test:** the one-sided Mantel-extension trend test, p < 0.025.
+- **Both are required to pass.** The ratio is pooled over strata and is a
+  point estimate with no interval.
+- **A stated weakness of the test.** The same 300 examples appear under
+  every arm, and the test treats strata as independent. So its p-value is too
+  small by an unknown amount. As a check, the same test is also run **per
+  arm**, where strata share no example, and those p-values are reported
+  beside the pooled one. They are descriptive and do not change the
+  verdict.
+- **Tolerance:** examples within ±0.005 of a tercile boundary go to the lower
+  tercile.
+- **Power floor:** at least 30 dense-correct examples per tercile, else
+  **underpowered**.
+
+### H5: profitable and certified deployable points (1.5B, `qa_1`, A100, n = 300)
+
+- **H5a:** the count at 16384 is 0. At 16384 profitability needs
+  d ≲ 0.25 (kernel saving 1.06 / 2.17 / 2.64 ms per layer at sparsity
+  0.5 / 0.75 / 0.9, against 4.434 for flash). Against the §4.6 baseline at
+  16384 (fa2, 4.167) each saving is 0.27 ms smaller: 0.79 / 1.90 / 2.37. The T4 deployable arms lost 7–24
+  points at d ≈ 0.4–0.5.
+- **H5b:** the count at 32768 is ≤ 1, and any certified point is an XA arm.
+  The best T4 deployable cell was XA τ = 0.95 on `qa_1`/32768: −2.0 points at
+  d = 0.33.
+- **Input ratio:** profitability uses τ_e and f, and an unresolved point is
+  not profitable.
+- Any certified point is reported against every configuration tried across T4
+  and this study.
+
+### H6: positive control, XAttention on its authors' model and table
+
+Model: Llama-3.1-8B. Configuration: §4.3, the authors' RULER configuration.
+
+- **H6a:**
+  - **Setup:** run that configuration with the shipped `llama_fuse_8` table on
+    `text.json`.
+  - **Population: the 130 texts of at most 32,768 Llama tokens** (run I2c,
+    never cut). The 26 longer texts (run I2d, cuttable) are reported
+    separately as "H6a, long texts", with no pass rule. So no cut changes
+    H6a's population.
+  - **In sample by design.** If the shipped table was calibrated on these
+    texts, H6a scores it on its own calibration set. That is what a positive
+    control of a reproduction is. It says nothing about other inputs.
+  - **Prediction:** mean raw R ≥ 0.85, against the profiler's 0.90 target less
+    0.05 tolerance.
+  - **STOP at R < 0.70** (gate G6).
+  - **If H6a misses (R < 0.85):** the conditional double-BOS arm I2c-B runs
+    (§4.9), before any G6 STOP takes effect, and its read-out is reported
+    with H6a.
+  - **I2c-B is one-sided, and that is stated.** It runs only after a miss,
+    so it can only explain a miss. **H6a's verdict stays "fail"** whatever
+    I2c-B shows. The read-out is an attribution printed beside it.
+- **H6b:**
+  - **Setup:** run the authors' released profiler on Llama over all 156 texts,
+    since none exceeds Llama's limit (§4.9 G9 verifies this). Cap at 0.96 for
+    the comparison only.
+  - **Prediction:** Spearman with `llama_fuse_8` ≥ 0.80 over its 996 non-zero
+    entries.
+  - This tests the collaborator statement that the profiler is "compatible
+    with the DP-based method" (§4.1). A failure is reported. It does not stop
+    the study.
+
+### H7: block granularity limits mean-pool, not antidiagonal scoring as much
+
+*(Rewritten 2026-10-03, eighth draft. As first written, its input ratio was
+fixed by arithmetic outside its own tolerance in at least 18 of 24 cells, so
+H7 was unresolved before any data.)*
+
+`claims.md` already pre-states that the mean-pool gap at block 128 "is an upper
+bound on the gap at their block size", because pooling dilution scales with
+block size.
+
+- **Matched density.** Below b = 128 the budget is the matched budget of
+  §2.1, so each row keeps the same share of its valid blocks as its parent
+  row at b = 128.
+- **Rows scored.** Only rows whose parent row p ≥ 7 at b = 128 (tokens from
+  896 on), at both block sizes. Below that, a b = 16 row has too few blocks
+  to match its parent's density within 0.01.
+- **H7a:** (1 − R̃_MP) at b = 16 ≤ 0.75 × (1 − R̃_MP) at b = 128. The cells are
+  d_nom ∈ {0.25, 0.10} × {1.5B, 7B} × 3 tasks × 2 bands (16384 and 32768c) =
+  24. Pass at least 2/3 of the cells: 16 of 24.
+- **H7b:** (R̃_XA8 − R̃_MP) at b = 16 < the same at b = 128, in at least 2/3 of
+  the cells. At b = 16 a stride-8 antidiagonal sees only 2 × 2 groups.
+- **Input ratio:** realised density at b = 16 over b = 128, over the scored
+  rows, within 1 ± 0.01. By arithmetic it is 0.9986–0.9998 in every cell
+  (`tests/test_frontier_prereg_plan.py`).
+- **Per-row check.** On the masks actually built, every scored row at b = 16
+  must be within 0.01 of its parent row's realised density
+  (`frontier_prereg.row_density_matches`).
+- **Descriptive cells.** A cell that fails the input ratio or the per-row
+  check is **descriptive**: its curves are reported, and it is not counted
+  towards the pass count. With more than 1/6 of the cells descriptive (more
+  than 4 of 24), H7 is **unresolved**.
+- **b = 32 and b = 64** carry no test. Their curves are reported with the
+  per-row check's failures counted (4–10 rows per cell, by arithmetic).
+- **If cut 4 is applied** (§8.4), the 7B cells do not exist. H7 is then
+  scored on the 12 1.5B cells by the same fractions: pass at 8 of 12,
+  unresolved with more than 2 descriptive. It is labelled "1.5B only
+  (cut 4)". *(Against the old fixed 16, it could not have passed.)*
+- **A confound, stated.** At b < 128 the official estimator runs outside the
+  block size its code hard-codes (§4.1), and possibly on the torch path
+  (§4.2). So H7b cannot separate block size from code path. It is labelled
+  with `xattn_path` at each b.
+
+### H8: XAttention, in its authors' configuration, on Llama-3.1-8B accuracy
+
+- **Prediction:** the native XA arm (§4.3, `llama_fuse_8`) is non-inferior to
+  dense within 10 points in every primary Llama cell (n = 300) selected by the
+  task rule (§4.9). Bands are 16384 and 32768c, plus 65536c if run.
+- **"Every" depends on two things fixed before any sparse row:** the dense
+  probe's retention (§4.9) and cut 1 (§8.4). H8 is reported with the number
+  of cells it covered, and labelled "without the 65536c band" under cut 1.
+  Under cut 11 it is "not run (cost stop)".
+- **Input ratio:** none on the test; it is exact. The prediction is scored
+  only if G1, G2 and G9 pass on Llama.
+- If no primary cell is selected, H8 is **unscorable** and reported as such.
+
+### 3.10 Indeterminate and unscorable cases, as implemented (L1, 2026-10-03)
+
+`attnbench/analysis/frontier_prereg.py` scores every hypothesis above.
+Where the text left a case open, the code decides it as follows. These rules
+are part of the pre-registration from lock, and
+`tests/test_frontier_prereg_plan.py` exercises each.
+
+**The exits other than pass and fail.** There are five. None is a pass, and
+each is reported beside the hypothesis it belongs to (§7.6):
+
+| exit | meaning |
+|---|---|
+| **unresolved** | the data exist, but noise or indeterminate cells leave the rule undecided |
+| **unscorable** | an input the rule needs does not exist or failed a gate |
+| **underpowered** | H4 only: fewer than 30 dense-correct examples in a tercile |
+| **not run (cost stop)** | the hypothesis's inputs were cut under §8.4 (`frontier_prereg.apply_cuts`). This overrides whatever a scorer would return on what is left |
+| **indeterminate / descriptive** | a *cell*, not a hypothesis: its input ratio is outside tolerance, so it is not counted |
+
+- **H1:** a cell on L4–H100 is descriptive. A cell whose pair fails the
+  discrimination guard is indeterminate. Fewer than 6 determinate cells is
+  **unresolved**.
+- **H2c:** more than half the points unresolved is **unresolved**.
+- **H7:** a cell count other than 24, or 12 under cut 4, is **unscorable**.
+- **G7 and H3:** a cell outside the 1 ± 0.01 density ratio is
+  **indeterminate**. It does not stop the study. *(§6 said STOP until the
+  eighth draft; this rule governs.)*
+
+- **H2a / H2b:** no determinate cell (every |1 − m| ≤ 0.07) is
+  **unresolved**.
+- **H2c:** no deployable point at 8192 on either card is **unscorable**. An
+  unresolved point counts as not profitable.
+- **H2d:** a missing cell is **unscorable**. If either cell's profitability
+  is unresolved, H2d is **unresolved**.
+- **H3:** a cell outside G7's density ratio 1 ± 0.01 is indeterminate. If
+  passing cells plus indeterminate cells could still reach 16, but passing
+  cells alone do not, H3 is **unresolved**. Otherwise it fails.
+- **H3b:** no cell is **unscorable**.
+- **H5a / H5b:** no point at the band is **unscorable**. The count is of
+  points both profitable and certified.
+- **H6a:** not measured is **unscorable**.
+- **H6b:** a table with other than 996 non-zero entries is **unscorable**.
+- **P-T4:** a missing primary cell is **unscorable**.
+- **R1 / R2:** id sets that differ, or n ≠ 400, are **unscorable**.
+- **R3 / R4:** no cell or band is **unscorable**. R3 and R4 carry
+  "path-divergent" when R1 does not pass, and "card-confounded" when R2 does
+  not pass.
+- **H4:** with tercile 3's loss rate at 0 and tercile 1's above 0, the ratio
+  is infinite, so it passes the ≥ 2.0× test. The trend test is the stratified
+  Mantel extension with tercile scores 1, 2, 3, one-sided for loss
+  decreasing with tercile.
+
+### 3.9 Before T4 runs: the T4 outcome and the replication
+
+These are committed at lock, which comes before T4 Session A (§0).
+
+**P-T4.** The amended T4 `authors` calibration certifies **0 of 2** primary
+cells (`qa_1` at 16384 and 32768, n = 100, L4). **This is close to
+guaranteed** by the n = 100 bound cited below, and it is labelled so. It is
+recorded for completeness, not as a risky prediction.
+
+- The scalar phase's best bounds were −21.1 and −12.7.
+- At n = 100 the exact bound certifies only when the discordant pairs are at
+  most 4 each way (§7.5).
+
+**The replication.** Same table digest, same settings, same 400 example ids.
+The A100 runs the Triton path. T4 Session B runs on the L4 torch fallback.
+
+- **R1, path agreement:** the per-example mean realised density of the A100
+  run is within ±5% (relative) of the L4 run on at least 90% of the 400 ids.
+  This is the input-ratio check for R3 and R4: if R1 fails, they are scored
+  but labelled **path-divergent**.
+- **R2, dense agreement across cards:** A100 `sdpa_flash` dense predictions
+  are identical to T4's L4 dense predictions on at least 90% of the 400 ids.
+  If R2 fails, R3 and R4 are labelled **card-confounded**.
+- **R3, outcome agreement:**
+  - per-example `correct` agrees between the two XA runs on at least 85% of
+    ids in each primary and secondary cell;
+  - |Δ accuracy| ≤ 5 points in each primary cell.
+- **R4, claim agreement:** on the 100 shared `qa_1` ids per band, under T4's
+  test, the A100 claim/no-claim (§2.5) matches T4's in both primary cells.
+- **What R1–R4 cannot separate.** The A100 run differs from T4's in card
+  **and** in code path (Triton against the torch fallback). R1 and R2 label
+  the two, but no result here isolates one from the other. The transformers
+  version behind T4's L4 rows and the A100 rows is recorded per row from the
+  seventh draft; earlier Qwen rows carry none, so R2 cannot rule out a
+  library difference for them.
+- **The replication runs on its own ids.** From the eighth draft the
+  evaluation split shares no example with T4 (§5). R1–R4 and P-T4 use T4's
+  400 ids, at both bands, and nothing else does.
+
+**Decoding in the replications (checked 2026-10-03).**
+
+- **The T4 replication** runs in this harness on both sides: T4's L4 rows
+  and the A100 rows use the same greedy argmax loop, stop rule and caps. So
+  decoding matches by construction.
+- **The XAttention authors' own RULER pipeline**, which H6 and H8 refer to,
+  is also **greedy**: `config_models.sh` sets `TEMPERATURE="0.0"`, and
+  `call_api.py` passes `do_sample=False`. It does not sample, so no
+  replication here needs a sampling treatment (no seeds, no repeated draws).
+- **Where it differs from this study:** chat-format prompts, a double BOS
+  under default tokenizer settings (traced in §4.9),
+  no newline stop, and its own `tokens_to_generate`. These are recorded in
+  §4.9 as confounds for the positive control and H8.
+
+---
+
+## 4. Estimators and implementation
+
+### 4.1 Verified from source (2026-10-03)
+
+Checked at `mit-han-lab/x-attention@e37988770b9d1bebd489eba011d615f35587ba08`
+(`XATTN_COMMIT`, the tip of `main`, last pushed 2025-07-06).
+
+| item | finding | where |
+|---|---|---|
+| **Licence** | **None.** There is no LICENSE file, and GitHub returns `license: null`. The only licences are those of vendored subtrees (`eval/RULER`, `eval/VLMEvalKit`, `eval/HunyuanVideo`). Default copyright applies. No licence issue exists on the tracker. Permission request: §14. | repo; `gh api` |
+| **Block size** | 128. `Xattention_prefill` asserts it, and the profiler hard-codes it. | `xattn/src/Xattention.py:356`; `profile_threshold.py:161` |
+| **Kernel** | `block_sparse_attn_func` (Block-Sparse-Attention, **BSD-3-Clause**). `head_mask_type` all 1, a **per-head** bool mask (1, H, n_qb, n_kb) on the device, `deterministic=True`, `is_causal`. | `Xattention.py:365-391` |
+| **Estimator** | "Inverse" antidiagonal at stride s: softmax of the s-strided Q·Kᵀ, summed into groups of b/s × b/s. | `Xattention.py:13-300` (`xattn_estimate`) |
+| **Selection** | Per row and head, blocks are kept until the cumulative estimate reaches τ × the row total. **The sink column and the diagonal are always kept by the selection itself**, whatever the flags (`utils.py:98-105`, and asserted at `:185-189`). `keep_sink` and `keep_recent` are a separate step afterwards in `xattn_estimate` (`Xattention.py:286-298`): `keep_sink` sets the first **query** block's whole row, and `keep_recent` sets the diagonal again. So with both flags False, as in the authors' RULER call, the sink column and diagonal are still kept. Computed in float64 (`utils.py:86`, `.to(float)`). | `xattn/src/utils.py:44-191` (`find_blocks_chunked`) |
+| **Host syncs** | Two `assert <tensor>.all()` per chunk (`utils.py:178`, `:189`). The default chunk size is `max(min(max(2048, P), 128·1024·2048 // P), 2048)`, with P the next power of two at or above the key length (`Xattention.py:322-331`). At 16384 that is min(16384, 16384) = 16384, **one chunk**, so 2 syncs per layer. At 32768 it is min(32768, 8192) = 8192, **four chunks**, so 8 per layer. **Not sync-free.** | as cited |
+| **Triton vs torch** | Triton runs only if the device name contains "100" (A100 and H100; not the L4). The paths are numerically different: `exp2` with log2(e) folded in, −1e6 against −inf, bf16 block sums. T4's "the fallback selects the same blocks" is untested. Gate G2 tests it. | the device check: `Xattention.py:57-60`; the Triton kernels: `xattn/src/kernels.py:46-151` |
+| **Calibration as released** | `profile_threshold.py`: <br>1. exact fp32 block mass per row; <br>2. the fewest blocks covering **0.90** of the exact mass; <br>3. the smallest estimated value among them; <br>4. per head, (estimated mass ≥ that value, summed over rows) / (total); <br>5. **max over texts**. <br>It calls the estimate with `use_triton=True`, so it follows the card's path. | `xattn/threshold/profile_threshold/profile_threshold.py`: exact mass `:15-47`; 0.90 `:91`; smallest estimate `:96-97`; `use_triton=True` `:82`; max over texts `:218` |
+| **Calibration as published** | The paper's thresholds come from a **dynamic-programming method (Sec. 2.3) that was never released**. Issue #13 (2025-06-05) asked for it. A repository collaborator (`xrorrim`, 2025-06-22, the day the profiler landed) answered that DP is expensive and that `profile_threshold.py` "produces results that are compatible with the DP-based method". Issue #19 (2025-07-13, open) repeats the question. | GitHub issues #13, #19 |
+| **Shipped tables** | `llama_threshold.py` (2025-03-20) predates the profiler (2025-06-22). In `llama_fuse_8`, 114 of 1,024 entries are exactly 0.96 (a cap) and 28 are exactly 0, neither of which the profiler produces. They are consistent with DP output plus post-processing. That cannot be confirmed from source (§14 asks). | `git log -- xattn/threshold/` |
+| **Authors' configurations** | **LongBench** (`eval/LongBench/pred.py`): stride 8, `norm=1`, `keep_sink=True`, `keep_recent=True`, a per-layer table. <br>**RULER** (`scripts/run_ruler.sh` → `xattn/src/load_llama.py`): every prefill layer runs `Xattention_prefill(q, k, v, stride, norm=1, threshold=table[layer_idx], use_triton=True)`, so `keep_sink` and `keep_recent` take their defaults (**False**), and the default chunk size applies. Strides 16, 8 and 4, each with its table. | LongBench: `eval/LongBench/pred.py:135-140`. RULER: `scripts/run_ruler.sh:5-7`; the call at `xattn/src/load_llama.py:175` (and `:389`); tables chosen at `:256-260` |
+
+*(Line numbers added 2026-10-03, eighth draft, read at `e379887`. Elsewhere
+in this file: `TEMPERATURE` is `eval/RULER/scripts/config_models.sh:15`,
+`do_sample` is `eval/RULER/scripts/pred/call_api.py:190`. This project's own
+code is cited at commit `338bdf5`.)*
+
+**Licence policy.** x-attention is cloned and called at run time. It is never
+vendored, never published in modified form, and never baked into an image. Any
+public artefact can only point at the commit (F13).
+
+**Other pins:**
+
+- **MInference** `29ef1974fcb5a1440ccf92d7d7996900230fddcf` (**MIT**). The
+  deployed `vertical_and_slash_kernel` in
+  `minference/modules/minference_forward.py:232-239` (`last_q` at `:234`,
+  the forced first 30 at `:239`; the kernel import at `:29`):
+  - `last_q = 64`;
+  - an fp32 softmax of q_last·kᵀ/√d, causal;
+  - the vertical score is the column sum, with the first 30 forced;
+  - the slash score is the diagonal sum, with the last 100 forced.
+  - Its kernel is `vertical_slash_sparse_attention` (block 64), not
+    Block-Sparse-Attention.
+- **FlashAttention-3:** `Dao-AILab/flash-attention`, `hopper/` (**BSD-3**),
+  pinned at lock. `main` today is `e9515d5dee6ade134a33d6020d38d01ef0596996`.
+  Requirements: H100/H800 and CUDA ≥ 12.3 (12.8 recommended). The image runs
+  CUDA 12.9.
+- FlexPrefill is Apache-2.0. It is not an arm.
+
+### 4.2 Arms
+
+Every arm produces per-head scores (H_q, n_qb, n_kb) in fp32 on the device,
+then a selector, then a bool mask (1, H_q, n_qb, n_kb) on the device, then
+`bsa_prefill` (§4.4).
+
+| arm | scorer | source | selectors |
+|---|---|---|---|
+| **O** oracle | exact M_b, per head | attnbench, GPU-side, chunked | era 4. A reference ceiling, **never deployable**. |
+| **MP** mean-pool | softmax(mean_b(q_h)·mean_b(k_g(h))ᵀ/√d + causal), **per query head** | `minference_meanpool_scores_on_device` without head averaging | era 4 |
+| **XA**_s antidiagonal | `attn_sums` of official `xattn_estimate` | x-attention @ `e379887` | era 4, s ∈ {4, 8, 16} (s = 8 only at b < 128); **native** (§4.3) |
+| **VS** vertical-slash-style | block mean over causal (q, k) ∈ B_i×B_j of v_h(k) + s_h(q−k), from the deployed MInference function | MIT, vendored with attribution (`attnbench/_vendor/minference/`) and NOTICE | era 4. **Not** MInference's vertical-slash method (F11). |
+| **SL** sink + local window | no estimator: score(i, j) = −(i − j), so the nearest earlier blocks win | attnbench | era 4, so the budget is filled by the closest blocks (StreamingLLM-shaped). T_est = 0. The zero-cost anchor of the frontier. Runs none of XAttention's code (§0.3). |
+
+At b < 128, XA uses `xattn_estimate(block_size=b, stride=8)` on the Triton path
+where it runs. Otherwise it uses the torch path, recorded per row as
+`xattn_path`, with gate G2 run at that b. This is outside the block size the
+authors' prefill asserts (§4.1), so every b < 128 XA result is this study's
+use of their estimator, not their method (confound stated under H7).
+
+**Native XA against the other scorers (stated 2026-10-03, eighth draft).**
+Native XA picks its own density, so it has no era-4 arm at the same d_nom.
+
+- **Intrinsic:** for each native mask, MP and O are also scored **at that
+  mask's own per-row kept count**, from the same forward. That
+  matched-density comparison is reported, with no pass rule.
+- **Extrinsic:** native XA is tested only against dense (§2.4). It is never
+  tested against an era-4 arm. Any such comparison is descriptive and names
+  both realised densities.
+
+**Two authors' configurations, not one.** The Qwen native arm uses the
+LongBench settings (`keep_sink` and `keep_recent` on), because it replicates
+T4. The Llama native arm uses the RULER settings (both off). Both run on
+RULER tasks here. Qwen and Llama native results are therefore never pooled
+or compared as one configuration (§10).
+
+### 4.3 The native XAttention arms
+
+**Qwen2.5-1.5B: replication of T4 `authors`, identical configuration.**
+
+- **Table:** T4's committed `authors` table, loaded **by digest**. It is
+  calibrated in T4 Session A on the A100 (§12 A4), by the rule below.
+- **Settings:** stride 8, `norm=1`, `select_mode="inverse"`,
+  `keep_sink=True`, `keep_recent=True`, the official chunk size, KV heads
+  repeated, Block-Sparse-Attention through `bsa_prefill`, dense decode.
+- **Examples and test:** the same 400 example ids and the same dense accuracy
+  reference (`sdpa_flash`). The 200 extra `qa_1` ids per band (§5) are an
+  **extension**, reported separately from the replication.
+- **What differs is the card and the path.** T4 runs on the L4 torch
+  fallback; this runs on the A100 Triton path. R1–R4 test exactly that
+  difference.
+
+**Qwen2.5-7B (intrinsic only).** The same rule, calibrated in this study's
+run C on the A100.
+
+**Llama-3.1-8B: the authors' RULER configuration, verbatim.**
+
+- shipped `llama_fuse_8`;
+- stride 8, `norm=1`, `use_triton=True`;
+- `keep_sink=False`, `keep_recent=False`;
+- default chunk size;
+- every prefill layer;
+- decoding in their pipeline: greedy (`TEMPERATURE="0.0"` →
+  `do_sample=False`), no stop words, chat-format prompts with a double BOS
+  under default tokenizer settings (§4.9, traced to file and line). This study keeps greedy and the kernel settings above. It changes
+  the prompt format for accuracy and the BOS count everywhere, both stated as
+  confounds (§4.9).
+
+This is a deliberate difference from the Qwen arm, whose settings follow T4.
+Both are authors' configurations, one per benchmark.
+
+**The calibration rule (identical in T4 A2–A3, binding on every table).**
+
+1. **Source:** `text.json` (156 prompts), with the Llama-3 chat markers
+   stripped, for the Qwen tables (C, T4). **For Llama** (H6a, H6b) the chat
+   format is kept and only the leading literal `<|begin_of_text|>` is
+   removed, so the input has one BOS (§4.9). Under the Llama limit (131,072)
+   all 156 are used: the maximum is 65,314 tokens.
+2. **Over-length texts are excluded, not truncated.**
+   - A text is used if and only if its token count under the target model's
+     tokenizer is ≤ that model's `max_position_embeddings`, read at run time
+     from the pinned revision's `config.json`.
+   - For both Qwen models that is 32,768, which leaves **121 of 156**. The
+     Qwen token counts are: median 16,025, 10th percentile 3,881, 90th
+     percentile 65,484, maximum 91,574; 35 exceed the limit.
+   - **Why not truncate:** in these multi-document QA prompts the question is
+     at the end. Keeping the tail drops documents, keeping the head drops the
+     question, and either changes the attention structure being profiled.
+   - The excluded indices and their counts are written into the table file.
+3. **Threshold statistic:**
+   - **the maximum over the used texts** of the profiler's per-(layer, head)
+     value, which is the released profiler's `final_threshold`, verbatim;
+   - **no cap** is applied;
+   - recorded descriptively and never used: the 90th-percentile table, the
+     number of entries where max − p90 > 0.05, and for each entry the text
+     that sets the max (to detect domination by one text).
+4. **Path:** the profiler runs on an A100, so its estimate is the Triton path.
+   The table records `xattn_path="triton"`, the source sha256, the commits,
+   and the excluded indices.
+
+**Stated deviation.** This is the authors' *released* procedure. The paper's
+DP procedure is unreleased (§4.1), so no table here is the paper's. H6b
+measures how far the released procedure is from the shipped tables.
+
+**`ruler_cal` tables** (descriptive): from the calibration split (§5), under
+the same rule. They never claim.
+
+### 4.4 Two kernel call sites, proved equivalent
+
+The plan to merge the call sites is **dropped** (2026-10-03).
+`attnbench/backends/xattention.py` stays as it is, under the authors'
+approval (§0.1). Any change to it is a §0.2-gated action.
+
+- **Every non-XAttention arm** calls one new function,
+  `attnbench.kernels.bsa_prefill(q, k, v, mask)`. It takes q, k and v with KV
+  already repeated, and a contiguous bool mask (1, H_q, n_qb, n_kb) on q's
+  device.
+- **Its keyword arguments copy those `backends/xattention.py` passes:**
+  `head_mask_type = ones(H_q)`, `streaming_info=None`, `is_causal=True`,
+  `deterministic=True`, `exact_streaming=False`.
+- **`backends/block_sparse.py`'s own call** (default `deterministic`, mask
+  broadcast across heads) is left for the banked era-3 path. Frontier arms do
+  not use it.
+- **Gate G1b.** On the same q, k, v and per-head mask, `bsa_prefill` and the
+  XA backend's kernel invocation are bitwise equal, at 8192 and 32768, on the
+  A100. That makes "same downstream kernel and mask format" a tested fact
+  rather than one call site.
+
+### 4.5 Era 4: registration
+
+Era 4 is defined in §2.1. The per-head selector is **added beside** the
+head-uniform path, which T4 and the oracle arms still use. So an era cannot be
+read from the commit alone, as eras 1–3 are (`analysis/eras.py`).
+
+**A row-level column.** From the commit that introduces it, every accuracy,
+recall, component and end-to-end row carries `mask_selector`:
+
+| `mask_selector` | era |
+|---|---|
+| `per_head` | 4 |
+| `head_uniform` | 3, by the existing commit rule |
+| `xattn_native` | **native**: the method's own selection, not an attnbench era |
+| `none` | no sparse mask (dense rows); by the commit rule. Added 2026-10-03, because dense rows also have to be fully populated. |
+
+**Implemented 2026-10-03 (lock gate L3).**
+
+- `masks.MASK_SELECTORS` and `masks.mask_selector_for`.
+- The column is written on:
+  - accuracy rows (`runner`, validated in `AccuracyResult`);
+  - component rows (`measure_estimator_cost.py`);
+  - end-to-end rows (`run_vectorised_endtoend.py`);
+  - phase rows (`PhaseMeasurement`).
+- Recall rows do not exist yet. Their writer (§11.2) must carry it, and
+  `frontier_prereg`'s plan test checks that.
+- `eras.py`:
+  - `ERA_LABELS[4]` and `NATIVE`;
+  - `era_of_row` (`mask_selector` first, then commit);
+  - `side_from_frame`, which the two comparison scripts now use;
+  - `PER_HEAD_SELECTOR_COMMIT` = `a1b7801`, the introducing commit,
+    recorded in the commit after it.
+- `licence` no longer passes two sides on equal commits alone. Their eras
+  must match too, because one commit can now hold era 3 and era 4.
+- The era-4 row is added to the `limitations.md` table.
+- Tests: `tests/test_eras.py` (era-4 tests, including the stripped-column
+  break-test) and `tests/test_mask_selector_rows.py`. Every guard was
+  watched red.
+- **The per-head selector: built 2026-10-04**
+  (`masks.importance_block_mask_per_head`, returning a `PerHeadBlockMask`).
+  - Gate G3 holds on CPU: one score matrix on every head is era 3 bitwise,
+    at four sparsities, four sizes, fp32 and fp16, and where only the jitter
+    decides (`tests/test_per_head_selector.py`).
+  - It takes `row_budgets` for the matched budgets below b = 128.
+  - **Built 2026-10-04:** `attnbench.kernels.bsa_prefill` (§4.4), with a
+    plain-torch reference of what it computes; the per-head mean-pool
+    scorer (`meanpool_scores_per_head_on_device`); and the recall pass
+    (`attnbench/accuracy/recall.py`), which is the first caller of the
+    selector and writes `per_head` rows. All three are tested on CPU only.
+    The kernel wrapper has never called the real kernel: gate G1b, and a
+    CUDA test against the reference, run on the first instance.
+  - Still to build: VS, SL, the timed arms that call `bsa_prefill`, and the
+    script that runs the recall pass over a split.
+
+A row at or after that commit with no `mask_selector` is **refused**. Rows
+before it resolve by commit, as now.
+
+This differs from the reasoning in `eras.py` against a mask-rule column. That
+reasoning was about a half-populated field. This one is fully populated from
+its introducing commit, and absence before it is unambiguous.
+
+**To register, all in one commit:**
+
+1. Add an era-4 row to the era table in `docs/limitations.md` ("Which mask
+   era each banked accuracy file belongs to"). Its file list stays empty until
+   rows are banked.
+2. In `eras.py`, add `ERA_LABELS[4]` and `PER_HEAD_SELECTOR_COMMIT`, and
+   resolve era by `mask_selector` first, then by commit.
+3. Extend `tests/test_eras.py` to derive era 4 from the doc table joined to
+   each parquet's `mask_selector`.
+4. Add a **break-test**: a per-head row with the column stripped must be
+   refused, not silently read as era 3.
+
+**Consequences:**
+
+- The comparison scripts refuse era 3 against era 4, and native against
+  either, without `--cross-era`.
+- T4's head-uniform arms against this study's per-head arms are therefore
+  descriptive only.
+
+### 4.6 Dense timing baseline: the fastest kernel that runs correctly
+
+**Candidates.** For each (card, band):
+
+- `sdpa_flash`, `sdpa_cudnn`, `fa2`;
+- on the H100 only, FA3 (`flash_attn_3`).
+
+**"Runs correctly" means three things:**
+
+1. it completes at the model's geometry (GQA, head dim 128, bf16, causal);
+2. it passes the existing numerics gate against an fp32 reference:
+   |error| ≤ atol + rtol·|expected| elementwise, with atol = rtol = 2e-2 for
+   bf16 (`attnbench/gates.py:24-26`, `:295`);
+3. a device-health check passes afterwards: a fixed matmul checksum, and no
+   new Xid in the serial console.
+
+**The rule.** The baseline is the fastest correct candidate, from the
+session's component microbenchmark. It is chosen **before** any end-to-end
+timing and recorded on every row as `dense_baseline`. It also carries T_dense
+in H1 and H2.
+
+**Switch points, reported per card:**
+
+- the microbenchmark covers {4096, 8192, 12288, 16384, 24576, 32768}, plus
+  65536 for Llama;
+- each switch is attributed either to **speed** or to **exclusion**.
+- From banked data, the A100 at (12,2) (`s7_sweep_hl122`):
+
+  | band | cuDNN | fa2 | `sdpa_flash` | fastest |
+  |---:|---:|---:|---:|---|
+  | 4096 | 0.343 | 0.383 | 0.509 | cuDNN |
+  | 8192 | 1.165 | 1.459 | 1.570 | cuDNN |
+  | 16384 | excluded | 4.167 | 4.434 | fa2 |
+
+  The cuDNN→fa2 switch between 8192 and 16384 is caused by **exclusion**,
+  not speed. Every earlier end-to-end figure in this project used
+  `sdpa_flash`, which is the slowest of the three.
+
+**Run D: a same-session dense-kernel comparison at the real geometry.**
+`docs/claims.md` now carries a baseline-strength caveat (2026-10-03): every
+banked A100 speedup is against `sdpa_flash`. Its end-to-end corrections are
+**estimates**, made by subtracting the per-layer kernel difference ×28. Run D
+measures them. It runs in I1 (A100) and I3 (H100), before candidate timing:
+
+- **What:** end-to-end dense prefill of Qwen2.5-1.5B at 8192, 16384 and
+  32768.
+- **Arms:** every correct candidate kernel (`sdpa_flash`, `fa2`, cuDNN at
+  ≤ 8192 or where the H100 probe passes, FA3 on the H100), interleaved per
+  rep. 20 reps after 3 warm-up calls, 2 selection-split prompts, A/A on
+  `sdpa_flash`.
+- **Alongside:** the vectorised block-sparse arm at 0.5, 0.75 and 0.9 with
+  the `results/s12_*` builder, so the banked speedups can be recomputed
+  against each kernel in one session.
+- **Output:** `results/frontier_dense_kernels_<card>_<date>/`. When banked,
+  its figures **replace** the caveat's estimates in `claims.md`, as a dated
+  update with `tests/test_a100_baseline_caveat.py` re-pointed at the new
+  parquet.
+- **Cost:** about 5 arms × 23 forwards × 2 prompts × 3 bands, or 4–7 min on
+  the A100 and 2–4 min on the H100, inside I1 and I3's brackets.
+
+**The cuDNN fault at 16384 and above:**
+
+- **A100 and L4.** Excluded above 8192 and recorded as
+  `status="illegal_memory_access"`. The evidence (`limitations.md`, "cuDNN
+  fused attention faults the device above 8192"): Xid 31, an MMU fault, on
+  four machines across sm_89 and sm_80, all at driver 580.173.02 and torch
+  2.9.1+cu129. *(Corrected 2026-10-03: the banked serial logs hold three
+  real Xid 31 events, two on L4 and one on A100. Later rows that record the
+  fault are guard-written; see `limitations.md`.)* They are not re-probed
+  while driver and torch are unchanged.
+  If either changes, they are re-probed as for the H100.
+- **H100 (sm_90). A record exists, and it is not an observation. Checked
+  2026-10-03.**
+  - **What the files say.** Every H100 probe file records `sdpa_cudnn` at
+    16384 and 32768 as `actual="illegal_memory_access"`, with
+    `claim_mismatch=False`: 168 rows in each of
+    `results/h100_20260916_stage0/results/probe/probe.parquet`,
+    `results/h100_20260916_stage0/stage0_h100_merged.parquet`,
+    `results/h100_20260916_stage01/results/probe/probe.parquet` and
+    `results/h100_20260916_stage2/results/probe/probe.parquet`. There are 84
+    at 32768 in `…/stage0/results/probe32k/sdpa_cudnn/probe.parquet`, and 84
+    at 16384 in `results/h100_20260916_stage0_partial/probe.parquet`.
+  - **What actually happened.** At those sessions' commits (`92c253f`,
+    `795823a`, `9c05dfd`, `de0e8ed`), `gates.py` returns that status
+    **before** `run_once` whenever the claim reason starts with
+    `KNOWN DEVICE FAULT: `, and every one of these rows carries that prefix
+    and the sm_89 note. **cuDNN was never launched above 8192 on an H100.**
+    The `actual` column holds the guard's prediction, not a measurement.
+  - **Two documents say otherwise, and are wrong about these rows.**
+    `docs/retry_session_runbook.md` (the "isolation" table) says cuDNN's 84
+    faults "raise at the call, `probe()` catches them". The `--exclude-backends`
+    help in `scripts/run_probe.py` says cuDNN "took the 32768 band down with
+    it", which the same runbook then disproves ("excluding it changed
+    nothing"). Both were corrected on 2026-10-03 (`3f8a884`), and each
+    keeps its old text. *(This said "Both are flagged (§13). Neither is
+    corrected here." until 2026-10-03, after the correction had been made.)*
+  - **The sm_80 evidence is real.** `results/a100/serial_console.log:2686`
+    logs Xid 31 (MMU fault) at 2026-09-05 13:03.
+  - **The probe runs LAST** (amended 2026-10-03). It is the final phase of
+    the H100 session I3, **after all of I3's results are synced** to GCS.
+    - It runs in an isolated subprocess with `CUDA_LAUNCH_BLOCKING=1`.
+    - It **bypasses the guard explicitly** (`--launch-known-fault
+      sdpa_cudnn`, refused anywhere but an isolated process), because the
+      guard writes its status without launching.
+    - It runs cuDNN at 16384 and 32768 at the model's geometry, records
+      `launched=True`, and is followed by the health check.
+    - A fault can then cost nothing already measured.
+  - **So cuDNN is never a candidate in an H100 session above 8192.** The
+    H100 timing baseline above 8192 is chosen in I3 from the other
+    candidates, and stays fixed for every later H100 session. Changing it
+    between sessions would break comparability.
+  - **If the probe passes:** cuDNN's correctness and speed are reported.
+    Later H100 sessions (the replicates) add it to run D as a **descriptive**
+    dense arm. If it is faster, every H100 profitability claim above 8192 is
+    stated as an upper bound against it.
+  - **If it faults:** it is recorded as observed on the H100. The scope then
+    becomes "observed on L4, A100 and H100".
+  - **If the health check fails:** the session is already over and its
+    results are synced. The fault is recorded, and nothing is relaunched for
+    the probe.
+
+**FA3 on the H100: included.**
+
+- **Why:** Block-Sparse-Attention is FA2-derived. Against an FA2-class dense
+  kernel on Hopper, sparse savings would be overstated.
+- **How:** a wheel is built from `hopper/` at the pinned commit, against the
+  image's torch 2.9.1+cu129 and CUDA 12.9, on a CPU-only VM, so no GPU time is
+  spent on the compile. It is installed on the H100 and must pass "runs
+  correctly".
+- **If the build or a check fails:** H100 rows carry
+  `dense_set_incomplete="fa3:<reason>"`. Every H100 profitability claim then
+  reads "against the fastest correct dense kernel available, FA3 excluded
+  (reason)", and is stated as an upper bound.
+- **FlashAttention-4** (CuTeDSL, `pip install flash-attn-4`) is not a
+  candidate. Its README recommends CUDA 13, and the image runs 12.9. Recorded
+  as limitation F2.
+
+**The accuracy reference stays `sdpa_flash`** (§2.4).
+
+### 4.7 GPU-side and synchronisation
+
+- **On the device:** every scorer, selector and mask build, with masks never
+  leaving the device. The oracle's exact mass is GPU-side and chunked; today's
+  CPU-resident oracle path is not used.
+- **Sync check:** each arm's forward runs once under
+  `torch.cuda.set_sync_debug_mode("error")`. MP, VS, O and the era-4 selector
+  must raise nothing.
+- **Official XA** syncs by construction and runs **as shipped**. `n_sync` is
+  recorded and enters H2's model (F9).
+
+### 4.8 Host provenance on every row: CPU model and launch floor
+
+**Per row, every output** (component, end-to-end, recall, accuracy,
+calibration):
+
+- `cpu_model` and `cpu_count`, which `provenance.py` stamps already;
+- `host`;
+- the live `cpuPlatform` from the metadata server, as in the s12 sessions.
+
+**Per-host launch floor,** measured at session start and end on that host and
+stamped on every row from the start values:
+
+| field | measurement |
+|---|---|
+| `launch_floor_us` | median per-launch host time over 10,000 back-to-back empty kernel launches |
+| `sync_floor_us` | median of 2,000 round trips: a trivial kernel launch, then device synchronise, on the host clock |
+| `h2d_floor_us` | a 1-byte host-to-device copy under double sync, the S11 floor (`floor_p50_us`) |
+
+- **Drift:** start and end values both go in the session file. More than 20%
+  drift between them flags the session in the report, but does not stop it.
+- **Use:**
+  - `sync_floor_us` is t_sync in H2;
+  - all three are reported beside every cross-card comparison;
+  - for H1, a host whose `launch_floor_us` differs by more than 25% from the
+    other card's host is named in that cell's report.
+
+### 4.9 Cards, models, bands, XA path labels, context limits
+
+**Cards:**
+
+- **A100** `a2-ultragpu-1g`: primary; the official Triton path; recall,
+  calibration and all extrinsic runs.
+- **H100** `a3-highgpu-1g`: the generation axis.
+- **L4:** components only.
+
+**XA path labels.**
+
+- Every XA row carries `xattn_path ∈ {triton, torch_fallback}`.
+- L4 XA rows are always `torch_fallback`. They are reported in their own
+  table titled "XAttention, torch fallback (official code's behaviour on this
+  card, not its official path)".
+- They are **never on the generational curve**. H1, the cross-card frontier
+  plots and every cross-card ratio refuse `torch_fallback` rows. A
+  separately-labelled descriptive table needs `--allow-fallback`.
+
+**Models and pinned revisions:**
+
+| repo id | revision | `max_position_embeddings` | `rope_scaling` | how verified |
+|---|---|---:|---|---|
+| `Qwen/Qwen2.5-1.5B-Instruct` | `989aa7980e4cf806f80c7fef2b1adb7bc71aa306` | 32768 | none | local HF cache |
+| `Qwen/Qwen2.5-7B-Instruct` | `a09a35458c702b33eeacc393d103063234e8bc28` | 32768 | none | HF |
+| `meta-llama/Llama-3.1-8B-Instruct` | `0e9e39f249a16976918f6564b8830bc894c89659` | 131072 | `llama3`: factor 8.0, low 1.0, high 4.0, original 8192; `rope_theta` 500000.0 | **G9, 2026-10-03:** read by the researcher locally with their own token. `config.json` sha256 `29e4c210b0d6ac178b16b2a255a568bdb23b581e50ca1ef6a6d071dd85704e6e`, taken from the researcher's local HF cache, whose only snapshot is this revision. *(Until 2026-10-03 this row read "not verified: gated, 401 without a token".)* |
+
+**G9 result, 2026-10-03 (lock gate L5): passed for the position limit
+only.** The researcher read `config.json` at the pinned revision locally,
+with their own token:
+
+- `max_position_embeddings` 131072;
+- `rope_scaling` {`rope_type` llama3, `factor` 8.0, `low_freq_factor` 1.0,
+  `high_freq_factor` 4.0, `original_max_position_embeddings` 8192};
+- `rope_theta` 500000.0;
+- 32 layers, 32 attention heads, 8 KV heads, `hidden_size` 4096 (head_dim
+  128), vocab 128256, bfloat16.
+
+The geometry matches §2. Every Llama band below fits under 131,072 with any
+generation cap. The pass covers the limit and nothing else. The checks below
+were done on CPU on 2026-10-03, or are still open.
+
+**Same model as XAttention's shipped thresholds (checked from source,
+`e379887`).**
+
+- **Repo id.** This study uses `meta-llama/Llama-3.1-8B-Instruct`. The
+  authors' RULER run (`scripts/run_ruler.sh`, model `llama3.1-8b-chat`)
+  resolves in `eval/RULER/scripts/config_models.sh` to
+  `${MODEL_DIR}/Llama-3.1-8B-Instruct`, a local directory. The profiler's
+  default is `meta-llama/Llama-3.1-8B-Instruct`
+  (`profile_threshold.py:185`). LongBench names `Meta-Llama-3.1-8B-Instruct`,
+  the repository's earlier name.
+- **Revision.** Not recorded anywhere in their code (a local path), so the
+  tables were calibrated on this model at an **unknown revision**.
+- **Table shape.** `llama_fuse_4`, `llama_fuse_8` and `llama_fuse_16` are
+  each 32 × 32. `load_llama.py` repeats K and V up to 32 heads before
+  `Xattention_prefill`, which asserts `num_q_head == num_kv_head`, and passes
+  `threshold[layer_idx]`. `find_blocks_chunked` (`xattn/src/utils.py:91-93`)
+  broadcasts that 32-vector over the head axis. So the table is **32 layers ×
+  32 query heads**, matching G9's 32 layers and 32 attention heads.
+
+**RoPE `llama3` in the pinned transformers.**
+
+- The GPU images pin transformers 4.46.0. It implements `llama3`
+  (`modeling_rope_utils.py:310`, `_compute_llama3_parameters`, registered
+  at line 362), as does the workstation venv's 5.18.0.
+- **The logits gate was re-run** with llama3 scaling that triggers:
+  `tests/test_llama3_rope_gate.py`, a tiny random Llama with the G9 rope
+  values and `original_max_position_embeddings` scaled to 16, run to 64
+  positions. Wrapped logits equal unwrapped logits within 1e-5 on both
+  4.46.0 and 5.18.0. The installed inverse frequencies equal Meta's formula,
+  implemented independently in the test, for the real G9 geometry too. A
+  wrapper fed unscaled RoPE fails the gate (break-tested, watched red).
+- **A trap, found doing this.** transformers 4.46.0 **silently ignores** a
+  config key it does not read: given `rope_parameters` (the newer spelling)
+  instead of `rope_scaling`, it builds default RoPE with θ = 10000 and no
+  error. The real `config.json` uses `rope_scaling`, which both versions
+  read. Step 4 below guards against this on the instance.
+
+**Gate G9, on the instance, before any Llama row:**
+
+1. Read `config.json` at the pinned revision with the project's token.
+   Assert its sha256 equals the one in the table above, so the instance
+   loads the file the researcher checked.
+2. Assert `max_position_embeddings` ≥ every Llama band's budget +
+   `stopping.token_cap(task, "meta-llama/Llama-3.1-8B-Instruct")`.
+3. Assert that `text.json`'s maximum Llama token count is within the limit,
+   for H6b. **Done locally 2026-10-03** with the pinned tokenizer, offline:
+   maximum 65,314 with one BOS (65,315 as the authors encode it), against
+   131,072. The instance repeats the count. (The Qwen count is 91,574.)
+4. After loading the model, assert `model.model.rotary_emb.rope_type ==
+   "llama3"` and that its `inv_freq` equals Meta's formula (the helper in
+   `tests/test_llama3_rope_gate.py`). STOP otherwise.
+5. Assert the stop set is {128001, 128008, 128009} and the newline and
+   whitespace sets match the digests in the stop-rule block below. STOP
+   otherwise.
+6. Determinism: the dense arm decodes two selection-split prompts twice
+   each. Anything but byte-identical output is a STOP.
+
+If an assertion fails for one band, that band is **dropped for validity**
+(not under §8.4).
+
+**Bands:**
+
+- Qwen: 8192, 16384, 32768 (the 32K band capped, below).
+- Llama extrinsic: 16384, 32768c and 65536c (amended 2026-10-03):
+  - **32768c:** budget 32,768 − the Llama cap for the task, the same rule as
+    Qwen's (below). Llama's limit does not require it. It keeps
+    prompt + generation ≤ 32,768, so the 32K band means the same number of
+    positions on both models.
+  - **65536c:** budget 65,536 − the Llama cap, so prompt + generation ≤
+    65,536, below the 131,072 limit.
+  - **16384:** uncapped, as for Qwen. 16,384 plus any cap is far below the
+    limit.
+  - **No 128K band is planned.** One would need its own cap at 131,072. At
+    about 4× the 65536 band's cost per row (§8.2), it does not fit under
+    §8.3, and the 65536 band is already cut first.
+- **Llama sizing: per example, every task.** Every Llama generation calls
+  `ruler.generate_examples(..., per_example_fit=True)` (added 2026-10-03,
+  `tests/test_per_example_fit_flag.py`, break-tested). That sizes every
+  example on its own and raises if one still lands above budget. The five
+  candidate tasks are already in `_PER_EXAMPLE_FIT`, so the flag changes none
+  of their prompts. It closes the gap for any other task. G11 holds Llama to
+  it as well.
+- **Llama decoding, stop rule and prompt encoding (lock gate L7, amended
+  2026-10-03, sixth draft).**
+  - **`generation_config.json`** at the pinned revision, as reported by the
+    researcher and matching the copy in their local cache: `bos_token_id`
+    128000; `eos_token_id` [128001, 128008, 128009]; `do_sample` true,
+    `temperature` 0.6, `top_p` 0.9; `transformers_version` 4.42.3. The
+    researcher also confirmed locally that 128000 is `<|begin_of_text|>`,
+    128001 `<|end_of_text|>`, 128008 `<|eom_id|>` and 128009 `<|eot_id|>`;
+    that `tokenizer.eos_token_id` is 128009 alone; and that the tokenizer
+    prepends BOS by default ("hello" → [128000, 15339]).
+  - **Greedy, explicitly.** The decode loop is argmax and never reads
+    `generation_config`. Even so, `SwappableAttentionModel` **forces** greedy
+    for this model id when it wraps the model (`do_sample` False;
+    `temperature`, `top_p` and `top_k` None), and **asserts** it at every
+    `generate` call. Every Llama arm goes through that wrapper. `generate`
+    takes no sampling arguments.
+    `tests/test_llama_decoding_and_prompts.py` fails if `do_sample`,
+    `temperature` or `top_p` reaches a Llama arm. It also checks
+    determinism: the same prompt twice gives byte-identical ids, stop and
+    text. **On the instance:** before XL0, the dense arm decodes two
+    selection-split prompts twice each, and anything but byte-identical
+    output is a STOP.
+  - **Stop set: all three ids.** `StopTokens.from_tokenizer(..., model_id=)`
+    refuses any Llama stop set but {128001, 128008, 128009}. In particular it
+    refuses the tokenizer's 128009 alone. The newline stop keeps its
+    non-whitespace arming rule.
+  - **Firing id recorded.** Every row carries `stop_token_id`, the id that
+    ended an `eos` or `newline` stop, beside `stop_reason`. The category
+    column keeps its three values, so banked rows and analyses read the same.
+    **Banked rows have no `stop_token_id`.** `schema.load_accuracy_parquet` /
+    `normalise_accuracy_frame` give them a typed null (`Int64` NA, never 0 or
+    a float NaN), and the runner applies the same normaliser on every
+    checkpoint append. Tested.
+  - **Newline and whitespace sets** are rebuilt from the Llama vocab
+    (128,256 entries). 2,255 newline ids (sha256 of the sorted list, first 16
+    hex: `dc24e2c3056c70b4`) and 530 whitespace-only ids (`445dc415bf20b800`).
+    No special id is in the newline set. They are **identical on
+    transformers 4.46.0 and 5.18.0**. The instance asserts the same digests.
+  - **Decoded text differs by version, so the version is a hard check.**
+    On 4.46.0 the tokenizer's `clean_up_tokenization_spaces=True` applies on
+    decode ("x , y" → "x, y"). 5.18.0 ignores it for BPE, and substring
+    scoring can be sensitive to spacing before punctuation.
+    `accuracy/pins.py` pins Llama to **transformers 4.46.0**, the image's
+    version per `scripts/gcp_launch_compile_session.sh` and audit S9, not
+    re-read from the v6 image. The Llama path refuses unless the loaded
+    version equals the pin, at three points:
+    - before the model loads (`run_accuracy.build_generate_fn`);
+    - at every `generate` call;
+    - before every row is scored (`runner.run_accuracy`, `model_id=`).
+
+    Every row now records the version (the new provenance field
+    `transformers`; banked rows read it as null). If the instance reports
+    another version, nothing is scored, and the pin changes only by a dated
+    amendment before any Llama row. Tests run on 5.18.0, so the Llama tests
+    stand in for the image explicitly, and one test checks that the real
+    5.18.0 is refused.
+  - **Caps, measured 2026-10-03** offline (`HF_HUB_OFFLINE=1`, the cached
+    pinned tokenizer, no token) by
+    `scripts/measure_answer_lengths.py --model meta-llama/Llama-3.1-8B-Instruct --revision 0e9e39f…`,
+    200 examples per task, same rule as Qwen (cap = 2 × max). Recorded in
+    `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS` and pinned to this table by
+    `tests/test_stopping.py`:
+
+    | task | n | min | median | p95 | max | cap | model |
+    |---|---:|---:|---:|---:|---:|---:|---|
+    | `niah_single` | 200 | 3 | 3.0 | 3 | 3 | **6** | Llama |
+    | `niah_multikey` | 200 | 18 | 23.0 | 26 | 28 | **56** | Llama |
+    | `vt` | 200 | 12 | 16.0 | 18 | 20 | **40** | Llama |
+    | `niah_multikey_1` | 200 | 3 | 3.0 | 3 | 3 | **6** | Llama |
+    | `niah_multivalue` | 200 | 15 | 15.0 | 15 | 15 | **30** | Llama |
+    | `niah_multiquery` | 200 | 15 | 15.0 | 15 | 15 | **30** | Llama |
+    | `qa_1` | 200 | 1 | 3.0 | 10 | 21 | **42** | Llama |
+    | `qa_2` | 200 | 1 | 3.0 | 8 | 23 | **46** | Llama |
+
+    Llama groups digits in threes, so a 7-digit answer is 3 tokens (Qwen: 7),
+    and the number tasks' caps are less than half of Qwen's. **Flag:** a cap
+    of 6 leaves 3 tokens for anything before or after a 3-token number.
+
+    **Pre-registered cap-change rule (2026-10-03).**
+    - **Input.** The dense cap-hit rate per task in XL0: rows with
+      `stop_reason == "cap"`, over the task's 15 dense rows (5 per band × 3
+      bands).
+    - **Trigger.** A rate **above 5%**, which at n = 15 means **one or more**
+      cap hits, for any Llama task.
+    - **Action.** That task's cap is doubled **once** (for example 6 → 12),
+      committed as a dated amendment, and the task's XL0 dense rows are
+      re-run at the new cap **before** the retention decision (§4.9, task
+      selection) and before any XL row.
+    - **No second change.** If the re-run still exceeds 5%, the task keeps
+      the doubled cap and is reported with a truncation confound.
+    - **Never after XL0.** Caps are not changed on the basis of any sparse
+      row or any XL row.
+    - **Cost.** At most 15 dense rows per task, inside XL0's own bracket
+      (XL0 is cut-order item 11).
+  - **Budgets.** 32768c and 65536c Llama budgets are band − the cap above:
+    `qa_1` 32,726 and 65,494; `niah_multivalue` and `niah_multiquery` 32,738
+    and 65,506.
+  - **Encoding: the sizer counts exactly what the model is fed.** Sizing
+    (`ruler.generate_examples`) and generation (`generation.generate_one`)
+    both encode through `accuracy/prompting.py`. It uses
+    `add_special_tokens=True`, stated rather than defaulted, which prepends
+    one BOS on Llama. `generate_one` refuses an example whose sized
+    `context_length` differs from the number of ids it feeds.
+    `tests/test_llama_decoding_and_prompts.py` checks the two are equal per
+    example, and that a sizer counting with `add_special_tokens=False` (one
+    short) is caught. Qwen's counts are unchanged, because its tokenizer
+    adds no BOS.
+  - **Double-BOS guard.** `prompting.prompt_ids` refuses ids that begin with
+    two BOS ids.
+  - **Block 0 holds the BOS on Llama.** Every Llama prompt's position 0 is
+    `<|begin_of_text|>` (128000), so key block 0, the sink every era-3 and
+    era-4 mask grants free (§2.1), contains it. On Qwen, position 0 is
+    ordinary text.
+
+**What the authors' pipeline does (checked from source at `e379887` and
+with the pinned tokenizer, 2026-10-03).**
+
+- **Decoding: greedy.** `eval/RULER/scripts/config_models.sh` sets
+  `TEMPERATURE="0.0"  # greedy`. `pred/call_api.py` passes
+  `do_sample=args.temperature > 0`, so False, with `repetition_penalty=1`,
+  `top_k` 32 and `top_p` 1.0, which greedy ignores. Generation is
+  `model.generate` with no stop words (`config_tasks.sh`). So it ends on
+  `generation_config`'s three EOS ids or on `max_new_tokens`, the task's
+  `tokens_to_generate`. **It does not sample, so the replication needs no
+  sampling treatment.** Our decoding is also greedy. Our stop rule adds the
+  newline stop and uses our own caps, and that difference is the confound
+  stated below.
+- **Prompt format: chat, hand-written.**
+  - **Calibration** (`profile_threshold.py` on `text.json`): every prompt is
+    `<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n…<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n Answer:`.
+  - **RULER evaluation** (`run_ruler.sh` → `config_models.sh`): template
+    `meta-llama3`, the same user/assistant wrapping (`data/template.py`).
+  - Neither is `tokenizer.apply_chat_template`, which would add a system
+    header. Neither has a system turn.
+- **Double BOS, under default tokenizer settings** (wording and trace
+  amended 2026-10-03, before this section was pushed).
+  - **What was checked.** Both prompt strings begin with a literal
+    `<|begin_of_text|>`. Encoded with `add_special_tokens` left at its
+    default (True), the pinned tokenizer (revision `0e9e39f`) produces
+    `[128000, 128000, 128006, …]` on transformers 4.46.0 and 5.18.0. That
+    holds for **156 of 156** `text.json` prompts and for the RULER
+    `meta-llama3` template.
+  - **Calibration path** (`xattn/threshold/profile_threshold/profile_threshold.py`,
+    `e379887`):
+    - line 208 loads `text.json`, whose strings carry the literal BOS;
+    - line 212 calls `tokenizer(text, return_tensors="pt")`, so
+      `add_special_tokens` is not passed and takes its default;
+    - lines 213–214 call `model(**inputs)` with those ids.
+  - **RULER evaluation path** (`eval/RULER/scripts/`, `e379887`):
+    - `data/prepare.py:86-91` formats the `meta-llama3` template, literal
+      BOS included, into each task's template;
+    - the task generators fill it (for example `data/synthetic/niah.py:188`)
+      to give each example's `input`;
+    - `pred/call_api.py:323` passes `data_point['input']` to
+      `llm.process_batch` (`:266`);
+    - `pred/model_wrappers.py:64` calls `self.tokenizer(prompts,
+      return_tensors="pt", padding=True)`, with `add_special_tokens` not
+      passed;
+    - `:66` calls `self.model.generate(**inputs)` with those ids. That is the
+      branch taken for `Llama-3.1-8B-Instruct` (`pipeline=None`, lines 31–32).
+  - **So, from source,** both paths feed the model the ids the tokenizer
+    returns under default settings. Those are double-BOS ids **if** their
+    installed tokenizer behaves as the pinned one does here. **Not
+    established:**
+    - their transformers and tokenizers versions, which their code does not
+      pin;
+    - whether the published runs used this code path unmodified.
+
+    Nobody here ran their pipeline.
+  - **The shipped tables.** The `llama_fuse_*` calibration pipeline is
+    unreleased (§4.1). If it used the profiler path above, the tables were
+    calibrated on double-BOS inputs.
+  - **Asked of the authors?** Whether the calibration prompts were meant to
+    carry a double BOS is a third question, after the two in §0.1. Sending it
+    is the researcher's action.
+
+**Pre-registered prompt format for this study, and the confounds it
+leaves.**
+
+- **H6a / H6b (positive control on `text.json`):** the authors' chat format
+  exactly, with the leading literal `<|begin_of_text|>` removed. That gives
+  **one BOS**, the tokenizer's. Only the BOS count differs from the authors'
+  input. **Confound, stated:** their double BOS shifts every position by one
+  and puts two BOS keys in block 0. H6a's recall and H6b's profiler
+  reproduction are both measured on single-BOS inputs, and the confound is
+  reported beside their verdicts.
+  **Conditional arm I2c-B, double-BOS sensitivity (pre-registered
+  2026-10-03 with the researcher's yes):**
+  - **What:** H6a's recall run again on the same ≤ 32K `text.json` texts,
+    encoded exactly as the authors' code does: the literal BOS kept,
+    `add_special_tokens` at its default, so two BOS ids. The double-BOS guard
+    is lifted for this arm only, by an explicit flag recorded on its rows
+    (`bos_count=2`). Same table, settings and recall measure as I2c.
+  - **Trigger:** only if H6a misses its stated tolerance, that is mean raw R
+    < 0.85. That includes the G6 range (R < 0.70). When G6 fires, I2c-B runs
+    in the same session **before** the STOP takes effect, because it is the
+    diagnostic for that STOP.
+  - **Read-out, stated now:** if R on double-BOS inputs is ≥ 0.85, the miss
+    is attributed to the BOS mismatch, and H6a is reported as "passes on the
+    authors' encoding, fails on ours". Otherwise the BOS does not explain the
+    miss, and H6a fails as stated.
+  - **Cost:** about ₹117–262 (25–55 min, as I2c). Cut-order item 12 (§8.4).
+    It is reserved in the worst-case arithmetic (§8.3).
+- **H8 and every Llama accuracy arm:** this study's completion-style RULER
+  prompts (no chat wrapping, as for Qwen), one BOS, greedy, the stop rule
+  above. **Confound, stated:** the authors evaluated in chat format with no
+  newline stop. So H8 tests XAttention's kernel configuration and shipped
+  table on this study's prompt format. It does not reproduce the authors'
+  RULER scores, and is never compared with them numerically.
+  `calibrate_xattn_thresholds.py`'s marker stripping is for Qwen only, and
+  is not applied to Llama.
+
+**Positions past Qwen's limit at 32768.**
+
+- **How the overrun arises.** `context_length` is the prefill length:
+  `generation.py:123` tokenises the context with no chat template, the same
+  `len(tokenizer(text).input_ids)` that sized it. The decode loop feeds
+  generated token k at position P + k − 1 and never feeds the last one.
+- **Banked rows, flagged 2026-10-03** by `scripts/flag_positions_over_limit.py`
+  into `results/positions_over_limit/` (`summary.csv`, `flagged_rows.csv`,
+  `copies.txt`). Across **31 distinct accuracy parquets** (47 paths):
+  - **1,638 of 34,582 rows** have P + n_generated > 32,768;
+  - **1,636** ran at least one forward at a position ≥ 32,768;
+  - every flagged row is at the 32768 band, in `stage3_32768` (era 1) and
+    every T4 file (probe, pilots, canaries).
+- **Prefill itself past the limit.** **12 rows** in `stage3_32768` (`niah_single`
+  examples 16, 35 and 40, each under 4 arms) have prompts of **32,769**
+  tokens, so their prefill also crossed the limit. This contradicts
+  `ruler.py`'s docstring ("never above `token_budget`"). The filler count is
+  fitted on example 0 per budget, and a later example's needle can add a
+  token.
+
+**Qwen at 32K: the capped band "32768c" (pre-registered 2026-10-03).**
+
+- **Budget.** Every new Qwen run at the long band uses a per-task budget of
+  **32,768 − `stopping.token_cap(task)`**:
+
+  | task | `token_cap` | budget |
+  |---|---:|---:|
+  | `qa_1` | 42 | 32,726 |
+  | `niah_multivalue` | 62 | 32,706 |
+  | `niah_multiquery` | 62 | 32,706 |
+
+  So prompt + generation ≤ 32,768.
+- **Enforced:** gate G11 checks `context_length` ≤ budget on every generated
+  example. This study's tasks are all in `_PER_EXAMPLE_FIT`, so they are
+  sized per example and cannot overshoot. The check holds them to it anyway.
+- **Never pooled.** Rows at 32768c are never pooled, compared in a test, or
+  plotted on one axis with banked 32768 rows. The band label differs on every
+  row (`band="32768c"`).
+- **Primary cells.** All of this study's own 32K tests (H2–H5, H7, the
+  frontier, the n = 300 primary cell) run at 32768c, on fresh prompts:
+  `qa_1` indices 3000–3299 (§5), generated at the capped budget.
+- **The one exception: the T4 replication.** R1–R4 compare against T4's
+  banked rows, so they need T4's exact prompts. They run XA native and the
+  dense reference on **T4's 200 example ids at the original 32768 band**,
+  and the results are compared only with T4's 32768 rows. From the eighth
+  draft they also run on **T4's 200 ids at 16384**, because the evaluation
+  split no longer shares them (§5).
+  - These rows inherit the overrun: `positions_over_limit` is recorded, and
+    R3 and R4 are also reported on the subset where it is 0.
+  - **Extra cost:** 2 arms × 200 rows × 2 bands, about ₹112–433. It is a ★
+    line (§8.2). *(Until the eighth draft: 32768 only, ₹71–289, with the T4
+    prompts at 16384 serving both the replication and the frontier.)*
+- **On every row:** `positions_over_limit = max(0, prompt + generated − limit)`.
+- **Llama** is capped at 32768c and 65536c (above). G9 confirms both are
+  far inside the 131,072 limit.
+
+**Llama task selection.** A dense probe (XL0), n = 5 per task and band, on
+**selection-split** examples (indices 1000–1004, §5), so retention never
+conditions on an evaluation outcome. It covers the T4
+candidates (`niah_multikey_1`, `niah_multivalue`, `niah_multiquery`, `qa_1`,
+`qa_2`). It applies T4's rule unchanged: retain a (task, band) whose dense
+score is in [40, 90].
+
+- **Primary:** `qa_1` at each band where it is retained, n = 300. If `qa_1` is
+  not retained at a band, there is **no substitution**: that band has no
+  primary cell.
+- **Secondary:** the other retained tasks, n = 50. Nothing is re-selected
+  after the probe.
+
+**Llama arms:**
+
+- dense (`sdpa_flash` as the accuracy reference);
+- XA native (§4.3);
+- XA_8, MP and VS at d_nom = 0.25 under era 4.
+
+---
+
+## 5. Splits
+
+| split | used for | source |
+|---|---|---|
+| **calibration** | `ruler_cal` tables, and T4's amended `ruler_heldout` (§12 A1) | RULER seed 1, index offset 2000. 8 per (task, band): indices **2000–2007** at each band. 2008–2047 are reserved and unused. |
+| **selection** | extrinsic budgets (§7.2); end-to-end timing prompts (`qa_1` 1000 and 1001); the canary; X0; the Llama dense probe XL0 (1000–1004); G9's determinism prompts | RULER seed 2, index offset 1000. Indices **1000–1031**, 32 per (task, band). |
+| **evaluation** | every tested quantity except R1–R4 and P-T4 | Seed 0, index offset 3000: **evaluation indices start at 3000**. `qa_1` 3000–3299 (n = 300); `niah_multivalue` and `niah_multiquery` 3000–3049 (n = 50). 7B: the first 30 / 15 / 15 of those. Llama: the same indices at its bands, for every retained task. At 32K the band is 32768c (§4.9). |
+| **T4 replication** | R1–R4 and P-T4 only | T4's own 400 ids: `qa_1` 0–99 and both NIAH tasks 0–49, at 16384 and at the original 32768. Nothing else is scored on them. |
+
+**The evaluation split shares no example with any banked run (2026-10-03,
+eighth draft).**
+
+- **Why.** Until this draft the evaluation split was `qa_1` 0–299 and NIAH
+  0–49, of which `qa_1` 0–99 at 16384 and all the NIAH examples are prompts
+  T4's arms had already been scored on. H3's 1.5B cells and H5a would have
+  been scored partly on data that informed them.
+- **The rule.** An evaluation index must not appear in **any** banked file
+  for that task, **at any band**: Stage 3, S1a, S1b, S7, the 7B run and
+  every T4 file. The band does not matter, because QA picks its question by
+  index alone.
+- **What is banked** (every parquet under `results/` with an `example_id`
+  column, 47 files, scanned 2026-10-03):
+
+  | task | banked indices, by band |
+  |---|---|
+  | `qa_1` | 0–99 at 16384 and 32768 |
+  | `qa_2` | 0–4 at 16384 and 32768 |
+  | `niah_multivalue`, `niah_multiquery` | 0–49 at 16384 and 32768 |
+  | `niah_multikey_1` | 0–4 at 16384 and 32768 |
+  | `niah_single` | 0–299 at 2048, 4096 and 8192; 0–99 at 16384; 0–49 at 32768 |
+  | `niah_multikey`, `vt` | 0–299 at 2048, 4096 and 8192; 0–99 at 16384 |
+
+  The highest banked index for any task is 299. The registry is
+  `frontier_prereg.BANKED_INDEX_RANGES`.
+- **Tested.** `tests/test_frontier_eval_ids.py` scans every banked parquet
+  and fails if an evaluation index appears in one, or if a banked range is
+  outside the registry. `tests/test_frontier_prereg_plan.py` checks the
+  split ranges against the registry and against each other, and runs
+  everywhere.
+- **Cost.** The intrinsic and extrinsic row counts do not change. The T4
+  replication now needs its own rows at 16384 as well (§4.9): X-rep rises
+  from ₹71–289 to ₹112–433.
+
+**Seeds are not enough.** In `attnbench/accuracy/ruler.py:309-311`,
+`_render` is called with `index=i`, which reaches `generate_qa_example` at
+`:224`. For QA, the SQuAD question is chosen by the example's
+**position**, not its seed. The seed changes only the distractors and their
+order (`_vendor/ruler/qa.py:114-128`). `qa_1` draws from 5,928 questions, so
+indices up to 2047 exist.
+
+**Disjointness.** Enforced in code, fail-closed, over every pair of splits and
+models:
+
+1. `example_id`;
+2. the context sha256;
+3. QA question index **and** gold-document set;
+4. NIAH (key, value) needle pairs.
+
+The offset is `generate_examples(index_offset=)` (L2).
+**Break-test**, kept permanently: a split that shares one `qa_1` index with
+evaluation, under another seed and context, must be refused.
+
+**What the four identities do not cover (stated 2026-10-03, eighth draft).**
+
+- **Distractor documents.** QA distractors are drawn from one pool for every
+  split, so two splits can share a distractor document. Only the question
+  and its gold documents are held disjoint.
+- **`text.json`.** It calibrates every Qwen table and is multi-document QA,
+  but it is not a RULER split. From this draft it is held to the firewall by
+  gate G12 (§6): no evaluation or selection question, and no gold
+  document's opening, may occur in any of its texts
+  (`frontier_prereg.check_calibration_texts_disjoint`).
+
+**G12 on the real file says STOP (run 2026-10-04, on a workstation, before
+any session).** `scripts/check_g12.py` was run on `text.json` at `e379887`
+(sha256 `d11899123f032af35abb23515eed685833b2a6853d483e04a6205c6b6296d50a`).
+
+- **`text.json` is a sample of RULER.** Its 156 texts are RULER prompts in
+  RULER's own templates, 12 per task for 13 tasks: 96 needle-in-a-haystack
+  texts (8 tasks), 12 `qa_1`, 12 `qa_2`, 12 variable-tracking, and 24
+  word-frequency texts. It is not a separate multi-document QA set.
+- **Its `qa_1` texts ask SQuAD questions 0 and 10,** each in six texts.
+  Both are in T4's test ids (0–99).
+- **Held-out gold documents occur in it.** Those 12 `qa_1` texts carry 825
+  of the 1,204 SQuAD documents as their haystack.
+
+  | split | `qa_1` n | question in a text | gold document in a text |
+  |---|---:|---:|---:|
+  | evaluation | 300 | 0 | 218 |
+  | selection | 32 | 0 | 18 |
+  | T4 replication | 100 | 2 (indices 0 and 10) | 100 |
+
+- **What follows in code.** `calibrate_xattn_thresholds.py --source authors`
+  now stops at G12. So C and T4 Session A's `authors` table cannot be made
+  until this is decided.
+- **What is not checked.** Whether a needle in the 96 needle texts equals
+  one this harness generates. They come from RULER's generator with RULER's
+  seeds, and this harness draws its own.
+- **The decision is the researcher's.** It changes what "the authors'
+  profiling set" means, so it is a dated amendment here and in T4 before
+  either calibration runs. The options are in the report of 2026-10-04.
+
+**Amendment, 2026-10-04 (the researcher's decision, before any
+calibration).** The text above is kept as it was written.
+
+- **The claim tables leave out the 24 QA texts** of `text.json` (12 `qa_1`,
+  12 `qa_2`). That leaves 132 texts. For Qwen, 104 of them are within
+  32,768 tokens.
+- **The full-set tables are also made, and are descriptive.** For the 7B
+  model, C makes the claim table on 104 texts, and a separate cuttable
+  session, C-full, makes the descriptive one on 121 (§8.4, cut item 0). If
+  C-full is cut, the paper states "full-set table not made".
+  The frontier's arms use the claim table. The full-set table is reported
+  beside it entry by entry (the largest difference, and the rank
+  correlation over the 28 × 28 entries), with no pass rule and no arm of
+  its own. In T4 it is a third, descriptive calibration (T4 amendment A8).
+- **G12 on the 132 texts: passes.**
+  - *Questions and gold documents:* none of the 432 held-out `qa_1` indices
+    (evaluation, selection, T4's ids) has its question or a gold document's
+    opening in any of them.
+  - *Needles: compared, not left unchecked.* Every needle in the 96 needle
+    texts (18,361 distinct) was compared with every needle this harness
+    generates for `niah_single`, `niah_multikey_1`, `niah_multivalue` and
+    `niah_multiquery`, in every split, at every budget either study
+    generates a prompt at: 16384, 32768, 32768 minus the task's Qwen cap,
+    and 32768 and 65536 minus its Llama cap (`scripts/check_g12_needles.py`).
+    The budget is part of an example's seed, so the capped bands hold other
+    needles than the plain ones. **No (key, value) pair is shared.**
+  - *Values that recur under other keys:* 5 among T4's ids, 1 in selection,
+    3 in calibration, 9 in evaluation. Chance alone gives 5.1, 3.3, 0.8 and
+    5.1, because the values are random 7-digit numbers and the texts hold
+    about 14,000 of them.
+  - *`niah_multikey` is not compared, and is outside both studies' splits.*
+    Its haystack is itself made of needles, so which ones it holds depends
+    on the prompt's length. It is not a task of T4 (`qa_1`,
+    `niah_multivalue`, `niah_multiquery`), of the Qwen evaluation (the same
+    three), or of the Llama candidates (`niah_multikey_1`,
+    `niah_multivalue`, `niah_multiquery`, `qa_1`, `qa_2`, §4.9). Its banked
+    rows are Stage 3's, which no XAttention table touches.
+  - *`qa_2`:* none of its held-out questions or gold documents is in the
+    132 texts either. It matters only as a Llama candidate.
+  - The calibration script refuses any `text.json` other than the one this
+    was run on.
+- **Why the pass rule is "no shared (key, value) pair".**
+  - A needle is one sentence binding a key to a value, and a needle
+    question asks for the value of a key. What a calibration text could
+    give away is that binding. A value sitting under a different key gives
+    away nothing the question asks for.
+  - The profiler does not store content. It records, per layer and head,
+    one number from the attention mass of each text. A text can only bias a
+    table toward a test prompt by containing the same sentence in the same
+    role, and that is what a shared pair would be.
+  - A rule of "no shared value" could not be met by any large needle set.
+    The values are 7-digit random numbers. With about 14,000 in the
+    calibration texts and about 4,500 in this harness's held-out prompts,
+    about 14 collisions are expected by chance, and 18 are found. The
+    chance of none is below one in a million. Such a rule would fail on
+    chance, not on leakage.
+  - So shared values are counted and reported beside their chance rate,
+    and they do not fail the gate. A count far above chance would be
+    reported as a finding.
+- **The one test example whose answer value recurs** (pre-registered
+  2026-10-04). `niah_multiquery` at 32768, index 5, is in T4's test ids, and
+  one of its four answer values also occurs in a calibration text under
+  another key.
+  - It stays in the test. Dropping it would change T4's n after its test
+    was fixed.
+  - No claim rests on its cell: `niah_multiquery` at 32768 is T4's
+    observational cell, which yields no statement.
+  - Wherever that cell is reported (T4, and R3 here), it is reported twice:
+    on all 50 examples and with index 5 left out. Both are descriptive.
+  - The same is done for any evaluation example a later run of the
+    comparison finds: reported with and without, and the test as
+    pre-registered is the one on all examples.
+- **What the claim tables still share with the test.** The 96 needle texts
+  use RULER's needle templates, the same as `niah_multivalue` and
+  `niah_multiquery`. The authors' set is therefore in-distribution for
+  format, and is not "disjoint from RULER". It shares no question, gold
+  document or needle with any held-out example (§10).
+- **The authors' shipped Llama tables are not covered.** H6a and H8 use
+  `llama_fuse_*`, whose profiling set is not known (§0.1, §4.1). If it was
+  `text.json`, the same overlap holds for the Llama evaluation on `qa_1`:
+  gold documents of 218 of 300 questions in the profiling haystacks. That
+  cannot be removed, because the table is theirs. It is stated with H8
+  (§10).
+- **No banked result used any calibrated table.** The six banked XAttention
+  files are T4's scalar phase. `docs/claims.md` makes no claim from a
+  profiled table.
+- **Cost.** C runs two passes: ₹254–555, from ₹158–348 (§8.2).
+- The gate matched questions only from 40 characters until this run, which
+  skipped the 36-character question that texts 0, 26, 52, 78, 106 and 130 of
+  the file ask (SQuAD question index 0; the file's sha256 is above). It now
+  matches from 12.
+
+**Firewall order:**
+
+1. The tables are committed.
+2. The selection-split recall writes `budget_selection.json`, which is
+   committed.
+3. Only then is evaluation recall analysed. Its script refuses without that
+   file at `HEAD` and its digest.
+
+**The firewall gates analysis, not computation.** I1 computes evaluation
+recall in the same session as selection recall, before
+`budget_selection.json` is committed, because a second session would cost
+more than the firewall is worth. What is enforced is that the selection
+script reads only rows whose `split` column is `selection`, and refuses a
+frame holding any other.
+
+**n = 300 applies only to cells that carry non-inferiority** (the primary
+tier, `qa_1`). It comes from the exact bound
+(`exact_noninferiority.paired_lower_bound`, margin 10, alpha 0.025):
+
+| n | bound at b = c = 0 | largest equal discordance that still certifies |
+|---:|---:|---|
+| 100 | −4.3 | b = c = 4 (4% each way) |
+| 300 | −1.5 | b = c = 50 (16.7% each way) |
+
+- At n = 100, certification is attainable only for near-identical outputs. At
+  n = 300 it is attainable at realistic churn.
+- The old "ceiling" of 100 is a Stage-3 budget value in
+  `configs/accuracy/stage3_grid.yaml`, not a data limit. A frontier grid
+  config sets 300.
+- The secondary tier stays at 50. The observational cell stays
+  observational.
+
+---
+
+## 6. Gates and STOP conditions (code, not prose)
+
+| gate | condition | on failure |
+|---|---|---|
+| **G1** | The XA native arm through `bsa_prefill` is bitwise equal to `Xattention_prefill` (with the matching `keep_*` settings) for Qwen 1.5B, Qwen 7B and Llama-3.1-8B, at 8192 and 32768, on the Triton path. | STOP |
+| **G1b** | `bsa_prefill` is bitwise equal to the XA backend's own kernel call on the same inputs and per-head mask (§4.4). | STOP |
+| **G2** | The same q and k through `xattn_estimate(use_triton=True)` and `(False)` on the A100, at every b used: masks disagree on ≤ 0.5% of causal blocks, and \|ΔR\| ≤ 0.005. | Not a stop. Labels T4's L4 XA rows as not the official selections (in `claims.md`); scores R1 as indeterminate. |
+| **G3** | The era-4 selector on head-mean scores is bitwise equal to `importance_block_mask_device`. | STOP |
+| **G4** | Each scorer matches its reference (MP bitwise before averaging; VS fp32 at rtol 1e-5; O rows sum to 1 ± 1e-4, at every b). | STOP |
+| **G5** | The sync-debug check is clean for MP, VS, O and the selector, and XA's `n_sync` is recorded. | STOP |
+| **G6** | H6a's R ≥ 0.70. | I1 and T4 have already run by then, so nothing is undone. The action: Llama accuracy (XL0, XL) does not launch; and every XAttention result of this study and of T4 is reported under the label "positive control failed", with no statement about the method drawn from it. |
+| **G7** | The realised-density ratio between era-4 arms is 1 ± 0.01. Among era-4 arms the kept counts are equal by rule, so this is a check on the implementation. | the cell is indeterminate (§3.10). Not a stop. |
+| **G8** | Every row has `git_dirty=False`, one commit per analysis, `dense_baseline`, `mask_selector`, `cpu_model`, `cpu_count`, `launch_floor_us`, `sync_floor_us`, `h2d_floor_us`, `positions_over_limit`, `xattn_path` and the calibration digest (on XA rows). | the analysis refuses |
+| **G9** | Llama `config.json` verified (§4.9). | that band or model is dropped for validity |
+| **G10** | The dense baseline "runs correctly" (§4.6), including the device-health check after every probe. | the candidate is excluded; on a failed health check the session ends |
+| **G11** | Every new Qwen example at the capped 32K band satisfies `context_length` ≤ 32,768 − `token_cap(task)`; every new Llama example at 32768c and 65536c satisfies `context_length` ≤ band − `token_cap(task, "meta-llama/Llama-3.1-8B-Instruct")` and was generated with `per_example_fit=True`; and every new example at any band satisfies `context_length` ≤ its budget. Checked on the generated prompts before any row is written (§4.9). | STOP |
+
+| **G12** | No evaluation or selection question, and no gold document's opening, occurs in any `text.json` text (§5). Run when the splits are generated, before C and before T4 Session A. Wired 2026-10-04 into `frontier_splits.generate_splits` and `calibrate_xattn_thresholds.py`. **It fails on the real file (§5).** | STOP |
+
+**Canary (A100, before I1).** Two selection-split examples per (task, band)
+(indices 1000 and 1001), every arm, every
+gate. It measures μ (exact-mass pass / dense prefill, at b = 128 and with all
+four b) and the launch floors. It then re-projects §8.
+
+---
+
+## 7. Analysis plan
+
+### 7.1 The frontier
+
+For each (model, card, band):
+
+- the deployable points at (c, R̃), with marker shape for the selector;
+- the affordability curve c_max(d) = 1 − T_bsa(d)/T_dense;
+- each point labelled profitable, unprofitable or unresolved;
+- the Pareto set over (s, R̃).
+
+It is **descriptive**: claims come only from §3. Every point is reported.
+Torch-fallback XA appears only in its own L4 table.
+
+### 7.2 Budget selection (selection split, 1.5B)
+
+- **b\*_e** is the smallest d_nom in {0.50, 0.25, 0.10, 0.05} with mean
+  R̃ ≥ 0.95. If none qualifies, it is 0.50.
+- **Selection is per task** (pre-registered 2026-10-04; until then this
+  section did not say). b\*_e is chosen separately for each (estimator,
+  task, band), on that task's own 32 selection examples at that band, each
+  example weighted equally. No task's recall enters another task's budget,
+  and nothing is pooled (`frontier_recall.select_budgets`).
+- **Extrinsic arms per band:**
+  - each e at 0.25 and at b\*_e (deduplicated), XA native, and O at 0.25,
+    which is 5–8 arms;
+  - plus SL at 0.25, the zero-cost anchor (§0.3), which is cuttable (§8.4).
+- **Fixed sequence:** within an e, the larger d is tested first. XA native and
+  O are single tests.
+
+### 7.3 Replicate sessions for near-parity cells
+
+- **Unit:** a session, meaning a fresh instance and host.
+- **Near-parity:** |1 − m| ≤ 0.07. m comes from components. *(Until the
+  eighth draft a measured |1 − s| ≤ 0.07 also triggered replicates. That made
+  the number of sessions depend on the outcome, so it is removed. A cell with
+  m far from 1 and s near 1 stays as its single session leaves it.)*
+- **Replicates:** **3 sessions**, so 4 in total. They run only the
+  near-parity cells, interleaved with dense A/A per rep.
+- **Why 3:** the banked cross-session SD of the ratios is 0.6–1.4%. With
+  k = 4 the half-width is 1.59σ, so 1.0–2.2%.
+- **Escalation:** if σ̂ > 2.5%, run up to 6 sessions in total, then stop.
+  What is left is **unresolved**. Escalation is subject to the cost stop
+  (§8.3). It is decided by σ̂ alone, never by the sign or size of s. The
+  final bound uses every session run, with no correction for the two
+  possible stopping points (4 or 6); that is stated with each replicated
+  cell.
+
+**Reruns (stated 2026-10-03, eighth draft).**
+
+- A rerun is allowed only for a **failed session** (§2.5), and only for the
+  phases it did not complete.
+- A phase that completed with `rc=0` is never run again. Its rows count.
+- If a phase somehow exists twice, the **first** complete one counts and the
+  other is reported.
+- No session is rerun because of what it showed.
+
+### 7.4 Resolution floor
+
+    f = max( 0.02,  f_AA,  t₀.₉₇₅,k−1 · σ̂_s / √k )
+
+- f_AA = |mean(dense_a)/mean(dense_b) − 1| + 2·SE over reps.
+- The third term exists only for a cell with k ≥ 2 sessions. A single-session
+  cell has f = max(0.02, f_AA), and is labelled "one session" (§2.2).
+- No sign is ever claimed inside f.
+
+### 7.5 Statistics and multiplicity
+
+- **Recall:** percentile bootstrap over examples.
+- **End to end:** per-rep paired ratios (20 reps after 3 warm-up calls,
+  interleaved, 2 selection-split prompts per band), with a t-interval across
+  sessions.
+- **Accuracy:** the exact paired bound.
+- **Hypotheses:** each H, R and P-T4 is one pass/fail under its count rule.
+  No pooling beyond what each states, and no post-hoc margin, alpha, budget,
+  τ, floor or baseline.
+
+### 7.6 What may be claimed
+
+- **"Profitable":** only from end-to-end time, against the named
+  `dense_baseline`.
+- **"Non-inferior":** only from the exact test. "No accuracy loss" is never
+  claimed.
+- **XA claims** name the path, table and digest, the configuration (T4 /
+  authors' RULER) and the selector.
+- **VS** is "vertical-slash-style scoring under block selection".
+- **The oracle** is never deployable.
+- **Block sizes below 128** carry no cost or profitability claim.
+- **Every failed or unscorable hypothesis** is reported beside what it tests.
+- **A hypothesis not run because of the cost stop** is reported as "not run
+  (cost stop)", never as passed or failed.
+
+---
+
+## 8. Sessions, cost, and the hard stop
+
+### 8.1 Inputs
+
+Rates (`docs/spend_ledger.md`): A100 Flex Start ₹284/h, H100 Flex Start
+₹425/h, L4 ₹80/h. A CPU VM is **assumed** at ₹130/h (c2-standard-30, about
+$1.5/h).
+
+| input | value | status | source |
+|---|---|---|---|
+| dense prefill, 1.5B | A100 0.190 / 0.436 / 1.102 s; H100 0.079 / 0.189 / 0.506 s at 8K / 16K / 32K | measured | `results/s12_{a100,h100}_vec_endtoend` |
+| dense row, 1.5B, L4 | 2.59 / 5.40 s at 16K / 32K | measured | T4 pilot parquets |
+| dense row, 7B, A100, 16K | 2.73 s | measured | `results/s7_7b_16384` |
+| μ = exact-mass pass / dense prefill, used in §8.2 | **6.19–9.08** (sixth draft; was 2–11.3) | **measured**: this harness's oracle pass on the A100, Qwen2.5-1.5B, min and max over the three bands below. The new GPU-side pass (§4.7) is measured at the canary. | `results/s12_a100_vec_endtoend/logs/s12_vec_e2e.log` |
+| μ of this harness's oracle pass, A100, 1.5B | 7.90 / 6.19 / 9.08 at 8K / 16K / 32K (1.5 / 2.7 / 10.0 s, one cold call each) | measured | same |
+| μ on the L4 | 7.2 at 16K, 11.1–11.3 at 32K | measured, L4 card only; used for no line in §8.2 (no L4 oracle line); T4 Session B's | `docs/t4_sparse_pilot.md`, `writeup_input.md` |
+| μ on the H100 | 12.6 / 7.93 / 10.47 at 8K / 16K / 32K (1.0 / 1.5 / 5.3 s) | measured, one cold call each; applies to I3's oracle masks | `results/s12_h100_vec_endtoend/logs/s12_vec_e2e.log` |
+| Llama-8B oracle pass per text | 8.2–14.4 s at 16K, 30.5–53.3 s at 32K, 112–212 s at 65,314 tokens (the longest `text.json` text in Llama tokens) | **derived** from the measured 1.5B pass above, scaled by config geometry (§8.2 note) | `scripts/derive_llama_oracle_cost.py` |
+| block-size recall multiplier | 1.1–1.5 | **assumed** | the canary measures it |
+| wall / Σ row latency | 1.25–1.69 | measured | phase logs |
+| session overhead | 8–15 min | measured range | ledger sessions |
+| decode per token | 1.5B on A100 20–35 ms (upper measured on L4); Llama 25–45 ms | partly **assumed** | |
+| decode per token, measured | 1.5B on the L4: 35.0 ms at 16384 and 35.5 ms at 32768. 7B on the A100 at 16384: about 34 ms (two tasks, 4.9 tokens apart, so weak) | measured: the slope of mean dense row latency on mean generated tokens across tasks | `results/t4_xattn_pilot_session_20261003/results/t4_xattn_dense_20261002`, `results/s7_7b_16384` |
+| a row is prefill + tokens × decode | on the L4 the dense rows' intercept is 1.63 s at 16384 and 4.05 s at 32768, against a measured dense prefill of 1.70 s and 4.04–4.08 s | measured, L4 only, 400 dense rows | the same T4 rows; `results/s12_l4_vec_endtoend/logs/s12_vec_e2e.log` |
+| generated tokens per row, upper | the task's cap: `qa_1` 42; `niah_multivalue` and `niah_multiquery` 62; T4's prompt mix 52 | a hard bound, enforced in code | `attnbench/accuracy/stopping.py` |
+| sparse prefill / dense prefill, A100 | 0.60–0.91 at 16384 and 32768 with the vectorised builder (sparsity 0.5–0.9). The XA Triton path and the era-4 selector are **unmeasured** on the A100, so the arm factor's upper end stays 1.6, **assumed** | measured for one builder | `results/s12_a100_vec_endtoend/vec_endtoend.parquet` |
+| 7B and Llama prefill, A100 | 7B 1.85–2.73 s (16K), 4.19–6.90 s (32K). Llama 16K 2.06 s, 32K 4.78 s and 65K 12.6 s at the lower end, upper = 1.6× lower | **assumed** from a FLOP split anchored to measured 1.5B times | |
+| `text.json` | 156 texts. Qwen: 3.92M tokens, max 91,574, 121 ≤ 32K. **Llama (one BOS): 3.63M tokens, max 65,314, 130 ≤ 32K** | measured | tokenised locally; Llama offline with the pinned tokenizer, 2026-10-03 |
+
+### 8.2 Bracket
+
+The computation moves into `attnbench/analysis/frontier_prereg.py` before lock
+(§11). ★ = never cut (§8.4).
+
+**Re-bracketed 2026-10-03 (sixth draft) with the measured μ on every
+oracle-pass line.** The fifth draft's figures are kept beside the new ones.
+
+| run | card | min, fifth | min, now | ₹, fifth | ₹, now | what moved it |
+|---|---|---:|---:|---:|---:|---|
+| ★ FA3 wheel build | CPU | 60–150 | 60–150 | 130–325 | 130–325 | — |
+| ★ C: XA calibration, Qwen 7B, the claim table (104 texts) | A100 | 18–85 | 31–69 | 86–404 | 148–326 | μ (a); 104 texts, not 121 (e), 2026-10-04 |
+| C-full: the full-set 7B table, descriptive (cut item 0) | A100 | — | 30–64 | — | 144–301 | new 2026-10-04 (e); its own session, last in the order |
+| ★ I1: 1.5B components, end to end at 3 bands, recall (192 selection + 800 evaluation, b 16–128) | A100 | 59–259 | 117–220 | 281–1,228 | 553–1,040 | μ (a) |
+| ★ I2a: 7B recall, 60 per band, b 16–128 | A100 | 24–188 | 52–156 | 115–890 | 247–738 | μ (a) |
+| I2b: 7B end to end at 32K | A100 | 14–36 | 14–36 | 64–170 | 64–170 | — |
+| ★ I2c: Llama H6a, texts ≤ 32K | A100 | 22–49 | 25–55 | 103–233 | 117–262 | Llama token counts (b) |
+| I2c-B: conditional double-BOS arm, only if H6a misses (§4.9) | A100 | — | 25–55 | — | 117–262 | new (researcher's yes, 2026-10-03) |
+| I2d: Llama H6a, texts > 32K | A100 | 62–137 | 47–104 | 295–649 | 224–491 | Llama token counts (b) |
+| I2e: Llama H6b profiler reproduction | A100 | 81–176 | 69–149 | 384–834 | 327–706 | Llama token counts (b) |
+| ★ I3: H100 cuDNN probe, components, end to end at 3 bands | H100 | 22–44 | 22–44 | 155–313 | 155–313 | — |
+| ★ I4: L4 components | L4 | 11–25 | 11–25 | 15–33 | 15–33 | ★ from the eighth draft: H1 rests on it |
+| ★ R: A100 replicates ×3 (0 if no near-parity) | A100 | 0–140 | 0–140 | 0–664 | 0–664 | — |
+| ★ R: H100 replicates ×2 | H100 | 0–59 | 0–59 | 0–414 | 0–414 | — |
+| R: H100 replicate #3 | H100 | 0–29 | 0–29 | 0–207 | 0–207 | — |
+| ★ X0: 1.5B extrinsic canary | A100 | 13–37 | 13–35 | 62–177 | 62–167 | row bound (c) |
+| ★ X: 1.5B primary `qa_1`, n = 300, dense + 5–8 arms | A100 | 137–735 | 170–511 | 650–3,478 | 803–2,416 | μ (a); row bound (c) |
+| ★ X: 1.5B secondary, 100 per band | A100 | 40–235 | 51–196 | 192–1,112 | 242–926 | μ (a); row bound (c) |
+| ★ X-rep: T4 replication on T4's own prompts at 16384 and 32768, dense + XA native, 200 ids per band (§4.9) | A100 | 15–61 | 24–69 | 72–288 | 112–325 | eighth draft: the 16384 band added, because the evaluation split no longer shares T4's ids; row bound (c) |
+| SL: sink + local window at 0.25, one more arm in X0 and X (cut item 0c) | A100 | — | 24–66 | — | 113–312 | priced 2026-10-04; it was "about ₹90–500" in §8.4 and in no total |
+| XL0: Llama dense task probe | A100 | 22–50 | 22–50 | 106–238 | 106–238 | — |
+| XL: Llama primary `qa_1`, n = 300, 16K + 32K, dense + 4 | A100 | 272–601 | 272–601 | 1,289–2,843 | 1,289–2,843 | — |
+| XL: Llama secondary, 16K + 32K | A100 | 88–195 | 88–195 | 417–924 | 417–924 | — |
+| XL: Llama 65536 band | A100 | 574–1,252 | 574–1,252 | 2,719–5,925 | 2,719–5,925 | — |
+| **Never-cut core** | | **6.8–34.1 h** | **9.6–28.8 h** | **₹1,842–9,526** | **₹2,584–7,952** | eighth draft ₹2,594–9,231; seventh ₹2,539–9,053 |
+| **Full plan** | | **25.7–75.7 h** | **29.0–72.1 h** | **₹7,133–21,347** | **₹8,107–20,330** | with the SL and C-full lines, both new on 2026-10-04; eighth draft ₹7,860–20,997 |
+
+*The "now" columns are `attnbench/analysis/frontier_prereg.bracket()` at its
+default inputs, rounded. `tests/test_frontier_prereg_plan.py` fails if any of
+them, or the §8.3 arithmetic, differs from what the code computes (added with
+lock gate L1, 2026-10-03).*
+
+**Re-bracketed 2026-10-04, before any session, from what is already
+banked.** The researcher asked for the worst case to be re-bracketed now
+and not left to DP1. Two things changed. Both touch upper ends only.
+
+- **(c) The upper bound on a 1.5B row on the A100.**
+  - *Before:* a proxy. The 7B A100 row at 16384 (2.73 s) and the 1.5B L4
+    row at 32768 (5.40 s) stood in for every 1.5B A100 row.
+  - *Now:* measured dense prefill on the A100 × the arm factor's upper end
+    (1.6) + the task's token cap × 35 ms. That is 2.17 s and 3.23 s for
+    `qa_1` at 16384 and 32768, 2.87 s and 3.93 s for the secondary tasks,
+    and 2.52 s and 3.58 s for T4's prompt mix.
+  - *Why it is still an upper bound:* a row is prefill plus tokens × decode
+    (checked on the L4, §8.1); the token cap is a hard limit; 35 ms is the
+    L4's measured decode, and the A100's 7B decode is no slower.
+  - *The old proxy was not an upper bound everywhere.* At 16384 it was
+    2.73 s, below the new 2.87 s for the secondary tasks, whose answers run
+    to 62 tokens.
+  - *What is still assumed:* the arm factor 1.6. Measured sparse prefill
+    with the vectorised builder is 0.60–0.91 of dense, but the XA Triton
+    path and the era-4 selector have never run on the A100.
+- **(d) The rerun term was too small.** §8.3 priced "one band of X primary"
+  at half the line. The 32768 band is 61% of it at the new inputs, and was
+  66% at the old ones. At the eighth draft's inputs the correct term is
+  ₹2,251, not ₹1,698, and the worst case was **₹12,248, which is ₹248 over
+  the cap**, not ₹304 under it. `worst_case` now prices the larger band.
+- **(e) Two calibration tables** (the researcher's decisions, 2026-10-04,
+  §5). C makes the claim table on 104 texts, so it falls from ₹158–348 to
+  ₹148–326. The full-set table on 121 texts is C-full, ₹144–301: a cuttable
+  session, cut first (§8.4).
+- **Checked and left alone:** wall / Σ row latency (1.61–1.67 in the T4 XA
+  pilot session, inside 1.25–1.69) and the session overhead. The T4
+  sparse pilot at 32768 took 342 minutes against a bracket of 293–348 by
+  the same formulas with the L4's μ.
+
+**Sources of the change (sixth draft).**
+
+- **(a) μ, measured.** μ = 6.19–9.08 replaces 2.0 (assumed) – 11.3 (L4) on
+  every oracle-pass line: C, I1, I2a and both X lines. It is the minimum and
+  maximum over 8K / 16K / 32K of this harness's oracle scoring pass over
+  dense prefill, **measured on the A100 for Qwen2.5-1.5B**: 1.5 / 2.7 /
+  10.0 s against 0.190 / 0.436 / 1.102 s, giving 7.90 / 6.19 / 9.08
+  (`results/s12_a100_vec_endtoend/logs/s12_vec_e2e.log`; one cold call per
+  band). 11.3 was an L4 figure, from the L4's own pass, so it no longer bounds
+  an A100 line. Lower ends rise and upper ends fall.
+- **(b) Llama token counts, measured.** I2c–I2e now use `text.json` counted
+  with the pinned Llama tokenizer, offline, with one BOS as this study feeds
+  it: 3,628,025 tokens, maximum 65,314, and 130 of 156 texts ≤ 32,768. The
+  Qwen proxy was 3,921,756, maximum 91,574, 121 ≤ 32K. The Llama pass itself
+  is still the measured 1.5B pass scaled by config ratios (below).
+  `scripts/derive_llama_oracle_cost.py` reproduces the three lines.
+- **Per card (checked 2026-10-03).** Every oracle-pass line in this table
+  runs on the A100, so each uses the A100's measured μ:
+  - C, I1, I2a, I2c, I2c-B, I2d, I2e, X0 and X.
+  - **No line here runs an oracle pass on the L4.** I4 is components only.
+    The L4's measured μ (7.2 at 16K, 11.1 at 32K) belongs to T4 Session B,
+    which is a separate pre-registration.
+  - **The H100's measured μ** is 12.6 / 7.93 / 10.47 at 8K / 16K / 32K
+    (1.0 / 1.5 / 5.3 s against 0.079 / 0.189 / 0.506 s,
+    `results/s12_h100_vec_endtoend/logs/s12_vec_e2e.log`). It applies only
+    to I3's end-to-end oracle masks: 2 prompts × 3 bands, about 16 s, inside
+    I3's overhead term.
+
+  So the per-card rule changes no figure above.
+- **Still assumed:** the block-size recall multiplier (1.1–1.5), Llama
+  prefill and decode for the XL lines, and 7B prefill (§8.1).
+- **What μ still is not.** It is the **existing** oracle pass's cost. The
+  study's GPU-side exact-mass pass (§4.7) is new code. The canary measures
+  its μ (DP1), and `rebracket()` replaces these values with that
+  measurement.
+
+**The Llama oracle-pass lines, derivation (2026-10-03).** They start from
+this harness's oracle pass on the A100, **measured** for Qwen2.5-1.5B (source
+(a)). Two ratios from the configs scale it to Llama:
+
+- **attention:** layers × query heads × head_dim, 3.048;
+- **everything else:** non-embedding linear parameters, 6.979B against
+  1.310B, 5.327.
+
+The split between the two is not assumed. The lower bound puts the whole
+pass at 3.048 and the upper at 5.327, and any split lies between them.
+
+- **Interpolation:** a power law between the measured bands. Past 32K, the
+  exponent is the 16K–32K one (1.89) or 2. Below 8K, the 8K point is scaled
+  linearly or quadratically.
+- **XA estimate pass:** up to one dense prefill more, which is at most
+  1 / 6.19 of the oracle pass.
+- **Token counts:** source (b).
+
+*(In the fifth draft these lines used Qwen token counts, and the other
+oracle lines kept μ = 2.0–11.3. Before that, all three Llama lines used a
+FLOP-split prefill model × the assumed μ.)*
+
+**Intrinsic-only and extrinsic, full plan** (X-rep excluded, as before):
+
+- intrinsic: ₹2,243–6,254 (8.4–22.6 h) with I2c-B and C-full, from ₹1,633–6,367 (6.2–23.0 h);
+- extrinsic: ₹5,753–13,751 (20.3–48.4 h) with the SL line, from
+  ₹5,640–14,588 in the eighth draft, of which Llama is ₹4,530–9,930
+  (unchanged).
+
+**T4 calibrated, as amended,** is a separate pre-registration, not under this
+cap:
+
+- Session A on the A100: 15–48 min, ₹70–230;
+- Session B on the L4: about 2.6 h, about ₹210.
+
+**For scale:** the project's ledgered spend to 2026-10-01 is ₹8,409 over 38
+sessions.
+
+**Not in the session figures above; checked 2026-10-03 with read-only
+`gcloud` listings.** Prices are **assumed** list prices at ₹88/$.
+
+| item | measured size | cost |
+|---|---|---|
+| custom images `attnbench-env-v5-20260905`, `attnbench-env-v6-20260917` | 22.0 GiB archive each | about ₹194/month, billed whether or not a session runs |
+| results bucket `gs://attnbench-results-research-507316` | 5.19 GiB, about 10 GiB after the study | about ₹18/month |
+| 200 GB boot disk per session | (no disks exist now) | about ₹2.4/h of session: ₹23–69 over the core, ₹70–173 over the full plan |
+| FA3 wheel build | — | already a ★ line above (₹130–325) |
+
+**Share of the core that depends on XAttention arms.** About **31%**:
+₹792–2,481 of the ₹2,584–7,952 core. That includes the X-rep line, which
+is XA-only. *(Eighth draft: 31–32%, ₹802–2,955 of ₹2,594–9,231.)* *(Seventh draft: 30–31%, ₹761–2,811 of ₹2,539–9,053.)* *(Fifth draft: 30–33%, ₹612–2,876 of ₹1,842–9,526. Before that:
+31%, ₹560–3,000 of ₹1,790–9,650.)*
+
+| component | XA-dependent ₹ |
+|---|---:|
+| X0 + X, the XA share of the 1.5B extrinsic rows (2–3 of 5–8 arms) | 333–1,053 |
+| X-rep, the T4 replication at 16384 and 32768 (XA only) | 112–325 |
+| C, the 7B claim table (XA only) | 148–326 |
+| I2c, the Llama positive control (XA only) | 117–262 |
+| replicates, assuming a third of near-parity cells are XA | 0–359 |
+| I3's XA end-to-end arms | 47–94 |
+| I1's XA end-to-end arms and components | 35–62 |
+| the recall passes (dominated by the shared exact-mass pass) | ≈ 0 |
+
+So the non-XA core is about ₹1,792–5,471.
+
+**Running non-XA parts first is mostly possible, with two exceptions:**
+
+- **The extrinsic dense reference is shared.** Splitting XA arms into later
+  sessions adds a session overhead each.
+- **The 1.5B XA-native replication is ★.** Deferring it changes nothing about
+  what is reserved.
+
+### 8.3 Hard cost stop
+
+- **Cap:** **₹12,000** for this study: all sessions above plus the storage
+  reserve, T4 calibrated excluded.
+  - **Confirmed by the researcher on 2026-10-03**, in conversation, after it
+    was stated back. It cannot be raised after lock.
+  - It covers, at worst-case inputs, the never-cut core (₹7,952) plus the
+    storage reserve (₹493) plus one rerun of the largest ★ session
+    (₹1,472) plus the conditional arm I2c-B (₹262), which is ₹10,179,
+    leaving ₹1,821 (`frontier_prereg.worst_case`). *(Re-bracketed
+    2026-10-04, §8.2 (c), (d) and (e). The eighth draft said ₹11,696,
+    leaving ₹304; with its rerun term corrected that was ₹12,248, over the
+    cap.)*
+  - Anything cuttable is paid for only from what the measured μ (DP1) frees
+    up.
+- **Ledger:** `results/frontier_spend.csv`. Each session's teardown appends
+  one row from its `session_cost.txt`. If that file is missing, the row is
+  rebuilt from the audit log, as `docs/spend_ledger.md` does. Spend is never
+  restated in prose.
+- **Reservation check, before every launch:**
+  `scripts/frontier_budget_gate.py` must pass, refusing with `STOP` otherwise.
+  **Built 2026-10-04.** `gcp_launch_a100.sh`, `gcp_launch_h100.sh` and
+  `gcp_launch_l4.sh` source `scripts/frontier_gate.sh` before they create
+  anything:
+  - `FRONTIER_SESSION=<session>` must pass the gate on that launcher's card.
+    The gate then sets the in-guest halt and the hard cap, over the
+    launcher's defaults and over `GCP_MAX_RUN`.
+  - A session of another pre-registration (T4 calibrated) must say so with
+    `ATTNBENCH_NOT_FRONTIER=<reason>`. It is outside this cap.
+  - With neither set the launcher refuses. So does a missing ledger: it is
+    not read as zero spend.
+  - A launch is written to the ledger at its hard cap and stays reserved in
+    full until its teardown is recorded.
+  - **Scripts that create a billable resource and are not wired to the
+    gate** (every `gcloud compute … create` in `scripts/`, listed
+    2026-10-04):
+
+    | script | what it creates | why it matters |
+    |---|---|---|
+    | `gcp_launch_compile_session.sh` | a GPU instance (g2-standard-8 + L4 by default; the machine type is overridable) | a study session launched through it would pass no gate. It asks for a typed "launch". |
+    | `gcp_boot_test_image.sh` | a CPU instance (e2-medium), to boot-test an image | small, but it is spend outside the ledger |
+    | `gcp_capture_image.sh` | a disk image | storage, about ₹97 a month per image; S_res assumes two images |
+    | the FA3 CPU build | (no launcher exists yet) | a ★ line, ₹130–325, with nothing to refuse it |
+
+    Until they are wired, no frontier-study session may be launched through
+    any of them, and FA3's build is gated by hand with
+    `frontier_budget_gate.py --session FA3 --card CPU`.
+  - **The teardown script does not write the ledger row yet.** It is
+    recorded by hand with `--record-teardown`. Until it is, the session
+    stays reserved at its hard cap.
+  - **Verified only against a fake `gcloud`.** The launchers' refusal, the
+    cap the gate passes to `--max-run-duration`, and the ledger row were
+    tested by running each launcher with a stand-in `gcloud` that logs its
+    arguments. No launcher has been run against the real project since the
+    gate was added.
+
+  The check:
+
+      spent + U(next session) + Σ U(every remaining ★ session)
+            + Σ U(every higher-priority cuttable item not yet run) + S_res + R_B  ≤  ₹12,000
+
+  - **The higher-priority term (added 2026-10-04; the researcher's rule).** A
+    session launches only if what is left still covers every never-cut
+    session and every higher-priority cuttable item not yet run
+    (`frontier_prereg.launch_check`).
+    - "Higher priority" means later in the cut order (§8.4), so cut later.
+    - A cuttable session also reserves the rest of its own item. The Llama
+      dense probe XL0 does not launch unless XL primary is covered too.
+    - A ★ session outranks every cuttable item and reserves none of them.
+    - A cut takes the whole item. Cutting item 11 also takes items 1 and 2,
+      which need its dense probe.
+    - **Why.** Until this rule, I2b, I2d and I2e (cut items 7, 3 and 9) ran
+      before the Llama runs in §8.5's order and took the money item 11
+      needed. At worst-case inputs H8 was then "not run" with no session
+      having failed. Under the rule those three are cut and XL0 and XL
+      primary run (`frontier_prereg.fund`, with a break-test).
+    - **H8's funding at worst-case inputs, in both cases.** The walk runs
+      every never-cut session at its upper bound, then reaches the Llama
+      probe. H8 is funded in both cases:
+
+      | | H6a passes | H6a misses, I2c-B runs |
+      |---|---:|---:|
+      | spent when the Llama probe is reached | ₹8,229 | ₹8,285 |
+      | the probe and the primary run | ₹3,080 | ₹3,080 |
+      | storage still to reserve | ₹450 | ₹450 |
+      | needed | ₹11,759 | ₹11,816 |
+      | to spare under ₹12,000 | ₹241 | ₹184 |
+      | cut | I2b, I2d, I2e, SL, Llama secondary, Llama 65536, C-full | the same, and the third H100 replicate |
+
+      (When H6a passes, the third H100 replicate has run, which is why the
+      two "spent" figures are close.) The full-set table is cut in both
+      cases. Were it inside C, as first written on 2026-10-04, the second
+      case would be ₹48 short.
+    - **The ledger carries the boot disk.** A ledger row is priced at the
+      card's rate plus ₹2.4/h, because S_res stops reserving a session's
+      disk once it has run.
+
+  - **R_B** (added 2026-10-03) is U(I2c-B), the conditional double-BOS arm,
+    while H6a is unscored or has missed and I2c-B has not run. It is 0 once
+    H6a passes or I2c-B has run. It is released earlier only by cutting
+    I2c-B as cut-order item 12.
+
+  - **S_res is the storage reserve:**
+
+        S_res = ₹212 × (months remaining to the planned end, rounded up)
+              + ₹2.4 × (upper-bound hours of every remaining session)
+
+    The ₹212 is the two images plus the bucket. Storage is counted in
+    `spent` monthly from the billing export.
+
+  - **U** is the session's upper bound, re-projected after the canary with
+    measured μ and the measured block-size multiplier.
+  - **If it fails and the next session is cuttable:** cut it, and continue
+    down §8.4.
+  - **If it fails and the next session is ★:** cut the remaining cuttable
+    items in §8.4 order until it passes.
+  - **If no cuttable item remains and it still fails:** **the study stops**.
+    Nothing more launches, what is banked is analysed, and every hypothesis
+    left without inputs is reported as "not run (cost stop)".
+- **In-session:** every launch sets `GCP_MAX_RUN` and the in-guest halt to
+  ⌈1.25 × U⌉ minutes, with a hard delete 10 minutes later.
+  - A session that hits its halt banks what it has.
+  - It is relaunched only if the reservation check passes for the remainder.
+- **Health-check relaunches** (§4.6) are ordinary sessions under the same
+  check.
+- **The cap is not raised under this pre-registration.** More spend needs a
+  new, dated pre-registration covering only the sessions not yet run,
+  committed before the next launch.
+- **Nothing is cut because of a result.** Cuts follow only from the check, in
+  the order below.
+
+**What the cap covers (checked 2026-10-03):**
+
+| item | covered? |
+|---|---|
+| **FA3** | **Yes.** A ★ line (₹130–325). |
+| **Storage** | **Yes, from this draft,** through S_res. It was not covered before. |
+| **Repeats: base replicates** (A100 ×3, H100 ×2) | **Yes.** ★ lines. |
+| **Repeats: escalation to 6 sessions** (§7.3) | **No.** Up to ₹440 A100 + ₹620 H100. Now cut-order items 0a and 0b, so the reservation check funds or cuts them first. |
+| **Repeats: health-check relaunches and failed-session reruns** (preemption, stock-out, crash) | **No.** No reserve exists for them. They are ordinary sessions under the check. They consume cuttable work first, then trigger the stop. |
+
+**The arithmetic at worst-case inputs:**
+
+| | ₹ |
+|---|---:|
+| core, including the T4-replication line at both bands and I4 | 7,952 (eighth draft 9,231; seventh 9,053; fifth 9,526) |
+| S_res, two months | 493 (₹424 storage + ₹2.4/h × 28.8 h) |
+| one rerun of the largest ★ session (the 32768 band of X primary: 311 of the line's 511 minutes) | 1,472 (eighth draft 1,698, which should have been 2,251) |
+| the conditional double-BOS arm I2c-B, if H6a misses (§4.9) | 262 |
+| **total** | **10,179** (9,917 without I2c-B; eighth draft 11,696, or 12,248 with its rerun term corrected) |
+
+That is **inside the ₹12,000 cap**, with ₹1,821 to spare (₹2,083 without
+I2c-B). Source of the change: the row bound, the rerun term and the smaller
+claim table (§8.2, (c), (d) and (e)). So:
+
+- a single failed session at worst-case inputs does not stop the study;
+- a second rerun of the same band (₹1,472) also fits, leaving ₹350;
+- a third does not, unless DP1 measures inputs below their upper ends;
+- the H100 cuDNN probe now runs last, so it needs no relaunch (§4.6).
+
+**What the margin rests on.** It is zero if the arm factor's upper end is
+about 2.6 and not 1.6, or if decode on the A100 is about 62 ms per token
+and not 35, or if wall / Σ row latency is about 2.4 and not 1.69. The arm
+factor is the one still assumed. DP1 and DP2 measure all three.
+
+**Re-bracketing decision points.** These are mechanical, committed before the
+next launch, and read timings only:
+
+- **DP1, after the A100 canary and before I1.**
+  - **Inputs:**
+    - measured μ at b = 128 and with all four b;
+    - the block-size multiplier;
+    - per-forward end-to-end times per arm;
+    - launch and sync floors;
+    - session overhead.
+  - **Recompute:** `frontier_prereg.rebracket()` recomputes U for every
+    remaining session, S_res and the reservation check.
+  - **Output:** `rebracket_dp1.json`: inputs, U per session, the funded set,
+    the cuts applied in §8.4 order, and the verdict.
+  - **Verdict:** **proceed** (the core and the funded cuttables fit),
+    **proceed with cuts**, or **STOP**. STOP means the core alone fails the
+    check, with no study session run. Raising the cap is then a new
+    pre-registration (above).
+  - **The arm factor's trigger, as a number (added 2026-10-04).** The arm
+    factor is the largest ratio, over the deployable arms and the three
+    bands, of an arm's end-to-end prefill to dense prefill in the canary.
+    The bracket's upper end is 1.6 (`ARM_FACTOR_UPPER`).
+    - At or below 1.6: the bracket stands.
+    - A measured arm factor above 1.6: the measured value replaces 1.6 and
+      every U is recomputed before I1.
+    - A measured arm factor at or above 2.61: the worst case no longer fits the cap, so the
+      verdict is "proceed with cuts" or STOP
+      (`frontier_prereg.dp1_arm_factor`).
+    - **Built 2026-10-04:** `frontier_prereg.dp1` reads the factor from
+      the canary's timing rows (`band`, `arm`, `prefill_ms`), refuses any
+      frame with a result column, re-brackets, and returns the funded set,
+      the cuts and the verdict. The oracle is timed but is not a deployable
+      arm, so it is not in the factor.
+  - **Leak guard:** the function reads only timing, μ, and cost columns.
+    It **refuses** any parquet with `correct`, `predicted`, `R`, `R̃` or
+    density columns, so no canary result can enter a funding decision.
+- **DP2, after X0 and before X.** The same procedure, with measured per-row
+  times for every extrinsic arm. Output: `rebracket_dp2.json`.
+- **Between them,** every launch runs the ordinary reservation check, using
+  the latest DP's U values.
+
+### 8.4 Cut order (first cut first)
+
+0. C-full: the full-set 7B calibration table, descriptive (added 2026-10-04;
+   the researcher's decision). ₹144–301. Cut first.
+0a. Replicate escalation beyond 4 sessions on the A100 (§7.3).
+0b. Replicate escalation beyond 3 sessions on the H100.
+0c. SL in the 1.5B extrinsic run: ₹113–312, one more arm (§8.2).
+1. XL: the Llama 65536 band.
+2. XL: Llama secondary cells.
+3. I2d: Llama H6a on texts > 32K.
+4. Block sizes 16–64 for 7B. 1.5B keeps them, so H7 runs on 1.5B only, by
+   the 12-cell rule stated under H7.
+5. XA strides 4 and 16, intrinsic.
+6. R: H100 replicate #3.
+7. I2b: 7B end to end.
+8. *(Removed 2026-10-03, eighth draft. I4, the L4 components, is never cut:
+   H1 rests on the L4–A100 cells. The numbering is kept so that references
+   to items 9–12 still hold.)*
+9. I2e: H6b, the profiler reproduction.
+10. VS in the 1.5B extrinsic run.
+11. XL0 + XL primary: Llama accuracy entirely. H8 becomes "not run (cost
+    stop)".
+12. I2c-B, the conditional double-BOS arm (§4.9), added 2026-10-03. It is
+    cut last among cuttable items: without it, a missed H6a cannot be
+    interpreted. It is cut only if H6a has not yet missed, or if the check
+    fails with nothing else left to cut.
+
+**If publication is withheld (pre-registered 2026-10-04; the researcher's
+rule):** if publication of XAttention results is withheld at any point, cuts
+0c and 10 move to the end of the order, after item 12, with 0c cut before
+10 (`frontier_prereg.cut_order`). The fallback (§0.3) rests on SL and VS. The
+move applies from the launch after the withholding is logged. A cut already
+made is not undone.
+
+**The full-set table's trigger (pre-registered 2026-10-04).** C-full is its
+own session and runs last, after every other session has run or been cut.
+It is made if, and only if, the launch check passes for it then:
+
+    spent + U(C-full) + S_res  ≤  ₹12,000
+
+with U(C-full) re-projected at the latest decision point, and ₹301 at
+worst-case inputs. Nothing ranked above it is ever cut to make room for it,
+and no result decides it. If it is cut, the paper states "full-set table not
+made", and the claim table is reported without that comparison. It stays
+first in the cut order if publication is withheld.
+
+**SL as a never-cut line: priced 2026-10-04, not adopted.** SL is the
+frontier's zero-cost endpoint. Its intrinsic and end-to-end points are
+already never cut, inside I1 and I3. Only its accuracy arm is item 0c.
+
+| | SL cuttable (as now) | SL never-cut |
+|---|---:|---:|
+| core, upper end | ₹7,952 | ₹8,264 |
+| one rerun (the 32768 band of X primary, with one more arm) | ₹1,472 | ₹1,601 |
+| worst case | ₹10,179 | ₹10,623 |
+| spare | ₹1,821 | ₹1,377 |
+| arm factor at which the spare is zero | 2.61 | 2.31 |
+| left for cuttable work at worst-case inputs | about ₹3,293 | about ₹2,978 |
+
+*(The two differences are not the same number. The worst case rises by
+₹444 and the pool for cuttable work falls by ₹315. The pool has no rerun in
+it. SL costs ₹312, its 1.1 hours add ₹3 of disk, and the rerun of the
+32768 band gains one arm, ₹129.)*
+
+So the worst case would be ₹10,623, leaving ₹1,377. The cost is elsewhere:
+the Llama probe and primary run need ₹3,080, so SL as never-cut leaves H8
+unfunded at worst-case inputs when I2c-B runs. With SL cuttable, H8 is
+funded in both cases, and SL is cut.
+
+**Decided 2026-10-04 (the researcher): SL's accuracy arm stays cuttable,
+ranked below H8.**
+
+**Never cut (★):**
+
+- gates G1–G12;
+- FA3;
+- C;
+- I1, including 1.5B block sizes;
+- I2a at b = 128;
+- I2c, because G6 depends on it;
+- I3;
+- I4, because H1 rests on it;
+- R: A100 ×3 and H100 ×2;
+- X0;
+- X: 1.5B primary at n = 300 and secondary, including the replication arm.
+
+Item 1 is the only item addressing ⚑6, and item 11 removes ⚑3's mitigation.
+§10 names both.
+
+**What each cut does to a hypothesis, fixed now** (eighth draft;
+`frontier_prereg.apply_cuts`). No cut changes a pass threshold after a
+result, and no hypothesis is scored on a population a cut has shrunk
+without the label below.
+
+| cut | hypothesis | effect |
+|---|---|---|
+| 0 | none tested | the full-set 7B table is not made. The paper states "full-set table not made". The claim table and every arm are unchanged |
+| 0a | H2, H5 | no threshold changes. A near-parity A100 cell with σ̂ > 2.5% keeps its 4 sessions and is unresolved if its bound still spans 1. Labelled "A100 escalation not run" |
+| 0b | H2 | the same on the H100, at the sessions run. Labelled "H100 escalation not run" |
+| 0c | H4, H5 | H4 pools the arms that ran and H5 counts them, both labelled "without SL". The frontier's zero-cost endpoint keeps its recall and timing and has no accuracy point. H2 is unchanged: SL's end-to-end cells are in I1 and I3 |
+| 1 | H8 | scored on the bands run, labelled "without the 65536c band" |
+| 2 | none tested | Llama secondary cells are in no test (H8 is the primary cells); they are not reported |
+| 3 | H6a | none: its population is the ≤ 32K texts (I2c) |
+| 4 | H7 | the 12 1.5B cells, pass at 8 of 12, labelled "1.5B only (cut 4)" |
+| 5 | none tested | strides 4 and 16 are descriptive |
+| 6 | H2 | no threshold changes. A near-parity H100 cell has 3 sessions, not 4, so its bound is wider (2.48σ against 1.59σ) and it is more often unresolved. Labelled "H100 near-parity cells on 3 sessions" |
+| 7 | H2 | none: 7B cells are in no denominator |
+| 9 | H6b | "not run (cost stop)" |
+| 10 | H4, H5 | H4 pools the arms that ran and H5 counts them, both labelled "without VS". VS keeps its recall and timing (I1, I3), so the fallback's descriptive VS-against-MP comparison (§0.3) is unchanged |
+| 11 | H8 | "not run (cost stop)". Items 1 and 2 go with it |
+| 12 | H6a | none on the verdict; a miss is then reported without its attribution |
+
+### 8.5 Order
+
+**This study:** FA3 build ∥ local code. Then C. Then the canary and I1. Then
+I2a and I2c (I2b, I2d and I2e if funded). Then I3. Then I4. Then R. Then
+budget selection, committed. Then X0. Then X. Then XL0. Then XL.
+
+- That order spends ★ items first, so a stop starves only cuttable work.
+- The quota is GPUS_ALL_REGIONS = 1, so sessions run one at a time.
+- The standing `scripts/gcp_*` rules apply.
+
+### 8.6 Permission gate and publication rule (binding; cannot be amended after any result is seen)
+
+§0.2 is part of the plan, and both halves are binding.
+
+- **The gate.** Every action that depends on the authors' permission is
+  **NOT PERMITTED** until the researcher says yes explicitly, in
+  conversation, to that exact action.
+  - Claude Code asks each time, naming the action.
+  - A yes is never inferred.
+  - Each answer is logged with its date in
+    `/Users/mehuldahiya/Desktop/research/xattention_permission_log.md`,
+    outside the repository. The log never contains a quote of the email.
+- **The publication rule.** No result produced with XAttention code leaves
+  the project — native, calibrated, or any arm running their selector,
+  estimator or thresholds — except under the §0.1 scope **and** a logged yes
+  for that act.
+- **Status 2026-10-03.** Written permission was received, and the
+  researcher's summary (§0.1) covers using the code, reproducing results,
+  publishing results and figures, and reproducing their kernel lines,
+  including `backends/xattention.py`. *(Corrected 2026-10-03, eighth draft: this
+  said "No gated action has been approved yet. The log has no entries.")*
+  Three gated actions, all pushes of this branch, have been approved and
+  logged. No publication of any result has been approved. The decision on
+  publishing XAttention results is taken before the first XA row (§0.3).
+- **Never permitted here,** whatever the answer: vendoring or copying their
+  repository, redistribution, and baking their code into an image.
+- **When it can change.** Only by a dated amendment committed before any
+  XAttention result exists in the project. T4's XAttention pilot results
+  already exist, so this section **cannot be loosened** under this
+  pre-registration.
+- **What is already public.** `mehul24d/attnbench-research` is a public
+  repository. Since 2026-10-02 (`fdeae62`) it has carried T4's XAttention
+  results (`docs/t4_xattention_pilot.md`, `docs/claims.md`) and
+  `attnbench/backends/xattention.py`.
+  - The researcher reports that the authors were informed of the file and
+    approved it.
+  - Those pushes predate this gate. Any **further** push of files containing
+    XAttention results or code lines is a gated action.
+
+---
+
+## 9. Fatal-flaw review: the plan, read as a hostile referee
+
+**C** = controlled, **P** = partly controlled, **L** = stated limitation.
+
+| # | objection | verdict | how |
+|---|---|---|---|
+| F1 | *"Your XAttention isn't XAttention."* | **P** | Official code, pinned. G1 bitwise. The Triton path. G2. The released profiler, on the Triton path. H6 and H8 on the authors' model and configuration. **Open:** the paper's DP calibration is unreleased, and the shipped tables carry post-processing not in source. Only the released procedure is reproduced, and H6b measures the gap. |
+| F2 | *"Weak dense baseline."* | **P** | The fastest correct kernel per (card, band), switch points reported, FA3 included. Run D measures the dense kernels against each other in one session. `claims.md` carries a tested caveat for the banked A100 figures. The H100 cuDNN record was checked and is a guard prediction, not an observation, so it is probed with the guard bypassed. **Open:** FA4 is not a candidate (CUDA 13), and cuDNN on sm_80/sm_89 is not re-probed at the same driver and torch. |
+| F3 | *"Kernel time is not system time."* | **C** | Profitable is defined end to end. |
+| F4 | *"Recall is an unvalidated proxy."* | **P** | H4, at n = 300 on the primary cells. Underpowered is a stated outcome. |
+| F5 | *"Teacher forcing hides compounding."* | **L** | Compounding appears only extrinsically. |
+| F6 | *"Scorers compared under different selectors."* | **P** | Era 4 for all. G3. G7. **Open:** native XA picks its own density, so it has no matched era-4 arm. Intrinsically it is compared at its own per-row kept count (§4.2). Extrinsically it is tested against dense only. |
+| F7 | *"Tuned on test; hypotheses written after T4."* | **P** | Content-disjoint splits, the firewall, 7B replication, and from the eighth draft evaluation ids that no banked run has used (§5). The 1.5B H3 direction is T4-informed, so H3 also needs 6 of the twelve 7B cells. **Open:** H2c, H2d, H5a, H5b and P-T4 are priors written with the data in view. |
+| F8 | *"Near-parity signs are noise."* | **C** | τ_e, replicates, the floor, "unresolved". |
+| F9 | *"Host effects, not estimators."* | **P** | Everything on the device. The sync gate. CPU model and launch, sync and H2D floors on every row. The XA sync term in H2. **Open:** XA's syncs are kept as shipped. |
+| F10 | *"Toy model, one family."* | **P** | Llama-3.1-8B accuracy (H8), 7B intrinsic. **Open:** no Qwen 7B accuracy, and Llama accuracy is cuttable (item 11). |
+| F11 | *"Block 128 and a non-MInference VS."* | **P** | Intrinsic recall at b = 16–128 (H7). **Open:** cost and profitability exist only at 128, and VS is VS-style. |
+| F12 | *"A big grid guarantees a hit."* | **P** | Fixed hypotheses with count rules. The frontier is descriptive. Everything is reported, and withholding cannot follow a result (§0.3). **Open:** the count rules carry no error rate, except H1's. |
+| F13 | *"Unlicensed code."* | **P** | Written permission, 2026-10-03, from the XAttention authors, recorded as the researcher's summary, not a quote (§0.1). Every dependent action sits behind the §0.2 gate: default no, asked each time, logged outside the repository. The code is called, never redistributed. **Open:** still no licence, so third-party reproduction depends on upstream staying up. |
+| F14 | *"It stops below where sparsity pays."* | **P** | Llama accuracy at 65536. **Open:** it is cut first, there is no Llama end-to-end timing beyond 32K, and the L4 is off XA's curve. |
+| F15 | *"One machine type per card."* | **L** | Recorded, not varied. |
+| F16 | *"Batch 1, prefill only, HuggingFace stack."* | **L** | Audit items 8 and 10 stay open. |
+| F17 | *"A fourth XAttention configuration after T4 said 'last'."* | **C** | The Qwen native arm is T4's configuration, replicated with identical settings and the table by digest. Its predictions (P-T4, R1–R4) are committed before T4 runs (§0). Era-4 XA arms are scorer positions, not XAttention configurations. Llama uses the authors' configuration, not a new one. |
+| F18 | *"Calibration texts beyond the model's context."* | **C** | Excluded by a config-read rule (§4.3). T4 is amended to match (§12). |
+| F19 | *"Decode at 32768 runs past Qwen's position limit."* | **P** | All banked rows are flagged: 1,638 of 34,582 have P + gen > 32,768, 1,636 with a forward at a position ≥ 32,768, and 12 era-1 rows with a 32,769-token prompt (§4.9). `positions_over_limit` goes on every new row, with a subset analysis. **Open:** the replication keeps T4's prompts on purpose. |
+| F20 | *"Different dense kernels for speed and for accuracy."* | **C** | On purpose (§2.4). The accuracy reference is fixed for identity with T4. The timing baseline is the fastest correct kernel. Both are named on every row. |
+| F21 | *"The cost stop will quietly drop whatever fails."* | **C** | Cuts come only from the reservation check, in a fixed order, never after a result. Uncut ★ items run first. Every cut item is reported as "not run (cost stop)". What each cut does to each hypothesis is fixed in §8.4. |
+| F22 | *"You published results from code you had no permission to use."* | **P** | T4's XA results and `backends/xattention.py` were public on `origin` from 2026-10-02, before permission arrived. The authors have since permitted publishing results and reproducing their kernel lines, and were informed of that file and approved it (researcher's summary, §0.1). From now on every push or external use is gated (§0.2). **Open:** the record of that approval is the researcher's summary, not a citable document. |
+
+---
+
+## 10. Steps that weaken the methodology or settle for an incremental result
+
+| ⚑ | step | status after this amendment |
+|---|---|---|
+| 1 | Qwen accuracy only at 1.5B. | **Open.** Qwen2.5-7B accuracy is not planned. Llama-3.1-8B partly answers model scale. |
+| 2 | n = 100. | **Resolved** for the primary cells (n = 300, §5). The secondary tier stays at 50 and carries no headline. |
+| 3 | One family for accuracy. | **Partly resolved** (Llama, H8). **Cut-order item 11 removes it** under cost pressure. |
+| 4 | Block 128 only. | **Partly resolved:** intrinsic recall at 16–128 (H7). Cost and profitability stay at 128. |
+| 5 | VS block-ified. | Open (F11). |
+| 6 | Bands stop at 32K. | **Partly resolved** by Llama accuracy at 65536, **which is cut first**. No end-to-end timing beyond 32K. |
+| 7 | L4 off XA's curve. | Kept on purpose. The torch fallback is labelled and refused cross-card. |
+| 8 | No FA3. | **Resolved:** FA3 included and never cut. A failed build makes H100 claims upper bounds. |
+| 9 | Descoping H2 or H4. | Forbidden. Their inputs are ★. |
+| 10 | Teacher-forced recall. | Open (F5). |
+| 11 | **New:** calibration is the authors' released substitute, not the paper's DP. | Open (F1). H6b measures it, and §14 asks the authors. |
+| 12 | **New:** era 3 against era 4 is cross-era. | T4's head-uniform arms against this study's per-head arms are descriptive only. |
+| 13 | **New:** the cap is ₹12,000 (confirmed 2026-10-03) against a ₹20,997 worst case for the full plan (measured μ, with I2c-B). | At worst-case μ, only the core runs. The canary's μ decides how much of the cut list is funded. |
+| 14 | **New:** H2c, H2d, H5a and H5b were written with the A100 crossover estimates and T4's cells visible (§3). P-T4 is close to guaranteed by its own bound. | Stated. They are reported as priors anchored on visible data, not blind predictions. The blind tests of the crossover are H1 and H2a/H2b. |
+| 16 | **New:** under default tokenizer settings, the authors' calibration and RULER code paths pass a double BOS to the model (traced to file and line, their library versions unpinned); this study feeds one (§4.9). | Stated as a confound for H6a/H6b and H8. **Controlled for H6a** by the conditional arm I2c-B, which is triggered by an H6a miss (§4.9) and is cut-order item 12. Not controlled for H6b or H8. |
+| 17 | **New:** Llama accuracy uses this study's completion-style prompts and newline stop, not the authors' chat format. | Stated. H8 is not a reproduction of the authors' RULER scores, and is never compared with them numerically. |
+| 18 | **New:** Llama number-task caps are 6 tokens (2 × a 3-token answer). | Kept by the rule, with a pre-registered trigger (§4.9): a dense XL0 cap-hit rate above 5% (≥ 1 of 15) doubles that task's cap once, before retention and before any XL row. There is no further change. |
+| 19 | **Eighth draft:** in H1, D mixes kernel family with card. The timing baseline is the fastest correct kernel per card, which may be cuDNN, fa2 or FA3. | Stated. D is reported per kernel as well, from run D, so the ratio can be recomputed with one kernel family on both cards. |
+| 20 | **Eighth draft:** H1 assumes the estimator is bandwidth-bound at every band, including 8192. | Stated. H1 is reported per band, and a band-dependent miss is named as such. |
+| 21 | **Eighth draft:** component times are standalone, not in situ. The peer-review audit found in-situ builder cost at about 1/3–1/2 of standalone. | Stated. H2 is the test of whether standalone components predict the end-to-end time. |
+| 22 | **Eighth draft:** R1–R4 confound card with code path (§3.9). | Stated. Not separable in this design. |
+| 23 | **Eighth draft:** the Llama revision the authors calibrated on is unknown (§4.9), and the transformers version behind banked Qwen rows is unrecorded. | Stated. New rows record the version. |
+| 24 | **Eighth draft:** the count rules have no error rate, except H1's. | Stated (§3). |
+| 25 | **Eighth draft:** H7b runs the official estimator at block sizes its code does not support, possibly on another path. | Stated under H7. Labelled per b. |
+| 26 | **Eighth draft:** T4's table is calibrated on the Triton path and applied on the torch fallback in Session B. | Stated (T4 A4). G2 measures the difference. |
+| 27 | **Eighth draft:** Qwen native uses the authors' LongBench settings on RULER tasks; Llama native uses their RULER settings. | Stated (§4.2). Never pooled. |
+| 28 | **Eighth draft:** H4's trend test treats strata that share examples as independent. | Stated under H4, with per-arm tests reported beside it. |
+| 29 | **Eighth draft:** for data-dependent masks, timing reps over two prompts are pseudo-replicates. | Stated (§2.2). Single-session cells are labelled. |
+| 30 | **Eighth draft:** if cuDNN or FA3 proves faster on the H100 after the baseline is fixed, the baseline stays and the claims become upper bounds. | Kept, and pre-stated (§4.6): changing the baseline between sessions would break comparability. The affected claims carry the label. |
+| 31 | **Eighth draft:** the worst-case margin under the cap is ₹304. | Stated (§8.3). A second failed session stops the study unless DP1 frees margin. |
+| 32 | **2026-10-04:** the authors' profiling set is RULER (§5). The claim tables leave out its QA texts, but its needle texts share their templates with two of the study's tasks. | Stated with every XA result: an XA table is calibrated in-distribution for format, and the other estimators have nothing to calibrate. |
+| 33 | **2026-10-04:** H6 and H8 use the authors' shipped Llama table, whose profiling set is unknown. If it was `text.json`, the gold documents of 218 of the 300 Llama `qa_1` evaluation questions were in its profiling haystacks. | Cannot be removed: the table is theirs. H8 is reported with that sentence. |
+| 34 | **2026-10-04:** the budget is the era-3 code's expression, not the worded rule: one block different in 6 of 128 rows at 0.10 and 3 of 128 at 0.05. | Recorded as a deviation (§2.1). One function computes every budget. |
+| 35 | **2026-10-04:** the worst-case margin is ₹1,821, and it rests on an assumed arm factor of 1.6 (row 31's ₹304 was wrong: it was ₹248 over). | DP1 measures the factor; above 1.6 it re-brackets, at or above 2.61 it cuts or stops (§8.3). |
+| 36 | **2026-10-04:** at worst-case inputs the descriptive full-set 7B table is not made, and H8 is funded with under ₹250 to spare. | Stated. Both depend on DP1 and DP2 coming in below their upper ends. |
+| 37 | **2026-10-04:** shared needle values do not fail G12; only a shared (key, value) pair does. | Justified in §5. Shared values are counted against their chance rate and reported. |
+| 15 | **New:** the H100 in-model speedups are against `sdpa_flash`, and no banked H100 dense kernel exists at (12, 2). | Labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`). Run D in I3 measures it. Nothing is adjusted from a different geometry. |
+
+---
+
+## 11. Lock gates, and what must exist before the first session
+
+### 11.1 Lock gates (only these; set 2026-10-03 by the researcher)
+
+The hold on the authors' answers is lifted (§0.1). The file locks when all
+seven of these are met and committed with it (L7 added 2026-10-03):
+
+| # | gate | status 2026-10-03 |
+|---|---|---|
+| L1 | `attnbench/analysis/frontier_prereg.py`, its plan test `tests/test_frontier_prereg_plan.py`, and the §11.3 break-tests, each watched red | **Done 2026-10-03.** One scorer per hypothesis (H1–H8, R1–R4, P-T4), each with a pass, a fail and an indeterminate case. Every pre-registered number is pinned to this text as a whole number. The rules the text left open are written into §3.10. The split firewall, resolution floor, profit classes, bracket, `worst_case`, `reservation_check`, `rebracket()` with its leak guard, and the torch-fallback refusal are all in the module. §8.2–8.3's figures are checked against `bracket()`. Ten mutations were each watched red, including the H1 band (which first passed and exposed a substring match, now fixed). |
+| L2 | The T4 amendment code (§12), with T4's own plan test updated, committed with the dated amendment sections | **Done 2026-10-03.** A1–A7 are appended, dated, to `docs/t4_xattention_calibrated.md`, and a dated note is in `docs/t4_xattention_pilot.md`. The code: `generate_examples(index_offset=)`; the four-identity `assert_disjoint` with its break-test; over-length exclusion; descriptive p90/argmax records; the A100-only calibration refusal; `procedure`; `positions_over_limit` and `xattn_path` on rows. T4's plan test pins the amendments to `t4_pilot`, and `tests/test_t4_amendments.py` covers each. The A1 check was watched red. |
+| L3 | The `mask_selector` column on every row type, era 4 registered (§4.5), and its stripped-column break-test | **Done 2026-10-03.** The column is on accuracy, component, end-to-end and phase rows; era 4 is in `eras.py` and in the `limitations.md` table; a stripped per-head row is refused (break-tested). Recall rows inherit the requirement when their writer is built. `PER_HEAD_SELECTOR_COMMIT` is recorded in the commit after the introducing one. |
+| L4 | The cuDNN-on-H100 record checked (§4.6) | **done.** The record exists and is guard-written: cuDNN was never launched above 8192 on an H100. §4.6 is corrected, and so is every doc that called these rows faults (runbook, `run_probe.py` help, `silent_failure_patterns.md` ×2, `limitations.md`, `a100_session_plan.md`): "observed on L4 and A100, H100 untested above 8192". |
+| L5 | The Llama-3.1-8B `config.json` check (G9) at revision `0e9e39f…`: `max_position_embeddings`, `rope_scaling`, sha256 | **Passed 2026-10-03, for the position limit only.** The researcher read it locally with their own token (values and sha256 in §4.9). On CPU the same day: the repo id and table shape match the authors' model; transformers 4.46.0 and 5.18.0 implement `llama3`, and the logits gate passes with it (`tests/test_llama3_rope_gate.py`). What it does not cover is L7. |
+| L7 | The Llama stop rule (added 2026-10-03 from the researcher's pre-lock list): `generation_config.json`'s stop ids recorded in §4.9; the Llama caps measured with the Llama tokenizer and committed to `stopping.LLAMA_31_8B_TASK_TOKEN_CAPS`; `text.json` re-counted with the Llama tokenizer (G9 step 3, done early) | **Done 2026-10-03 (sixth draft).** `generation_config.json` was reported by the researcher, with the token ids confirmed locally. The caps were measured offline with the cached tokenizer (no token) and committed, pinned to the §4.9 table by a test. The `text.json` maximum is 65,314. Also done: forced and asserted greedy decoding, the three-id stop set, `stop_token_id`, the newline set rebuilt from the Llama vocab, the shared encoder (sizer = fed ids) and the double-BOS guard, all tested (`tests/test_llama_decoding_and_prompts.py`). |
+| L6 | Banked rows flagged for positions past 32,768 (§4.9) | **done.** `scripts/flag_positions_over_limit.py` → `results/positions_over_limit/`: 1,638 / 34,582 rows, plus the per-band sizing deltas. The root cause is sizing on example 0 (`ruler.py` docstring fixed). The script is committed. Its output sits in gitignored `results/` and is regenerated by the script. |
+
+**Eighth draft (2026-10-03).** L1's module and plan test changed after an
+independent referee read of this file (§13). The changed scorers, the new
+split registry and the bracket were re-tested, and each new break-test was
+watched red. This file does not say whether the gates are met: that is the
+researcher's call.
+
+**Settled 2026-10-03, no longer open:** §0.1 records the researcher's
+summary, the date and "XAttention authors"; §8.3 records the ₹12,000 cap.
+
+### 11.2 Before the first session (after lock is fine)
+
+1. Provenance: `launch_floor_us`, `sync_floor_us`, `h2d_floor_us` and
+   `cpuPlatform` in `provenance.py`, stamped onto every row type.
+   (`positions_over_limit` and `xattn_path` on accuracy rows: done with L2.)
+2. The dense baseline: the "runs correctly" check, the isolated cuDNN probe
+   with the guard bypassed (`--launch-known-fault`), the health check,
+   run D, and the `dense_baseline` column. The FA3 build script for a CPU
+   VM, pinned.
+3. Implementation, each with its gate test:
+   - `bsa_prefill`: **done 2026-10-04**, CPU-tested against a recorder and a
+     reference; never run on CUDA;
+   - the era-4 selector: **done 2026-10-04**;
+   - per-head MP: **done 2026-10-04** (the scorer);
+   - VS (vendored MIT code and NOTICE);
+   - SL;
+   - the GPU-side multi-b oracle;
+   - the recall script: the pass is **done 2026-10-04**
+     (`attnbench/accuracy/recall.py`, checked against a token-by-token
+     computation); the script that runs it over a split is not;
+   - extensions to `measure_estimator_cost.py` and
+     `run_vectorised_endtoend.py`;
+   - a frontier grid config at n = 300, built from
+     `frontier_prereg.evaluation_indices`;
+   - gate G12 wired into split generation: **done 2026-10-04**
+     (`attnbench/accuracy/frontier_splits.py`); it fails on the real file
+     (§5);
+   - the `split` column on recall rows, and the selection script's refusal:
+     **done 2026-10-04** (`attnbench/analysis/frontier_recall.py`). The
+     recall pass that writes the rows is still to build;
+   - the per-head selector: **done 2026-10-04** (§4.5).
+4. `scripts/frontier_budget_gate.py`, and the launchers' refusal without it:
+   **done 2026-10-04** (§8.3). `results/frontier_spend.csv` is created with
+   `--init` before the first launch; the teardown's ledger row is still to
+   wire.
+   (`frontier_prereg.rebracket()` with its leak guard: done with L1.)
+5. Llama gated access on the project token, verified.
+6. The era table: **done** (`65cd9c1`). The 16 T4 files are registered as era 3 by commit, with their XAttention rows marked as native selection in prose. `tests/test_eras.py` passes, and its key regex was fixed and break-tested. Era-4 registration (L3) has since added `mask_selector`.
+
+### 11.3 Break-tests (part of L1), permanent and watched red
+
+**All done 2026-10-03** (`tests/test_frontier_prereg_plan.py` and
+`tests/test_eras.py`, each watched red):
+
+- One fail case and one indeterminate case per scorer (H1–H8, R1–R4, P-T4).
+- The split break-test (§5).
+- The era-4 stripped-column break-test (L3).
+- A reservation-check break-test: a ledger and plan over the cap must print
+  `STOP`.
+- Added 2026-10-04: at worst-case inputs, a lower-priority cuttable item
+  running first cannot consume H8's funding.
+- A `rebracket()` refusal of any parquet carrying a result column.
+- A cross-card refusal of `torch_fallback` rows.
+- The A100 caveat test (`tests/test_a100_baseline_caveat.py`) is **done**:
+  red on a mutated figure, green after a byte-identical restore, 2026-10-03.
+
+---
+
+## 12. T4 amendments, to append (dated) to `docs/t4_xattention_calibrated.md` before this file locks
+
+**Appended 2026-10-03** as "Amendments, 2026-10-03 (before Session A)",
+with the code (L2, §11.1).
+
+Session A has not run, so each is an amendment before data.
+
+- **A1, `ruler_heldout` leaks `qa_1` questions.**
+  - Its seed-1 examples 0–7 ask SQuAD questions 0–7, which are test questions
+    0–7, because QA picks the question by index (§5). `assert_disjoint`
+    compares whole contexts, so it passes.
+  - **Change:** draw `ruler_heldout` from this study's calibration split (seed
+    1, `qa_1` indices 2000–2007 per band, NIAH from seed 1), and replace
+    `assert_disjoint` with the §5 content check and its break-test.
+  - The table stays descriptive.
+- **A2, over-length texts.**
+  - 35 of the 156 `authors` texts exceed Qwen2.5-1.5B's 32,768-token
+    `max_position_embeddings`, up to 91,574. The plan's premise that the texts
+    are "thousands of tokens, much shorter than the test bands" is false: the
+    median is 16,025.
+  - **Change:** the exclusion rule of §4.3, which leaves 121 texts, with the
+    excluded indices recorded in the table.
+- **A3, the threshold statistic.** Pre-register the max over used texts,
+  verbatim, with no cap, plus the descriptive p90 and argmax records (§4.3).
+- **A4, the calibration card.** Session A moves to the **A100**, so the
+  profiler's `use_triton=True` takes the Triton path it was written for. The
+  table records `xattn_path="triton"`. Session B stays on the L4, with rows
+  labelled `torch_fallback`. Cost: Session A becomes 15–48 min (₹70–230)
+  instead of about 45 L4-minutes.
+- **A5, calibration provenance.** State that the profiler is the authors'
+  released substitute for the paper's unreleased DP method (issue #13). This
+  phase's claims therefore read "calibrated by the authors' released
+  profiler".
+- **A6, the replication link.** This study's §3.9 (P-T4, R1–R4) is committed
+  before Session A. T4's `authors` configuration is the one replicated, and
+  is unchanged by this study.
+- **A7, positions past the limit.** Note that 119 of 200 dense rows at 32768
+  in the XA pilot decode past 32,768 positions, and add
+  `positions_over_limit` to new rows. No design change.
+
+Also correct, as a dated note in `docs/t4_xattention_pilot.md`, the untested
+sentence "the fallback selects the same blocks". G2 tests it.
+
+---
+
+## 13. Changes since the first draft (2026-10-03)
+
+*(Until 2026-10-03 each later table had been inserted inside the previous
+table's separator row, so the tables rendered nested and out of order. They
+are now in draft order. Their contents are unchanged, except that the first
+table's "now" column is labelled "second draft".)*
+
+**Second draft (2026-10-03):**
+
+| area | first draft | second draft |
+|---|---|---|
+| Sequence | unspecified | T4 amendments, then lock, then T4, then this study (§0) |
+| XA native on Qwen 1.5B | a new calibration in run C | a replication of T4 `authors`, identical settings, table by digest, with P-T4 and R1–R4 pre-stated (§3.9, §4.3) |
+| Selector rule | free blocks counted inside the budget, which would have failed G3 by construction | the era-3 rule, per head; registered as **era 4** with a row-level `mask_selector` (§2.1, §4.5) |
+| Calibration | "≤ 32K texts", statistic unstated | the config-read exclusion rule, max over texts with no cap, descriptive p90 and argmax, A100 Triton path, the DP provenance stated (§4.3) |
+| Dense baseline | "fastest installed" | fastest **correct**: health check, switch points with cause, cuDNN excluded above 8192 on sm_80/sm_89 and probed in isolation on the H100, FA3 included and built on a CPU VM, a fixed `sdpa_flash` accuracy reference (§2.4, §4.6) |
+| Host provenance | CPU in provenance | CPU model, `cpuPlatform`, launch, sync and H2D floors on every row; the sync term in H2 (§4.8) |
+| XA on the L4 | excluded from the frontier | labelled `torch_fallback`; refused by every cross-card analysis (§4.9) |
+| n | 100 | 300 on primary cells, with attainable bounds (§5) |
+| Llama-3.1-8B | positive control only | plus accuracy at 16K, 32K and 65K, in the authors' RULER configuration, with task selection and gate G9; `config.json` **not verifiable here** (gated) (§4.9, H8) |
+| Block size | 128 only | intrinsic recall at 16, 32, 64 and 128 (H7) |
+| Positions past the limit | not noticed | 119 of 200 T4 rows at 32768; recorded and analysed as a subset (F19) |
+| Cost | a bracket and a soft re-projection | a ₹10,000 hard cap, a reservation check, an 11-step cut order and a ★ core (§8.3–8.4) |
+| Licence | policy only | a permission request drafted (§14) |
+| Hypotheses | H1–H6 | plus H7 and H8; H5 restated for n = 300 |
+
+**Third draft (2026-10-03):**
+
+| area | second draft | third draft |
+|---|---|---|
+| Permission | a request drafted | written permission received; verbatim scope, date and sender to be pasted (§0.1); the professor's-guidance note superseded |
+| Publication | a sentence in §14 | a binding rule, §0.2 and §8.6: no waiting window; it cannot be loosened after any result; met only for the quoted scope; the public `origin` already carries T4 XA results (F22) |
+| Fallback | none | §0.3: what survives without XA; "our implementation of the published algorithm" named as an option, not used until the professor is consulted |
+| SL arm | none | sink + local window, the zero-cost anchor (§4.2); its extrinsic arm is cuttable (0c) |
+| cuDNN on H100 | "never tested" | a record exists in 6 H100 files, but it is guard-written (`gates.py` returns before `run_once`); the probe now bypasses the guard explicitly; two docs flagged as wrong about these rows |
+| A100 baseline | a §4.6 note | a tested caveat in `claims.md` (`tests/test_a100_baseline_caveat.py`, break-tested); run D plans the same-session dense-kernel comparison at the real geometry |
+| Positions past 32,768 | the XA pilot dense file only | all banked rows flagged (1,638 / 34,582; 12 rows with a 32,769-token prompt) |
+| Cost | the cap, the cut order | DP1 and DP2 re-bracketing points with a leak guard; S_res storage reserve; replicate escalation made cuttable (0a, 0b); worst-case core + storage + one rerun ≈ ₹11,600 against a ₹10,000 cap (open decision) |
+| XA share | — | 28–29% of the core (₹490–2,710 of ₹1,720–9,360) |
+| Lock | gated on all §11 items, held for the authors | the hold lifted; gated on L1–L6 only (§11.1); L4 and L6 done |
+
+**Fourth draft (2026-10-03):**
+
+| area | third draft | fourth draft |
+|---|---|---|
+| Permission | placeholders for a verbatim scope, date and sender | the researcher's summary (not a quote), 2026-10-03, "XAttention authors"; the email stays private; `backends/xattention.py` is approved and left as is, so the call-site merge is dropped (§4.4, gate G1b) |
+| Gate | a publication rule | a binding permission gate (§0.2, §8.6): default NOT PERMITTED, asked per exact action, never inferred, logged outside the repository |
+| Cap | ₹10,000, open decision | **₹12,000**, confirmed by the researcher; worst case about ₹11,900 |
+| cuDNN | the H100 record corrected in §4.6 | also corrected in 6 places across docs and code; the probe runs **last**, isolated, `CUDA_LAUNCH_BLOCKING=1`, after sync; cuDNN is never an H100 candidate above 8192 |
+| 32K band | T4 prompts kept | the capped band 32768c (budget = 32,768 − `token_cap`), never pooled with banked 32768; the replication alone keeps T4's prompts (X-rep, ★); gate G11 |
+| Sizing | 12 prompts at 32,769 noted | root cause (example-0 sizing for UUID/number-needle tasks), measured overshoot at every band (up to +82 at 16384), `ruler.py` docstring fixed |
+| Docs | — | 32K-positions caveat on every 32768 accuracy citation in `claims.md`; A100 baseline caveat in README, `writeup_input.md` and `limitations.md` |
+
+**Fifth draft (2026-10-03):**
+
+| area | fourth draft | fifth draft |
+|---|---|---|
+| G9 (L5) | pending with the researcher | **passed for the position limit only** (values and `config.json` sha256 in §4.9); repo id and the 32 × 32 (layers × query heads) table shape match the authors' model; the revision they used is unknown |
+| RoPE `llama3` | unchecked | implemented in transformers 4.46.0 and 5.18.0; logits gate re-run with triggering llama3 scaling (`tests/test_llama3_rope_gate.py`, break-tested); 4.46.0's silent `rope_parameters` trap; G9 step 4 on the instance |
+| Llama bands | 16384, 32768, 65536, uncapped | 16384, 32768c, 65536c (band − Llama cap); no 128K band |
+| Llama sizing | example-0 sizing possible for a task outside `_PER_EXAMPLE_FIT` | `per_example_fit=True` on every Llama generation (code and tests, break-tested); G11 extended |
+| Llama stop rule | Qwen's caps by default | its own caps, measured with the Llama tokenizer; lookups raise until measured (break-tested); stop ids from `generation_config.json` (pending); lock gate **L7** |
+| Llama oracle-pass cost | FLOP split × assumed μ (lower 2.0) and an assumed 1.6× | the measured 1.5B A100 oracle pass × config ratios 3.048–5.327 (`scripts/derive_llama_oracle_cost.py`); core ₹1,842–9,526; worst case about ₹11,780 |
+| Visibility | unstated | §3: H2c, H2d and H5a were written with the A100 crossover estimates visible, and are reported as anchored priors |
+| H100 baseline | not caveated | labelled **unmeasured** in `limitations.md` (tested, `tests/test_h100_baseline_caveat.py`); run D in I3 measures it |
+| Licence request | a draft in `docs/` (untracked) | moved out of the repository; only the request date is recorded (§0.1, §14) |
+| Sizing wording | "token-exact", "never above" | corrected in `limitations.md`, `writeup_input.md`, `sizing.py`, `ruler.py` and `reestimate_stage3.py`; 182 distinct over-budget examples (655 file-example pairs) |
+| §4.6 | "Neither is corrected here"; "four machines" | stale: the docs were corrected in `3f8a884`, and three Xid 31 events are banked |
+| §13 | later drafts' tables nested inside earlier tables' separator rows | repaired, in draft order |
+
+**Sixth draft (2026-10-03):**
+
+| area | fifth draft | sixth draft |
+|---|---|---|
+| Push | none | the 8 commits `dbabef7`..`469fed2` pushed to `origin` as branch `frontier-prereg-2026-10-03`, with the researcher's logged yes; no merge, no tag |
+| μ in §8 | 2.0 (assumed) – 11.3 (L4) on C, I1, I2a, X | **6.19–9.08**, measured on the A100 (1.5B oracle pass); old and new side by side (§8.2) |
+| Llama oracle lines | Qwen token counts | Llama token counts of `text.json` (3.63M, max 65,314, 130 ≤ 32K) |
+| Cost | core ₹1,842–9,526; full ₹7,133–21,347; worst case about ₹11,780 | core **₹2,540–9,053**; full **₹7,704–20,589**; worst case **about ₹11,250** against ₹12,000 |
+| L7 | pending | done: `generation_config.json` recorded; caps measured (6 / 56 / 40 / 6 / 30 / 30 / 42 / 46); `text.json` recounted |
+| Decoding | argmax only | greedy forced and asserted on Llama, refusal test, determinism test, on-instance determinism STOP (G9 step 6) |
+| Stop set | union of tokenizer and generation_config | Llama must be exactly {128001, 128008, 128009}; the tokenizer's 128009 alone is refused; `stop_token_id` on every row |
+| Encoding | two call sites agreeing by default | one encoder (`prompting.py`, `add_special_tokens=True`), fed length checked against sized length, double-BOS guard |
+| Authors' pipeline | not checked | greedy; chat format; **double BOS under default tokenizer settings** in calibration and RULER (156/156; file-and-line trace in §4.9); recorded with the confounds it leaves (§4.9, §3.9) |
+| Block 0 | — | holds the BOS on Llama |
+
+**Seventh draft (2026-10-03):**
+
+| area | sixth draft | seventh draft |
+|---|---|---|
+| Push | `469fed2` on the remote branch | `d849ded` pushed (the three local commits plus the §4.9 double-BOS wording the condition required), with the researcher's logged yes |
+| Double BOS | "the authors' pipelines produce one" | "under default tokenizer settings", traced to file and line in both paths at `e379887`, with their unpinned library versions stated |
+| I2c-B | not planned | a conditional double-BOS arm, triggered by an H6a miss, cut-order item 12, reserved as R_B; worst case ₹11,516 (₹484 spare) |
+| μ | A100's on every line | per card: every oracle line here is on the A100; no L4 oracle line exists; H100 μ recorded for I3 |
+| Llama | a version convention | a hard transformers pin (4.46.0) at load, generate and score; `transformers` on every row |
+| Banked rows | — | `stop_token_id`, `transformers`, `positions_over_limit`, `xattn_path` and `mask_selector` load as typed nulls |
+| Caps | "not changed after XL0" | a pre-registered trigger: a dense XL0 cap-hit rate over 5% doubles the cap once |
+| L3 | not started | **done**: `mask_selector` on every row type; era 4 and native in `eras.py`; stripped-column refusal; anchor `a1b7801` |
+| L1 | not started | **done**: `frontier_prereg.py`, its plan test and the §11.3 break-tests; §3.10 rules; H1's wording fixed; §8 numbers equal `bracket()` |
+| L2 | not started | **done**: A1–A7 code and dated sections |
+
+**Eighth draft (2026-10-03), after an independent referee read.** A fresh
+session read the seventh draft cold, as a journal referee, without the
+drafting history, and edited nothing. Its two arithmetic findings were
+re-derived here before anything changed. The researcher chose the fix for
+the first four blocking findings.
+
+| area | seventh draft | eighth draft |
+|---|---|---|
+| Push | `d849ded` on the remote branch | `338bdf5` pushed (six commits), with the researcher's logged yes, after a line-by-line check found no line copied from the authors' repository |
+| Permission date | recorded | typed by the researcher (3/10/26) |
+| H7 | input ratio "within 1 ± 0.05", which arithmetic puts at 0.69–0.96, so H7 was unresolved before data | matched budget below b = 128; ratio 1 ± 0.01 (0.9986–0.9998 by arithmetic); per-row check; descriptive cells; rows from parent row 7; a 12-cell rule under cut 4 |
+| H1 | 18 cells, 15 to pass; A100–H100 cells passed under the null; L4–H100 counted | independent pairs only; a guard that excludes a pair whose null value is inside the band (with a 1.10 margin); 5 of every 6 determinate cells; false-pass rate stated (≤ 0.32% at the guard's edge); I4 never cut; the six L4–A100 cells shown out of sample |
+| Withholding | XA results could be withheld by a decision after they were seen; fallback H3 gained a new comparison | the publish decision is logged before the first XA row; afterwards only the authors, in writing, can withhold; any withholding is published; fallback VS-against-MP is descriptive |
+| Evaluation ids | `qa_1` 0–299 and NIAH 0–49, sharing T4's prompts | indices from 3000, used by no banked file for that task at any band; registry and two tests; T4's ids serve R1–R4 and P-T4 only |
+| Bound on s | unstated | one session: t-bound over 40 per-rep ratios, labelled; k ≥ 2: over session means; the floor's third term needs k ≥ 2; pseudo-replication stated |
+| Replicates | triggered by m or by measured s | by m only; escalation by σ̂ only; a rerun rule |
+| H2 | cells not enumerated; S_meas undefined | 84 cells named; S_meas defined; H2c unresolved when most points are; H2d's model and band named |
+| H3 | 16 of 24 | and 6 of the twelve 7B cells; bands and tasks named |
+| H5b, P-T4 | not labelled as anchored | labelled in text and in code |
+| H6a | population changed under cut 3 | the 130 texts ≤ 32K, fixed; I2c-B cannot change the verdict |
+| Cuts | effect on each hypothesis unstated | a table in §8.4, and `apply_cuts` |
+| Terms | "deployable", "certified", "failed session" and others undefined | §2.5 |
+| Thresholds | no basis stated | §3 says which are conventions, which were fitted to a past miss, and which have a basis |
+| Code citations | file or function only; two stale line numbers | file and line for every x-attention claim in §4.1 at `e379887`; this project's at `338bdf5` |
+| §4.1 | two rows the referee read as inconsistent | both are correct and now explained: the chunk-size formula (one chunk at 16384, four at 32768), and the selection keeping sink and diagonal whatever `keep_sink` / `keep_recent` say |
+| Gates | G7 STOP; G6 "before any Qwen XA interpretation" | G7 makes a cell indeterminate; G6 names its action; G12 holds `text.json` to the firewall |
+| §10 | 18 items | 13 more (19–31) |
+| Cost | core ₹2,539–9,053; worst case ₹11,516, ₹484 spare | core **₹2,594–9,231**; worst case **₹11,696**, **₹304 spare** |
+
+**The referee's findings, each with what was done.**
+
+| finding | disposition |
+|---|---|
+| H7 cannot resolve | **fixed** (above) |
+| H1 passes under the null; L4–H100 not independent; fails instead of "not run" if I4 is cut | **fixed**; I4 is never cut |
+| selective reporting through §0.3 and §8.6 | **fixed** |
+| evaluation ids not fresh | **fixed**, against every banked file |
+| the bound on s; the floor's third term; pseudo-replicates | **fixed** in text; pseudo-replication **stated** (⚑29) |
+| H2a/H2b denominators, S_meas, native T_bsa | **fixed** |
+| H2c passes on noise; 0.05 outside the quoted ceiling | **fixed**; **stated** |
+| H2d: model, band, tolerance | **fixed** |
+| H3 and H7 bands unnamed; 7B has no pass rule; 16 reachable on T4-informed cells | **fixed** |
+| H3b, H6a, H6b, H7a, H7b: point estimates | **kept**, with intervals reported and a "marginal" label |
+| H4: both conditions; pooled ratio; shared examples | **fixed** in text; the dependence is **stated**, with per-arm tests beside it (⚑28) |
+| R1–R3 and other thresholds without a basis; τ_e fitted to the past | **stated** (§3) |
+| undefined terms | **fixed** (§2.5); "runs correctly" now names its threshold |
+| G6 is not an action | **fixed** |
+| H5b missing from the visible list | **fixed** |
+| H5 partly structural; P-T4 near-guaranteed | **stated** |
+| H5a and H1's anchor use `sdpa_flash` | **fixed**: both now give the §4.6 figure as well |
+| splits of the canary, X0 and XL0 | **fixed**: all selection split |
+| `text.json` outside the disjointness check | **fixed**: gate G12, function and test; wiring is §11.2 |
+| H6a scores a table on its own calibration texts | **stated** |
+| distractor documents | **stated** |
+| "8 per (task, band)" against 48 indices | **fixed**: 2000–2007, the rest reserved |
+| the firewall gates analysis, not computation | **stated**, with the `split`-column refusal |
+| native XA has no density-matched comparator | **fixed** intrinsically; F6 moved from C to P |
+| XA below b = 128 outside its hard-coded size | **stated** (⚑25) |
+| table calibrated on Triton, applied on the fallback | **stated** (⚑26) |
+| LongBench settings on Qwen, RULER settings on Llama | **stated** (⚑27) |
+| KV repetition missing from T_bsa and S_pred | **fixed** |
+| G7 vacuous; STOP against indeterminate | **fixed** |
+| seven confounds missing from §10 | **added** (⚑19–24, 29) |
+| x-attention claims without lines; two rows that look inconsistent | **fixed**; the two rows are correct and explained |
+| this project's stale line numbers | **fixed** |
+| cut 4, cut 3, cut 1 change a population | **fixed** (§8.4 table) |
+| I2c-B can only rescue | **stated**: it cannot change H6a's verdict |
+| replicates triggered by measured s; no stopping correction | **fixed**; the uncorrected escalation is **stated** |
+| no rerun rule | **fixed** |
+| a faster cuDNN or FA3 leaves the baseline in place | **kept and stated** (⚑30) |
+| five non-fail exits | **stated**: listed and defined in §3.10 |
+| never-cut list omits G11; §11.2 lists `rebracket()` as to do | **fixed** |
+
+---
+
+**2026-10-04, still the eighth draft: two entries the researcher typed, and a re-bracket.**
+
+| area | 2026-10-03 | 2026-10-04 |
+|---|---|---|
+| Push | `338bdf5` | `2c568ef` pushed (two commits), with the researcher's logged yes |
+| Request date (§0.1) | 2026-10-03, inferred | 2026-06-03, typed by the researcher as "3/6/2026" |
+| Scope note (§0.1) | none | the researcher's own words, recorded beside the summary; it widens nothing |
+| 1.5B A100 row, upper bound | a proxy: the 7B A100 row and the 1.5B L4 row | measured prefill × 1.6 + the task's token cap × 35 ms (§8.2 (c)) |
+| Rerun term | half of X primary, ₹1,698 | the 32768 band of X primary, ₹1,472; at the old inputs it should have been ₹2,251 (§8.2 (d)) |
+| Worst case | ₹11,696, ₹304 spare (₹12,248 and over the cap once the rerun term is corrected) | ₹10,202, ₹1,798 spare |
+| Core | ₹2,594–9,231 | ₹2,594–7,975 |
+| Push | `2c568ef` | `dc21dec` pushed, with the researcher's logged yes |
+| Request date, corrected | 2026-06-03 (from "3/6/2026") | 2026-10-03 (from "3/10/2026") |
+| Scope | the note beside the summary | the researcher confirmed the summary is the gate's basis, and that it covers publishing XA results and the kernel lines |
+| Reservation check | reserved never-cut sessions only, so I2b, I2d and I2e could run first and leave H8 unfunded | also reserves every higher-priority cuttable item not yet run, and the rest of the session's own item |
+| Cut order under withholding | unchanged by it | 0c (SL) and 10 (VS) move to the end |
+| SL's accuracy arm | "about ₹90–500", in no total | ₹113–312, a line in §8.2; priced as never-cut and not adopted (§8.4) |
+| Cut-effects table | no row for 0a, 0b, 0c, 2, 6, 10 | every cut item has a row |
+| DP1 and the arm factor | no number | above 1.6 re-brackets; at or above 2.60 cuts or stops |
+| Push | `dc21dec` | `d71efc8` pushed, with the researcher's logged yes |
+| Budget gate | a rule in prose and a function | `scripts/frontier_budget_gate.py`; the three GPU launchers refuse without it |
+| G12 | a function and a test | wired into split generation and the calibration script; **it says STOP on the real `text.json`**, which is a RULER sample (§5) |
+| Recall rows | no schema | `split` is required and checked against the example's index; selection refuses any other split; the evaluation analysis refuses without the committed selection |
+| Per-head selector | not built | built; G3 holds on CPU |
+| Budget expression | round(d_nom·n_cand) in prose | the era-3 code's expression, one function; they differ in a few rows at 0.10 and 0.05 (§2.1); recorded as a deviation |
+| `text.json` | G12 says STOP; decision open | the claim tables leave out its 24 QA texts; the full-set tables are also made, descriptive; G12 passes on the 132 texts, needles compared (§5); T4 amendment A8 |
+| C | one table, ₹158–348 | two tables, ₹254–555 |
+| Worst case, again | ₹10,202, ₹1,798 spare | ₹10,410, ₹1,590 spare |
+| H8's funding at worst-case inputs | funded under the new rule | funded if H6a passes; ₹48 short if I2c-B runs (§8.3) |
+| Budget selection | "mean R̃", population unstated | per (estimator, task, band), 32 examples, equal weight |
+| Scripts not wired to the gate | named in a sentence | listed in §8.3 with what each creates |
+| SL's accuracy arm | priced as never-cut, undecided | stays cuttable, below H8 (the researcher) |
+| Full-set 7B table | inside C, never cut | C-full: its own session, cut item 0, run last; "full-set table not made" if cut |
+| Worst case, third time | ₹10,410, ₹1,590 spare | ₹10,179, ₹1,821 spare |
+| H8's funding at worst-case inputs, again | funded only if H6a passes | funded in both cases (₹241 and ₹184 to spare) |
+| Needle comparison | at 16384 and 32768 | at every budget either study generates a prompt at, the capped bands included; still no shared pair |
+| Needle pass rule | stated | justified; the one T4 example whose answer value recurs is reported with and without |
+| Quoted question | one SQuAD question quoted | replaced by its index and the file's sha256 |
+| Built | selector, gate, G12, recall rows | also `bsa_prefill`, per-head mean-pool, the recall pass, DP1 from timing rows |
+| Push | `d71efc8` | README `a343917`, then the build commits `236bcd0`, each with the researcher's logged yes |
+
+## 14. Licence and provenance request to the XAttention authors
+
+- **The request.** Dated 2026-10-03 (§0.1). Its text is not kept in the
+  repository (moved out 2026-10-03, never committed).
+- **The reply.** Dated 2026-10-03, from the XAttention authors. It is
+  recorded only as the researcher's summary (§0.1). The email is private and
+  is not quoted anywhere in the project.
+- **Unanswered:** threshold provenance, and Triton-versus-torch block
+  selection. Both are in §0.1, with no waiting window.
+- **Every dependent action** is gated by §0.2 and §8.6.
+
+---
+
+## Results
+
+*(Empty until lock and the first session.)*

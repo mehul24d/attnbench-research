@@ -90,7 +90,12 @@ T4_DENSE_PILOT_TASKS = (
 # word needles). They are sized per example, so every example lands at or
 # under its budget by construction rather than by assuming the first
 # example's fit holds for the rest -- which is all the existing tasks rely
-# on, and is safe only because their filler is uniform.
+# on. That is NOT safe for them: their filler is uniform, but their needles
+# (UUIDs, numbers) are not, so later examples overshoot by up to +82 tokens
+# (see the `RulerExample` docstring; corrected 2026-10-03). Left unchanged
+# here because changing the sizing would change every regenerated prompt for
+# those tasks and break identity with banked rows. New runs that need the
+# ceiling (every Llama-3.1-8B generation) pass `per_example_fit=True`.
 _PER_EXAMPLE_FIT = frozenset(_QA_PARAMS) | frozenset(
     t for t, p in _NIAH_PARAMS.items()
     if p["haystack_mode"] == "essay" or "words" in (p["type_needle_k"], p["type_needle_v"]))
@@ -104,8 +109,20 @@ class RulerExample:
     keeping it separate, so there's nothing distinct to put there.
 
     `context_length` is the REAL tokenized length of `context` under the
-    tokenizer that generated it -- not a word-count estimate. It will be at
-    or just below `token_budget`, never above (see accuracy/sizing.py).
+    tokenizer that generated it -- not a word-count estimate.
+
+    It is at or below `token_budget` only for tasks in `_PER_EXAMPLE_FIT`,
+    which are sized per example, or when `generate_examples` was called with
+    `per_example_fit=True`. Every other task is sized ONCE per budget,
+    on example 0, and that filler count is reused for the rest; their needles
+    (UUIDs, numbers) tokenize to different lengths per example, so an example
+    can land ABOVE budget. Measured 2026-10-03 across banked data:
+    `niah_multikey` up to +82 tokens at 16384, `niah_single` up to +20,
+    `vt` up to +5, and `niah_single` +1 at 32768 -- a 32,769-token prompt,
+    past Qwen2.5's 32,768-position limit
+    (`results/positions_over_limit/sizing_delta_by_band_task.csv`). Callers
+    that need a hard ceiling must check `context_length` themselves.
+    (Until 2026-10-03 this said "never above".)
 
     Both are recorded because they are not identical: the budget is the
     grid's requested length, and the actual is what the filler granularity
@@ -229,13 +246,18 @@ def _example_seed(seed: int, task: str, num_haystack: int, index: int) -> int:
 
 def generate_examples(task: str, token_budgets: list[int], n_per_length: int,
                        seed: int, *, count_tokens: sizing.TokenCounter,
+                       per_example_fit: bool = False,
+                       index_offset: int = 0,
                        ) -> list[RulerExample]:
     """Generate `n_per_length` examples at each of `token_budgets` for
     `task`.
 
-    `token_budgets` are EXACT TOKEN COUNTS, not haystack-unit counts. Each
-    example's filler is binary-searched so the rendered prompt lands at or
-    just under its budget under `count_tokens` -- so a grid `seq_len` of
+    `token_budgets` are EXACT TOKEN COUNTS, not haystack-unit counts. The
+    filler is binary-searched so the rendered prompt lands at or just under
+    its budget under `count_tokens` -- per example for `_PER_EXAMPLE_FIT`
+    tasks or with `per_example_fit=True`, otherwise once per budget on
+    example 0, which later examples can overshoot (see `RulerExample`; this
+    said "Each example's filler" until 2026-10-03) -- so a grid `seq_len` of
     16384 produces ~16384 real tokens, not the ~19821 the old word-count
     heuristic produced. See accuracy/sizing.py for why this replaced the
     estimate-then-correct approach.
@@ -250,6 +272,18 @@ def generate_examples(task: str, token_budgets: list[int], n_per_length: int,
     example's seed) and reused across that budget's examples -- filler size
     is essentially constant at a fixed budget since only needle contents
     vary -- but each example's own token count is measured and recorded.
+
+    `index_offset` shifts every example's index -- its seed, its id and,
+    for QA, WHICH QUESTION it asks (`_render(index=...)`) -- so a split can
+    draw questions no other split uses (estimator-frontier pre-registration
+    sec. 5; T4 amendment A1, 2026-10-03). 0 reproduces every banked example.
+
+    `per_example_fit=True` sizes EVERY example on its own, whatever the
+    task, and raises if any example still lands above its budget. The
+    estimator-frontier pre-registration (sec. 4.9) requires it for every
+    Llama-3.1-8B generation. It defaults to False because turning it on for
+    a task outside `_PER_EXAMPLE_FIT` changes that task's prompts, and the
+    banked rows were generated without it (added 2026-10-03).
     """
     if task not in _TASK_CATEGORY:
         raise ValueError(f"unknown task {task!r}; known tasks: "
@@ -260,20 +294,25 @@ def generate_examples(task: str, token_budgets: list[int], n_per_length: int,
         # Solve the filler count once per budget, against the first
         # example's seed, rather than per example: ~log2(n) tokenizations
         # of a 30k-token string per cell instead of per row.
-        probe_seed = _example_seed(seed, task, budget, 0)
+        probe_seed = _example_seed(seed, task, budget, index_offset)
         fit = sizing.fit_units_to_budget(
             lambda units: _render(task, probe_seed, units)[0],
             count_tokens, budget, min_units=_min_haystack_units(task))
 
-        for i in range(n_per_length):
+        for j in range(n_per_length):
+            i = index_offset + j
             example_seed = _example_seed(seed, task, budget, i)
             example_id = f"{task}_{budget}_{i}"
             units = fit.units
-            if task in _PER_EXAMPLE_FIT:
+            if per_example_fit or task in _PER_EXAMPLE_FIT:
                 units = sizing.fit_units_to_budget(
                     lambda u, s=example_seed, i=i: _render(task, s, u, index=i)[0],
                     count_tokens, budget, min_units=_min_haystack_units(task)).units
             text, answer = _render(task, example_seed, units, index=i)
+            if per_example_fit and count_tokens(text) > budget:
+                raise sizing.BudgetTooSmallError(
+                    f"{example_id}: {count_tokens(text)} tokens after a "
+                    f"per-example fit, above the {budget}-token budget")
             examples.append(RulerExample(
                 task=task, example_id=example_id, context=text, question="",
                 answer=answer, context_length=count_tokens(text),

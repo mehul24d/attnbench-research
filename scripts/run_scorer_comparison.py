@@ -70,7 +70,7 @@ def main():
     if a.empty or b.empty:
         raise SystemExit(f"no rows at band {args.band} in one of the inputs")
 
-    for line in eras.licence(*eras.sides(eras.commits_of(a), eras.commits_of(b),
+    for line in eras.licence(*eras.sides_from_frames(a, b,
                                          "oracle", "cheap"), args):
         print(line, flush=True)
 

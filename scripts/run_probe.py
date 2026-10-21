@@ -159,10 +159,14 @@ def main():
                          "with an illegal memory access does not fail alone: "
                          "it poisons the CUDA context, so the NEXT band dies "
                          "in torch.cuda.empty_cache() before probing anything. "
-                         "On 2026-09-16 sdpa_cudnn logged "
-                         "illegal_memory_access on all 84 configs at "
-                         "seq_len=16384 and took the 32768 band down with it. "
-                         "Excluding it here and probing it last, in its own "
+                         "(On 2026-09-16, H100, the 32768 band died that way; "
+                         "the fault was block_sparse's backward, not cuDNN, "
+                         "whose 84 illegal_memory_access rows were written by "
+                         "the device-fault guard WITHOUT launching -- see "
+                         "docs/retry_session_runbook.md. cuDNN's fault above "
+                         "8192 is observed on L4 and A100; H100 untested "
+                         "above 8192.) "
+                         "Excluding a backend here and probing it last, in its own "
                          "process, is the standing 'cuDNN last' rule made "
                          "enforceable rather than remembered.")
     ap.add_argument("--only-backends", default="",

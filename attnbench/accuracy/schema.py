@@ -120,6 +120,16 @@ class Generated:
     text: str
     latency_ms: Optional[float] = None
     stop_reason: Optional[StopReason] = None
+    # The token id that fired an "eos" or "newline" stop; None on "cap".
+    # Added 2026-10-03: Llama-3.1 has three EOS ids, and which one ended a row
+    # is a fact the category alone does not carry.
+    stop_token_id: Optional[int] = None
+    # max(0, prompt + generated - max_position_embeddings): positions decoded
+    # past the model's limit (T4 amendment A7; pre-registration sec. 4.9).
+    positions_over_limit: Optional[int] = None
+    # XAttention rows only: "triton" or "torch_fallback", the path the
+    # official estimator actually took (T4 amendment A4; sec. 4.9).
+    xattn_path: Optional[str] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
     # True when the caller pinned the dense-decode fallback to a historical
@@ -189,6 +199,18 @@ class AccuracyResult:
     # inference from answer length against a per-task cap table that would
     # have to be kept in sync with the one generation actually used.
     stop_reason: Optional[StopReason] = None
+    # See Generated.stop_token_id. None on banked rows written before
+    # 2026-10-03, which did not record it.
+    stop_token_id: Optional[int] = None
+    # See Generated.positions_over_limit / xattn_path (2026-10-03). Null on
+    # banked rows; `scripts/flag_positions_over_limit.py` recomputes the
+    # former for them.
+    positions_over_limit: Optional[int] = None
+    xattn_path: Optional[str] = None
+    # masks.MASK_SELECTORS; the era-4 column (pre-registration sec. 4.5).
+    # The runner sets it on every row; rows banked before it have none, and
+    # analysis/eras.py resolves those by commit.
+    mask_selector: Optional[str] = None
     n_generated: Optional[int] = None
     decode_backend: Optional[str] = None
     # See Generated.decode_pinned. Carried so a replayed-regime row can never
@@ -261,6 +283,53 @@ class AccuracyResult:
             raise ValueError(
                 f"backend {self.backend!r} does not select its own blocks; "
                 f"xattn_threshold, xattn_calibration and the densities must be None.")
+        if self.xattn_path is not None and (
+                not selecting or self.xattn_path not in ("triton", "torch_fallback")):
+            raise ValueError(
+                f"xattn_path={self.xattn_path!r} on backend {self.backend!r}: only "
+                f"a self-selecting row carries it, as 'triton' or 'torch_fallback'.")
+        if self.mask_selector is not None:
+            from ..masks import MASK_SELECTORS
+            if self.mask_selector not in MASK_SELECTORS:
+                raise ValueError(f"mask_selector={self.mask_selector!r} is not one "
+                                 f"of {MASK_SELECTORS}")
+            if selecting != (self.mask_selector == "xattn_native"):
+                raise ValueError(
+                    f"backend {self.backend!r} with mask_selector="
+                    f"{self.mask_selector!r}: a self-selecting backend is "
+                    f"xattn_native, and nothing else is.")
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+# Columns added after accuracy rows were already banked, with the dtype a
+# loader gives them. A banked row has no value, so it reads as null (pd.NA),
+# never 0 or "" and never a float NaN that an equality test would silently
+# miss. Added 2026-10-03 (estimator-frontier pre-registration, sec. 4.9).
+LATE_ACCURACY_COLUMNS = {
+    "stop_token_id": "Int64",
+    "transformers": "string",
+    "positions_over_limit": "Int64",
+    "xattn_path": "string",
+    "mask_selector": "string",
+}
+
+
+def normalise_accuracy_frame(df):
+    """`df` with every late column present and typed; missing values null."""
+    import pandas as pd
+    df = df.copy()
+    for col, dtype in LATE_ACCURACY_COLUMNS.items():
+        if col not in df.columns:
+            df[col] = pd.Series(pd.NA, index=df.index, dtype=dtype)
+        else:
+            df[col] = df[col].astype(dtype)
+    return df
+
+
+def load_accuracy_parquet(path):
+    """Read an accuracy parquet, banked or new, with the late columns null
+    where a row predates them."""
+    import pandas as pd
+    return normalise_accuracy_frame(pd.read_parquet(path))

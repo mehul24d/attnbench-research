@@ -36,6 +36,7 @@ def build_examples_by_task_length(grid: AccuracyGrid, seed: int, *,
                                    count_tokens: TokenCounter,
                                    tasks: tuple[str, ...] | None = None,
                                    seq_lens: dict[int, int] | None = None,
+                                   index_offset: int = 0,
                                    ) -> dict[tuple[str, int], list[RulerExample]]:
     """One generate_examples() call per (task, seq_len), keyed on the
     GRID's seq_len -- this is what makes build_cells's context-length
@@ -62,7 +63,7 @@ def build_examples_by_task_length(grid: AccuracyGrid, seed: int, *,
         for seq_len, n_per_length in (seq_lens if seq_lens is not None else grid.seq_lens).items():
             out[(task, seq_len)] = generate_examples(
                 task, [seq_len], n_per_length, seed=seed,
-                count_tokens=count_tokens)
+                count_tokens=count_tokens, index_offset=index_offset)
     return out
 
 

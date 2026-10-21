@@ -50,6 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from attnbench.accuracy.config import load_grid                        # noqa: E402
+from attnbench.accuracy.prompting import prompt_token_counter  # noqa: E402
 from attnbench.accuracy.generation import (                            # noqa: E402
     ModelGeometry, StopTokens, generate_one)
 from attnbench.accuracy.grid_configs import (                          # noqa: E402
@@ -135,6 +136,11 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
 
     from attnbench.accuracy.model import SwappableAttentionModel
 
+    from attnbench.accuracy.pins import require_pinned_transformers
+    # Before the download and load, not after: a Llama run on the wrong
+    # transformers is refused before it costs anything (pins.py).
+    require_pinned_transformers(model_id)
+
     torch_dtype = getattr(torch, dtype)
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch_dtype)
     model = model.to(device).eval()
@@ -152,7 +158,7 @@ def build_generate_fn(grid, *, model_id: str, tokenizer, device: str,
                                       score_source=score_source)
 
     stop_tokens = StopTokens.from_tokenizer(
-        tokenizer, getattr(model, "generation_config", None))
+        tokenizer, getattr(model, "generation_config", None), model_id=model_id)
     if verbose:
         print(f"stop tokens   : {len(stop_tokens.eos)} eos, "
               f"{len(stop_tokens.newline)} newline, "
@@ -632,9 +638,8 @@ def main():
     else:
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-        def count_tokens(text: str) -> int:
-            return len(tokenizer(text).input_ids)
+        # The same encoding generation feeds the model (prompting.py).
+        count_tokens = prompt_token_counter(tokenizer)
 
         print(f"sizing        : exact, via {model_id} tokenizer")
 
@@ -693,7 +698,7 @@ def main():
                               if b in want}
     print(f"backends      : {', '.join(configs_by_backend)}")
     print("caps (tokens) : " + ", ".join(
-        f"{t}={stopping.token_cap(t)}" for t in selected_tasks))
+        f"{t}={stopping.token_cap(t, model_id)}" for t in selected_tasks))
 
     cells = build_cells(configs_by_backend=configs_by_backend,
                         examples_by_task_length=examples_by_task_length)
@@ -732,7 +737,8 @@ def main():
                               score_source=args.score_source,
                               xattn_threshold=args.xattn_threshold,
                               xattn_calibration=(xattn_table.label if xattn_table
-                                                 is not None else None))
+                                                 is not None else None),
+                              model_id=model_id)
     finally:
         if teardown is not None:
             teardown()

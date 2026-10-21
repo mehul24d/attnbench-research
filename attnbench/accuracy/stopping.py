@@ -43,16 +43,52 @@ TASK_TOKEN_CAPS: dict[str, int] = {
 }
 
 
-def token_cap(task: str) -> int:
+# Llama-3.1-8B-Instruct's own caps (estimator-frontier pre-registration,
+# sec. 4.9, 2026-10-03). Same rule, measured with the Llama tokenizer by
+# `scripts/measure_answer_lengths.py --model`. Qwen's caps above are NOT
+# reused: a different tokenizer splits the same answer differently (Llama
+# groups digits in threes, so a 7-digit number is 3 tokens, not 7). Measured
+# 2026-10-03, offline, with the pinned tokenizer (revision 0e9e39f), 200
+# examples per task; the table is in the pre-registration, sec. 4.9. A task
+# not listed still raises.
+LLAMA_31_8B = "meta-llama/Llama-3.1-8B-Instruct"
+LLAMA_31_8B_TASK_TOKEN_CAPS: dict[str, int] = {
+    "niah_single": 6,
+    "niah_multikey": 56,
+    "vt": 40,
+    "niah_multikey_1": 6,
+    "niah_multivalue": 30,
+    "niah_multiquery": 30,
+    "qa_1": 42,
+    "qa_2": 46,
+}
+
+# Models whose caps are not TASK_TOKEN_CAPS. Exact repo ids, not a substring
+# match: the toy test models are LlamaForCausalLM too.
+_CAPS_BY_MODEL: dict[str, dict[str, int]] = {LLAMA_31_8B: LLAMA_31_8B_TASK_TOKEN_CAPS}
+
+
+def token_cap(task: str, model_id: Optional[str] = None) -> int:
     """The per-task cap, or a raise. Never a default.
 
     A default here would silently apply one task's answer-length distribution
     to another's, and the failure would be a quietly truncated answer scored
     as wrong -- indistinguishable in the parquet from a backend that got it
     wrong. Adding a task to the grid must mean measuring its answer lengths.
+
+    `model_id` selects a model's own table (`_CAPS_BY_MODEL`); any other
+    model, or None, reads `TASK_TOKEN_CAPS`, measured with the Qwen2.5
+    tokenizer.
     """
+    table = _CAPS_BY_MODEL.get(model_id, TASK_TOKEN_CAPS)
+    if table is not TASK_TOKEN_CAPS and task not in table:
+        raise KeyError(
+            f"no measured token cap for task {task!r} on {model_id} (have "
+            f"{sorted(table)}). Measure it with that model's tokenizer "
+            f"(scripts/measure_answer_lengths.py --model); the Qwen caps are "
+            f"not reused.")
     try:
-        return TASK_TOKEN_CAPS[task]
+        return table[task]
     except KeyError:
         raise KeyError(
             f"no measured token cap for task {task!r} (have "
@@ -120,6 +156,26 @@ def eos_token_ids(tokenizer, generation_config=None) -> frozenset[int]:
     if generation_config is not None:
         _add(getattr(generation_config, "eos_token_id", None))
     return frozenset(found)
+
+
+# The full stop set a model's rows must use, where the tokenizer alone gives
+# less. Llama-3.1-8B-Instruct's tokenizer reports only <|eot_id|> (128009);
+# its generation_config.json lists <|end_of_text|> 128001, <|eom_id|> 128008
+# and <|eot_id|> 128009 (pinned revision 0e9e39f, read 2026-10-03).
+REQUIRED_EOS_BY_MODEL: dict[str, frozenset[int]] = {
+    LLAMA_31_8B: frozenset({128001, 128008, 128009}),
+}
+
+
+def check_eos_for_model(eos: frozenset[int], model_id: Optional[str]) -> None:
+    """Refuse a stop set that differs from the model's required one -- in
+    particular the tokenizer's single EOS id without generation_config's."""
+    want = REQUIRED_EOS_BY_MODEL.get(model_id)
+    if want is not None and frozenset(eos) != want:
+        raise ValueError(
+            f"{model_id} must stop on {sorted(want)} (generation_config.json); "
+            f"got {sorted(eos)}. Pass the model's generation_config, not the "
+            f"tokenizer alone.")
 
 
 def first_stop_index(token_ids: list[int], *, newline_ids: frozenset[int],
