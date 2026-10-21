@@ -350,3 +350,25 @@ done
 - **Reporting.** That cell is reported on all 50 examples and with index 5
   left out. Both are descriptive.
 - `niah_multikey` is not a task of this phase, so it was not compared.
+
+## Note, 2026-10-21: A6's link points to an archived study (T0.16)
+
+This note is not an amendment. It changes no calibration, task, n, test or
+claim of this phase, and Session A has still not run.
+
+- **The study A6 links to is archived.** The estimator-frontier study was
+  superseded by `docs/RESEARCH_PLAN.md`. Its pre-registration moved to
+  `docs/archive/estimator_frontier_preregistration.md` on 21 Oct 2026
+  (T0.16), and the citations of `docs/estimator_frontier_preregistration.md`
+  above now resolve there. It was never locked, and it will not run as
+  pre-registered.
+- **What A6 committed stays committed before Session A.** That document's
+  §3.9 (P-T4, R1–R4) was first committed in `7bb40ac` (3 Oct 2026). The
+  file was last changed on `frontier-prereg-2026-10-03` in `65b8f71`
+  (4 Oct 2026). Both commits are reachable from `main` through the T0.16
+  merge, and both predate any Session A row.
+- **What this phase still uses from it** moved unchanged to live code: the
+  four-identity split check behind A1 and G12 (`SplitLeak`,
+  `check_splits_disjoint`), now in `attnbench/analysis/splits_and_budgets.py`.
+- **Scoring.** Whether P-T4 and R1–R4 are scored against this phase's rows,
+  and how, is the researcher's decision. Nothing here scores them.
