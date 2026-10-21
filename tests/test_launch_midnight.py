@@ -161,6 +161,15 @@ def test_a_second_attempt_after_midnight_is_refused(name, tmp_path):
     assert len(creates) == 1, (name, creates, proc.stderr[-2000:])
     assert proc.returncode != 0, name
     assert "is after the last GCP" in proc.stderr, (name, proc.stderr[-2000:])
+    # The last launch date (9 Dec 2026) is after the credit's last day (30 Nov
+    # 2026), so the first attempt was told it is outside the credit.
+    assert "outside the GCP credit" in proc.stderr, (name, proc.stderr[-2000:])
+
+
+def test_the_crossing_is_the_night_of_9_to_10_december_2026():
+    """The dates these tests cross, pinned, so moving the boundary is seen
+    here as well as in tests/test_launch_policy.py."""
+    assert (_last_date(), _next(_last_date())) == ("2026-12-09", "2026-12-10")
 
 
 @pytest.mark.parametrize("name", RETRYING)

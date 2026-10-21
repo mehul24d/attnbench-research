@@ -48,8 +48,8 @@ def _last_date() -> str:
 def test_last_launch_date_matches_the_plan():
     """One date, stated in two places that must agree."""
     plan = (REPO / "docs" / "RESEARCH_PLAN.md").read_text()
-    assert _last_date() == "2026-11-22"
-    assert "22 November 2026" in plan
+    assert _last_date() == "2026-12-09"
+    assert "9 December 2026" in plan
 
 
 def test_the_last_launch_date_itself_is_allowed():
@@ -58,7 +58,7 @@ def test_the_last_launch_date_itself_is_allowed():
 
 
 def test_the_day_after_is_refused():
-    proc = _check("asia-northeast1-a", "2026-11-23")
+    proc = _check("asia-northeast1-a", "2026-12-10")
     assert proc.returncode != 0
     assert "PASSED" not in proc.stdout
     assert "last GCP" in proc.stderr
@@ -78,8 +78,8 @@ def test_an_australia_zone_anywhere_in_the_list_is_refused(zones):
 
 
 @pytest.mark.parametrize("override", [
-    {"ATTNBENCH_TODAY": "2026-11-23"},
-    {"BASH_FUNC_date%%": "() {  echo 2026-11-23; }"},
+    {"ATTNBENCH_TODAY": "2026-12-10"},
+    {"BASH_FUNC_date%%": "() {  echo 2026-12-10; }"},
 ])
 def test_no_variable_or_shell_function_moves_the_date(override):
     """The date the policy reads is the one `date` prints. A variable or an
@@ -90,9 +90,36 @@ def test_no_variable_or_shell_function_moves_the_date(override):
 
 def test_a_bash_env_function_does_not_move_the_date(tmp_path):
     env_file = tmp_path / "bash_env.sh"
-    env_file.write_text("date() { echo 2026-11-23; }\n")
+    env_file.write_text("date() { echo 2026-12-10; }\n")
     proc = _check("asia-northeast1-a", "2026-10-04", BASH_ENV=str(env_file))
     assert proc.returncode == 0 and "PASSED" in proc.stdout, proc.stderr
+
+
+CREDIT_LINE = "This launch is outside the GCP credit (expires 1 Dec 2026); billed to the researcher."
+
+
+def test_a_launch_after_30_november_says_it_is_outside_the_credit():
+    """Plan Section 5.2, Funding: the credit expires on 1 Dec 2026, and a launch
+    after 30 Nov 2026 (India time) is billed to the researcher. It is allowed,
+    and the check says so."""
+    for today in ("2026-12-01", _last_date()):
+        proc = _check("asia-northeast1-a", today)
+        assert proc.returncode == 0 and "PASSED" in proc.stdout, (today, proc.stderr)
+        assert CREDIT_LINE in proc.stderr, today
+
+
+def test_a_launch_on_30_november_or_before_says_nothing_about_the_credit():
+    for today in ("2026-10-21", "2026-11-30"):
+        proc = _check("asia-northeast1-a", today)
+        assert proc.returncode == 0 and "PASSED" in proc.stdout, (today, proc.stderr)
+        assert "outside the GCP credit" not in proc.stderr, today
+
+
+def test_the_credit_date_is_the_day_before_the_credit_expires():
+    m = re.search(r'^LAST_CREDIT_DATE="(\d{4}-\d{2}-\d{2})"$', POLICY.read_text(), re.M)
+    assert m and m.group(1) == "2026-11-30"
+    plan = (REPO / "docs" / "RESEARCH_PLAN.md").read_text()
+    assert "expires on 1 Dec 2026" in plan
 
 
 def test_a_permitted_zone_list_passes():

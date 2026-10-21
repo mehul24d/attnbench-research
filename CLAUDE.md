@@ -22,16 +22,17 @@ The study: **predicting when training-free block-sparse prefill pays end to end 
 5. Cite only papers read in full. If a paper is needed, ask the researcher for the PDF.
 6. Write and hash predictions before the data they predict.
 7. Run the focused tests for what you changed, and keep the full suite green (`python -m pytest -q`). In a CPU-only container, 5 tests in `test_generation_wiring.py`, `test_inline_estimator.py` and `test_swappable_attention_model.py` report as xfail: PyTorch's CPU flash SDPA kernel rejects grouped-query attention shapes. The mark is conditional on a probe of that call and strict (`tests/_sdpa_env.py`), so any other failure in those tests still fails the suite.
-8. No unrelated changes in a commit. Third-party code is installed and called, never copied.
+8. No unrelated changes in a commit. Third-party code is installed and called, never copied, except as listed in `docs/vendor_register.md`. Each row there states the upstream, its licence status and a credit line, and counts only once the researcher has approved it.
 9. No model identifiers in research artifacts.
 10. Any use of results that needs the researcher's permission must be in `docs/permission_log.md` before the use. If it is not in the log, it is not approved.
+11. Any push or merge needs the researcher's explicit yes to that exact action, naming files, branch and destination, recorded in the permission log before acting.
 
 ## Cloud sessions
 
 - Before any GPU session, state the exact command, estimated cost, cost cap, hard-delete limit and artifact path, then wait for approval. The researcher runs all cloud commands from their Mac.
 - The sequence is: cleanup check, cost cap, hard-delete limit, quarantine of stale results, deploy the clean commit, preflight, run, then teardown through `scripts/gcp_teardown_session.sh`. Record the cost in `docs/spend_ledger.md`.
 - Machines and zones are pinned in plan Section 5.2. The L4 zone is `asia-northeast1-a`. Never use an Australia region.
-- No GCP session launches after **22 November 2026** (India time). `scripts/_launch_policy.sh` enforces this and the Australia ban in every launch script; do not bypass it.
+- No GCP session launches after **9 December 2026** (India time; the date itself is allowed). `scripts/_launch_policy.sh` enforces this and the Australia ban in every launch script; do not bypass it.
 - No AWS launches until task T5.1 is done.
 
 ## Layout
