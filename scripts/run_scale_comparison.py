@@ -76,7 +76,7 @@ def main():
     # After the band filter, so the commits reported are the ones that
     # actually contribute rows to the tables below rather than every commit
     # in the file.
-    for line in eras.licence(*eras.sides(eras.commits_of(a), eras.commits_of(b),
+    for line in eras.licence(*eras.sides_from_frames(a, b,
                                          "small", "large"), args):
         print(line, flush=True)
 

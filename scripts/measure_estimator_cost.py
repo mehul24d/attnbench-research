@@ -100,15 +100,23 @@ def _samples(fn, *, device: str, warmup: int, reps: int) -> list[float]:
     return [run(fn) for _ in range(reps)]
 
 
+# The era-4 column (pre-registration sec. 4.5) on every component row.
+_COMPONENT_SELECTOR = {"meanpool": "head_uniform", "mask_build": "head_uniform",
+                       "block_sparse": "head_uniform", "dense": "none",
+                       "xattn_estimate": "xattn_native"}
+
+
 def _row(component, seq_len, samples, **extra):
     return dict(component=component, seq_len=seq_len,
+                mask_selector=_COMPONENT_SELECTOR[component],
                 median_ms=statistics.median(samples), min_ms=min(samples),
                 max_ms=max(samples), reps=len(samples), samples_ms=list(samples),
                 available=True, reason="", **extra)
 
 
 def _unavailable(component, seq_len, reason, **extra):
-    return dict(component=component, seq_len=seq_len, median_ms=float("nan"),
+    return dict(component=component, seq_len=seq_len,
+                mask_selector=_COMPONENT_SELECTOR[component], median_ms=float("nan"),
                 min_ms=float("nan"), max_ms=float("nan"), reps=0, samples_ms=[],
                 available=False, reason=reason[:300], **extra)
 

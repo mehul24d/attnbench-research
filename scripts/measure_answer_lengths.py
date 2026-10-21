@@ -69,10 +69,22 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", nargs="*", default=list(PUBLISHED_MAX) + list(NEW_TASKS))
     ap.add_argument("--out", type=Path, default=None)
+    # Another model's caps (2026-10-03, estimator-frontier pre-registration
+    # sec. 4.9): Llama-3.1-8B is measured with its own tokenizer, never given
+    # Qwen's caps. The method is validated only by reproducing the Qwen
+    # maxima, so run without --model first; with it, that check is skipped
+    # and the output says so.
+    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--revision", default=None)
     args = ap.parse_args()
 
     from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(MODEL)
+    tok = AutoTokenizer.from_pretrained(args.model, revision=args.revision)
+    validating = args.model == MODEL
+    print(f"tokenizer: {args.model}"
+          + (f" @ {args.revision}" if args.revision else "")
+          + ("" if validating else
+             "  (published-maxima check skipped: it validates the method on Qwen only)"))
 
     def count_tokens(text: str) -> int:
         return len(tok(text, add_special_tokens=False).input_ids)
@@ -84,7 +96,7 @@ def main() -> int:
                    p95=lens[int(0.95 * (len(lens) - 1))], max=lens[-1], cap=2 * lens[-1])
         rows[task] = row
         check = ""
-        if task in PUBLISHED_MAX:
+        if validating and task in PUBLISHED_MAX:
             match = lens[-1] == PUBLISHED_MAX[task]
             ok &= match
             check = f"  published max {PUBLISHED_MAX[task]}: {'REPRODUCED' if match else 'MISMATCH'}"

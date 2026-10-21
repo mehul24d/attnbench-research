@@ -302,7 +302,7 @@ the comparison and interleaving cancels.
 **One new A100 measurement.** These sessions are the first to run 32768 on the
 A100 with the vectorised builder: block-sparse beats flash by **1.250× /
 1.481× / 1.666×** at 0.50 / 0.75 / 0.90, against 0.28× / 0.48× / 0.84× with
-the reference builder.
+the reference builder. *(Against `sdpa_flash`; see the A100 baseline caveat below.)*
 
 All of the above is derived from the banked, force-committed parquets in
 `tests/test_overlap_paired.py`; `results/s12_*`, and on GCS under each
@@ -346,6 +346,30 @@ the A100: **1.245× / 1.537× / 1.790×** at 32768 (0.923 / 0.990 / 1.036 at
 every cell and bitwise-identical except at 16384 and 32768 for 0.50 and 0.75,
 the tie-break differences seen on the other cards. Derived in
 `tests/test_h100_overlap_preregistered.py`; banked in `results/s12_h100_*`.
+
+> **H100 baseline strength: unmeasured (caveat added 2026-10-03).** Every
+> H100 speedup in this section is against `sdpa_flash`, the only dense kernel
+> `results/s12_h100_vec_endtoend` timed. That covers the reference builder's
+> 0.294–0.850 and the vectorised 1.245× / 1.537× / 1.790× at 32768
+> (0.923 / 0.990 / 1.036 at 8192, 1.076 / 1.219 / 1.327 at 16384). No banked
+> H100 file times any other dense kernel at the model's (12, 2) geometry, so
+> how far these move against the fastest correct kernel is **unmeasured**.
+> They are not adjusted.
+>
+> - **The only banked H100 dense comparison** is the Stage 2 sweep at
+>   (32, 8) (`results/h100_20260916_stage2/results/sweep/sweep.parquet`).
+>   There `flex` is fastest: `sdpa_flash` takes 1.15× its time at 16384
+>   (6.778 vs 5.886 ms) and 1.16× at 32768 (26.034 vs 22.538 ms). cuDNN
+>   runs at 0.49× flash at 4096 (0.262 vs 0.535 ms) and was never launched
+>   above 8192. The sweep has no 8192 band.
+> - **It does not size the in-model effect.** On the A100 the ranking at
+>   (32, 8) does not carry to (12, 2). At 8192, cuDNN takes 1.007× flash's
+>   time at (32, 8) (2.982 vs 2.960 ms, `results/a100/sweep_a100.parquet`)
+>   but 0.742× at (12, 2) (1.165 vs 1.570 ms, `results/s7_sweep_hl122`).
+>   That gap is the difference that takes the A100's 8192 estimate below 1.
+> - **Measured by:** run D in session I3
+>   (`docs/estimator_frontier_preregistration.md` §4.6), at the real
+>   geometry.
 
 **"As implemented" is load-bearing — this is an engineering cost, not a
 property of sparse attention.** Profiling `importance_block_mask` at 32768:
@@ -411,6 +435,14 @@ The claim this licenses: **the end-to-end speedup requires either a dense
 baseline weak enough to beat, or a vectorised mask builder — and the reference
 implementation has neither.** That is a statement about the implementation
 landscape, not about sparse attention.
+
+> **A100 baseline caveat (2026-10-03).** These A100 ratios are against `sdpa_flash`, which is not the fastest correct dense kernel on that card. At the model's `(12,2)` geometry, fa2 is 6.0% faster at 16384, and cuDNN is 25.8% faster at 8192 (cuDNN faults above 8192).
+>
+> - **16384:** against fa2, 1.090× / 1.201× / 1.282× become an **estimated** 1.072× / 1.180× / 1.260×.
+> - **8192:** against cuDNN, the vectorised 0.968× / 1.023× / 1.058× become an **estimated** 0.910× / 0.962× / 0.995×, a loss at every sparsity.
+> - **32768:** unadjusted, an upper bound.
+>
+> These are estimates until run D (`docs/estimator_frontier_preregistration.md` §4.6) measures the kernels in one session. Derivation and test: `docs/claims.md`, `tests/test_a100_baseline_caveat.py`.
 
 **The end-to-end run, 2026-09-17.** Measured rather than composed: one
 process, one model instance, one score tensor, arms interleaved, changing only
@@ -850,6 +882,19 @@ against the target model's real tokenizer
 (`attnbench/accuracy/sizing.py`), so a grid length means what it says, to
 within ~1%.
 
+*"Exact" here means each row's `context_length` is the real measured count.
+It does not mean the count is at or under the band. Tasks outside
+`ruler._PER_EXAMPLE_FIT` are sized once per budget on example 0, and later
+examples whose UUID or number needles tokenize longer land above it: **182
+distinct examples** in banked data (655 file-example pairs across 31 distinct
+parquets, since examples recur), up to **+82** tokens (`niah_multikey`, 16384),
+and `niah_single` at **+1 at 32768** — twelve 32,769-token prompts in
+`stage3_32768`, past Qwen2.5's 32,768-position limit
+(`results/positions_over_limit/sizing_delta_by_band_task.csv`). Added
+2026-10-03; nothing in this section said so before. New runs that need the
+ceiling pass `per_example_fit=True` (estimator-frontier pre-registration,
+§4.9).*
+
 **Results produced before that change are not directly comparable** to ones
 after it at the same nominal length, because the underlying contexts were
 ~21% longer. Throughput measurements (effective TFLOPS) are unaffected --
@@ -957,8 +1002,25 @@ corrected accordingly. What it is a property of is not yet established: driver
 and torch were held constant across all four observations, so it could equally
 be a cuDNN version issue rather than a silicon one. That distinction needs a
 second driver or torch build to separate, and this study has not run one.
-Stating it as architecture-general is what the evidence supports; stating it as
-hardware-independent is not.
+**Scope, corrected 2026-10-03: observed on L4 and A100; the H100 is untested
+above 8192.**
+
+- **This sentence used to read** "Stating it as architecture-general is what
+  the evidence supports". Two architectures are not general.
+- **The H100 rows are not observations.** Every H100 probe file records
+  cuDNN as `illegal_memory_access` above 8192, but those rows were written by
+  the device-fault guard without launching (`gates.py` returns before
+  `run_once`).
+- **"Four machines" overstates the banked evidence.** The banked serial logs
+  hold three real Xid 31 events:
+  - `results/stage2/seg2_aborted_20260904/serial_console.log` and
+    `results/stage2/seg2b_20260904/serial_console.log`, both L4, 2026-09-04;
+  - `results/a100/serial_console.log:2686`, A100, 2026-09-05.
+
+  Rows that record the fault in 84-row blocks after 2026-09-04 (`492b9b5`)
+  are guard-written, not confirmations.
+- **Not hardware-independent either.** The fault is still not shown to be
+  independent of driver and torch.
 
 **A prior claim here was wrong and is worth recording.** During the A100
 session it was reported that the fault "was gone on Ampere", on the strength of
@@ -2428,6 +2490,9 @@ that.
 
 ### Which mask era each banked accuracy file belongs to
 
+*(Era 4 added 2026-10-03, with no banked file yet. The sentence below said
+"three" before it, and still describes the banked data.)*
+
 **There are now three, and a replicate of any banked number will disagree
 across an era boundary for a reason that is not drift.** Stating that eras
 exist is not enough — a canary comparison that straddles one fails with no
@@ -2439,7 +2504,9 @@ assignment is per file:
 | **1. pre-sink** | kv block 0 is an ordinary candidate; only the diagonal is free | `stage3_s1`, `stage3_s1b`, `stage3_16384`, `stage3_32768`, `stage3_flashdecode`, and the `gpu_session_2026090[678]*` copies of each |
 | **2. forced-sink** | kv block 0 granted free (`37675a0`, 2026-09-16); jitter drawn **after** the budget check | `accuracy_forced_sink`, `accuracy_forced_sink_cheap`, `s7_7b_16384`, `s9_7b_cheap_16384`, `s1a/accuracy_band2048`, `s1a/accuracy_bands2`, `s1a/accuracy_all_bands`, `sink_control` (`importance_randfree`) |
 | **3. post-jitter** | as era 2, plus jitter drawn unconditionally (instance 45, 2026-09-20) | `s7_jitter` — 16384, `niah_single` and `niah_multikey` only, n=100. **Supersedes the same cells of `accuracy_forced_sink`.** That file's `vt` cells at 16384, and every other band, remain era 2. |
-| **3. post-jitter (T4 dense probe, registered 18 Oct 2026)** | as era 2, plus unconditional jitter: the rule at commit `822a4dd`, which descends from both `37675a0` and `5cc3a40` (`eras.era_from_git` gives 3) | `t4_dense_probe_20261001`. The T4 dense-only probe of 1 Oct 2026. Its rows are dense and carry no mask, so the era holds by commit ancestry only. The other T4 files are not yet in this table. |
+| **3. post-jitter (T4 dense probe, registered 18 Oct 2026)** | as era 2, plus unconditional jitter: the rule at commit `822a4dd`, which descends from both `37675a0` and `5cc3a40` (`eras.era_from_git` gives 3) | `t4_dense_probe_20261001`. The T4 dense-only probe of 1 Oct 2026. Its rows are dense and carry no mask, so the era holds by commit ancestry only. The other T4 files are not yet in this table. *(21 Oct 2026, T0.16: the 3 Oct registration in the next row, from branch `frontier-prereg-2026-10-03`, reached `main` in the same merge as this table's 18 Oct row. It covers this file and the other fifteen T4 files.)* |
+| **3. post-jitter (T4, registered 2026-10-03)** | as era 2, plus unconditional jitter: the rule at commits `822a4dd`, `40118f7`, `e7eabaa`, `77b48e5`, `cc769b3` and `7490ee4`, all descendants of `5cc3a40` | `t4_dense_probe_20261001`, `t4_selected_dense_pilot_20261001`, `t4_sparse_canary_inline_20261001`, `t4_sparse_canary_oracle_20261001`, `t4_sparse_pilot_inline_16384_20261001`, `t4_sparse_pilot_inline_32768_20261002`, `t4_sparse_pilot_oracle_16384_20261001`, `t4_sparse_pilot_oracle_32768_20261002`, `t4_xattn_canary_dense_20261002`, `t4_xattn_canary_tau0.8_20261002`, `t4_xattn_canary_tau0.95_20261002`, `t4_xattn_canary_tau0.9_20261002`, `t4_xattn_dense_20261002`, `t4_xattn_tau0.8_20261002`, `t4_xattn_tau0.95_20261002`, `t4_xattn_tau0.9_20261002` — the T4 dense-only, sparse and XAttention phases. Their dense rows carry no mask. Their oracle and inline mean-pool rows use the era-3 head-uniform rule. **Their XAttention rows do not use an attnbench mask rule at all**: XAttention's own per-head threshold selection made those masks. Those rows are era 3 only by commit, and comparing them with any other era-3 sparse row crosses selection rules. `docs/estimator_frontier_preregistration.md` §4.5 gives them the row-level label `xattn_native` from era-4 registration on. |
+| **4. per-head (registered 2026-10-03)** | the era-3 rule applied per **query head**, each head ranking its own scores; sink and diagonal free; read from the row column `mask_selector` = `per_head`, not from the commit, because the head-uniform path (era 3) runs beside it (estimator-frontier pre-registration §2.1, §4.5) | *(none banked yet)* — every row from the column's introducing commit on carries `mask_selector` (`per_head`, `head_uniform`, `xattn_native` or `none`); `head_uniform` and `none` rows take their era from the commit as before; `xattn_native` rows are labelled **native**, XAttention's own selection and not an attnbench era; a row at or after that commit with no `mask_selector` is refused (`analysis/eras.py`, `era_of_row`; break-tested in `tests/test_eras.py`) |
 
 **One file is era 3, and it is a partial band.** `s7_jitter` covers 16384 at
 `niah_single` and `niah_multikey`; `vt` was deliberately excluded, because its

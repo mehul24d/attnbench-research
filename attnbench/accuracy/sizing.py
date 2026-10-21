@@ -116,7 +116,10 @@ def fit_units_to_budget(render: Renderer, count_tokens: TokenCounter,
     Assumes `render` is monotonically non-decreasing in units, which holds
     for every generator here (more filler sentences, longer prompt). The
     result is the largest fitting value, so the context lands at or just
-    below budget, never above.
+    below budget, never above -- for the `render` it was given. A caller
+    that reuses the unit count for a different example (ruler.py does, on
+    example 0, for tasks outside `_PER_EXAMPLE_FIT`) gets no such guarantee:
+    banked examples overshot by up to +82 tokens (clarified 2026-10-03).
     """
     if budget <= 0:
         raise ValueError(f"budget must be positive, got {budget}")

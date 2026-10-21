@@ -5,7 +5,9 @@ is a measurement from 2026-09-03 session 4 (commit b6ed63b), not an
 assumption.
 
 Sizing is now token-exact (measured 0.9996-0.9999x of budget at 16384 and
-32768), so a synthetic example whose token count equals the grid seq_len is
+32768; "exact" means measured, not capped -- examples of UUID/number tasks
+sized on example 0 overshoot by up to +82 tokens, noted 2026-10-03, see
+ruler.RulerExample), so a synthetic example whose token count equals the grid seq_len is
 faithful -- which is what lets this run on CPU without the tokenizer.
 
 REVISED 2026-09-06: a Stage 3 row is a prefill plus greedy decode, and the
