@@ -51,8 +51,8 @@ input. Code that handles this has three options. It can read the selected
 sizes back from the GPU, which makes the *host* (the CPU that drives the GPU)
 stop and wait; such a wait is called a *synchronisation*. It can reserve room
 for the worst case, which wastes GPU work. Or it can fix the number of blocks
-in advance. Released research code often takes the first option. XAttention,
-for example, runs Python `assert` checks on GPU tensors, at least two for each
+in advance. Released research code often takes the first option. XAttention
+(Xu et al., ICML 2025), for example, runs Python `assert` checks on GPU tensors, at least two for each
 chunk of the prompt, in every layer. In a
 [CPU check](results/compile_graph_breaks_cpu/), `torch.compile` with default
 settings split the compiled graph at `.item()`, at `nonzero()` and at some
@@ -206,7 +206,8 @@ whether they give correct results:
 
 ## Related work
 
-XAttention (Xu et al., ICML 2025); MInference; FlexPrefill; DuoAttention;
+XAttention (Xu et al., ICML 2025; [arXiv:2503.16428](https://arxiv.org/abs/2503.16428);
+[code](https://github.com/mit-han-lab/x-attention)); MInference; FlexPrefill; DuoAttention;
 TaxBreak; KernelSight-LM; CTFusion. Full references, and the rest of the
 related work, are in [`docs/research_brief.pdf`](docs/research_brief.pdf).
 
