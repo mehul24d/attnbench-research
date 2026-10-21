@@ -24,7 +24,11 @@
 # they replace gcloud. Changing the last date is a plan decision, made by
 # editing LAST_GCP_LAUNCH_DATE here and the plan in the same commit.
 
-LAST_GCP_LAUNCH_DATE="2026-11-22"
+LAST_GCP_LAUNCH_DATE="2026-12-09"
+# The GCP credit expires on 1 Dec 2026 (plan Section 5.2, Funding). A launch
+# after this date, India time, is approved by the researcher personally and
+# billed outside the credit; the check says so and goes on.
+LAST_CREDIT_DATE="2026-11-30"
 
 launch_policy_check() {
   local zones="$*"
@@ -40,6 +44,9 @@ launch_policy_check() {
     echo "REFUSING TO LAUNCH -- today ($today, India time) is after the last GCP" >&2
     echo "launch date ($LAST_GCP_LAUNCH_DATE) set in docs/RESEARCH_PLAN.md." >&2
     exit 1
+  fi
+  if [[ "$today" > "$LAST_CREDIT_DATE" ]]; then
+    echo "This launch is outside the GCP credit (expires 1 Dec 2026); billed to the researcher." >&2
   fi
 
   local z
