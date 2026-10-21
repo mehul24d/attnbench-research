@@ -597,7 +597,7 @@ def importance_block_mask_per_head(seq_len: int, block_size: int, sparsity: floa
 
     `scores` is (H_q, n, n). `row_budgets`, a length-n integer tensor,
     replaces the nominal budget per row: below b = 128 the budget is matched
-    to the parent row's realised density (`frontier_prereg.matched_budget`),
+    to the parent row's realised density (`splits_and_budgets.matched_budget`),
     and a native mask's own kept counts are scored the same way. It is
     clamped to the row's candidates."""
     n = _n_blocks(seq_len, block_size)

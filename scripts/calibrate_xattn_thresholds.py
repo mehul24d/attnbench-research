@@ -89,7 +89,7 @@ def assert_disjoint(calibration: dict, test: dict) -> None:
     amendment A1, 2026-10-03). Until then this compared whole contexts only,
     and a seed-1 qa_1 example asking test question 3 with other distractors
     passed it."""
-    from attnbench.analysis.frontier_prereg import SplitLeak, check_splits_disjoint
+    from attnbench.analysis.splits_and_budgets import SplitLeak, check_splits_disjoint
     try:
         check_splits_disjoint({"calibration": split_identities(calibration),
                                "test": split_identities(test)})
@@ -123,7 +123,7 @@ def g12_or_refuse(texts: list[str]) -> dict:
     texts are held to the split firewall before anything is profiled on
     them. A leak, or QA data the gate cannot read, stops the run."""
     from attnbench.accuracy import frontier_splits
-    from attnbench.analysis.frontier_prereg import SplitLeak
+    from attnbench.analysis.splits_and_budgets import SplitLeak
     try:
         return frontier_splits.g12(texts)
     except SplitLeak as e:

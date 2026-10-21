@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from attnbench.analysis import frontier_recall as fr
-from attnbench.analysis.frontier_prereg import SplitLeak
+from attnbench.analysis.splits_and_budgets import SplitLeak
 
 
 def _row(index=1000, split="selection", d_nom=0.25, recall_norm=0.97, arm="MP", band=16384, **kw):

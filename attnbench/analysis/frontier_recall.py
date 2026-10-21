@@ -18,7 +18,7 @@ from typing import Mapping, Optional
 import pandas as pd
 
 from ..masks import MASK_SELECTORS
-from .frontier_prereg import SPLIT_INDEX, SplitLeak
+from .splits_and_budgets import SPLIT_INDEX, SplitLeak
 
 SPLITS = tuple(SPLIT_INDEX)
 D_NOMS = (0.50, 0.25, 0.10, 0.05)

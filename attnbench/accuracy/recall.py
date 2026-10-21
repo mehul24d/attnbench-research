@@ -26,7 +26,7 @@ from typing import Callable, Mapping, Optional, Sequence
 import torch
 
 from .. import masks
-from ..analysis import frontier_prereg as fp
+from ..analysis.splits_and_budgets import matched_row_budgets
 from ..analysis.frontier_recall import D_NOMS, RecallRow, split_of
 
 FINEST = 16
@@ -121,7 +121,7 @@ def row_budgets(n: int, block: int, d_nom: float, device) -> Optional[torch.Tens
     """None at b = 128 (the nominal budget); the matched budgets below it."""
     if block == 128:
         return None
-    return torch.tensor(fp.matched_row_budgets(n, block, d_nom), dtype=torch.long, device=device)
+    return torch.tensor(matched_row_budgets(n, block, d_nom), dtype=torch.long, device=device)
 
 
 @dataclass

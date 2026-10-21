@@ -3,7 +3,7 @@ pre-registration sec. 5; added 2026-10-03).
 
 The evaluation split must use example indices no banked run has used, for
 that task at any band, because RULER QA picks its question by index alone.
-`frontier_prereg.BANKED_INDEX_RANGES` is the registry; these tests re-derive
+`splits_and_budgets.BANKED_INDEX_RANGES` is the registry; these tests re-derive
 it from the parquets on disk. The pure half is in
 `tests/test_frontier_prereg_plan.py` and runs everywhere.
 
@@ -19,7 +19,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from attnbench.analysis import frontier_prereg as fp
+from attnbench.analysis import splits_and_budgets as sb
 
 RESULTS = Path(__file__).resolve().parents[1] / "results"
 _ID = re.compile(r"^(.*)_(\d+)_(\d+)$")
@@ -43,12 +43,12 @@ def test_no_evaluation_id_appears_in_any_banked_parquet():
     banked = _banked()
     if not banked:
         pytest.skip("banked results not present")
-    evaluation = set(fp.evaluation_indices(300))
+    evaluation = set(sb.evaluation_indices(300))
     for (task, band), idx in banked.items():
         both = sorted(evaluation & idx)
         assert not both, f"evaluation indices {both[:3]} are banked for {task} at {band}"
-        assert (task, band) in fp.BANKED_INDEX_RANGES, (task, band)
-        lo, hi = fp.BANKED_INDEX_RANGES[(task, band)]
+        assert (task, band) in sb.BANKED_INDEX_RANGES, (task, band)
+        lo, hi = sb.BANKED_INDEX_RANGES[(task, band)]
         assert lo <= min(idx) and max(idx) <= hi, (task, band, min(idx), max(idx))
 
 
@@ -56,7 +56,7 @@ def test_the_registry_is_the_whole_banked_tree():
     if not (RESULTS / "stage3_32768").is_dir():
         pytest.skip("banked results not present")
     banked = {k: (min(v), max(v)) for k, v in _banked().items()}
-    assert banked == fp.BANKED_INDEX_RANGES
+    assert banked == sb.BANKED_INDEX_RANGES
 
 
 def test_no_estimator_timing_is_banked_off_the_l4():

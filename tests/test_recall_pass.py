@@ -10,7 +10,7 @@ import torch
 from attnbench import masks
 from attnbench.accuracy import model as acc_model
 from attnbench.accuracy import recall as R
-from attnbench.analysis import frontier_prereg as fp
+from attnbench.analysis import splits_and_budgets as sb
 from attnbench.analysis import frontier_recall as fr
 
 
@@ -145,7 +145,7 @@ def test_the_realised_density_on_a_row_is_the_masks():
     p.score_layer(q, k)
     (row,) = p.rows(model="m", task="qa_1", band=16384, example_id="qa_1_16384_1000",
                     n_layers=1, git_commit="abc", git_dirty=False)
-    want = sum(fp.kept_128(i, 0.25) for i in range(20)) / (20 * 21 / 2)
+    want = sum(sb.kept_128(i, 0.25) for i in range(20)) / (20 * 21 / 2)
     assert row.realised_density == pytest.approx(want)
 
 
@@ -160,7 +160,7 @@ def test_below_128_the_pass_uses_the_matched_budgets(b):
     (row,) = p.rows(model="m", task="qa_1", band=16384, example_id="qa_1_16384_1000",
                     n_layers=1, git_commit="abc", git_dirty=False)
     valid = n * (n + 1) / 2
-    matched = sum(min(i + 1, 2) + fp.matched_budget(i, b, d_nom) for i in range(n)) / valid
+    matched = sum(min(i + 1, 2) + sb.matched_budget(i, b, d_nom) for i in range(n)) / valid
     plain = sum(min(i + 1, 2) + (masks.era_budget(d_nom, i - 1) if i > 1 else 0)
                 for i in range(n)) / valid
     assert row.realised_density == pytest.approx(matched)

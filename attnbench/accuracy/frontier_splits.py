@@ -12,7 +12,7 @@ import hashlib
 import re
 from typing import Iterable, Mapping, Optional, Sequence
 
-from ..analysis.frontier_prereg import SPLIT_INDEX, SplitLeak, check_splits_disjoint
+from ..analysis.splits_and_budgets import SPLIT_INDEX, SplitLeak, check_splits_disjoint
 from . import ruler, ruler_data, sizing
 
 # sec. 5: the seed of each split. The index offsets are SPLIT_INDEX.

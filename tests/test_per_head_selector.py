@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from attnbench import masks
-from attnbench.analysis import frontier_prereg as fp
+from attnbench.analysis import splits_and_budgets as sb
 
 SEED = "per-head-selector-test"
 
@@ -78,10 +78,10 @@ def test_every_row_keeps_the_two_free_blocks_plus_its_budget(d_nom):
                                              identity_seed=SEED)
     kept = m.active.sum(dim=2)
     for i in range(n):
-        assert kept[:, i].tolist() == [fp.kept_128(i, d_nom)] * 3, i
+        assert kept[:, i].tolist() == [sb.kept_128(i, d_nom)] * 3, i
         assert bool(m.active[:, i, 0].all()) and bool(m.active[:, i, i].all())
     assert not bool(m.active.triu(1).any())               # nothing above the diagonal
-    want = sum(fp.kept_128(i, d_nom) for i in range(n)) / (n * (n + 1) / 2)
+    want = sum(sb.kept_128(i, d_nom) for i in range(n)) / (n * (n + 1) / 2)
     assert m.realised_density() == pytest.approx(want)
 
 
@@ -104,15 +104,15 @@ def test_the_budget_is_the_era_3_expression_not_d_nom_times_candidates():
 def test_matched_budgets_below_128_keep_the_parent_rows_density(b, d_nom):
     tokens = 16384
     n = tokens // b
-    budgets = torch.tensor(fp.matched_row_budgets(n, b, d_nom))
+    budgets = torch.tensor(sb.matched_row_budgets(n, b, d_nom))
     m = masks.importance_block_mask_per_head(tokens, b, 1 - d_nom, _scores(2, n, seed=b),
                                              causal=True, identity_seed=SEED,
                                              row_budgets=budgets)
     kept = m.active.sum(dim=2)
-    for i in fp.h7_rows(tokens, b):
-        assert kept[:, i].tolist() == [2 + fp.matched_budget(i, b, d_nom)] * 2
+    for i in sb.h7_rows(tokens, b):
+        assert kept[:, i].tolist() == [2 + sb.matched_budget(i, b, d_nom)] * 2
         p = i * b // 128
-        err = abs(int(kept[0, i]) / (i + 1) - fp.kept_128(p, d_nom) / (p + 1))
+        err = abs(int(kept[0, i]) / (i + 1) - sb.kept_128(p, d_nom) / (p + 1))
         # The nearest count a row of i + 1 blocks can hold. H7 is scored at
         # b = 16, where that is within the 0.01 tolerance on every scored row.
         # At b = 32 and 64 the early rows are too short for 0.01 (15 blocks at
@@ -120,7 +120,7 @@ def test_matched_budgets_below_128_keep_the_parent_rows_density(b, d_nom):
         # descriptive.
         assert err <= 0.5 / (i + 1) + 1e-12
         if b == 16:
-            assert err <= fp.H7_DENSITY_TOL and fp.row_density_matches(i, b, d_nom)
+            assert err <= sb.H7_DENSITY_TOL and sb.row_density_matches(i, b, d_nom)
     # Without them the plain rule keeps a different count, and a lower density.
     plain = masks.importance_block_mask_per_head(tokens, b, 1 - d_nom, _scores(2, n, seed=b),
                                                  causal=True, identity_seed=SEED)
