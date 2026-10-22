@@ -97,6 +97,7 @@ authority is the billing console.
 | 2026-10-02 | `attnbench-l4-xattn-canary-20261002-2016`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **35** | **47** | `session_cost.txt` (`results/t4_xattn_canary_session_20261002/`) |
 | 2026-10-02 | `attnbench-l4-xattn-pilot-20261002-2059`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **201** | **268** | `session_cost.txt` (`results/t4_xattn_pilot_session_20261003/`) |
 | 2026-10-02 | `attnbench-l4-t4pilot-16384-20261002-0312`; row added 18 Oct 2026, date from the instance name | no cost file | no cost file | no cost file (`results/t4_sparse_pilot_session_16384_20261002/` has none) |
+| 2026-10-21 | `attnbench-a100-t11a-20261022`, asia-southeast1-c, **Flex Start**, ₹297.47/h (planning rate, all-in); T1.1 Session A, the three calibrations; date from the boot clock in UTC (01:02 IST on 22 Oct) | **55** | **273** | `session_cost.txt` (`results/t11a_session_20261022/`) |
 
 **Notes on the table (18 Oct 2026).**
 
