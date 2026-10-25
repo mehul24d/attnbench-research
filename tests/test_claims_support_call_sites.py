@@ -88,6 +88,12 @@ CLASSIFIED: dict[tuple[str, str, str], str] = {
         "and SDPA (flash on CUDA, math on CPU) is the dense reference every "
         "accuracy arm already runs at that config; there is no declined cell "
         "for a guard to catch.",
+    ("attnbench/backends/xattention_noassert.py", "forward", "forward"):
+        "UNGUARDED BY DESIGN. AssertGate.forward runs the shipped and the "
+        "asserts-removed XAttention arms on the same layer inputs to compare "
+        "them bitwise. Both are the model's own causal prefill config, the "
+        "one each arm runs alone; a guard that declined it would decline the "
+        "arm itself, which the gate exists to compare, not to filter.",
 
     # --- guarded -------------------------------------------------------------
     ("attnbench/gates.py", "check_correctness", "reference"):
