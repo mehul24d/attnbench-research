@@ -525,3 +525,15 @@ def test_the_cap_is_passed_not_defaulted(tmp_path):
     proc, _ = _run(tmp_path, fail_zones="", zones="zone-a",
                    FAKE_IMAGE_KIND="disk-image", GCP_CAP_MINUTES="660")
     assert "shutdown -h +660 (11h from boot)" in proc.stdout
+
+
+def test_every_create_is_tagged_with_its_provisioning_model(tmp_path):
+    """T2.20: each create call, retries included, writes the model it asks
+    for into the VM's metadata, where provenance reads it back."""
+    proc, tried = _run(tmp_path, fail_zones="zone-a", zones="zone-a zone-b",
+                       GCP_PROVISIONING_MODEL="SPOT")
+    calls = [c for c in proc.create_argv.splitlines() if c]
+    assert tried == ["zone-a", "zone-b"] and len(calls) == 2, (tried, calls)
+    for call in calls:
+        assert "--provisioning-model=SPOT" in call, call
+        assert "--metadata=attnbench-provisioning-model=SPOT" in call, call

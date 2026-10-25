@@ -387,6 +387,7 @@ for Z in $ZONE_FALLBACKS; do
       "${SOURCE_FLAG[@]}" \
       --maintenance-policy=TERMINATE \
       --provisioning-model="$PROVISIONING_MODEL" \
+      --metadata=attnbench-provisioning-model="$PROVISIONING_MODEL" \
       ${ACCEL_FLAG[@]+"${ACCEL_FLAG[@]}"} \
       --metadata-from-file=startup-script="$STARTUP_SCRIPT" 2>"$CREATE_ERR"; then
     CREATED_ZONE="$Z"
