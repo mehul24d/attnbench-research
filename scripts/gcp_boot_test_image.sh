@@ -25,7 +25,8 @@ ZONE="${2:-asia-southeast1-c}"
 source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
 launch_policy_check "$ZONE"
 MACHINE="${3:-e2-medium}"
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 # Unique per run: a reused name made gcp_session_elapsed.sh pair one run's
 # boot with another run's delete (found 2026-09-19 reconciling the ledger).
 NAME="bt-$(date -u +%m%d%H%M%S)-${IMAGE}"

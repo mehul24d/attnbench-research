@@ -5,14 +5,10 @@
 # Read-only — lists resources, never deletes anything.
 set -uo pipefail
 
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 
-if [[ -z "$PROJECT" ]]; then
-  echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
-  exit 1
-fi
-
-echo "GCP Cleanup Check — project: $PROJECT"
+echo "GCP Cleanup Check, project: ATTNBENCH_GCP_PROJECT (pinned, not printed)"
 echo "=================================================================="
 
 FOUND_SOMETHING=0

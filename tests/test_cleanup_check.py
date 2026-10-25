@@ -72,7 +72,7 @@ def _run(tmp_path, **fakes):
     env.update(
         PATH=f"{bin_dir}:{env['PATH']}",
         CALL_LOG=str(call_log),
-        GCP_PROJECT="test-project",
+        GCP_PROJECT="test-project", ATTNBENCH_GCP_PROJECT="test-project",
         FAKE_INSTANCES="", FAKE_DISKS="", FAKE_MACHINE_IMAGES="",
         FAKE_DISK_IMAGES="", FAKE_SNAPSHOTS="", FAKE_ADDRESSES="",
     )

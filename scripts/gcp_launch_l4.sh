@@ -32,10 +32,11 @@
 # any probe, or delete anything -- see the Phase 1-6 runbook.
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 ZONE="${GCP_ZONE:-asia-northeast1-a}"   # plan Section 5.2: P1 pinned zone
 source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
 launch_policy_check "$ZONE"
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 MACHINE_TYPE="g2-standard-8"
 ACCELERATOR="type=nvidia-l4,count=1"
 IMAGE="${ATTNBENCH_IMAGE:-attnbench-env-v5-20260905}"   # the project env, not a stock ML image
@@ -53,10 +54,6 @@ BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
 INSTANCE_NAME="${1:-attnbench-l4-validation-$(date +%Y%m%d-%H%M)}"
 
-if [[ -z "$PROJECT" ]]; then
-  echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
-  exit 1
-fi
 
 STARTUP_SCRIPT="$(mktemp)"
 trap 'rm -f "$STARTUP_SCRIPT"' EXIT
@@ -72,7 +69,7 @@ shutdown -h +${HALT_MINUTES}
 EOF
 
 echo "About to create a BILLABLE instance:"
-echo "  project      : $PROJECT"
+echo "  project      : ATTNBENCH_GCP_PROJECT (pinned, not printed)"
 echo "  name         : $INSTANCE_NAME"
 echo "  zone         : $ZONE"
 echo "  machine-type : $MACHINE_TYPE"
@@ -113,5 +110,5 @@ echo "  - it halts at +${HALT_MINUTES} min from boot regardless of what you do"
 echo "    (GPU billing stops; the disk survives until DELETE)"
 echo "  - it DELETES at $MAX_RUN from boot, disk included"
 echo "  - delete (not stop) it the moment the session is done:"
-echo "      gcloud compute instances delete $INSTANCE_NAME --zone=$ZONE --project=$PROJECT"
+echo "      gcloud compute instances delete $INSTANCE_NAME --zone=$ZONE --project=\$ATTNBENCH_GCP_PROJECT"
 echo "  - run scripts/gcp_cleanup_check.sh afterward to confirm nothing is left billing"

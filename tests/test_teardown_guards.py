@@ -25,6 +25,7 @@ echo "$*" >> "$FAKE_LOG"
 zone=""
 for a in "$@"; do case "$a" in --zone=*) zone="${a#--zone=}";; esac; done
 case "$*" in
+  "config get-value project") echo "test-project"; exit 0;;
   "compute instances describe"*)
     [[ -n "$FAKE_ZONE" && "$zone" == "$FAKE_ZONE" ]] && { echo inst; exit 0; }; exit 1;;
   "compute instances list"*) [[ -n "$FAKE_ZONE" ]] && echo "$FAKE_ZONE"; exit 0;;
@@ -49,7 +50,8 @@ def _run(tmp_path, *, actual_zone, given_zone):
     real = [d for d in os.environ["PATH"].split(os.pathsep)
             if not any((Path(d) / c).exists() for c in ("gcloud", "gsutil", "bq"))]
     env = {**os.environ, "PATH": os.pathsep.join([str(bin_dir), *real]),
-           "FAKE_LOG": str(log), "FAKE_ZONE": actual_zone}
+           "FAKE_LOG": str(log), "FAKE_ZONE": actual_zone,
+           "ATTNBENCH_GCP_PROJECT": "test-project", "GCP_RATE_INR_HR": "108.64"}
     # step 5 calls gcp_cleanup_check.sh next to the script; the fake gcloud
     # makes it harmless, and its exit status is not under test here.
     p = subprocess.run(["bash", str(SCRIPT), "inst", given_zone, str(out_dir)],

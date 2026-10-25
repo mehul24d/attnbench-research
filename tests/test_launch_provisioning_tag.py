@@ -69,6 +69,7 @@ def _creates(script: str, extra: dict, tmp_path: Path) -> list[str]:
     log.touch()
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path),
            "GCLOUD_LOG": str(log), "GCP_PROJECT": "test-project",
+           "ATTNBENCH_GCP_PROJECT": "test-project",
            "GCP_RATE_INR_HR": "297.47", **extra}
     subprocess.run(["bash", str(SCRIPTS / script), "test-instance"],
                    input="launch\n", capture_output=True, text=True, env=env,

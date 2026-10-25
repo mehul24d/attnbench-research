@@ -24,7 +24,9 @@ TaxBreak names the two limits but gives no thresholds between "host-bound",
 "balanced" and "device-bound" (it reads 0.15 to 0.24 as host-bound, 0.37
 to 0.41 as moderately balanced and 0.93 as strongly device-bound, and notes
 host gains weaken above about 0.3). `classify` therefore takes both
-thresholds from the caller and has no defaults.
+thresholds from the caller and has no defaults. The study's thresholds are
+fitted on the training pairings and recorded at lock (researcher's decision,
+25 Oct 2026; plan T4.1); this module does not fit them.
 """
 
 from __future__ import annotations

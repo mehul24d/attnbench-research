@@ -31,14 +31,32 @@ NAME="${1:?usage: gcp_teardown_session.sh INSTANCE_NAME ZONE [RESULTS_DIR]}"
 ZONE="${2:?zone required}"
 S="${3:-results/gpu_session_$(date +%Y%m%d)}"
 
+# The rate is required, not defaulted. The old default, 80, was an L4 rate in
+# asia-south1, and an A100 or H100 session torn down without the variable was
+# costed at it silently. Checked before anything runs, so a missing rate
+# costs one re-run and no deletion is half done.
+RATE_INR_HR="${GCP_RATE_INR_HR:-}"
+if [[ ! "$RATE_INR_HR" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "REFUSING: set GCP_RATE_INR_HR to the planning rate of the card used (Rs/h," >&2
+  echo "all-in, plan Section 5.2): 108.64 for the L4 in asia-northeast1, 297.47 for the" >&2
+  echo "A100 on DWS, 350.14 on Spot. Nothing was copied or deleted." >&2
+  exit 2
+fi
+
+# The project is pinned (scripts/_gcp_project.sh) and passed to every call:
+# this script deletes the instance it is named, in the project it is pointed
+# at, so it must never be pointed at a project by accident.
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
+
 # The zone is checked before anything else runs. On 2026-10-02 the launcher
 # placed the 32768 pilot in asia-northeast1-c while the operator passed -a:
 # every step "failed, continuing", the delete reported "not found", and only
 # step 5's listing showed the instance still RUNNING. A wrong zone is not a
 # dead instance, so it stops here, names the right zone, and touches nothing.
-if ! gcloud compute instances describe "$NAME" --zone="$ZONE" --format='value(name)' \
+if ! gcloud compute instances describe "$NAME" --zone="$ZONE" --project="$PROJECT" --format='value(name)' \
      >/dev/null 2>&1; then
-  ACTUAL="$(gcloud compute instances list --filter="name=($NAME)" \
+  ACTUAL="$(gcloud compute instances list --project="$PROJECT" --filter="name=($NAME)" \
             --format='value(zone.basename())' 2>/dev/null | head -1)"
   if [[ -n "$ACTUAL" ]]; then
     echo "REFUSING: $NAME is not in $ZONE; it is in $ACTUAL. Nothing was copied or deleted." >&2
@@ -55,7 +73,7 @@ echo "== 1/5 serial console log -> $S/serial_console.log (before anything can de
 # second run (instance already gone) would empty the log the first run had
 # saved. Found on 2026-10-01, when a re-run over the canary's directory was
 # proposed.
-if gcloud compute instances get-serial-port-output "$NAME" --zone="$ZONE" \
+if gcloud compute instances get-serial-port-output "$NAME" --zone="$ZONE" --project="$PROJECT" \
      > "$S/serial_console.log.partial" 2>/dev/null; then
   mv "$S/serial_console.log.partial" "$S/serial_console.log"
   echo "   saved $(wc -l < "$S/serial_console.log") lines"
@@ -67,11 +85,11 @@ else
 fi
 
 echo "== 2/5 results"
-gcloud compute scp --recurse "$NAME:~/attnbench_scaffold/results" "$S/" --zone="$ZONE" 2>/dev/null \
+gcloud compute scp --recurse "$NAME:~/attnbench_scaffold/results" "$S/" --zone="$ZONE" --project="$PROJECT" 2>/dev/null \
   && echo "   copied" \
   || echo "   WARNING: scp failed (SSH may be gone) -- continuing to deletion"
 for LOG in fa_build.log bsa_build.log batch_probe.log anchor16k.log; do
-  gcloud compute scp "$NAME:~/$LOG" "$S/$LOG" --zone="$ZONE" 2>/dev/null \
+  gcloud compute scp "$NAME:~/$LOG" "$S/$LOG" --zone="$ZONE" --project="$PROJECT" 2>/dev/null \
     && echo "   copied $LOG" || true
 done
 
@@ -104,14 +122,14 @@ echo "== 3/5 age manifest: which files predate this boot"
 # (IST vs UTC = 5h30m), so converting that string locally would be wrong by
 # the offset -- and wrong in a way that still produces a plausible number.
 # The instance converts its own clock; only the epoch crosses the wire.
-BOOT_LINE="$(gcloud compute ssh "$NAME" --zone="$ZONE" --quiet \
+BOOT_LINE="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet \
               --command='printf "%s|%s\n" "$(uptime -s)" "$(date -d "$(uptime -s)" +%s)"' \
               2>/dev/null | tr -d '\r')"
 BOOT_UTC="${BOOT_LINE%%|*}"
 BOOT_EPOCH="${BOOT_LINE##*|}"
 if [[ -n "$BOOT_UTC" ]]; then
   echo "   instance booted: $BOOT_UTC"
-  gcloud compute ssh "$NAME" --zone="$ZONE" --quiet --command="
+  gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet --command="
     echo 'boot_time: $BOOT_UTC'
     echo '--- PREDATES BOOT (image-carried, NOT this session) ---'
     find ~/attnbench_scaffold/results ~/*.log -type f ! -newermt '$BOOT_UTC' 2>/dev/null | sort
@@ -125,7 +143,6 @@ if [[ -n "$BOOT_UTC" ]]; then
   # and spend on every report, and a total accumulated by hand across sessions
   # drifts -- it had reached a ~4% spread by 2026-09-04. This writes the
   # session's own row; docs/spend_ledger.md is assembled from these files.
-  RATE_INR_HR="${GCP_RATE_INR_HR:-80}"       # g2-standard-8 + 1x L4, on-demand
   if [[ "$BOOT_EPOCH" =~ ^[0-9]+$ ]]; then
     MINS=$(( ( $(date +%s) - BOOT_EPOCH + 59 ) / 60 ))
     COST=$(awk -v m="$MINS" -v r="$RATE_INR_HR" 'BEGIN{printf "%.0f", m*r/60}')
@@ -150,10 +167,10 @@ else
 fi
 
 echo "== 4/5 delete (not stop -- a stopped instance still bills for its disk)"
-gcloud compute instances delete "$NAME" --zone="$ZONE" --quiet
+gcloud compute instances delete "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet
 
 echo "== 5/5 verify nothing is left billing"
 bash "$(dirname "$0")/gcp_cleanup_check.sh"
 echo
 echo "machine images (billed for storage, NOT covered by the check above):"
-gcloud compute machine-images list
+gcloud compute machine-images list --project="$PROJECT"
