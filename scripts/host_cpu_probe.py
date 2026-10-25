@@ -11,11 +11,13 @@ builder code, yet the L4's Stage 5 rows bound its construction cost at
 8192/0.50 below half the A100 host's. An identity string cannot explain that.
 A clock trace, a steal counter and the builder timed on the same host can.
 
-Three subcommands:
+Four subcommands:
 
   snapshot --out DIR --tag TAG   lscpu, /proc/cpuinfo, /proc/stat, loadavg
   sample   --out FILE            per-second MHz and steal, until SIGTERM
   builders --out DIR             both builders, per band x sparsity, on this CPU
+  speed    --out DIR --tag TAG   the host-speed probe (T2.1): fixed loop and
+                                 null-kernel burst, one row per tag
 
 `builders` times `masks.importance_block_mask` (the reference, whose cost is
 one Python-level assignment per kept block, so it scales with 1 - sparsity)
@@ -24,7 +26,8 @@ not depend on score values, only on how many blocks are kept, so random scores
 time the same work the model's scores would. Every row carries the clock and
 steal observed across its own timing loop.
 
-CPU-only: no CUDA needed, so it runs on a laptop for a reference point.
+CPU-only except `speed`'s null-kernel burst, which is skipped without CUDA:
+every subcommand runs on a laptop for a reference point.
 """
 
 from __future__ import annotations
@@ -238,6 +241,59 @@ def cmd_builders(args) -> int:
     return 0
 
 
+def cmd_speed(args) -> int:
+    """The host-speed probe (T2.1, `attnbench.components.host_speed`), with
+    the clock and steal this script already reads, over the probe itself.
+
+    One parquet per tag, never overwritten: the session protocol runs the
+    probe at the start, middle and end and between ground-truth blocks, and a
+    rerun under a used tag would replace the earlier probe. Without CUDA the
+    null-kernel fields are None and `null_path` is "none"; with
+    `--require-gpu` that is a refusal instead, for the session runner.
+    """
+    out = Path(args.out)
+    path = out / f"host_speed_{args.tag}.parquet"
+    if path.exists():
+        print(f"{path} exists; a probe tag is used once per session", file=sys.stderr)
+        return 2
+
+    import pandas as pd
+
+    from attnbench import provenance
+    from attnbench.components import host_speed
+    try:
+        null_kernel = host_speed.cuda_null_kernel()
+    except RuntimeError:
+        if args.require_gpu:
+            print("no CUDA device, and --require-gpu was given", file=sys.stderr)
+            return 3
+        null_kernel = None
+    t0_ticks, mhz0 = cpu_ticks(), cpu_mhz()
+    row = host_speed.probe(args.tag, loop_reps=args.loop_reps,
+                           loop_iterations=args.loop_iterations,
+                           burst=args.burst, bursts=args.bursts,
+                           null_kernel=null_kernel)
+    mhz = mhz0 + cpu_mhz()
+    row.update({
+        "mhz_median": statistics.median(mhz) if mhz else None,
+        "mhz_min": min(mhz) if mhz else None,
+        "mhz_max": max(mhz) if mhz else None,
+        "steal_frac": steal_fraction(t0_ticks, cpu_ticks()),
+        "cpu_affinity": (",".join(map(str, sorted(os.sched_getaffinity(0))))
+                         if hasattr(os, "sched_getaffinity") else None),
+    })
+    df = pd.DataFrame([row])
+    provenance.stamp_onto(df, provenance.capture().to_dict())
+    out.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, index=False)
+    null = ("no GPU path" if row["null_launch_s_median"] is None else
+            f"null launch p50 {row['null_launch_s_median'] * 1e6:.2f} us "
+            f"(cv {row['null_launch_s_cv']:.3f})")
+    print(f"{path}: loop p50 {row['loop_s_per_iter_median'] * 1e9:.2f} ns/iter "
+          f"(cv {row['loop_s_per_iter_cv']:.3f}); {null}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -256,9 +312,20 @@ def main() -> int:
     s.add_argument("--warmup", type=int, default=2)
     s.add_argument("--threads", type=int, default=0,
                    help="torch threads; 0 keeps the default")
+    s = sub.add_parser("speed")
+    s.add_argument("--out", required=True)
+    s.add_argument("--tag", required=True,
+                   help="start, middle, end, or between-<block>")
+    s.add_argument("--loop-reps", type=int, default=30)
+    s.add_argument("--loop-iterations", type=int, default=200_000)
+    s.add_argument("--burst", type=int, default=64,
+                   help="launches per burst; keep below the queue depth Q (T2.6)")
+    s.add_argument("--bursts", type=int, default=30)
+    s.add_argument("--require-gpu", action="store_true",
+                   help="refuse instead of recording no null-kernel figures")
     args = ap.parse_args()
     return {"snapshot": cmd_snapshot, "sample": cmd_sample,
-            "builders": cmd_builders}[args.cmd](args)
+            "builders": cmd_builders, "speed": cmd_speed}[args.cmd](args)
 
 
 if __name__ == "__main__":
