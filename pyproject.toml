@@ -56,6 +56,12 @@ ruler-data = [
   "html2text==2024.2.26",
   "beautifulsoup4==4.12.3",
 ]
+# The learned baseline (attnbench/predict/learned.py, T2.10). Exact pin: the
+# model is part of a committed prediction, and learned.LIGHTGBM_VERSION
+# refuses any other version.
+learned = [
+  "lightgbm==4.6.0",
+]
 dev = [
   "pytest>=8",
 ]
