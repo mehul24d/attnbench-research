@@ -5,19 +5,18 @@ where its definition comes from:
 
   - "plan": named in Section 5.4 with no room for another reading;
   - "decided": settled by the researcher (25 Oct 2026): host_to_device_ratio
-    as sum h / (sum l + sum d), and sum_sync_cost, which the plan does not
+    as sum h / (sum l + sum d); sum_sync_cost, which the plan does not
     list, so the learned predictor sees the synchronisation costs the
-    recursion sees;
-  - "proposed": the researcher decided to compute it, and the definition
-    here is a proposal awaiting confirmation: transfer_demand, and the
-    arithmetic intensity of each kernel class in `intensity.KERNEL_CLASSES`.
+    recursion sees; and, confirmed the same day when T2.10 became Done,
+    transfer_demand as defined below and the arithmetic intensity of each
+    of the six kernel classes in `intensity.KERNEL_CLASSES`.
 
 transfer_demand is the bytes the arm moves between host and device (every
 copy's and synchronisation's `payload_bytes`) divided by the pairing's
 pinned bandwidth: the seconds the link needs for that traffic at its best
 rate. Arithmetic intensities are analytic, from the model's shape and the
-cell (`intensity.py`). Estimator scoring has no class yet
-(`PENDING_FEATURES`).
+cell (`intensity.py`). Estimator scoring is not one of the six classes,
+so `PENDING_FEATURES` is empty.
 
 Hyperparameters and the regression target are fixed at lock (Gate B), so
 `LOCKED_CONFIG` is None until then and every fit takes its `LearnedConfig`
@@ -82,15 +81,13 @@ FEATURE_SOURCE = {
     "host_to_device_ratio": "decided",
     "synchronisations_per_operation": "plan",
     "sum_sync_cost": "decided",
-    "transfer_demand": "proposed",
-    **{name: "proposed" for name in AI_FEATURES},
+    "transfer_demand": "decided",
+    **{name: "decided" for name in AI_FEATURES},
 }
 
-PENDING_FEATURES = {
-    "ai_estimator_scoring":
-        "each estimator's scoring kernels have their own shape (stride, "
-        "block size), so this class needs a formula per estimator",
-}
+# Features decided on but not yet computable. Empty since 25 Oct 2026: the
+# six kernel classes were confirmed, and estimator scoring is not among them.
+PENDING_FEATURES: dict[str, str] = {}
 
 Target = Literal["seconds", "log_seconds"]
 

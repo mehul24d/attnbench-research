@@ -110,10 +110,10 @@ def test_feature_order_and_sources_are_frozen():
         "ai_norm", "ai_lm_head")
     assert set(FEATURE_SOURCE) == set(FEATURES)
     assert {n for n, s in FEATURE_SOURCE.items() if s == "decided"} == {
-        "host_to_device_ratio", "sum_sync_cost"}
-    assert {n for n, s in FEATURE_SOURCE.items() if s == "proposed"} == {
-        "transfer_demand", *AI_FEATURES}
-    assert set(PENDING_FEATURES) == {"ai_estimator_scoring"}
+        "host_to_device_ratio", "sum_sync_cost", "transfer_demand", *AI_FEATURES}
+    assert set(FEATURE_SOURCE.values()) == {"plan", "decided"}
+    assert len(AI_FEATURES) == 6
+    assert PENDING_FEATURES == {}
 
 
 def test_features_hand_computed():
