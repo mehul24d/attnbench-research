@@ -163,7 +163,7 @@ Results of this study are not available yet. As of October 2026:
 | Part | State |
 |---|---|
 | Earlier study (masks chosen from the full attention scores, on L4, A100 and H100 GPUs) and accuracy pilots on an L4 | Finished; its results motivate this study |
-| Accuracy runs for XAttention with calibrated thresholds | Prepared, not yet run |
+| Accuracy runs for XAttention with calibrated thresholds | Done (25 Oct 2026); results in `docs/t4_xattention_calibrated.md` |
 | Tools for the time model's measurements (host speed, copy timings, timed ground-truth runs, choice of dense kernel) and recall measurement | Early pieces exist; not finished |
 | The time model, the comparison predictors, the profilers, the compiled variants and the dispatcher | Not started |
 | Runs on the seven pairings, analysis and write-up | Not started |

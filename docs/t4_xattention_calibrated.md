@@ -372,3 +372,87 @@ claim of this phase, and Session A has still not run.
   `check_splits_disjoint`), now in `attnbench/analysis/splits_and_budgets.py`.
 - **Scoring.** Whether P-T4 and R1–R4 are scored against this phase's rows,
   and how, is the researcher's decision. Nothing here scores them.
+
+## Results, 2026-10-25: Session B
+
+Session B ran on 25 Oct 2026 on a GCP L4 (g2-standard-8, `asia-northeast1-a`,
+on-demand), from `main` at `c0d9358` with a clean tree, on the torch fallback
+path. The install and the CUDA gate passed first (32 of 32), then a 12-row
+smoke for the dense reference and for `authors`. The phases ran from 06:46 to
+10:00 UTC, all `rc=0`: dense 46 minutes, each calibration 49 to 50 minutes.
+The session billed 210 minutes, about INR 380 at the planning rate.
+
+There are four files of 400 rows each, all `git_dirty=False` and at the one
+commit, under `results/t11b_session_20261025/results/` locally and under the
+instance's prefix in the results bucket. Every row carries
+`positions_over_limit` (A7), and every XAttention row carries
+`xattn_path = torch_fallback` and its table's label: `authors:7b2429d2c49a`,
+`ruler_heldout:0497d47f9260` or `authors_full:195da1d20d54`.
+
+**The dense reference reproduced exactly.** All 400 dense predictions are
+identical to the scalar phase's dense rows (`7490ee4`, 3 Oct 2026) for the
+same example ids, so all three tables are compared against the same
+reference as the scalar phase.
+
+The analysis is the pre-registered command, run once per table against the
+dense rows and written to `results/t4_xattn_cal_analysis_20261025/`. Each
+cell is `correct of n: difference, lower bound (mean realised density)`,
+with differences and bounds in points. **Bold** marks a claim. Only
+`authors` can claim; `ruler_heldout` and `authors_full` are descriptive
+(the calibration table above, and A8).
+
+| tier | task | band | dense | `authors` (claim) | `ruler_heldout` (descriptive) | `authors_full` (descriptive) |
+|---|---|---:|---:|---|---|---|
+| primary | `qa_1` | 16384 | 68/100 | **69: +1.0, −4.3 (0.59)** | 66: −2.0, −10.7 (0.47) | 69: +1.0, −4.3 (0.60) |
+| primary | `qa_1` | 32768 | 46/100 | **50: +4.0, −6.0 (0.51)** | 54: +8.0, −4.4 (0.39) | 50: +4.0, −6.0 (0.53) |
+| secondary | `niah_multivalue` | 16384 | 16/50 | 16: 0.0, −17.2 (0.54) | 17: +2.0, −16.4 (0.42) | 16: 0.0, −14.9 (0.56) |
+| secondary | `niah_multivalue` | 32768 | 17/50 | 1: −32.0, −50.7 (0.15) | 0: −34.0, −50.8 (0.12) | 0: −34.0, −50.8 (0.16) |
+| secondary | `niah_multiquery` | 16384 | 13/50 | 11: −4.0, −18.2 (0.54) | 10: −6.0, −20.9 (0.42) | 10: −6.0, −18.2 (0.56) |
+| observational | `niah_multiquery` | 32768 | 3/50 | 0 (0.15) | 0 (0.12) | 0 (0.16) |
+
+**What Session B licenses, in this phase's wording:**
+
+- **`authors` is non-inferior to dense on both primary cells,** at a
+  10-point margin and one-sided alpha 0.025: `qa_1` at 16384 (bound −4.3,
+  1 discordant pair, to XAttention) and at 32768 (bound −6.0, 6 pairs to
+  XAttention and 2 to dense). The table keeps 59% and 51% of blocks there.
+  This is XAttention calibrated by the authors' released profiler (A5), on
+  the L4's torch path, for this model.
+- **Its profiling set is a sample of RULER** (A8). The 24 QA texts were left
+  out of `authors`, but the table is not independent of the test
+  distribution.
+- **No secondary cell certifies.** On `niah_multivalue` at 32768 every
+  table collapses: 1 or 0 of 50 against dense's 17, keeping 12% to 16% of
+  blocks. It is the same cell, and nearly the same count, as the scalar
+  phase's collapse at tau 0.95 (0 of 50, 11% of blocks).
+- "No accuracy loss" is not claimed. Nothing from `ruler_heldout` or
+  `authors_full` is claimed, and the observational cell yields no
+  statement.
+
+**Read descriptively, not as a test.**
+
+- `authors_full`, which adds the 24 QA texts, gives the same `qa_1`
+  outcomes as `authors` at slightly higher density.
+- `ruler_heldout` keeps fewer blocks, and certifies nothing as a
+  descriptive table. Its `qa_1` bound at 16384 is −10.7, just past the
+  margin. At 32768 it answers 8 more of 100 than dense.
+- No timing was measured or used.
+
+**The pre-registered predictions** (§3.9 of the estimator-frontier
+pre-registration, committed before Session A through A6; scored on the
+researcher's decision of 25 Oct 2026, plan Appendix A).
+
+- **P-T4 failed.** It predicted that `authors` certifies 0 of 2 primary
+  cells. It certifies 2 of 2.
+- **The reasoning P-T4 was labelled "close to guaranteed" by is wrong.**
+  The final text (`65b8f71`) says that at n = 100 the exact bound certifies
+  only when the discordant pairs are at most 4 each way, citing §7.5, which
+  states no such rule. The bound is limited by the pairs dense wins, not by
+  the pairs XAttention wins. At n = 100, 3 dense-only pairs certify with any
+  number of XAttention-only pairs, and 4 certify once XAttention wins at
+  least 4. The 32768 cell certified with 6 and 2. The archived text is not
+  edited.
+- **R1 to R4: not scored: comparison run not made.** Each compares an A100
+  run on the same 400 ids (the `authors` table on the Triton path, and
+  `sdpa_flash` dense) with these L4 rows. That run was not made and is not
+  scheduled.
