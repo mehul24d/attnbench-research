@@ -791,3 +791,149 @@ def test_gsutil_store_needs_a_creation_time(tmp_path, fake_gsutil, monkeypatch):
     monkeypatch.setenv("FAKE_GCS_CREATED", "not a date")
     with pytest.raises(PredictionCommitError, match="unreadable creation time"):
         GsutilStore().created("gs://bucket/x")
+
+
+# --------------------------------------------------------------------------
+# T2.19's baselines and intervals in the committed file
+# --------------------------------------------------------------------------
+
+from attnbench.predict.intervals import Interval, bootstrap  # noqa: E402
+from attnbench.predict.naive import (  # noqa: E402
+    Nearest, nearest_pairing_predictions)
+
+XKEY = ("xattn", 4, 0.5, 1)
+DKEY = ("dense", 4, 1.0, 1)
+
+
+def test_the_constant_host_cost_baseline_is_computed_and_verified(tmp_path):
+    # Constant 2 on OPS_HOST: K(h2,d1) K(h2,d1): H 2, 4; D 3, 5; closing
+    # max(4, 5) = 5, + 1 = 6.  On OPS: K(2,10) S K(2,1): H 2, D 12; S at
+    # 12 + 2 = 14; K: H 16, D 17; closing 17 + 1 = 18.
+    rec = p1_record(constant_host_cost=2.0)
+    assert rec["constant_host_cost"] == 2.0
+    assert rec["cells"][0]["predictions"]["constant_host_cost"] == 18
+    assert rec["cells"][1]["predictions"]["constant_host_cost"] == 6
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, rec, store, T0)
+    cp = load(store, r, T0 + timedelta(seconds=1))
+    assert cp.cell(*DKEY).predictions["constant_host_cost"] == 6
+    _tamper(store, r, lambda rec: rec.update(constant_host_cost=3.0))
+    with pytest.raises(PredictionCommitError,
+                       match="committed constant_host_cost prediction"):
+        load(store, r, T0 + timedelta(seconds=1))
+
+
+def test_a_bad_constant_is_refused_at_commit():
+    with pytest.raises(PredictionCommitError, match="constant host cost"):
+        p1_record(constant_host_cost=0.0)
+
+
+def _p2_nearest():
+    rows = p1_rows()
+    keys = [XKEY, DKEY, ("xattn", 8, 0.5, 1)]
+    return nearest_pairing_predictions("P2", keys[:2], rows, ["P1"])
+
+
+def test_the_nearest_pairing_baseline_is_committed_with_its_source(tmp_path, locked):
+    rec = p2_record(nearest=_p2_nearest())
+    assert rec["nearest_pairing"] == {"source": "P1", "rule": "same host platform"}
+    assert rec["cells"][0]["predictions"]["nearest_pairing"] == 20.0
+    assert rec["cells"][1]["predictions"]["nearest_pairing"] == 10.0
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, rec, store, T0)
+    banked = {"P1": T0 - timedelta(1)}
+    assert load(store, r, T0 + timedelta(1), banked_at=banked) \
+        .cell(*XKEY).predictions["nearest_pairing"] == 20.0
+    _tamper(store, r, lambda rec: rec["nearest_pairing"].update(rule="same GPU"))
+    with pytest.raises(PredictionCommitError, match="nearest pairing is recorded"):
+        load(store, r, T0 + timedelta(1), banked_at=banked)
+
+
+def test_a_cell_the_nearest_pairing_lacks_is_marked_not_predicted(locked):
+    near, values = _p2_nearest()
+    values = dict(values)
+    values[DKEY] = None
+    rec = p2_record(nearest=(near, values))
+    assert "nearest_pairing" not in rec["cells"][1]["predictions"]
+    assert rec["cells"][1]["not_predicted"] == {
+        "nearest_pairing": "P1 has no ground truth for this cell"}
+
+
+def test_p4_has_no_nearest_pairing_and_says_why():
+    # Nothing banked keeps the fitted baselines out of this test; with P1 and
+    # P2 banked the answer is the same (no H100, no Sapphire Rapids).
+    rec = p1_record(pairing="P4", cells=[cell("P4")], banked=[],
+                    nearest=(Nearest("P4", None, "none"), {XKEY: None}))
+    assert rec["nearest_pairing"] == {"source": None, "rule": "none"}
+    assert "shares its GPU" in rec["cells"][0]["not_predicted"]["nearest_pairing"]
+
+
+def test_a_nearest_pairing_that_is_not_the_rules_is_refused(locked):
+    near, values = _p2_nearest()
+    with pytest.raises(PredictionCommitError, match="names"):
+        p2_record(nearest=(Nearest("P2", "P4", "same GPU"), values))
+    with pytest.raises(PredictionCommitError, match="cells not in this file"):
+        p2_record(nearest=(near, {**values, ("xattn", 8, 0.5, 1): 1.0}))
+
+
+def test_tampering_with_not_predicted_is_refused(tmp_path, locked):
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, p2_record(nearest=_p2_nearest()), store, T0)
+    banked = {"P1": T0 - timedelta(1)}
+    _tamper(store, r, lambda rec: rec["cells"][0]["not_predicted"].update(
+        nearest_pairing="hidden"))
+    with pytest.raises(PredictionCommitError, match="has predictions"):
+        load(store, r, T0 + timedelta(1), banked_at=banked)
+    _tamper(store, r, lambda rec: (rec["cells"][0]["not_predicted"].clear(),
+                                   rec["cells"][0]["not_predicted"].update(a="b")))
+    with pytest.raises(PredictionCommitError, match="unknown entries"):
+        load(store, r, T0 + timedelta(1), banked_at=banked)
+    (tmp_path / "p1").mkdir()
+    _, r = committed(tmp_path / "p1", p1_record(), store, T0)
+    _tamper(store, r, lambda rec: rec["cells"][0]["not_predicted"].update(a="b"))
+    with pytest.raises(PredictionCommitError, match="without a nearest pairing"):
+        load(store, r, T0 + timedelta(1))
+
+
+def _interval(point, lo=None, hi=None):
+    return Interval(point=point, lo=point * 0.9 if lo is None else lo,
+                    hi=point * 1.1 if hi is None else hi, level=0.9, n_boot=10,
+                    seed=1)
+
+
+def test_intervals_are_committed_with_their_prediction(tmp_path):
+    rec = p1_record(intervals={XKEY: {"recursion": _interval(16.0)}})
+    assert rec["cells"][0]["intervals"]["recursion"]["lo"] == pytest.approx(14.4)
+    assert rec["cells"][1]["intervals"] == {}
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, rec, store, T0)
+    load(store, r, T0 + timedelta(1))
+    _tamper(store, r, lambda rec: rec["cells"][0]["intervals"]["recursion"]
+            .update(point=15.0, lo=14.0))
+    with pytest.raises(PredictionCommitError, match="not on the committed"):
+        load(store, r, T0 + timedelta(1))
+
+
+def test_a_bootstrapped_recursion_interval_commits(tmp_path):
+    # The kernel's d resampled from [9, 10, 11]: its median is 10, so the
+    # point is the committed recursion, 16.
+    def f(v):
+        ops = close_prefill([kernel_op(1, v["d"], layer=0),
+                             sync_op("item", payload_bytes=4, layer=0),
+                             kernel_op(1, 1, layer=0)])
+        return {"recursion": recurse(price(ops, COSTS), 8).end_to_end}
+    b = bootstrap({"d": [9.0, 10.0, 11.0]}, f, n_boot=50, seed=3)
+    rec = p1_record(intervals={XKEY: {"recursion": b.interval("recursion", 0.9)}})
+    assert rec["cells"][0]["intervals"]["recursion"]["point"] == 16
+
+
+@pytest.mark.parametrize("ivs, match", [
+    ({XKEY: {"recursion": _interval(15.0)}}, "not on the committed"),
+    ({XKEY: {"learned": _interval(16.0)}}, "no prediction here"),
+    ({XKEY: {"recursion": _interval(16.0, lo=16.5)}}, "does not contain"),
+    ({("xattn", 8, 0.5, 1): {"recursion": _interval(16.0)}}, "cells not in"),
+    ({XKEY: {"recursion": {"point": 16.0}}}, "must be an intervals.Interval"),
+])
+def test_bad_intervals_are_refused(ivs, match):
+    with pytest.raises(PredictionCommitError, match=match):
+        p1_record(intervals=ivs)

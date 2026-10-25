@@ -62,9 +62,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
 from .baselines import FittedSum, step_form, sum_as_written, sum_plus_s0
+from .intervals import Interval
 from .learned import LIGHTGBM_VERSION, LearnedModel
 from . import learned as _learned
-from .recursion import OpKind, PricedSequence, recurse
+from .naive import Nearest, nearest_pairing, with_constant_host_cost
+from .recursion import CostModelError, OpKind, PricedSequence, recurse
 from .training import COMMITTED, GROUND_TRUTH_STATISTIC, STATISTICS, Cell
 
 SCHEMA = "attnbench.prediction/1"
@@ -299,6 +301,9 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
                  learned: Optional[LearnedModel],
                  code: CodeStamp, written_at: datetime,
                  fitted_sum_plus_s0: Optional[FittedSum] = None,
+                 constant_host_cost: Optional[float] = None,
+                 nearest: Optional[tuple[Nearest, Mapping]] = None,
+                 intervals: Optional[Mapping[tuple, Mapping[str, Interval]]] = None,
                  statistic: str = GROUND_TRUTH_STATISTIC) -> dict:
     """Check everything and compute every prediction for one pairing.
 
@@ -306,6 +311,13 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
     prediction is written (the same list `training.committed_training_set`
     was given). `queue_depth` is the measured Q; "no queue term" is a
     sensitivity (T2.15), never the committed prediction.
+
+    Optional, from T2.19: `constant_host_cost`, the per-host constant
+    (`naive.median_launch_cost`), which adds the constant-host-cost
+    baseline, computed here; `nearest`, the result of
+    `naive.nearest_pairing_predictions` for this pairing and `banked`;
+    `intervals`, by cell key and prediction label, each an
+    `intervals.Interval` whose point is that committed prediction.
     """
     if not isinstance(pairing, str) or not pairing:
         raise PredictionCommitError(f"pairing must be a name, got {pairing!r}")
@@ -367,6 +379,33 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
         for name in TRAINED_REQUIRED + TRAINED_OPTIONAL:
             not_fitted[name] = NOT_FITTED_REASON
 
+    if constant_host_cost is not None:
+        # Validated by the baseline itself; refuse here with this module's error.
+        try:
+            with_constant_host_cost(cells[0].priced, constant_host_cost)
+        except CostModelError as e:
+            raise PredictionCommitError(str(e)) from e
+    near_record, near_values = None, {}
+    if nearest is not None:
+        near, near_values = nearest
+        want = nearest_pairing(pairing, banked)
+        if near != want:
+            raise PredictionCommitError(
+                f"the nearest-pairing baseline names {near}, but for {pairing} "
+                f"with {list(banked)} banked it is {want}")
+        near_record = {"source": near.source, "rule": near.rule}
+        near_values = {tuple(k): v for k, v in near_values.items()}
+        extra = set(near_values) - seen
+        if extra:
+            raise PredictionCommitError(
+                f"nearest-pairing values for cells not in this file: "
+                f"{sorted(extra)}")
+    intervals = {tuple(k): v for k, v in (intervals or {}).items()}
+    extra = set(intervals) - seen
+    if extra:
+        raise PredictionCommitError(
+            f"intervals for cells not in this file: {sorted(extra)}")
+
     learned_values = learned.predict(cells) if banked else None
     out_cells = []
     for i, c in enumerate(cells):
@@ -377,13 +416,31 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
             preds["learned"] = learned_values[i]
             if fitted_sum_plus_s0 is not None:
                 preds["fitted_sum_plus_s0"] = fitted_sum_plus_s0.predict(c.priced)
+        if constant_host_cost is not None:
+            preds["constant_host_cost"] = _constant_host_prediction(
+                c.priced, constant_host_cost, queue_depth)
+        not_predicted = {}
+        if nearest is not None:
+            v = near_values.get(k)
+            if v is None:
+                not_predicted["nearest_pairing"] = (
+                    "no pairing banked before this one shares its GPU or host "
+                    "platform" if near_record["source"] is None else
+                    f"{near_record['source']} has no ground truth for this cell")
+            else:
+                preds["nearest_pairing"] = v
         preds = {n: _finite_positive(v, f"the {n} prediction for cell {k}")
                  for n, v in preds.items()}
+        cell_intervals = {}
+        for name, iv in intervals.get(k, {}).items():
+            cell_intervals[name] = _check_interval(iv, name, preds, k)
         out_cells.append({
             "arm": c.arm, "context_length": int(c.context_length),
             "density": float(c.density), "batch": int(c.batch),
             "components": _components(c.priced),
             "predictions": preds,
+            "not_predicted": not_predicted,
+            "intervals": cell_intervals,
         })
 
     return {
@@ -392,8 +449,45 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
         "written_at": _iso(written_at),
         "code": {"git_commit": code.git_commit, "git_dirty": code.git_dirty},
         "training": training, "not_fitted": not_fitted,
+        "constant_host_cost": constant_host_cost,
+        "nearest_pairing": near_record,
         "cells": out_cells,
     }
+
+
+def _constant_host_prediction(p: PricedSequence, constant: float,
+                              queue_depth: int) -> float:
+    return recurse(with_constant_host_cost(p, constant), queue_depth).end_to_end
+
+
+# An interval's point is the committed prediction it belongs to, recomputed
+# by the caller's bootstrap; allow for a different summation order only.
+INTERVAL_POINT_RTOL = 1e-9
+
+
+def _check_interval(iv, name: str, preds: Mapping[str, float], k) -> dict:
+    if not isinstance(iv, Interval):
+        raise PredictionCommitError(
+            f"cell {k}: the {name} interval must be an intervals.Interval")
+    d = iv.to_dict()
+    _check_interval_dict(d, name, preds, f"cell {k}")
+    return d
+
+
+def _check_interval_dict(d: Mapping, name: str, preds: Mapping[str, float],
+                         where: str) -> None:
+    if name not in preds:
+        raise PredictionCommitError(
+            f"{where}: an interval for {name!r}, which has no prediction here")
+    if not (d["lo"] <= d["point"] <= d["hi"]):
+        raise PredictionCommitError(
+            f"{where}: the {name} interval [{d['lo']}, {d['hi']}] does not "
+            f"contain its point {d['point']}")
+    if not math.isclose(d["point"], preds[name], rel_tol=INTERVAL_POINT_RTOL,
+                        abs_tol=0.0):
+        raise PredictionCommitError(
+            f"{where}: the {name} interval is centred on {d['point']}, not on "
+            f"the committed prediction {preds[name]}")
 
 
 def canonical_bytes(record: Mapping) -> bytes:
@@ -673,6 +767,14 @@ def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPredictio
             f"{sorted(training)}")
     fitted = {n: _fitted_from_record(training[n], pairing)
               for n in ("fitted_sum", "fitted_sum_plus_s0") if n in training}
+    constant = rec["constant_host_cost"]
+    near = rec["nearest_pairing"]
+    if near is not None:
+        want_near = nearest_pairing(pairing, banked)
+        if (near["source"], near["rule"]) != (want_near.source, want_near.rule):
+            raise PredictionCommitError(
+                f"{filename}: the nearest pairing is recorded as {near}, but "
+                f"with {list(banked)} banked it is {want_near}")
 
     cells = []
     for c in rec["cells"]:
@@ -681,8 +783,22 @@ def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPredictio
         _check_closing_sync(p, f"{filename} cell {k}")
         want = computed_predictions(p, Q)
         want.update({n: fs.predict(p) for n, fs in fitted.items()})
+        if constant is not None:
+            want["constant_host_cost"] = _constant_host_prediction(p, constant, Q)
         got = c["predictions"]
         expected = set(want) | ({"learned"} if "learned" in training else set())
+        skipped = c["not_predicted"]
+        if near is not None:
+            if set(skipped) - {"nearest_pairing"}:
+                raise PredictionCommitError(
+                    f"{filename} cell {k}: unknown entries in not_predicted")
+            if "nearest_pairing" not in skipped:
+                expected.add("nearest_pairing")
+        elif skipped:
+            raise PredictionCommitError(
+                f"{filename} cell {k}: not_predicted without a nearest pairing")
+        for name, d in c["intervals"].items():
+            _check_interval_dict(d, name, got, f"{filename} cell {k}")
         if set(got) != expected:
             raise PredictionCommitError(
                 f"{filename} cell {k} has predictions {sorted(got)}, expected "
