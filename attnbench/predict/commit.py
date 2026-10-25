@@ -694,6 +694,7 @@ class CommittedPrediction:
     training: Mapping[str, Mapping]
     not_fitted: Mapping[str, str]
     cells: tuple[CommittedCell, ...]
+    constant_host_cost: Optional[float] = None
 
     def cell(self, arm: str, context_length: int, density: float,
              batch: int) -> CommittedCell:
@@ -816,7 +817,8 @@ def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPredictio
         pairing=pairing, statistic=rec["statistic"], queue_depth=Q,
         banked_before=banked, written_at=_from_iso(rec["written_at"]),
         synced_at=None, sha256=digest, code=code, training=training,
-        not_fitted=rec["not_fitted"], cells=tuple(cells))
+        not_fitted=rec["not_fitted"], cells=tuple(cells),
+        constant_host_cost=constant)
 
 
 def load_committed(store: Store, remote: str, *,
