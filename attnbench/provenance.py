@@ -7,6 +7,7 @@ in the same dataframe without one, the dataset is unusable.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import platform
@@ -125,6 +126,140 @@ def _cpu_model(cpuinfo: str = "/proc/cpuinfo") -> Optional[str]:
             or platform.processor() or None)
 
 
+def _cpu_microcode(cpuinfo: str = "/proc/cpuinfo") -> Optional[str]:
+    """The microcode revision /proc/cpuinfo reports, or None (T2.20).
+
+    Plan Section 5.2: "same platform" is not the same SKU, and a provider can
+    change microcode under one CPU model string without notice. Every
+    processor's line is read; if they disagree (a late load that reached only
+    some cores) the distinct values are joined with commas, so a mixed host is
+    visible rather than reported as its first core. macOS has no such file
+    and no equivalent this harness trusts, so a laptop row says None, which is
+    also what `scripts/host_cpu_probe.py` records there. Never raises.
+    """
+    seen: list[str] = []
+    try:
+        with open(cpuinfo) as f:
+            for line in f:
+                if line.startswith("microcode") and ":" in line:
+                    v = line.split(":", 1)[1].strip()
+                    if v and v not in seen:
+                        seen.append(v)
+    except OSError:
+        return None
+    return ",".join(seen) or None
+
+
+# The provisioning model's vocabulary (plan Section 5.2), keyed by the value
+# a launch script writes into the VM's metadata at create time.
+PROVISIONING_TAG = "attnbench-provisioning-model"
+PROVISIONING_MODELS = {
+    "STANDARD": "on-demand",
+    "SPOT": "spot",
+    "FLEX_START": "dws-flex-start",
+    "RESERVED": "reserved",
+}
+
+_GCP_METADATA = "http://169.254.169.254/computeMetadata/v1/instance/"
+_GCP_SERIES_RE = re.compile(r"^([a-z][0-9]+[a-z]?)-")
+
+
+def _gcp_metadata(path: str, timeout: float = 2.0) -> Optional[str]:
+    """One value from the GCE metadata server, or None. No proxy: the server
+    is link-local, and a proxy from the environment would answer for it."""
+    import urllib.request
+    req = urllib.request.Request(_GCP_METADATA + path,
+                                 headers={"Metadata-Flavor": "Google"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return r.read().decode().strip() or None
+    except Exception:
+        return None
+
+
+def _read_dmi(dmi_dir: str, name: str) -> Optional[str]:
+    try:
+        return Path(dmi_dir, name).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _provisioning_model(tag: Optional[str], preemptible: Optional[str]
+                        ) -> tuple[Optional[str], Optional[str]]:
+    """(model, problem) from the launcher's tag, cross-checked against GCP.
+
+    The tag is what the successful create call asked for; GCP's own
+    `scheduling/preemptible` is the one thing the platform reports about it.
+    Where they disagree, or either is missing, the model is None and the
+    problem says why: a guessed model is the asserted-control failure
+    `lock_clocks` documents.
+    """
+    if tag is None:
+        return None, (f"no {PROVISIONING_TAG} metadata tag: the VM was not "
+                      f"created by a launcher that sets it")
+    model = PROVISIONING_MODELS.get(tag.strip().upper())
+    if model is None:
+        return None, f"unknown {PROVISIONING_TAG} tag {tag!r}"
+    if preemptible is None or preemptible.strip().upper() not in ("TRUE", "FALSE"):
+        return None, (f"tag {tag} cannot be cross-checked: "
+                      f"scheduling/preemptible is {preemptible!r}")
+    is_pre = preemptible.strip().upper() == "TRUE"
+    if is_pre != (model == "spot"):
+        return None, (f"tag {tag} disagrees with scheduling/preemptible "
+                      f"{preemptible.strip().upper()}")
+    return model, None
+
+
+def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
+                    fetch=None) -> dict:
+    """Provider, instance type and generation, and provisioning model (T2.20).
+
+    The provider is read from DMI first, so a machine that is not a cloud VM
+    never sends a request. On GCE, `machine-type` is reported as
+    `projects/<number>/machineTypes/<type>`; only `<type>` is kept, so the
+    project number never reaches a row. The generation is the machine
+    series (`g2`, `a2`, `a3`), which fixes the host platform (Section 5.2).
+    AWS is recognised but not read: its launchers are T5.1's, and nothing
+    here is tested against its metadata service yet.
+    """
+    out = {"cloud_provider": None, "instance_type": None,
+           "instance_generation": None, "provisioning_model": None,
+           "provisioning_model_problem": None}
+    vendor = _read_dmi(dmi_dir, "sys_vendor") or ""
+    product = _read_dmi(dmi_dir, "product_name") or ""
+    if product == "Google Compute Engine" or vendor == "Google":
+        out["cloud_provider"] = "gcp"
+    elif vendor.startswith("Amazon EC2"):
+        out["cloud_provider"] = "aws"
+        out["provisioning_model_problem"] = (
+            "AWS instance metadata is not read before T5.1")
+        return out
+    else:
+        out["provisioning_model_problem"] = "no cloud instance detected (DMI)"
+        return out
+
+    fetch = fetch or _gcp_metadata
+    machine_type = fetch("machine-type")
+    if machine_type:
+        out["instance_type"] = machine_type.rsplit("/", 1)[-1]
+        m = _GCP_SERIES_RE.match(out["instance_type"])
+        out["instance_generation"] = m.group(1) if m else None
+    model, problem = _provisioning_model(
+        fetch(f"attributes/{PROVISIONING_TAG}"),
+        fetch("scheduling/preemptible"))
+    out["provisioning_model"] = model
+    out["provisioning_model_problem"] = problem
+    return out
+
+
+@functools.lru_cache(maxsize=1)
+def _cloud_identity_cached() -> dict:
+    """Read once per process: none of it changes while a VM runs, and
+    `capture()` is called per band."""
+    return _cloud_identity()
+
+
 def _pkg(name: str) -> Optional[str]:
     try:
         import importlib.metadata as md
@@ -148,6 +283,19 @@ class Provenance:
     # "see that table", not as "unknown".
     cpu_model: Optional[str]
     cpu_count: Optional[int]
+    # From 2026-10-25 (T2.20; plan Section 5.2). Earlier rows lack them.
+    # `provisioning_model` is None whenever the launcher's tag and GCP's
+    # `scheduling/preemptible` cannot both be read and agree, and
+    # `provisioning_model_problem` then says which; `python_optimize` is
+    # `sys.flags.optimize` (under K8 a different flag is a different code
+    # path). See `_cloud_identity`.
+    cpu_microcode: Optional[str]
+    cloud_provider: Optional[str]
+    instance_type: Optional[str]
+    instance_generation: Optional[str]
+    provisioning_model: Optional[str]
+    provisioning_model_problem: Optional[str]
+    python_optimize: int
 
     torch: Optional[str]
     torch_cuda: Optional[str]
@@ -223,6 +371,9 @@ def capture(clocks_locked: bool = False) -> Provenance:
         platform=platform.platform(),
         cpu_model=_cpu_model(),
         cpu_count=os.cpu_count(),
+        cpu_microcode=_cpu_microcode(),
+        **_cloud_identity_cached(),
+        python_optimize=sys.flags.optimize,
         torch=torch.__version__,
         torch_cuda=torch.version.cuda,
         cudnn=torch.backends.cudnn.version() if torch.cuda.is_available() else None,
@@ -303,8 +454,15 @@ GATED_FIELDS = frozenset({
 # `accuracy/pins.require_pinned_transformers`, which reads the LIVE version
 # before a pinned model's row is generated or scored, so a wrong version
 # never produces a row to gate. The column is the per-row record of that.
+#
+# The T2.20 fields (2026-10-25) are RECORDED until their readers exist:
+# Section 5.2 compares them "before H0 is read", and T2.17's per-session
+# check reads `python_optimize`. Gating a session on them now would refuse a
+# laptop run for having no instance type.
 RECORDED_FIELDS = frozenset({
     "timestamp", "python", "platform", "cpu_model", "cpu_count",
+    "cpu_microcode", "cloud_provider", "instance_type", "instance_generation",
+    "provisioning_model", "provisioning_model_problem", "python_optimize",
     "torch", "torch_cuda", "cudnn", "triton",
     "flash_attn", "flashinfer", "xformers", "fla", "transformers",
     "driver", "compute_capability", "gpu_memory_gb", "gpu_count",

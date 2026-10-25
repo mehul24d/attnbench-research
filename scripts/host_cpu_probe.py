@@ -73,8 +73,12 @@ def cpu_identity() -> dict:
         first = info.split("\n\n")[0]
         kv = dict(line.split(":", 1) for line in first.splitlines() if ":" in line)
         kv = {k.strip(): v.strip() for k, v in kv.items()}
-        for k in ("model name", "cpu family", "model", "stepping", "microcode"):
+        for k in ("model name", "cpu family", "model", "stepping"):
             out[k.replace(" ", "_")] = kv.get(k)
+        # provenance's reader, so `builders` rows and the stamp merged onto
+        # them agree on `cpu_microcode` (stamp_onto raises on a mismatch).
+        from attnbench.provenance import _cpu_microcode
+        out["microcode"] = _cpu_microcode()
     else:
         out["model_name"] = (_sh(["sysctl", "-n", "machdep.cpu.brand_string"])
                              or platform.processor() or "").strip()
