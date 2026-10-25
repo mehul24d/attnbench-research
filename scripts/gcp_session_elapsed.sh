@@ -27,7 +27,9 @@ set -euo pipefail
 NAME="${1:?usage: gcp_session_elapsed.sh INSTANCE [ZONE] [RATE_INR_HR]}"
 ZONE="${2:-asia-southeast1-c}"
 RATE="${3:-${GCP_RATE_INR_HR:-284}}"
-PROJECT="${GCP_PROJECT:-research-507316}"
+# The project is pinned (scripts/_gcp_project.sh) and passed to every call.
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 
 STATUS=$(gcloud compute instances describe "$NAME" --project="$PROJECT" \
            --zone="$ZONE" --format='value(status)' 2>/dev/null || echo "GONE")

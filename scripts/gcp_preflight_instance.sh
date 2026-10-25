@@ -31,7 +31,11 @@ ZONE="${2:?zone required}"
 MODE="${3:-refuse}"
 REMOTE_DIR="${REMOTE_DIR:-~/attnbench_scaffold}"
 
-OUT="$(gcloud compute ssh "$NAME" --zone="$ZONE" --command="
+# The project is pinned (scripts/_gcp_project.sh) and passed to every call.
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
+
+OUT="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
 set -euo pipefail
 cd $REMOTE_DIR
 if [ ! -d results ] || [ -z \"\$(ls -A results 2>/dev/null)\" ]; then
@@ -53,7 +57,7 @@ if grep -q PREFLIGHT_RESULTS_EMPTY <<<"$OUT"; then
   # An empty results/ is necessary and not sufficient. The property that
   # actually matters downstream is that provenance.capture() will stamp
   # git_dirty=False, so check that directly rather than a proxy for it.
-  TREE="$(gcloud compute ssh "$NAME" --zone="$ZONE" \
+  TREE="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" \
             --command="cd $REMOTE_DIR && git status --porcelain" 2>/dev/null)"
   if [[ -n "$TREE" ]]; then
     echo "PREFLIGHT FAILED -- results/ is empty but the tree is dirty:" >&2
@@ -97,9 +101,9 @@ if [[ "$MODE" == "--quarantine" ]]; then
   # inside the move command, and the escaping did not survive, so it died with
   # `DIRT: unbound variable` -- a guard whose own check was broken. Boring and
   # readable beats clever and wrong.
-  gcloud compute ssh "$NAME" --zone="$ZONE" --command="mkdir -p \$HOME/$QDIR && cd $REMOTE_DIR && mv results \$HOME/$STAMP && mkdir -p results"
-  gcloud compute ssh "$NAME" --zone="$ZONE" --command="cd $REMOTE_DIR && git checkout -- results || true"
-  POST="$(gcloud compute ssh "$NAME" --zone="$ZONE" --command="cd $REMOTE_DIR && git status --porcelain" 2>/dev/null)"
+  gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="mkdir -p \$HOME/$QDIR && cd $REMOTE_DIR && mv results \$HOME/$STAMP && mkdir -p results"
+  gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="cd $REMOTE_DIR && git checkout -- results || true"
+  POST="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="cd $REMOTE_DIR && git status --porcelain" 2>/dev/null)"
   if [[ -n "$POST" ]]; then
     echo "QUARANTINE LEFT THE TREE DIRTY:" >&2
     echo "$POST" >&2

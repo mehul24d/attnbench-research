@@ -145,7 +145,7 @@ def test_clean_does_not_take_x():
 def _remote_sequence(script_text: str) -> list[str]:
     """The git lines the deploy script sends to the instance."""
     import re
-    block = re.search(r'gcloud compute ssh "\$NAME" --zone="\$ZONE" --command="\n'
+    block = re.search(r'gcloud compute ssh "\$NAME" --zone="\$ZONE" --project="\$PROJECT" --command="\n'
                       r'set -euo pipefail\n'
                       r'cd \$REMOTE_DIR\n'
                       r'(.*?)"\n', script_text, re.S)

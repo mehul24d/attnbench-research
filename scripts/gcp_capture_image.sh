@@ -31,7 +31,9 @@ INSTANCE="${1:?usage: gcp_capture_image.sh INSTANCE ZONE IMAGE_NAME [REPO_DIR]}"
 ZONE="${2:?usage: gcp_capture_image.sh INSTANCE ZONE IMAGE_NAME [REPO_DIR]}"
 IMAGE="${3:?usage: gcp_capture_image.sh INSTANCE ZONE IMAGE_NAME [REPO_DIR]}"
 REPO="${4:-attnbench_scaffold}"
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+# The project is pinned (scripts/_gcp_project.sh) and passed to every call.
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 
 echo "== precondition 1: image name must not already exist =="
 if gcloud compute images describe "$IMAGE" --project="$PROJECT" >/dev/null 2>&1; then

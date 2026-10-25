@@ -54,7 +54,25 @@ if command -v git >/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
   fi
 fi
 
-BUCKET="${ATTNBENCH_BUCKET:-gs://attnbench-results-research-507316}"
+# The results bucket is named after the project, and the project ID is not
+# written in the repository. On an instance the project is the instance's
+# own, read from the metadata server; ATTNBENCH_BUCKET overrides it. If
+# neither gives a bucket, the phase is refused before it runs: a phase whose
+# output cannot be synced is the 2026-09-15 loss.
+PROJECT_ID=""
+if [[ -z "${ATTNBENCH_BUCKET:-}" ]]; then
+  PROJECT_ID="$(curl -fs --max-time 5 -H 'Metadata-Flavor: Google' \
+    "${ATTNBENCH_METADATA_URL:-http://metadata.google.internal/computeMetadata/v1/project/project-id}" \
+    2>/dev/null || true)"
+  if [[ ! "$PROJECT_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+    echo "REFUSING TO RUN PHASE -- no results bucket: ATTNBENCH_BUCKET is unset and" >&2
+    echo "the instance's project could not be read from the metadata server." >&2
+    exit 4
+  fi
+fi
+BUCKET="${ATTNBENCH_BUCKET:-gs://attnbench-results-${PROJECT_ID}}"
+# What this script prints carries the bucket, so the project ID is redacted.
+_redact() { if [[ -n "$PROJECT_ID" ]]; then sed -e "s/${PROJECT_ID}/<project>/g"; else cat; fi; }
 SESSION="${ATTNBENCH_SESSION:-$(hostname)}"
 DEST="$BUCKET/$SESSION"
 mkdir -p logs results
@@ -62,14 +80,14 @@ LOG="logs/${PHASE}.log"
 
 sync_now() {
   local rc=$1 tag=$2
-  echo "--- sync[$tag] $PHASE -> $DEST (rc=$rc) $(date -u +%FT%TZ)" | tee -a "$LOG"
+  echo "--- sync[$tag] $PHASE -> $DEST (rc=$rc) $(date -u +%FT%TZ)" | _redact | tee -a "$LOG"
   # results first: it is the thing that cannot be regenerated.
-  gsutil -q -m rsync -r results "$DEST/results" 2>&1 | tee -a "$LOG" || {
+  gsutil -q -m rsync -r results "$DEST/results" 2>&1 | _redact | tee -a "$LOG" || {
       echo "SYNC FAILED for results -- the disk is now the only copy" >&2; return 1; }
-  gsutil -q -m rsync -r logs "$DEST/logs" 2>&1 || {
+  gsutil -q -m rsync -r logs "$DEST/logs" 2>&1 | _redact || {
       echo "SYNC FAILED for logs" >&2; return 1; }
-  echo "--- synced objects under $DEST/results:"
-  gsutil ls -r "$DEST/results" | tail -n 40
+  echo "--- synced objects under $DEST/results:" | _redact
+  gsutil ls -r "$DEST/results" | tail -n 40 | _redact
   return 0
 }
 
