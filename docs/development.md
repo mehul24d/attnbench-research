@@ -10,32 +10,32 @@ rewritten for a public reader.
 ## Running the tests
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
-.venv/bin/python -m pytest tests/ -q     # 2655 passed, 97 skipped, no GPU
+python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
+.venv/bin/python -m pytest tests/ -q     # 2692 passed, 96 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
 at collection time, so a bare `pip install -e .` cannot collect the suite. The
 `kernels` extra is separate because those kernels compile from source and are
 architecture-gated, and the harness must import on a machine where a kernel is
-unavailable.
+unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
+learned baseline (T2.10); without it one more test skips.
 
-The 97 skips are the honest part, and they split seven ways: **15** need CUDA,
+The 96 skips are the honest part, and they split six ways: **15** need CUDA,
 **65** read banked result files that `results/` keeps out of git, **6** are
 scripts `test_script_call_sites.py` has nothing to check because they import
 nothing from `attnbench`, **6** are the same scripts skipped again by
 `test_import_resolution.py`, **2** need the pinned RULER data directory
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
-`~/.cache/attnbench/ruler_data`), **2** need the pinned Llama tokenizer in
-the local Hugging Face cache, and **1** needs `lightgbm`, which the learned
-baseline (T2.10) will use but which is not a dependency yet. Each skip names
-the file, device or package it wanted.
+`~/.cache/attnbench/ruler_data`), and **2** need the pinned Llama tokenizer in
+the local Hugging Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 2724 passed, 28 skipped**, because
+**With `results/` present the suite reads 2761 passed, 27 skipped**, because
 the 65 banked-file tests run instead of skipping and, on a machine with the
-RULER data directory and the tokenizer, those four tests run too; the `lightgbm` skip stays. Both totals are 2752, which is
+RULER data directory and the tokenizer, those four tests run too (with `results/` present and those two hidden it reads
+2757 passed, 31 skipped). All three totals are 2788, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 
