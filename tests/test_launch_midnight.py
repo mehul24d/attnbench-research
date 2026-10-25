@@ -126,7 +126,8 @@ def _run(name: str, tmp_path: Path, day_of_first: str, day_after_first: str):
     env.update(
         PATH=f"{bin_dir}:/usr/bin:/bin", HOME=str(tmp_path),
         GCLOUD_LOG=str(log), DAY_OF_FIRST=day_of_first, DAY_AFTER_FIRST=day_after_first,
-        GCP_PROJECT="test-project", GCP_RATE_INR_HR="297.47",
+        GCP_PROJECT="test-project", ATTNBENCH_GCP_PROJECT="test-project",
+        GCP_RATE_INR_HR="297.47",
         # the compile session's zone walk: zone-a refuses for capacity
         ATTEMPT_LOG=str(attempts), FAIL_ZONES="zone-a", INVALID_ZONES="",
         GCP_ZONE_FALLBACKS="zone-a zone-b", FAKE_IMAGE_KIND="machine-image",

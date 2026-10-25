@@ -14,7 +14,7 @@ profile:
     per element. Tiling re-reads are not counted, so these intensities are
     upper bounds on what a kernel achieves.
 
-**Kernel classes (proposed; the list awaits the researcher).** One forward
+**Kernel classes (confirmed by the researcher, 25 Oct 2026).** One forward
 pass of prefill, T = B * L tokens, per layer unless stated:
 
   qkv_projection     X (T x d) times W_qkv (d x (h_q + 2 h_kv) hd)

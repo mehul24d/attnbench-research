@@ -117,7 +117,7 @@ def _run(tmp_path, *, fail_zones: str, zones: str, existing: str = "", **extra_e
         FAKE_IMAGE_KIND="machine-image",
         FAKE_DISK_IMAGE_JSON='{"status": "READY", "diskSizeGb": "200"}',
         GCP_ZONE_FALLBACKS=zones,
-        GCP_PROJECT="test-project",
+        GCP_PROJECT="test-project", ATTNBENCH_GCP_PROJECT="test-project",
     )
     env.update({k: str(v) for k, v in extra_env.items()})
     proc = subprocess.run(["bash", str(SCRIPT), "test-instance"], input="launch\n",

@@ -160,10 +160,12 @@ def documented_eras() -> dict[str, int]:
     assert block, "the era table's heading is no longer in limitations.md"
     out: dict[str, int] = {}
     for line in block.group(1).splitlines():
-        m = re.match(r"\|\s*\*\*(\d)\.", line)
+        m = re.match(r"\|\s*\*\*(\d|native)\.", line)
         if not m:
             continue
-        era = int(m.group(1))
+        # `native` (registered 25 Oct 2026) is XAttention's own selection,
+        # `eras.NATIVE`: rows with mask_selector `xattn_native`.
+        era = eras.NATIVE if m.group(1) == "native" else int(m.group(1))
         # Only the file list, which runs to the first em dash. Era 3's cell
         # continues past one into prose that names `accuracy_forced_sink`
         # (an era-2 file whose niah cells it supersedes) and two task names.
@@ -326,6 +328,11 @@ def test_the_register_agrees_with_the_documented_era_table():
                 f"{key} carries banked accuracy rows and is in no row of the "
                 f"era table in limitations.md. Every banked file has an era; "
                 f"an unlisted one is a comparison waiting to happen.")
+        # Era 4 and native files take their era from `mask_selector`, not
+        # from the commit; test_era_4_files_are_derived_from_the_table_
+        # joined_to_mask_selector checks those row by row.
+        if documented[key] in set(eras.SELECTOR_ERA.values()):
+            continue
         for c in commits:
             got = eras.era_of(c)
             assert got == documented[key], (
@@ -352,7 +359,8 @@ def test_no_registered_commit_is_absent_from_the_banked_data():
         f"tree makes it fail rather than skip -- which is exactly how "
         f"instance #53 presented.")
     seen = {c[:7] for commits in banked.values() for c in commits}
-    stale = sorted(k for k in eras.COMMIT_ERA if k not in seen)
+    stale = sorted(k for k in {**eras.COMMIT_ERA, **eras.POST_SELECTOR_COMMIT_ERA}
+                   if k not in seen)
     assert not stale, (
         f"eras.COMMIT_ERA registers {stale}, which no banked accuracy file "
         f"carries.")
@@ -421,7 +429,7 @@ def test_the_register_agrees_with_git_ancestry():
     """The definition is ancestry of the two boundary commits. The table is a
     cache of it, and a cache that disagrees with its source is worse than no
     cache -- it is the guard confidently returning the wrong era."""
-    bad = disagreements(eras.COMMIT_ERA)
+    bad = disagreements({**eras.COMMIT_ERA, **eras.POST_SELECTOR_COMMIT_ERA})
     assert not bad, "\n".join(
         f"{c}: register says era {claimed}, the commit graph says era {actual}"
         for c, claimed, actual in bad)
@@ -433,12 +441,13 @@ def test_every_registered_commit_is_resolvable_from_the_graph():
     commit this checkout does not contain, and None is skipped as
     'cannot decide'. If every entry resolved to None the agreement test
     would pass over an empty comparison."""
-    resolved = [c for c in eras.COMMIT_ERA
+    register = {**eras.COMMIT_ERA, **eras.POST_SELECTOR_COMMIT_ERA}
+    resolved = [c for c in register
                 if eras.era_from_git(c, repo=str(REPO)) is not None]
-    assert len(resolved) == len(eras.COMMIT_ERA), (
-        f"only {len(resolved)}/{len(eras.COMMIT_ERA)} registered commits are "
+    assert len(resolved) == len(register), (
+        f"only {len(resolved)}/{len(register)} registered commits are "
         f"in this checkout: "
-        f"{sorted(set(eras.COMMIT_ERA) - set(resolved))}")
+        f"{sorted(set(register) - set(resolved))}")
 
 
 @pytest.mark.skipif(not HAS_GIT, reason="no usable git history in this checkout")
@@ -655,5 +664,7 @@ def test_the_recorded_selector_commit_is_the_one_that_introduced_the_column():
     assert first and first[0].startswith(c[:7]), (first[:1], c)
     for banked in eras.COMMIT_ERA:
         assert not eras.at_or_after_selector_commit(banked, str(REPO)), banked
+    for banked in eras.POST_SELECTOR_COMMIT_ERA:
+        assert eras.at_or_after_selector_commit(banked, str(REPO)), banked
     head = _git_head()
     assert eras.at_or_after_selector_commit(head, str(REPO))

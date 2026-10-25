@@ -31,7 +31,6 @@
 # and deletes nothing -- see the compile-session runbook.
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 ZONE="${GCP_ZONE:-asia-northeast1-a}"   # plan Section 5.2: P1 pinned zone
 MACHINE_TYPE="${GCP_MACHINE_TYPE:-g2-standard-8}"
 # v4, not v3. A stale default is not a harmless one: on 2026-09-05 a launch
@@ -50,6 +49,8 @@ INSTANCE_NAME="${1:-attnbench-l4-compile-$(date +%Y%m%d-%H%M)}"
 ZONE_FALLBACKS="${GCP_ZONE_FALLBACKS:-$ZONE}"
 source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
 launch_policy_check "$ZONE_FALLBACKS"
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 
 # STANDARD (on-demand) by default -- see the header: preemption 70 minutes
 # into a compile wastes far more than spot saves.
@@ -100,10 +101,6 @@ BOOT_DISK_INTERFACE="${GCP_BOOT_DISK_INTERFACE:-}"
 BOOT_DISK_SIZE="${GCP_BOOT_DISK_SIZE:-200GB}"
 BOOT_DISK_TYPE="${GCP_BOOT_DISK_TYPE:-pd-balanced}"
 
-if [[ -z "$PROJECT" ]]; then
-  echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
-  exit 1
-fi
 
 # PREFLIGHT: refuse to launch if this project already has an instance.
 #
@@ -176,12 +173,12 @@ elif gcloud compute images describe "$SOURCE_MACHINE_IMAGE" \
   IMAGE_KIND="disk-image"
 else
   echo "Source image '$SOURCE_MACHINE_IMAGE' is not a READY machine image or" >&2
-  echo "a READY disk image in project '$PROJECT'." >&2
+  echo "a READY disk image in the pinned project." >&2
   echo "Booting this session from a bare DLVM family image instead would" >&2
   echo "spend most of the cap redoing an install, so this fails closed." >&2
   echo >&2
-  echo "  machine images: gcloud compute machine-images list --project=$PROJECT" >&2
-  echo "  disk images   : gcloud compute images list --project=$PROJECT --no-standard-images" >&2
+  echo "  machine images: gcloud compute machine-images list --project=\$ATTNBENCH_GCP_PROJECT" >&2
+  echo "  disk images   : gcloud compute images list --project=\$ATTNBENCH_GCP_PROJECT --no-standard-images" >&2
   exit 1
 fi
 
@@ -328,7 +325,7 @@ done
 EOF
 
 echo "About to create a BILLABLE instance:"
-echo "  project      : $PROJECT"
+echo "  project      : ATTNBENCH_GCP_PROJECT (pinned, not printed)"
 echo "  name         : $INSTANCE_NAME"
 echo "  machine-type : $MACHINE_TYPE"
 echo "  provisioning : $PROVISIONING_MODEL"
@@ -465,4 +462,4 @@ echo "     session lost its only diagnostic evidence by deleting first)"
 echo "  - run scripts/gcp_cleanup_check.sh afterward to confirm nothing is left billing"
 echo "  - machine images are billed separately from instances and are NOT"
 echo "    covered by gcp_cleanup_check.sh -- check them with:"
-echo "      gcloud compute machine-images list --project=$PROJECT"
+echo "      gcloud compute machine-images list --project=\$ATTNBENCH_GCP_PROJECT"

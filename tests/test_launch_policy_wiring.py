@@ -94,6 +94,7 @@ def _run(script: Path, today: str, tmp_path: Path) -> tuple[subprocess.Completed
     log.touch()
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path),
            "GCLOUD_LOG": str(log), "GCP_PROJECT": "test-project",
+           "ATTNBENCH_GCP_PROJECT": "test-project",
            "GCP_RATE_INR_HR": "297.47"}
     proc = subprocess.run(["bash", str(script), "test-image"], capture_output=True,
                           text=True, env=env, cwd=tmp_path, timeout=120)

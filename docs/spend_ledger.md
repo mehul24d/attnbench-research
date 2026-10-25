@@ -38,6 +38,8 @@ authority is the billing console.
 
 *Note added 20 Oct 2026 (T0.17).* From 20 Oct 2026 the rate given as `GCP_RATE_INR_HR` is the planning rate, all-in, in plan Section 5.2, which includes the 200 GB boot disk and any local SSD the machine type bundles. Egress and image storage are still not included, and the teardown script's default of 80 is unchanged. The billing console is the authority.
 
+*Note added 25 Oct 2026.* The teardown script no longer has a default rate. It refuses to run until `GCP_RATE_INR_HR` is set to the planning rate of the card used, and the A100 launcher refuses to launch without one. Rows before this date are not recomputed.
+
 ## Sessions
 
 | date | session | minutes | est ₹ | source |

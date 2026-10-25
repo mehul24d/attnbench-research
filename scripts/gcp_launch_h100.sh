@@ -49,10 +49,11 @@
 #     data, because the only copy was on the disk they deleted.
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 ZONE="${GCP_ZONE:-us-central1-a}"   # plan Section 5.2: P4 pinned zone
 source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
 launch_policy_check "$ZONE"
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 MACHINE_TYPE="a3-highgpu-1g"
 ACCELERATOR="type=nvidia-h100-80gb,count=1"
 IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
@@ -69,10 +70,6 @@ MAX_RUN="${GCP_MAX_RUN:-5h}"
 HALT_MINUTES="${GCP_HALT_MINUTES:-210}"   # DELETE at MAX_RUN; the gap is the recovery window.
 INSTANCE_NAME="${1:-attnbench-h100-$(date +%Y%m%d-%H%M)}"
 
-if [[ -z "$PROJECT" ]]; then
-  echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
-  exit 1
-fi
 
 STARTUP_SCRIPT="$(mktemp)"
 trap 'rm -f "$STARTUP_SCRIPT"' EXIT
@@ -83,7 +80,7 @@ shutdown -h +${HALT_MINUTES}
 EOF
 
 echo "About to create a BILLABLE instance:"
-echo "  project      : $PROJECT"
+echo "  project      : ATTNBENCH_GCP_PROJECT (pinned, not printed)"
 echo "  name         : $INSTANCE_NAME"
 echo "  zone         : $ZONE"
 echo "  machine-type : $MACHINE_TYPE"
@@ -130,5 +127,5 @@ echo "  halts   at +${HALT_MINUTES}m (disk still recoverable after this)"
 echo "  DELETES at $MAX_RUN (disk goes with it)"
 echo "GATE: verify the GCS write path before starting any phase:"
 echo "  bash scripts/gcp_verify_gcs_writable.sh $INSTANCE_NAME $ZONE"
-echo "  teardown early: gcloud compute instances delete $INSTANCE_NAME --zone=$ZONE --project=$PROJECT --quiet"
+echo "  teardown early: gcloud compute instances delete $INSTANCE_NAME --zone=$ZONE --project=\$ATTNBENCH_GCP_PROJECT --quiet"
 echo "  confirm clean : bash scripts/gcp_cleanup_check.sh"
