@@ -30,8 +30,8 @@ The study: **predicting when training-free block-sparse prefill pays end to end 
 ## Cloud sessions
 
 - Before any GPU session, state the exact command, estimated cost, cost cap, hard-delete limit and artifact path, then wait for approval. The researcher runs all cloud commands from their Mac.
-- The sequence is: cleanup check, cost cap, hard-delete limit, quarantine of stale results, deploy the clean commit, preflight, run, then teardown through `scripts/gcp_teardown_session.sh`. Record the cost in `docs/spend_ledger.md`.
-- The launchers, the cleanup check and the teardown take the GCP project from `ATTNBENCH_GCP_PROJECT`, set outside the repository, and refuse while the active gcloud project differs. They never print it. The teardown and the A100 launcher refuse without `GCP_RATE_INR_HR`, the planning rate of the card used.
+- The sequence is: cleanup check, cost cap, hard-delete limit, quarantine of stale results, deploy the clean commit, preflight, the GCS write gate, the bootstrap of a fresh instance (`scripts/gcp_bootstrap_instance.sh`: the RULER data checked against its hash pins, the pinned wonderwords and nltk, the XAttention install), run, then teardown through `scripts/gcp_teardown_session.sh`. Record the cost in `docs/spend_ledger.md`.
+- Every `scripts/gcp_*.sh` takes the GCP project from `ATTNBENCH_GCP_PROJECT`, set outside the repository, and refuses while the active gcloud project differs. None prints it. On the instance, `scripts/run_phase.sh` names the results bucket after the instance's own project, read from the metadata server, unless `ATTNBENCH_BUCKET` is set, and refuses the phase if it has neither. The teardown and the A100 launcher refuse without `GCP_RATE_INR_HR`, the planning rate of the card used.
 - Machines and zones are pinned in plan Section 5.2. The L4 zone is `asia-northeast1-a`. Never use an Australia region.
 - No GCP session launches after **9 December 2026** (India time; the date itself is allowed). `scripts/_launch_policy.sh` enforces this and the Australia ban in every launch script; do not bypass it.
 - No AWS launches until task T5.1 is done.

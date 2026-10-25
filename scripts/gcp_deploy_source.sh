@@ -59,7 +59,12 @@ trap 'rm -f "$BUNDLE"' EXIT
 # not depend on what the instance's repo happens to already have.
 git bundle create "$BUNDLE" HEAD >/dev/null 2>&1
 
-gcloud compute scp "$BUNDLE" "$NAME:/tmp/deploy.bundle" --zone="$ZONE" >/dev/null
+# The project is pinned (scripts/_gcp_project.sh), after the local checks so
+# a dirty tree is still refused first, and before the first gcloud call.
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
+
+gcloud compute scp "$BUNDLE" "$NAME:/tmp/deploy.bundle" --zone="$ZONE" --project="$PROJECT" >/dev/null
 
 # 2. Check the bundle out on the instance. `-f` and `clean -fd` because the
 #    instance may be carrying a previous tarball deploy's edits; `clean` is
@@ -77,7 +82,7 @@ gcloud compute scp "$BUNDLE" "$NAME:/tmp/deploy.bundle" --zone="$ZONE" >/dev/nul
 #    at Stage 3 segment 2 regardless: the segmentation plan pins a commit per
 #    segment and re-deploys each time, and a mid-session fix is exactly the
 #    hazard `check_code_continuity` exists to catch.
-gcloud compute ssh "$NAME" --zone="$ZONE" --command="
+gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
 set -euo pipefail
 cd $REMOTE_DIR
 git checkout --quiet --detach
@@ -93,7 +98,7 @@ rm -f /tmp/deploy.bundle
 # deliberately a SEPARATE ssh round trip: asking the machine that will write
 # the provenance what it thinks its commit is, after the deploy claims to have
 # finished, is the only question whose answer matters.
-REMOTE_STATE="$(gcloud compute ssh "$NAME" --zone="$ZONE" --command="
+REMOTE_STATE="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
 cd $REMOTE_DIR
 echo \"commit=\$(git rev-parse HEAD)\"
 echo \"dirty=\$(git status --porcelain | wc -l | tr -d ' ')\"

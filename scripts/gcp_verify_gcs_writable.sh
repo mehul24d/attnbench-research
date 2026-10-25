@@ -59,8 +59,11 @@ set -euo pipefail
 
 INSTANCE="${1:?usage: gcp_verify_gcs_writable.sh INSTANCE ZONE [BUCKET]}"
 ZONE="${2:?usage: gcp_verify_gcs_writable.sh INSTANCE ZONE [BUCKET]}"
-BUCKET="${3:-gs://attnbench-results-research-507316}"
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+# The project is pinned (scripts/_gcp_project.sh), and the results bucket is
+# named after it, so neither is written in the repository.
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
+BUCKET="${3:-gs://attnbench-results-${PROJECT}}"
 
 SSH_READY_TIMEOUT="${SSH_READY_TIMEOUT:-300}"
 
@@ -80,7 +83,7 @@ done
 echo "sshd answered after $(( $(date +%s) - _t0 ))s"
 
 TOKEN="writecheck-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
-echo "GCS write gate: $BUCKET  (token $TOKEN)"
+echo "GCS write gate: $BUCKET  (token $TOKEN)" | gcp_redact
 
 REMOTE=$(cat <<EOF
 set -euo pipefail

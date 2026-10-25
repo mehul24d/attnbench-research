@@ -131,7 +131,7 @@ def _batched(fn, reps: int) -> float:
 def analyse(rows: list[dict], floor_p50: float) -> dict:
     """Every derived quantity S11 is entitled to quote, from the banked rows
     alone. A pure function so it can be replayed on CPU against banked
-    parquets -- `tests/test_mask_h2d_tax_analysis.py` does exactly that.
+    parquets -- `tests/test_s11_tax_derivation.py` does exactly that.
 
     It exists because the 2026-09-21 run's conclusions were written from the
     figures this script PRINTED rather than from the columns it BANKED, and the
@@ -251,6 +251,30 @@ def print_analysis(rows: list[dict], a: dict) -> None:
           "band' is a stronger claim than 'max exceeds the top'.")
 
 
+def summary(rows: list[dict], floor: dict, sync_only, a: dict, gpu: str) -> dict:
+    """The contents of summary.json. Pure, so it is tested on CPU.
+
+    Until 25 Oct 2026 this was built inline in `main()` and read `p50s`, a
+    name the fourth audit pass (`ce2ad91`) removed when the analysis moved
+    into `analyse()`: every GPU run since would have written the parquet and
+    then raised NameError before this file.
+    """
+    p50s = [r["copy_p50_us"] for r in rows]
+    marg_lo = a["over_floor_us"][rows[0]["band"]]
+    marg_hi = a["over_floor_us"][rows[-1]["band"]]
+    return {
+        "rows": rows, "floor": floor, "sync_only": sync_only,
+        "ratio_cost": round(a["raw_ratio"], 3), "ratio_size": a["ratio_size"],
+        "marginal_ratio": (round(marg_hi / marg_lo, 3) if marg_lo > 0 else None),
+        "unresolvable_bands": a["unresolvable_bands"],
+        "verdict": a["verdict"],
+        "gpu": gpu,
+        "assumed_range_us": [ASSUMED_LO, ASSUMED_HI],
+        "analysis": {k: v for k, v in a.items() if k != "over_floor_us"},
+        "measured_p50_span_us": [min(p50s), max(p50s)],
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="results/s11_mask_h2d")
@@ -349,12 +373,6 @@ def main() -> int:
 
     a = analyse(rows, floor["p50_us"])
     print_analysis(rows, a)
-    raw_ratio = a["raw_ratio"]
-    ratio_size = a["ratio_size"]
-    unresolvable = a["unresolvable_bands"]
-    verdict = a["verdict"]
-    marg_lo = a["over_floor_us"][rows[0]["band"]]
-    marg_hi = a["over_floor_us"][rows[-1]["band"]]
 
     import pandas as pd
     df = pd.DataFrame(rows)
@@ -363,17 +381,8 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out / "mask_h2d.parquet", index=False)
-    (out / "summary.json").write_text(json.dumps({
-        "rows": rows, "floor": floor, "sync_only": sync_only,
-        "ratio_cost": round(raw_ratio, 3), "ratio_size": ratio_size,
-        "marginal_ratio": (round(marg_hi / marg_lo, 3) if marg_lo > 0 else None),
-        "unresolvable_bands": unresolvable,
-        "verdict": verdict,
-        "gpu": torch.cuda.get_device_name(0),
-        "assumed_range_us": [ASSUMED_LO, ASSUMED_HI],
-        "analysis": {k: v for k, v in a.items() if k != "over_floor_us"},
-        "measured_p50_span_us": [min(p50s), max(p50s)],
-    }, indent=2))
+    (out / "summary.json").write_text(json.dumps(
+        summary(rows, floor, sync_only, a, torch.cuda.get_device_name(0)), indent=2))
     print(f"\nwrote {out}/mask_h2d.parquet and summary.json")
     return 0
 

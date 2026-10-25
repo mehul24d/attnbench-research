@@ -28,7 +28,12 @@ HELPER = SCRIPTS / "_gcp_project.sh"
 
 LAUNCHERS = ("gcp_launch_l4.sh", "gcp_launch_a100.sh", "gcp_launch_h100.sh",
              "gcp_launch_compile_session.sh", "gcp_boot_test_image.sh")
-PINNED = LAUNCHERS + ("gcp_cleanup_check.sh", "gcp_teardown_session.sh")
+# The six session scripts and the bootstrap were pinned on 25 Oct 2026, after
+# the first seven (PR #14).
+SESSION = ("gcp_deploy_source.sh", "gcp_preflight_instance.sh",
+           "gcp_verify_gcs_writable.sh", "gcp_capture_image.sh", "gcp_status.sh",
+           "gcp_session_elapsed.sh", "gcp_bootstrap_instance.sh")
+PINNED = LAUNCHERS + ("gcp_cleanup_check.sh", "gcp_teardown_session.sh") + SESSION
 
 PIN = "pinned-proj-123"
 OTHER = "other-proj-456"
@@ -39,6 +44,7 @@ proj=""
 for a in "$@"; do case "$a" in --project=*) proj="${a#--project=}";; esac; done
 case "$*" in
   "config get-value project") echo "$FAKE_ACTIVE"; exit 0 ;;
+  "auth list"*) echo "ACCOUNT-MARKER-NOT-TO-BE-PRINTED"; exit 0 ;;
   *"sourceInstanceProperties"*) printf 'g2-standard-8\tnvidia-l4\n'; exit 0 ;;
   *"machine-images describe"*) echo READY; exit 0 ;;
   *"instances list"*) exit 0 ;;
@@ -63,7 +69,37 @@ ARGS = {
     "gcp_boot_test_image.sh": ["some-image", "asia-southeast1-c"],
     "gcp_cleanup_check.sh": [],
     "gcp_teardown_session.sh": ["inst", "asia-northeast1-a"],
+    "gcp_deploy_source.sh": ["inst", "zone"],
+    "gcp_preflight_instance.sh": ["inst", "zone"],
+    "gcp_verify_gcs_writable.sh": ["inst", "zone"],
+    "gcp_capture_image.sh": ["inst", "zone", "some-image"],
+    "gcp_status.sh": [],
+    "gcp_session_elapsed.sh": ["inst", "zone", "100"],
+    "gcp_bootstrap_instance.sh": ["inst", "zone"],
 }
+
+# The bootstrap's local steps run Python; this stands in for it so the
+# generic tests reach the instance steps without the RULER data present.
+FAKE_PYTHON = r"""#!/usr/bin/env bash
+case "$*" in
+  *"len(r.PINNED_SHA256)"*) echo 3 ;;
+  *"PINNED_VERSIONS"*) echo "nltk==3.9.1 wonderwords==2.2.0" ;;
+  *) cat >/dev/null; echo "$FAKE_RULER_DIR" ;;
+esac
+"""
+
+
+def _fixture_repo(tmp_path):
+    """A clean git repository, because the deploy script refuses a dirty tree
+    and resolves its repository from the working directory."""
+    r = tmp_path / "repo"
+    r.mkdir(exist_ok=True)
+    git = ["git", "-C", str(r), "-c", "user.email=t", "-c", "user.name=t"]
+    subprocess.run(git[:3] + ["init", "-q"], check=True)
+    (r / "f.txt").write_text("x\n")
+    subprocess.run(git + ["add", "-A"], check=True)
+    subprocess.run(git + ["commit", "-qm", "init"], check=True)
+    return r
 
 
 def _run(name, tmp_path, *, pin=PIN, active=PIN, rate="297.47", script=None, extra=None):
@@ -89,8 +125,18 @@ def _run(name, tmp_path, *, pin=PIN, active=PIN, rate="297.47", script=None, ext
     args = list(ARGS[name])
     if name == "gcp_teardown_session.sh":
         args.append(str(tmp_path / "session"))
+    cwd = tmp_path
+    if name == "gcp_deploy_source.sh":
+        cwd = _fixture_repo(tmp_path)
+    if name == "gcp_bootstrap_instance.sh":
+        cwd = REPO
+        fake_py = bin_dir / "fake_python"
+        fake_py.write_text(FAKE_PYTHON)
+        fake_py.chmod(0o755)
+        env.setdefault("ATTNBENCH_PYTHON", str(fake_py))
+        env.setdefault("FAKE_RULER_DIR", str(tmp_path / "ruler"))
     p = subprocess.run(["bash", str(script or SCRIPTS / name), *args], input="launch\n",
-                       capture_output=True, text=True, env=env, cwd=tmp_path, timeout=120)
+                       capture_output=True, text=True, env=env, cwd=cwd, timeout=120)
     return p, log.read_text().splitlines()
 
 
@@ -106,7 +152,7 @@ def gcloud_calls(text: str) -> list[str]:
         s = line.strip()
         if s.startswith("#") or re.match(r"^(echo|printf)\b", s):
             continue
-        for m in re.finditer(r"(?<![\w-])gcloud (?:compute|config)\b", line):
+        for m in re.finditer(r"(?<![\w-])gcloud (?!auth\b)[a-z]+\b", line):
             depth, end = 0, len(line)
             for i in range(m.start(), len(line)):
                 ch = line[i]
@@ -136,7 +182,7 @@ def pin_problems(text: str) -> list[str]:
     pin = text.find("\ngcp_project_pin\n")
     if pin == -1:
         problems.append("never calls gcp_project_pin at top level")
-    first = min((m.start() for m in re.finditer(r"^[^#\n]*\bgcloud (compute|config)", text, re.M)
+    first = min((m.start() for m in re.finditer(r"^[^#\n]*\bgcloud [a-z]+\b", text, re.M)
                  if not re.match(r"\s*(echo|printf)\b", text[m.start():])), default=-1)
     if pin != -1 and first != -1 and first < pin:
         problems.append("calls gcloud before the pin")
@@ -171,6 +217,14 @@ def test_every_launch_script_is_pinned():
     creating = {p.name for p in SCRIPTS.glob("*.sh")
                 if "gcloud compute instances create" in p.read_text()}
     assert creating <= set(LAUNCHERS), creating - set(LAUNCHERS)
+
+
+
+def test_every_gcp_script_is_pinned():
+    """CLAUDE.md says every scripts/gcp_*.sh takes the pinned project; a new
+    one is covered by naming it in PINNED, or this fails."""
+    present = {p.name for p in SCRIPTS.glob("gcp_*.sh")}
+    assert present <= set(PINNED), present - set(PINNED)
 
 
 # Break-tests for the static checks: each mutation must be noticed.
@@ -232,12 +286,48 @@ def test_a_different_active_project_refuses_without_naming_either(name, tmp_path
 @pytest.mark.parametrize("name", PINNED)
 def test_a_matching_project_reaches_gcloud_with_the_flag_and_is_never_printed(name, tmp_path):
     p, calls = _run(name, tmp_path)
-    work = [c for c in calls if c != "config get-value project"]
+    # `gcloud auth` is not project-scoped and takes no --project.
+    work = [c for c in calls if c != "config get-value project" and not c.startswith("auth ")]
     assert work, f"{name} made no call past the pin: {p.stderr[-1500:]}"
     assert all(f"--project={PIN}" in c for c in work), [c for c in work if PIN not in c]
     # The fake echoes the project on both streams; none of it may get out.
     assert PIN not in p.stdout and PIN not in p.stderr, (p.stdout + p.stderr)[-1500:]
-    assert "projects/<project>" in p.stdout + p.stderr
+    if name not in QUIET:
+        assert "projects/<project>" in p.stdout + p.stderr
+
+
+# Scripts whose gcloud output under this fake is all captured or discarded,
+# so no redacted text reaches the terminal to check.
+QUIET = {"gcp_session_elapsed.sh", "gcp_capture_image.sh"}
+
+
+ON_INSTANCE = ("run_phase.sh",)
+
+
+@pytest.mark.parametrize("name", PINNED + ON_INSTANCE)
+def test_no_project_or_bucket_is_written_in_the_script(name):
+    """The project ID was the default in gcp_session_elapsed.sh, and the
+    bucket named after it was the default in run_phase.sh and
+    gcp_verify_gcs_writable.sh. Both are now derived."""
+    text = (SCRIPTS / name).read_text()
+    assert not re.search(r"attnbench-results-[a-z0-9]", text), name
+    assert not re.search(r"GCP_PROJECT:-[a-z]", text), name
+
+
+def test_the_literal_check_notices_a_restored_bucket():
+    text = (SCRIPTS / "run_phase.sh").read_text()
+    mutated = text.replace('gs://attnbench-results-${PROJECT_ID}', 'gs://attnbench-results-some-project-1')
+    assert mutated != text
+    assert re.search(r"attnbench-results-[a-z0-9]", mutated)
+
+
+def test_the_status_check_does_not_print_the_account(tmp_path):
+    """The active account is an email address; gcp_status.sh says only
+    whether one is active. The fake answers `auth list` with a marker."""
+    p, calls = _run("gcp_status.sh", tmp_path)
+    assert any(c.startswith("auth list") for c in calls)
+    assert "ACCOUNT-MARKER" not in p.stdout + p.stderr
+    assert "Active account: yes (not printed)" in p.stdout
 
 
 def test_an_unpinned_variable_name_is_not_a_bypass(tmp_path):

@@ -4,23 +4,25 @@
 # availability, and existing resources. Makes no changes to the project.
 set -uo pipefail
 
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 REGIONS=("asia-south1" "us-central1")
 ZONES=("asia-south1-a" "asia-south1-b" "asia-south1-c")
 
-if [[ -z "$PROJECT" ]]; then
-  echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
-  exit 1
-fi
 
 hr() { printf '%s\n' "----------------------------------------------------------------"; }
 
-echo "GCP Status — project: $PROJECT"
+echo "GCP Status, project: ATTNBENCH_GCP_PROJECT (pinned, not printed)"
 hr
 
 echo "## Account / Billing"
-gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>&1 | sed 's/^/Active account: /'
-BILLING_JSON=$(gcloud billing projects describe "$PROJECT" --format=json 2>&1)
+# The account is an email address, so only whether one is active is printed.
+if [[ -n "$(gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null)" ]]; then
+  echo "Active account: yes (not printed)"
+else
+  echo "Active account: NONE -- run gcloud auth login"
+fi
+BILLING_JSON=$(gcloud billing projects describe "$PROJECT" --project="$PROJECT" --format=json 2>&1)
 if echo "$BILLING_JSON" | grep -q '"billingEnabled"'; then
   echo "$BILLING_JSON" | python3 -c "
 import json,sys
@@ -39,7 +41,7 @@ if gcloud services list --enabled --project="$PROJECT" 2>/dev/null | grep -q com
   echo "compute.googleapis.com: ENABLED"
 else
   echo "compute.googleapis.com: NOT enabled"
-  echo "  -> Enable with: gcloud services enable compute.googleapis.com --project=$PROJECT"
+  echo "  -> Enable with: gcloud services enable compute.googleapis.com --project=\$ATTNBENCH_GCP_PROJECT"
   echo "  (Everything below requires this API; skipping remaining checks.)"
   exit 0
 fi

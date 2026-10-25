@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 3607 passed, 98 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 3686 passed, 99 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -21,21 +21,21 @@ architecture-gated, and the harness must import on a machine where a kernel is
 unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
 learned baseline (T2.10); without it one more test skips.
 
-The 98 skips are the honest part, and they split six ways: **15** need CUDA,
+The 99 skips are the honest part, and they split six ways: **15** need CUDA,
 **65** read banked result files that `results/` keeps out of git, **7** are
 scripts `test_script_call_sites.py` has nothing to check because they import
 nothing from `attnbench`, **7** are the same scripts skipped again by
-`test_import_resolution.py`, **2** need the pinned RULER data directory
+`test_import_resolution.py`, **3** need the pinned RULER data directory
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
 `~/.cache/attnbench/ruler_data`), and **2** need the pinned Llama tokenizer in
 the local Hugging Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 3676 passed, 29 skipped**, because
+**With `results/` present the suite reads 3756 passed, 29 skipped**, because
 the 65 banked-file tests run instead of skipping and, on a machine with the
-RULER data directory and the tokenizer, those four tests run too (with `results/` present and those two hidden it reads
-3672 passed, 33 skipped). All three totals are 3705, which is
+RULER data directory and the tokenizer, those five tests run too (with `results/` present and those two hidden it reads
+3751 passed, 34 skipped). All three totals are 3785, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 
