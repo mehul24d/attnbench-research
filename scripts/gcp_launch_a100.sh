@@ -122,6 +122,7 @@ create_with() {
     --boot-disk-type="$BOOT_DISK_TYPE" \
     --maintenance-policy=TERMINATE \
     --provisioning-model="$model" \
+    --metadata=attnbench-provisioning-model="$model" \
     --instance-termination-action=DELETE \
     --max-run-duration="$MAX_RUN" \
     --reservation-affinity=none \
