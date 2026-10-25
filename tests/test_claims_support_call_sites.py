@@ -94,6 +94,11 @@ CLASSIFIED: dict[tuple[str, str, str], str] = {
         "them bitwise. Both are the model's own causal prefill config, the "
         "one each arm runs alone; a guard that declined it would decline the "
         "arm itself, which the gate exists to compare, not to filter.",
+    ("attnbench/backends/compiled.py", "forward", "forward"):
+        "UNGUARDED BY DESIGN. MaskAgreement.forward returns the eager arm's "
+        "own output at the model's causal prefill config, the config that arm "
+        "runs alone, after comparing its mask with the compiled estimator's. "
+        "It runs no config the arm would not; the comparison is untimed.",
 
     # --- guarded -------------------------------------------------------------
     ("attnbench/gates.py", "check_correctness", "reference"):
