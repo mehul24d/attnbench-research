@@ -76,7 +76,7 @@
 <table>
   <tr><th style="width:34%">Item</th><th>Status</th></tr>
   <tr><td>Earlier study on L4, A100 and H100</td><td>Done. Our first, CPU-side mask builder explains why kernel speedup did not survive end to end on the A100; a vectorised builder removes most of that cost. Two of three predictions registered before the H100 run passed.</td></tr>
-  <tr><td>Accuracy pilots on the L4 (Qwen2.5-1.5B, 16K and 32K tokens)</td><td>Done. With oracle masks, accuracy is non-inferior to dense only at 50% density, and only in two of the tested cells. The mean-pool estimator and XAttention with a single threshold were not non-inferior in any cell; XAttention with calibrated per-head thresholds is built and not yet run.</td></tr>
+  <tr><td>Accuracy pilots on the L4 (Qwen2.5-1.5B, 16K and 32K tokens)</td><td>Done. With oracle masks, accuracy is non-inferior to dense only at 50% density, and only in two of the tested cells. The mean-pool estimator and XAttention with a single threshold were not non-inferior in any cell. XAttention with per-head thresholds from its authors' profiler is non-inferior on the primary task at both lengths, keeping 51% to 59% of blocks, and on none of the secondary tasks.</td></tr>
   <tr><td>Measurement harness</td><td>Built and tested: one shared block selector and kernel for all estimators, commit-stamped rows, exact statistical analysis.</td></tr>
   <tr><td>Component profilers, cost model, AWS tooling</td><td>To be built.</td></tr>
 </table>

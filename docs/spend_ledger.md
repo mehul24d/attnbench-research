@@ -98,6 +98,7 @@ authority is the billing console.
 | 2026-10-02 | `attnbench-l4-xattn-pilot-20261002-2059`, asia-northeast1-a, ₹80/h; row added 18 Oct 2026 from its cost file | **201** | **268** | `session_cost.txt` (`results/t4_xattn_pilot_session_20261003/`) |
 | 2026-10-02 | `attnbench-l4-t4pilot-16384-20261002-0312`; row added 18 Oct 2026, date from the instance name | no cost file | no cost file | no cost file (`results/t4_sparse_pilot_session_16384_20261002/` has none) |
 | 2026-10-21 | `attnbench-a100-t11a-20261022`, asia-southeast1-c, **Flex Start**, ₹297.47/h (planning rate, all-in); T1.1 Session A, the three calibrations; date from the boot clock in UTC (01:02 IST on 22 Oct) | **55** | **273** | `session_cost.txt` (`results/t11a_session_20261022/`) |
+| 2026-10-25 | `attnbench-l4-t11b-20261025`, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); T1.1 Session B, the dense reference and the three calibrated XAttention runs; image `attnbench-env-v7-20261025` captured before teardown (its storage is not in this row) | **210** | **380** | `session_cost.txt` (`results/t11b_session_20261025/`) |
 
 **Notes on the table (18 Oct 2026).**
 
@@ -216,6 +217,8 @@ Machine images are billed for storage independently of any instance and are
 **not** in the table above: `attnbench-l4-image-v3-20260903` (21.5 GB) and
 `-v4-20260903` (22.0 GB). v3 is superseded by v4 and is a candidate for
 deletion.
+
+*Note added 25 Oct 2026.* Disk images bill the same way. On 25 Oct 2026 the project held `attnbench-env-v5-20260905`, `attnbench-env-v6-20260917` and `attnbench-env-v7-20261025`, 200 GB disks each. The archives of v6 and v7 are 23.6 GB and 23.9 GB; v5's was not read. At $0.05 per GB a month, a price not checked against the catalogue, v7 costs about ₹115 a month. v7 is v6 plus the pinned RULER data, `wonderwords`, `nltk` and the XAttention install. v5 is superseded by v6. The billing console is the authority.
 
 ### The 2026-09-06 row — ~7 of 11 hours were idle
 
