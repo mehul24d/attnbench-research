@@ -94,6 +94,17 @@ COMMIT_ERA: dict[str, int] = {
     "7490ee4": 3,   # t4_xattn_{dense,tau*}_20261002
 }
 
+# The same cache for banked commits AT OR AFTER the `mask_selector` column's
+# introducing commit (`PER_HEAD_SELECTOR_COMMIT`). Kept apart from
+# `COMMIT_ERA`, whose entries all predate the column and are therefore read
+# as before it when git is unavailable: these must not be, so that a row at
+# one of them that lacks `mask_selector` is still refused.
+# Only rows whose selector leaves the era to the commit (`none`,
+# `head_uniform`) take it from here.
+POST_SELECTOR_COMMIT_ERA: dict[str, int] = {
+    "c0d9358": 3,   # t4_xattn_cal_dense_20261025, t11b_smoke_dense (T1.1 Session B)
+}
+
 # The two commits the eras are defined BY. Era 1 is everything that is not a
 # descendant-or-self of the sink fix; era 3 is everything that is a
 # descendant-or-self of the jitter fix; era 2 is what lies between. Both
@@ -175,7 +186,7 @@ def era_of(commit: str) -> int | None:
     by being unrecognised.
     """
     c = str(commit).strip()
-    for prefix, era in COMMIT_ERA.items():
+    for prefix, era in {**COMMIT_ERA, **POST_SELECTOR_COMMIT_ERA}.items():
         if c.startswith(prefix):
             return era
     return None
