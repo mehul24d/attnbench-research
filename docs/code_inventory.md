@@ -66,7 +66,7 @@
 
 | Path | Decision | Reason / plan task |
 |---|---|---|
-| `gcp_*.sh` (launch, preflight, deploy, teardown, cleanup, status, image) | Keep | Session rules 10 to 12; template for AWS (T5.1) |
+| `gcp_*.sh` (launch, preflight, deploy, bootstrap, teardown, cleanup, status, image) | Keep | Session rules 10 to 12; template for AWS (T5.1) |
 | `run_phase.sh`, `gpu_suite_record.sh`, `procmatch.sh`, `_image_boot_checks.py`, `build_flash_attn.sh`, `install_xattention.sh` | Keep | Session plumbing |
 | `run_accuracy.py`, `check_dense_canary.py`, `check_score_canary.py`, `fetch_ruler_data.py`, `measure_answer_lengths.py`, `time_one_accuracy_example.py` | Keep | Accuracy pipeline |
 | `calibrate_xattn_thresholds.py`, `run_t4_noninferiority.py` | Keep | T1.1 |

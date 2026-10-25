@@ -28,11 +28,11 @@ HELPER = SCRIPTS / "_gcp_project.sh"
 
 LAUNCHERS = ("gcp_launch_l4.sh", "gcp_launch_a100.sh", "gcp_launch_h100.sh",
              "gcp_launch_compile_session.sh", "gcp_boot_test_image.sh")
-# The six session scripts were pinned on 25 Oct 2026, after the first seven
-# (PR #14).
+# The six session scripts and the bootstrap were pinned on 25 Oct 2026, after
+# the first seven (PR #14).
 SESSION = ("gcp_deploy_source.sh", "gcp_preflight_instance.sh",
            "gcp_verify_gcs_writable.sh", "gcp_capture_image.sh", "gcp_status.sh",
-           "gcp_session_elapsed.sh")
+           "gcp_session_elapsed.sh", "gcp_bootstrap_instance.sh")
 PINNED = LAUNCHERS + ("gcp_cleanup_check.sh", "gcp_teardown_session.sh") + SESSION
 
 PIN = "pinned-proj-123"
@@ -75,7 +75,19 @@ ARGS = {
     "gcp_capture_image.sh": ["inst", "zone", "some-image"],
     "gcp_status.sh": [],
     "gcp_session_elapsed.sh": ["inst", "zone", "100"],
+    "gcp_bootstrap_instance.sh": ["inst", "zone"],
 }
+
+# The bootstrap's local steps run Python; this stands in for it so the
+# generic tests reach the instance steps without the RULER data present.
+FAKE_PYTHON = r"""#!/usr/bin/env bash
+case "$*" in
+  *"len(r.PINNED_SHA256)"*) echo 3 ;;
+  *"PINNED_VERSIONS"*) echo "nltk==3.9.1 wonderwords==2.2.0" ;;
+  *) cat >/dev/null; echo "$FAKE_RULER_DIR" ;;
+esac
+"""
+
 
 def _fixture_repo(tmp_path):
     """A clean git repository, because the deploy script refuses a dirty tree
@@ -116,6 +128,13 @@ def _run(name, tmp_path, *, pin=PIN, active=PIN, rate="297.47", script=None, ext
     cwd = tmp_path
     if name == "gcp_deploy_source.sh":
         cwd = _fixture_repo(tmp_path)
+    if name == "gcp_bootstrap_instance.sh":
+        cwd = REPO
+        fake_py = bin_dir / "fake_python"
+        fake_py.write_text(FAKE_PYTHON)
+        fake_py.chmod(0o755)
+        env.setdefault("ATTNBENCH_PYTHON", str(fake_py))
+        env.setdefault("FAKE_RULER_DIR", str(tmp_path / "ruler"))
     p = subprocess.run(["bash", str(script or SCRIPTS / name), *args], input="launch\n",
                        capture_output=True, text=True, env=env, cwd=cwd, timeout=120)
     return p, log.read_text().splitlines()
