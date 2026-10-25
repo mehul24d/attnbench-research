@@ -114,6 +114,7 @@ gcloud compute instances create "$INSTANCE_NAME" \
   --boot-disk-type="$BOOT_DISK_TYPE" \
   --maintenance-policy=TERMINATE \
   --provisioning-model=FLEX_START \
+  --metadata=attnbench-provisioning-model=FLEX_START \
   --request-valid-for-duration="$FLEX_REQUEST_VALID_FOR" \
   --instance-termination-action=DELETE \
   --max-run-duration="$MAX_RUN" \

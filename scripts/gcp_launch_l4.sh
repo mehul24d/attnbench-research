@@ -98,6 +98,7 @@ gcloud compute instances create "$INSTANCE_NAME" \
   --boot-disk-type="$BOOT_DISK_TYPE" \
   --maintenance-policy=TERMINATE \
   --provisioning-model=STANDARD \
+  --metadata=attnbench-provisioning-model=STANDARD \
   --max-run-duration="$MAX_RUN" \
   --instance-termination-action=DELETE \
   --scopes=https://www.googleapis.com/auth/cloud-platform \
