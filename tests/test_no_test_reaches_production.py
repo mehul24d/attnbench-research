@@ -85,10 +85,15 @@ def test_the_launcher_cannot_reach_a_real_project_from_a_test(blocked_call_log):
     guard this resolved the live project and created an instance. It must now
     die at the first gcloud call, having created nothing.
     """
+    # Since 25 Oct 2026 the launcher refuses before any gcloud call when
+    # ATTNBENCH_GCP_PROJECT is unset (next test). A placeholder pin is set so
+    # the replay still reaches the first gcloud call, where the guard must
+    # intercept it; with the pin alone the guard would go untested here.
     p = subprocess.run(
         ["bash", str(LAUNCHER), "test-instance"],
         input="launch\n", capture_output=True, text=True, timeout=60,
-        env={**os.environ, "GCP_ZONE_FALLBACKS": "asia-southeast1-c"})
+        env={**os.environ, "GCP_ZONE_FALLBACKS": "asia-southeast1-c",
+             "ATTNBENCH_GCP_PROJECT": "replay-project"})
 
     assert p.returncode != 0, "the launcher must not succeed from a test"
     calls = blocked_call_log.read_text()
@@ -96,6 +101,18 @@ def test_the_launcher_cannot_reach_a_real_project_from_a_test(blocked_call_log):
     assert "instances create" not in calls, (
         "a create reached the CLI layer; it was refused, but the script should "
         "have stopped before it")
+
+
+def test_without_the_pin_the_launcher_stops_before_any_gcloud_call(blocked_call_log):
+    """The same replay with ATTNBENCH_GCP_PROJECT unset: the pin refuses
+    before gcloud is called at all, so not even the active project is read."""
+    env = {k: v for k, v in os.environ.items() if k != "ATTNBENCH_GCP_PROJECT"}
+    env["GCP_ZONE_FALLBACKS"] = "asia-southeast1-c"
+    p = subprocess.run(["bash", str(LAUNCHER), "test-instance"], input="launch\n",
+                       capture_output=True, text=True, timeout=60, env=env)
+    assert p.returncode != 0
+    assert "ATTNBENCH_GCP_PROJECT is not set" in p.stderr, p.stderr[-1500:]
+    assert "gcloud" not in blocked_call_log.read_text()
 
 
 def test_no_test_file_invokes_the_launcher_with_the_inherited_path():

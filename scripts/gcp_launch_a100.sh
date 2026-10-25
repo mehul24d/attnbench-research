@@ -41,10 +41,22 @@
 #   which billing has stopped but the disk still exists.
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 ZONE="${GCP_ZONE:-asia-southeast1-c}"   # plan Section 5.2: P2 pinned zone
 source "$(dirname "${BASH_SOURCE[0]}")/_launch_policy.sh"
 launch_policy_check "$ZONE"
+# A declared rate, required: the planning rate this session is costed at,
+# Rs/h all-in (plan Section 5.2). It is not defaulted, because the two ways
+# this script can create differ by 18% and the teardown's old default (80, an
+# L4 rate) under-costed an A100 session by a factor of 3.7.
+RATE_INR_HR="${GCP_RATE_INR_HR:-}"
+if [[ ! "$RATE_INR_HR" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "REFUSING TO LAUNCH -- declare the planning rate as GCP_RATE_INR_HR (Rs/h, all-in):" >&2
+  echo "  297.47 for FLEX_START (DWS), 350.14 for the Spot fallback (plan Section 5.2)." >&2
+  echo "Pass the rate of the model actually used to gcp_teardown_session.sh as well." >&2
+  exit 1
+fi
+source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
+gcp_project_pin
 MACHINE_TYPE="a2-ultragpu-1g"
 ACCELERATOR="type=nvidia-a100-80gb,count=1"
 # Overridable so a freshly captured image can be put to work instead of
@@ -69,10 +81,6 @@ MAX_RUN="${GCP_MAX_RUN:-4h30m}"
 HALT_MINUTES="${GCP_HALT_MINUTES:-210}"   # DELETE at MAX_RUN; the gap is the recovery window.
 INSTANCE_NAME="${1:-attnbench-a100-$(date +%Y%m%d-%H%M)}"
 
-if [[ -z "$PROJECT" ]]; then
-  echo "No project set. Run: gcloud config set project PROJECT_ID" >&2
-  exit 1
-fi
 
 STARTUP_SCRIPT="$(mktemp)"
 trap 'rm -f "$STARTUP_SCRIPT"' EXIT
@@ -83,7 +91,7 @@ shutdown -h +${HALT_MINUTES}
 EOF
 
 echo "About to create a BILLABLE instance:"
-echo "  project      : $PROJECT"
+echo "  project      : ATTNBENCH_GCP_PROJECT (pinned, not printed)"
 echo "  name         : $INSTANCE_NAME"
 echo "  zone         : $ZONE  (only zone offering $MACHINE_TYPE)"
 echo "  machine-type : $MACHINE_TYPE  (12 vCPU, 170GB, 1x A100 80GB)"
@@ -91,6 +99,7 @@ echo "  image        : $IMAGE  (plain DISK image -- no accelerator binding)"
 echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 echo "  provisioning : FLEX_START attempted first, SPOT on refusal"
 echo "  rate         : Rs ~297/h on DWS, Rs ~350/h on Spot (planning rate, all-in, 2026-10-20)"
+echo "  declared rate: Rs ${RATE_INR_HR}/h (GCP_RATE_INR_HR)"
 echo "  in-guest halt: +${HALT_MINUTES} min"
 echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE (Rs 1,339 on DWS, Rs 1,576 on Spot at the default 4h30m)"
 echo "  recovery win : ~1h between halt and DELETE"
@@ -139,6 +148,10 @@ echo "  halts   at +${HALT_MINUTES}m (disk still recoverable after this)"
 echo "  DELETES at $MAX_RUN (disk goes with it)"
 echo "GATE: verify the GCS write path before starting any phase:"
 echo "  bash scripts/gcp_verify_gcs_writable.sh $INSTANCE_NAME $ZONE"
-echo "  teardown early: gcloud compute instances delete $INSTANCE_NAME --zone=$ZONE --project=$PROJECT --quiet"
+echo "  teardown early: gcloud compute instances delete $INSTANCE_NAME --zone=$ZONE --project=\$ATTNBENCH_GCP_PROJECT --quiet"
 echo "  confirm clean : bash scripts/gcp_cleanup_check.sh"
+if [[ "$MODEL_USED" == "SPOT" && "$RATE_INR_HR" != "350.14" ]]; then
+  echo "NOTE: created on SPOT, but the declared rate is Rs ${RATE_INR_HR}/h. Tear down with"
+  echo "  GCP_RATE_INR_HR=350.14, the Spot planning rate."
+fi
 echo "PROVISIONING_MODEL=$MODEL_USED"
