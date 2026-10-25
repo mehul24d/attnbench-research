@@ -1,9 +1,9 @@
 """T2.9 baselines and the training-set rule they share with T2.10.
 
 Hand-computed numbers are worked in the comments from Section 5.4. The
-fitted sum is checked against an exhaustive solver (least squares on every
-subset of active terms, keep the best non-negative one), which shares no
-code with scipy's nnls.
+fitted sum is checked against a vertex enumeration of its linear program
+(every choice of three tight conditions, solved and kept if feasible),
+which shares no code with scipy's linprog.
 """
 
 from __future__ import annotations
@@ -15,13 +15,14 @@ import numpy as np
 import pytest
 
 from attnbench.predict.baselines import (
-    LABELS, FittedSum, fit_fitted_sum, step_form, steps, sum_as_written,
+    LABELS, fit_fitted_sum, step_form, steps, sum_as_written,
     sum_plus_s0)
 from attnbench.predict.recursion import (
     CostModelError, close_prefill, copy_op, kernel_op, price, recurse,
     sync_op)
 from attnbench.predict.training import (
-    COMMITTED, RETROSPECTIVE, Cell, GroundTruthRow, HardwareFeatures,
+    COMMITTED, GROUND_TRUTH_STATISTIC, RETROSPECTIVE, STATISTICS, Cell,
+    GroundTruthRow, HardwareFeatures,
     committed_training_set, retrospective_training_set)
 
 from test_predict_recursion import COSTS
@@ -89,8 +90,8 @@ def test_step_form_needs_a_layer_on_every_kernel_and_copy():
 
 
 def test_labels_keep_the_two_sums_apart():
-    assert set(LABELS) == {"sum", "sum_plus_s0", "step_form", "fitted_sum"}
     assert "no s_0" in LABELS["sum"] and "not in the plan" in LABELS["sum_plus_s0"]
+    assert "no s_0" in LABELS["fitted_sum"]
 
 
 def random_layered(rng, n):
@@ -126,10 +127,10 @@ def test_baseline_orderings(seed):
 # Training sets
 # --------------------------------------------------------------------------
 
-def row(pairing, ops, measured, arm="dense", L=8192):
+def row(pairing, ops, measured, arm="dense", L=8192, statistic="median"):
     cell = Cell(pairing=pairing, arm=arm, context_length=L, density=1.0,
                 batch=1, priced=P(ops), hardware=HW)
-    return GroundTruthRow(cell=cell, measured=measured)
+    return GroundTruthRow(cell=cell, measured=measured, statistic=statistic)
 
 
 ROWS = [row("P1", [kernel_op(1, 1)], 2.0), row("P1", [kernel_op(2, 1)], 3.0),
@@ -166,98 +167,176 @@ def test_retrospective_set_is_every_other_pairing_and_says_so():
         retrospective_training_set([ROWS[0]], target="P1")
 
 
+def test_the_statistic_is_the_median_unless_a_row_says_otherwise():
+    # Section 5.3's ground truth reports median, p90 and p99 and names none.
+    assert GROUND_TRUTH_STATISTIC == "median" and STATISTICS == ("median", "p90", "p99")
+    assert ROWS[0].statistic == "median"
+    assert committed_training_set(ROWS, "P4", ["P1"]).statistic == "median"
+    p90 = [row("P1", [kernel_op(1, 1)], 2.5, statistic="p90")]
+    assert committed_training_set(p90, "P2", ["P1"]).statistic == "p90"
+
+
+def test_rows_that_mix_statistics_or_name_another_are_refused():
+    mixed = ROWS + [row("P1", [kernel_op(1, 1)], 2.5, statistic="p99")]
+    with pytest.raises(CostModelError, match="mix ground-truth statistics"):
+        committed_training_set(mixed, "P4", ["P1"])
+    with pytest.raises(CostModelError, match="mix ground-truth statistics"):
+        retrospective_training_set(mixed, "P2")
+    with pytest.raises(CostModelError, match="statistic must be one of"):
+        committed_training_set([row("P1", [kernel_op(1, 1)], 2.0,
+                                    statistic="mean")], "P2", ["P1"])
+
+
 # --------------------------------------------------------------------------
-# Fitted sum
+# Fitted sum (loss: sum of absolute relative errors)
 # --------------------------------------------------------------------------
 
-def terms_row(pairing, H, L, D, y):
+def terms_row(pairing, H, L, D, y, n_sync=0):
     ops = [kernel_op(H, D, layer=0)]
     if L:
         ops.append(copy_op(0, L, layer=0))
+    ops += [sync_op("synchronize") for _ in range(n_sync)]   # s0 1 each
     return row(pairing, ops, y)
 
 
+def committed(rows):
+    return committed_training_set(rows, target="P2", banked=["P1"])
+
+
 def test_fitted_sum_recovers_exact_coefficients():
-    # y = 2 sum h + 0.5 sum l + 3 sum d on four rows with independent terms.
+    # y = 2 sum h + 0.5 sum l + 3 sum d on four rows with independent terms:
+    # zero loss, and the exact fit is the only one.
     data = [(1, 2, 1), (2, 1, 3), (3, 4, 1), (1, 1, 1)]
-    rows = [terms_row("P1", H, L, D, 2 * H + 0.5 * L + 3 * D)
-            for H, L, D in data]
-    ts = committed_training_set(rows, target="P2", banked=["P1"])
-    for loss in ("absolute", "relative"):
-        f = fit_fitted_sum(ts, loss=loss)
-        assert (f.a, f.b, f.c) == pytest.approx((2, 0.5, 3), abs=1e-9)
-        assert f.trained_on == ("P1",) and f.kind == COMMITTED
-        assert f.unidentified == ()
-        assert f.predict(P([kernel_op(1, 1), copy_op(0, 2)])) == pytest.approx(6)
+    rows = [terms_row("P1", H, L, D, 2 * H + 0.5 * L + 3 * D) for H, L, D in data]
+    f = fit_fitted_sum(committed(rows))
+    assert (f.a, f.b, f.c) == pytest.approx((2, 0.5, 3), abs=1e-9)
+    assert f.training_loss == pytest.approx(0, abs=1e-12)
+    assert f.trained_on == ("P1",) and f.kind == COMMITTED
+    assert f.statistic == "median" and f.label == "fitted_sum"
+    assert f.unidentified == () and f.condition_number < 1e3
+    assert f.predict(P([kernel_op(1, 1), copy_op(0, 2)])) == pytest.approx(6)
 
 
-def test_fitted_sum_clamps_a_negative_coefficient_and_refits():
-    # (H, D, y) = (1,1,1), (2,1,3), (1,2,0.5); no copies, so sum l = 0.
-    # Unconstrained least squares: [6 5; 5 6][a c] = [7.5 5], a = 20/11,
-    # c = -7.5/11 < 0.  With c = 0: a = sum(Hy)/sum(H^2) = 7.5/6 = 1.25.
-    # KKT: residual (-0.25, 0.5, -0.75), D . r = -1.25 <= 0, so c stays 0.
-    rows = [terms_row("P1", 1, 0, 1, 1), terms_row("P1", 2, 0, 1, 3),
-            terms_row("P1", 1, 0, 2, 0.5)]
-    f = fit_fitted_sum(retrospective_training_set(rows + [ROWS[2]], "P2"),
-                       loss="absolute")
-    assert (f.a, f.b, f.c) == pytest.approx((1.25, 0, 0), abs=1e-12)
+def test_fitted_sum_minimises_absolute_relative_error_not_its_square():
+    # Host only: H = (1, 1, 1), y = (1, 2, 4).
+    # sum |a - y_i| / y_i = |a-1| + |a-2|/2 + |a-4|/4: slope -1.75 below 1,
+    # +0.25 between 1 and 2, so a = 1 with loss 0 + 0.5 + 0.75 = 1.25.
+    # (Least squares on relative error would give
+    #  sum(1/y)/sum(1/y^2) = 1.75/1.3125 = 4/3 instead.)
+    rows = [terms_row("P1", 1, 0, 0, y) for y in (1.0, 2.0, 4.0)]
+    f = fit_fitted_sum(committed(rows))
+    assert f.a == pytest.approx(1) and f.training_loss == pytest.approx(1.25)
+    assert f.unidentified == ("link", "device")
+    assert f.condition_number == pytest.approx(1.0)
+
+
+def test_fitted_sum_clamps_a_negative_coefficient():
+    # (H, D, y) = (1, 0, 1), (1, 1, 0.5).  The exact fit is a = 1, c = -0.5.
+    # With c = 0: |a - 1| + |a - 0.5| / 0.5, slope -3 below 0.5 and +1 above,
+    # so a = 0.5 with loss 0.5; raising c from 0 only adds to the second term.
+    rows = [terms_row("P1", 1, 0, 0, 1.0), terms_row("P1", 1, 0, 1, 0.5)]
+    f = fit_fitted_sum(committed(rows))
+    assert (f.a, f.b, f.c) == pytest.approx((0.5, 0, 0), abs=1e-9)
+    assert f.training_loss == pytest.approx(0.5)
     assert f.unidentified == ("link",)
-    assert f.kind == RETROSPECTIVE
 
 
-def test_relative_and_absolute_losses_differ_as_hand_computed():
-    # Host only: H = (1, 2), y = (1, 4).
-    # absolute: a = sum(Hy)/sum(H^2) = (1 + 8)/5 = 1.8.
-    # relative: x = H/y = (1, 0.5); a = sum(x)/sum(x^2) = 1.5/1.25 = 1.2.
-    rows = [row("P1", [kernel_op(1, 0, layer=0)], 1.0),
-            row("P1", [kernel_op(2, 0, layer=0)], 4.0)]
-    ts = committed_training_set(rows, target="P2", banked=["P1"])
-    assert fit_fitted_sum(ts, loss="absolute").a == pytest.approx(1.8)
-    assert fit_fitted_sum(ts, loss="relative").a == pytest.approx(1.2)
-    assert fit_fitted_sum(ts, loss="relative").unidentified == ("link", "device")
+def test_fitted_sum_plus_s0_fits_the_remainder_and_adds_s0_back():
+    # Host only, one synchronise each (s0 = 1): H = (1, 1), y = (3, 5).
+    # As written: |a - 3|/3 + |a - 5|/5, slope +2/15 above 3 -> a = 3.
+    # Plus s0:    |a + 1 - 3|/3 + |a + 1 - 5|/5 -> a = 2, and a cell with
+    #             H = 1, S = 1 predicts 2 + 1 = 3.
+    rows = [terms_row("P1", 1, 0, 0, 3.0, n_sync=1),
+            terms_row("P1", 1, 0, 0, 5.0, n_sync=1)]
+    plain = fit_fitted_sum(committed(rows))
+    plus = fit_fitted_sum(committed(rows), add_s0=True)
+    assert plain.a == pytest.approx(3) and plain.label == "fitted_sum"
+    assert plus.a == pytest.approx(2) and plus.label == "fitted_sum_plus_s0"
+    cell = P([kernel_op(1, 0), sync_op("synchronize")])
+    assert plain.predict(cell) == pytest.approx(3)
+    assert plus.predict(cell) == pytest.approx(3)
+    assert plus.predict(P([kernel_op(1, 0), sync_op("synchronize"),
+                           sync_op("synchronize")])) == pytest.approx(4)
 
 
-@pytest.mark.parametrize("loss", [None, "l2", "rel"])
-def test_fitted_sum_requires_a_stated_loss(loss):
-    ts = committed_training_set(ROWS, target="P4", banked=["P1"])
-    with pytest.raises(CostModelError, match="loss must be"):
-        fit_fitted_sum(ts, loss=loss)
+def test_condition_number_hand_computed():
+    # Rows (H, D, y) = (1, 0, 1) and (0, 4, 2): weighted design
+    # [[1, 0], [0, 2]], singular values 2 and 1, condition number 2.
+    rows = [terms_row("P1", 1, 0, 0, 1.0), terms_row("P1", 0, 0, 4, 2.0)]
+    f = fit_fitted_sum(committed(rows))
+    assert f.condition_number == pytest.approx(2.0)
+    assert (f.a, f.c) == pytest.approx((1.0, 0.5))
+    # sum h equal to sum d on every row: the two cannot be told apart.
+    rows = [terms_row("P1", 1, 0, 1, 2.0), terms_row("P1", 2, 0, 2, 3.0)]
+    assert fit_fitted_sum(committed(rows)).condition_number == float("inf")
 
 
-def exhaustive_nnls(A, y):
-    best, best_x = None, None
-    for k in range(4):
-        for active in itertools.combinations(range(3), k):
-            x = np.zeros(3)
-            if active:
-                sol, *_ = np.linalg.lstsq(A[:, active], y, rcond=None)
-                if np.any(sol < 0):
-                    continue
-                x[list(active)] = sol
-            obj = float(np.sum((A @ x - y) ** 2))
-            if best is None or obj < best - 1e-12:
-                best, best_x = obj, x
-    return best, best_x
+def test_an_unidentified_term_is_fixed_at_zero_not_left_to_the_solver(monkeypatch):
+    # No copies anywhere, so sum l is zero on every row and b is fixed at
+    # 0 by its bounds; a solver free to pick b would make it arbitrary.
+    import attnbench.predict.baselines as bl
+    seen = {}
+    real = bl.linprog
+
+    def spy(*args, **kw):
+        seen["bounds"] = kw["bounds"]
+        return real(*args, **kw)
+
+    monkeypatch.setattr(bl, "linprog", spy)
+    rows = [terms_row("P1", 1, 0, 1, 2.0), terms_row("P1", 2, 0, 1, 3.0)]
+    f = bl.fit_fitted_sum(committed(rows))
+    assert seen["bounds"][:3] == [(0, None), (0, 0), (0, None)]
+    assert f.b == 0 and f.unidentified == ("link",)
+
+
+def test_labels_name_every_baseline():
+    assert set(LABELS) == {"sum", "sum_plus_s0", "step_form", "fitted_sum",
+                           "fitted_sum_plus_s0"}
+    assert "not fitted" in LABELS["fitted_sum_plus_s0"]
+
+
+def exhaustive_l1(X, r):
+    """Least absolute deviations over beta >= 0 by enumerating vertices:
+    each choice of three tight conditions from {row i fitted exactly} and
+    {beta_j = 0}, solved, kept if feasible. Needs X of full column rank."""
+    n = X.shape[0]
+    conds = [("row", i) for i in range(n)] + [("zero", j) for j in range(3)]
+    best = None
+    for trio in itertools.combinations(conds, 3):
+        M = np.zeros((3, 3)); v = np.zeros(3)
+        for k, (kind, idx) in enumerate(trio):
+            if kind == "row":
+                M[k] = X[idx]; v[k] = r[idx]
+            else:
+                M[k, idx] = 1.0
+        if abs(np.linalg.det(M)) < 1e-12:
+            continue
+        beta = np.linalg.solve(M, v)
+        if np.any(beta < -1e-12):
+            continue
+        obj = float(np.abs(X @ np.clip(beta, 0, None) - r).sum())
+        best = obj if best is None else min(best, obj)
+    return best
 
 
 @pytest.mark.parametrize("seed", range(40))
-@pytest.mark.parametrize("loss", ["absolute", "relative"])
-def test_fitted_sum_matches_the_exhaustive_solver(seed, loss):
+@pytest.mark.parametrize("add_s0", [False, True])
+def test_fitted_sum_matches_the_vertex_enumeration(seed, add_s0):
     rng = random.Random(4000 + seed)
     rows = []
-    for _ in range(rng.randint(3, 9)):
+    for _ in range(rng.randint(4, 9)):
         H, L, D = rng.randint(0, 8), rng.randint(0, 5), rng.randint(1, 8)
         y = abs(rng.gauss(1.0, 0.6)) * H + abs(rng.gauss(0.5, 1.0)) * L \
             + rng.gauss(1.0, 1.5) * D + rng.uniform(0.5, 3)
-        rows.append(terms_row("P1", H, L, D, max(y, 0.25)))
-    ts = committed_training_set(rows, target="P2", banked=["P1"])
-    f = fit_fitted_sum(ts, loss=loss)
+        rows.append(terms_row("P1", H, L, D, max(y, 0.25),
+                              n_sync=rng.randint(0, 2)))
+    f = fit_fitted_sum(committed(rows), add_s0=add_s0)
     A = np.array([[sum(r.cell.priced.host), sum(r.cell.priced.link),
                    sum(r.cell.priced.device)] for r in rows], dtype=float)
     y = np.array([r.measured for r in rows])
-    if loss == "relative":
-        A, y = A / y[:, None], np.ones_like(y)
-    best, _ = exhaustive_nnls(A, y)
-    ours = float(np.sum((A @ np.array([f.a, f.b, f.c]) - y) ** 2))
+    S = np.array([sum(r.cell.priced.sync_cost) if add_s0 else 0.0 for r in rows])
+    X, rhs = A / y[:, None], (y - S) / y
     assert min(f.a, f.b, f.c) >= 0
-    assert ours == pytest.approx(best, rel=1e-9, abs=1e-12)
+    if np.linalg.matrix_rank(X) < 3:
+        pytest.skip("rank-deficient draw; the vertex enumeration needs full rank")
+    assert f.training_loss == pytest.approx(exhaustive_l1(X, rhs), rel=1e-7, abs=1e-9)

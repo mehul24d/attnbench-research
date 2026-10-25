@@ -111,6 +111,10 @@ class Operation:
     s_0 is priced from the mechanism table, never stored here, so the
     queue, density and bandwidth sensitivities can re-price it.
 
+    A copy may also state the bytes it moves in `payload_bytes`. That count
+    does not price it (its l_i arrives already priced); it feeds the learned
+    baseline's transfer demand (T2.10). A kernel moves no host-device bytes.
+
     `layer` is carried for the per-layer step form (T2.9) and `stream` for
     the one-stream check; neither changes the recursion.
     """
@@ -216,6 +220,7 @@ class PricedSequence:
     kinds: tuple[OpKind, ...]
     layers: tuple[Optional[int], ...]
     mechanisms: tuple[Optional[str], ...]
+    payload_bytes: tuple[int, ...]
 
     def __len__(self) -> int:
         return len(self.host)
@@ -270,6 +275,12 @@ def _check_operation(op: Operation, i: int) -> None:
         raise CostModelError(f"kind{where} must be an OpKind, got {op.kind!r}")
     for name in ("host", "device", "link"):
         _check_cost(getattr(op, name), name, where)
+    if (isinstance(op.payload_bytes, bool)
+            or not isinstance(op.payload_bytes, int)
+            or op.payload_bytes < 0):
+        raise CostModelError(
+            f"payload_bytes{where} must be an int >= 0, got "
+            f"{op.payload_bytes!r}")
 
     if op.kind is OpKind.SYNC:
         if op.device != 0 or op.link != 0:
@@ -292,23 +303,21 @@ def _check_operation(op: Operation, i: int) -> None:
             raise CostModelError(
                 f"unknown synchronisation mechanism {op.mechanism!r}{where}; "
                 f"expected one of {SYNC_MECHANISMS}")
-        if (isinstance(op.payload_bytes, bool)
-                or not isinstance(op.payload_bytes, int)
-                or op.payload_bytes < 0):
-            raise CostModelError(
-                f"payload_bytes{where} must be an int >= 0, got "
-                f"{op.payload_bytes!r}")
         if op.mechanism == "synchronize" and op.payload_bytes:
             raise CostModelError(
                 f"an explicit synchronise moves no payload{where}; a copy to "
                 f"the host is its own mechanism")
         return
 
-    if op.mechanism is not None or op.payload_bytes or op.loaded:
+    if op.mechanism is not None or op.loaded:
         raise CostModelError(
-            f"mechanism, payload_bytes and loaded belong to synchronisations "
-            f"only{where}; a {op.kind.value}'s link cost arrives already "
-            f"priced at the right bandwidth")
+            f"mechanism and loaded belong to synchronisations only{where}; a "
+            f"{op.kind.value}'s link cost arrives already priced at the right "
+            f"bandwidth")
+    if op.kind is OpKind.KERNEL and op.payload_bytes:
+        raise CostModelError(
+            f"a kernel moves no host-device bytes{where}: got "
+            f"payload_bytes={op.payload_bytes}")
     if op.kind is OpKind.KERNEL and op.link != 0:
         raise CostModelError(f"a kernel has no link cost{where}: got link={op.link}")
     if op.kind is OpKind.COPY and op.device != 0:
@@ -359,6 +368,7 @@ def price(ops: Iterable[Operation], sync_costs: SyncCosts) -> PricedSequence:
         kinds=tuple(op.kind for op in ops),
         layers=tuple(op.layer for op in ops),
         mechanisms=tuple(op.mechanism for op in ops),
+        payload_bytes=tuple(op.payload_bytes for op in ops),
     )
 
 

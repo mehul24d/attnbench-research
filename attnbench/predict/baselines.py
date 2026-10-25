@@ -3,33 +3,45 @@
 priced from different numbers than the recursion it is compared with.
 
   - `sum_as_written`: sum(h) + sum(l) + sum(d), no overlap. As the plan
-    writes it, it leaves out s_0. A synchronisation has l = d = 0 and, once
-    its host cost is s_fixed, h = 0 too, so this Sum charges nothing at all
-    for a synchronisation.
-  - `sum_plus_s0`: the same plus sum(s_0). Not in the plan; built so the
-    effect of that omission can be read, and labelled separately.
+    writes it, it leaves out s_0. A synchronisation has h = l = d = 0, so
+    this Sum charges nothing at all for a synchronisation.
+  - `sum_plus_s0`: the same plus sum(s_0). Not in the plan; labelled
+    separately.
   - `step_form`: the KernelSight-style step form, max(sum h, sum l + sum d)
     per layer plus every s_0 as a serial tail. A step is a maximal run of
     consecutive kernels and copies with the same `layer` label, so a
     chunked prefill that visits layer 3 twice has two steps for it.
     Synchronisations carry no h, l or d, so they never split a step and
     enter only through the tail.
-  - `FittedSum`: a·sum(h) + b·sum(l) + c·sum(d), a, b, c >= 0, fitted on
-    the rows `training` selects (committed or retrospective). No s_0 term,
-    as written.
+  - `fit_fitted_sum`: a·sum(h) + b·sum(l) + c·sum(d), a, b, c >= 0, as
+    written (no s_0). With `add_s0=True` it is the fitted sum + s_0,
+    labelled separately: a, b and c are fitted to what is left after the
+    measured sum(s_0), which is then added back with coefficient 1, never
+    fitted (researcher's decision, 25 Oct 2026).
 
-HDBI (TaxBreak's diagnostic) is not here: the plan names it without
-defining it, and its definition has to come from the paper.
+**The loss** is the plan's headline error metric, absolute relative error
+|predicted - measured| / measured (H1; "Reported for every prediction",
+Section 5.4), summed over the training rows and minimised as a linear
+program (researcher's decision, 25 Oct 2026). Least squares on relative
+error would minimise its square instead, which weights the worst rows more
+than the metric the fit is scored on.
+
+Every fit reports the 2-norm condition number of its design matrix (the
+rows of sum h, sum l, sum d, each divided by the row's measured time, as
+the loss weights them), over the identified terms only. A large condition
+number says the training rows cannot tell the terms apart, so a, b and c
+can trade against each other with little change in the fit.
+
+HDBI is in `hdbi.py`.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal
 
 import numpy as np
-from scipy.optimize import nnls
+from scipy.optimize import linprog
 
 from .recursion import CostModelError, PricedSequence
 from .training import TrainingSet
@@ -41,10 +53,12 @@ LABELS = {
                  "sum d) + sum s_0",
     "fitted_sum": "Fitted sum, as written: a sum h + b sum l + c sum d, "
                   "a, b, c >= 0 (no s_0)",
+    "fitted_sum_plus_s0": "Fitted sum + s_0: a sum h + b sum l + c sum d + "
+                          "sum s_0, s_0 measured and not fitted (not in the plan)",
 }
 
 FITTED_TERMS = ("host", "link", "device")
-Loss = Literal["relative", "absolute"]
+LOSS = "sum of absolute relative errors"
 
 
 def sum_as_written(priced: PricedSequence) -> float:
@@ -90,46 +104,75 @@ class FittedSum:
     a: float
     b: float
     c: float
-    loss: str
+    add_s0: bool
     target: str
     kind: str
     trained_on: tuple[str, ...]
+    statistic: str
     n_rows: int
+    # The summed absolute relative error on the training rows.
+    training_loss: float
+    # 2-norm condition number of the weighted design over the identified
+    # terms; inf when those columns are linearly dependent.
+    condition_number: float
     # Terms that are zero on every training row, so their coefficient says
-    # nothing (nnls returns 0 for them). A pairing whose arms have copies,
-    # predicted from rows with none, gets b = 0 and charges its copies
-    # nothing.
+    # nothing (fixed at 0). A pairing whose arms have copies, predicted from
+    # rows with none, gets b = 0 and charges its copies nothing.
     unidentified: tuple[str, ...]
+
+    @property
+    def label(self) -> str:
+        return "fitted_sum_plus_s0" if self.add_s0 else "fitted_sum"
 
     def predict(self, priced: PricedSequence) -> float:
         H, L, D = fitted_terms(priced)
-        return self.a * H + self.b * L + self.c * D
+        tail = float(sum(priced.sync_cost)) if self.add_s0 else 0.0
+        return self.a * H + self.b * L + self.c * D + tail
 
 
-def fit_fitted_sum(training: TrainingSet, *, loss: Loss) -> FittedSum:
-    """Non-negative least squares for a, b, c.
+def _condition_number(A_weighted: np.ndarray, identified: list[int]) -> float:
+    if not identified:
+        return math.inf
+    sub = A_weighted[:, identified]
+    if np.linalg.matrix_rank(sub) < len(identified):
+        return math.inf
+    return float(np.linalg.cond(sub))
 
-    `loss` has no default: "relative" minimises sum((pred - y) / y)^2,
-    which matches H1's absolute relative error; "absolute" minimises
-    sum(pred - y)^2 in seconds, which the longest contexts dominate. The
-    plan does not say which, so the caller states it.
+
+def fit_fitted_sum(training: TrainingSet, *, add_s0: bool = False) -> FittedSum:
+    """Minimise sum |a H + b L + c D (+ S) - y| / y over a, b, c >= 0.
+
+    As a linear program in (a, b, c, t_1..t_n): minimise sum t_i subject to
+    t_i >= +(x_i . beta - r_i) and t_i >= -(x_i . beta - r_i), where x_i is
+    (H, L, D) / y_i and r_i is (y_i - S_i) / y_i (S_i = 0 without s_0).
     """
-    if loss not in ("relative", "absolute"):
-        raise CostModelError(f"loss must be 'relative' or 'absolute', got {loss!r}")
     if not training.rows:
         raise CostModelError("an empty training set fits nothing")
     A = np.array([fitted_terms(r.cell.priced) for r in training.rows])
     y = np.array([r.measured for r in training.rows], dtype=float)
-    if loss == "relative":
-        A_fit, y_fit = A / y[:, None], np.ones_like(y)
-    else:
-        A_fit, y_fit = A, y
-    coef, _ = nnls(A_fit, y_fit)
-    if not all(math.isfinite(float(x)) for x in coef):
-        raise CostModelError(f"the fit returned non-finite coefficients {coef}")
-    unidentified = tuple(name for name, col in zip(FITTED_TERMS, A.T)
-                         if not np.any(col))
-    return FittedSum(a=float(coef[0]), b=float(coef[1]), c=float(coef[2]),
-                     loss=loss, target=training.target, kind=training.kind,
-                     trained_on=training.trained_on,
-                     n_rows=len(training.rows), unidentified=unidentified)
+    S = np.array([float(sum(r.cell.priced.sync_cost)) if add_s0 else 0.0
+                  for r in training.rows])
+    X = A / y[:, None]
+    rhs = (y - S) / y
+    n = len(y)
+    identified = [j for j in range(3) if np.any(A[:, j])]
+
+    # Variables: beta (3), then t (n).
+    c_obj = np.concatenate([np.zeros(3), np.ones(n)])
+    eye = np.eye(n)
+    A_ub = np.vstack([np.hstack([X, -eye]), np.hstack([-X, -eye])])
+    b_ub = np.concatenate([rhs, -rhs])
+    bounds = [(0, None) if j in identified else (0, 0) for j in range(3)] \
+        + [(0, None)] * n
+    res = linprog(c_obj, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    if res.status != 0:
+        raise CostModelError(f"the fitted-sum program did not solve: {res.message}")
+    beta = res.x[:3]
+    return FittedSum(
+        a=float(beta[0]), b=float(beta[1]), c=float(beta[2]), add_s0=add_s0,
+        target=training.target, kind=training.kind,
+        trained_on=training.trained_on, statistic=training.statistic,
+        n_rows=n, training_loss=float(np.abs(X @ beta - rhs).sum()),
+        condition_number=_condition_number(X, identified),
+        unidentified=tuple(FITTED_TERMS[j] for j in range(3)
+                           if j not in identified))

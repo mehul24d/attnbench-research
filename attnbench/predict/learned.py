@@ -4,19 +4,26 @@ Features are frozen here, in `FEATURES`, in order. Each one is marked with
 where its definition comes from:
 
   - "plan": named in Section 5.4 with no room for another reading;
-  - "proposed": named in Section 5.4, but the plan does not say how it is
-    computed, so the definition here is a proposal awaiting the researcher;
-  - "added": not in the plan; proposed so the learned predictor sees the
-    synchronisation costs the recursion sees.
+  - "decided": settled by the researcher (25 Oct 2026): host_to_device_ratio
+    as sum h / (sum l + sum d), and sum_sync_cost, which the plan does not
+    list, so the learned predictor sees the synchronisation costs the
+    recursion sees;
+  - "proposed": the researcher decided to compute it, and the definition
+    here is a proposal awaiting confirmation: transfer_demand, and the
+    arithmetic intensity of each kernel class in `intensity.KERNEL_CLASSES`.
 
-Two features the plan names cannot be computed from what the operation
-sequence records, so they are in `PENDING_FEATURES` and not in `FEATURES`:
-both need per-operation byte or FLOP counts that T2.3's sequence does not
-carry.
+transfer_demand is the bytes the arm moves between host and device (every
+copy's and synchronisation's `payload_bytes`) divided by the pairing's
+pinned bandwidth: the seconds the link needs for that traffic at its best
+rate. Arithmetic intensities are analytic, from the model's shape and the
+cell (`intensity.py`). Estimator scoring has no class yet
+(`PENDING_FEATURES`).
 
 Hyperparameters and the regression target are fixed at lock (Gate B), so
 `LOCKED_CONFIG` is None until then and every fit takes its `LearnedConfig`
-explicitly. LightGBM is imported only when a model is built.
+explicitly. LightGBM is the optional `learned` extra, pinned to
+`LIGHTGBM_VERSION`; it is imported only when a model is built, and always
+runs on one thread (see `lightgbm_factory`).
 """
 
 from __future__ import annotations
@@ -27,9 +34,14 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Literal, Mapping, Optional, Sequence
 
+from .intensity import KERNEL_CLASSES, arithmetic_intensity
 from .recursion import CostModelError
 from .training import (RETROSPECTIVE, Cell, GroundTruthRow, TrainingSet,
-                       retrospective_training_set)
+                       retrospective_training_set, statistic_of)
+
+LIGHTGBM_VERSION = "4.6.0"
+
+AI_FEATURES = tuple(f"ai_{c}" for c in KERNEL_CLASSES)
 
 FEATURES = (
     # Task features.
@@ -48,8 +60,12 @@ FEATURES = (
     # Bottleneck ratios.
     "host_to_device_ratio",
     "synchronisations_per_operation",
-    # Not in the plan.
+    # Not in the plan; decided 25 Oct 2026.
     "sum_sync_cost",
+    # Transfer demand relative to link bandwidth.
+    "transfer_demand",
+    # Arithmetic intensity per kernel class.
+    *AI_FEATURES,
 )
 
 FEATURE_SOURCE = {
@@ -63,17 +79,17 @@ FEATURE_SOURCE = {
     "sum_device": "plan",
     "pinned_bandwidth": "plan",
     "pageable_bandwidth": "plan",
-    "host_to_device_ratio": "proposed",   # sum h / (sum l + sum d)
+    "host_to_device_ratio": "decided",
     "synchronisations_per_operation": "plan",
-    "sum_sync_cost": "added",
+    "sum_sync_cost": "decided",
+    "transfer_demand": "proposed",
+    **{name: "proposed" for name in AI_FEATURES},
 }
 
 PENDING_FEATURES = {
-    "arithmetic_intensity_per_operation_class":
-        "needs FLOPs and bytes per operation and a list of operation "
-        "classes; neither is defined or recorded",
-    "transfer_demand_relative_to_link_bandwidth":
-        "needs the bytes each copy moves; a copy's cost arrives as seconds",
+    "ai_estimator_scoring":
+        "each estimator's scoring kernels have their own shape (stride, "
+        "block size), so this class needs a formula per estimator",
 }
 
 Target = Literal["seconds", "log_seconds"]
@@ -91,19 +107,42 @@ ModelFactory = Callable[[Mapping[str, Any]], Any]
 
 
 def lightgbm_factory(params: Mapping[str, Any]):
+    """An LGBMRegressor at the pinned version, on one thread.
+
+    One thread because torch and LightGBM each load their own OpenMP
+    runtime on macOS, and a multi-threaded LightGBM fit after `import torch`
+    crashes the process (seen with 4.6.0 and the torch in this repo's
+    environment, 25 Oct 2026). One thread also makes every fit
+    reproducible, and the training sets here are small.
+    """
     try:
         import lightgbm
     except ImportError as e:
         raise CostModelError(
-            "lightgbm is not installed; the learned baseline is LightGBM "
-            "(Section 5.4). Pass model_factory= to fit with something else "
-            "in a test") from e
-    return lightgbm.LGBMRegressor(**dict(params))
+            "lightgbm is not installed; install the optional extra with "
+            "pip install -e '.[learned]'. Pass model_factory= to fit with "
+            "something else in a test") from e
+    if lightgbm.__version__ != LIGHTGBM_VERSION:
+        raise CostModelError(
+            f"lightgbm {lightgbm.__version__} is installed; the learned "
+            f"baseline is pinned to {LIGHTGBM_VERSION}")
+    params = dict(params)
+    for key in ("num_threads", "n_jobs"):
+        if key in params and params[key] != 1:
+            raise CostModelError(
+                f"{key}={params[key]!r}: the learned baseline runs on one "
+                f"thread (see lightgbm_factory)")
+        params.pop(key, None)
+    return lightgbm.LGBMRegressor(num_threads=1, **params)
 
 
 def features(cell: Cell) -> tuple[float, ...]:
     """The values of `FEATURES` for one cell, in order."""
     p = cell.priced
+    if cell.model is None:
+        raise CostModelError(
+            f"{cell.pairing}/{cell.arm} has no model shape; the arithmetic "
+            f"intensities need one")
     n_ops = len(p)
     n_sync = sum(p.is_sync)
     sum_h = float(sum(p.host))
@@ -113,6 +152,11 @@ def features(cell: Cell) -> tuple[float, ...]:
         raise CostModelError(
             f"{cell.pairing}/{cell.arm} at {cell.context_length} has no link "
             f"or device time, so host_to_device_ratio is undefined")
+    pinned = float(cell.hardware.pinned_bandwidth)
+    if not (math.isfinite(pinned) and pinned > 0):
+        raise CostModelError(f"pinned bandwidth must be positive, got {pinned!r}")
+    ai = arithmetic_intensity(cell.model, cell.context_length, cell.batch,
+                              cell.density)
     values = {
         "context_length": float(cell.context_length),
         "density": float(cell.density),
@@ -122,11 +166,13 @@ def features(cell: Cell) -> tuple[float, ...]:
         "sum_host": sum_h,
         "sum_link": sum_l,
         "sum_device": sum_d,
-        "pinned_bandwidth": float(cell.hardware.pinned_bandwidth),
+        "pinned_bandwidth": pinned,
         "pageable_bandwidth": float(cell.hardware.pageable_bandwidth),
         "host_to_device_ratio": sum_h / (sum_l + sum_d),
         "synchronisations_per_operation": n_sync / n_ops,
         "sum_sync_cost": float(sum(p.sync_cost)),
+        "transfer_demand": float(sum(p.payload_bytes)) / pinned,
+        **{f"ai_{c}": ai[c] for c in KERNEL_CLASSES},
     }
     return tuple(values[name] for name in FEATURES)
 
@@ -146,6 +192,7 @@ class LearnedModel:
     target: str
     kind: str
     trained_on: tuple[str, ...]
+    statistic: str
     n_rows: int
 
     def predict(self, cells: Sequence[Cell]) -> list[float]:
@@ -169,6 +216,7 @@ def fit_learned(training: TrainingSet, config: LearnedConfig,
     model.fit(X, y)
     return LearnedModel(model=model, config=config, target=training.target,
                         kind=training.kind, trained_on=training.trained_on,
+                        statistic=training.statistic,
                         n_rows=len(training.rows))
 
 
@@ -182,35 +230,29 @@ class CurvePoint:
 
 
 def learning_curve(rows: Iterable[GroundTruthRow], target: str,
-                   sizes: Iterable[int], config: LearnedConfig,
+                   config: LearnedConfig,
                    model_factory: Optional[ModelFactory] = None
                    ) -> list[CurvePoint]:
-    """Error on `target` when trained on every subset of k other pairings.
-
-    One point per subset, so a size has C(n, k) points over a pool of n
-    pairings. It draws on pairings run after `target`, so every point is
-    retrospective. A size larger than the pool is refused rather than
-    skipped: "1 to 6" needs seven pairings, P7 included.
+    """Error on `target` trained on every subset of k other pairings, for k
+    from 1 to N - 1 with N the pairings available (researcher's decision,
+    25 Oct 2026). One point per subset, C(N - 1, k) at size k. It draws on
+    pairings run after `target`, so every point is retrospective.
     """
     rows = list(rows)
     target_rows = [r for r in rows if r.pairing == target]
     if not target_rows:
         raise CostModelError(f"{target} has no ground-truth rows to score")
+    statistic_of(rows)
     pool = retrospective_training_set(rows, target).trained_on
-    sizes = list(sizes)
-    bad = [k for k in sizes if not (1 <= k <= len(pool))]
-    if bad:
-        raise CostModelError(
-            f"training sizes {bad} are impossible with {len(pool)} other "
-            f"pairing(s) {list(pool)}")
     truth = [r.measured for r in target_rows]
     cells = [r.cell for r in target_rows]
     out = []
-    for k in sizes:
+    for k in range(1, len(pool) + 1):
         for subset in itertools.combinations(pool, k):
             chosen = tuple(r for r in rows if r.pairing in subset)
             ts = TrainingSet(target=target, kind=RETROSPECTIVE,
-                             trained_on=subset, rows=chosen)
+                             trained_on=subset, rows=chosen,
+                             statistic=statistic_of(chosen))
             pred = fit_learned(ts, config, model_factory).predict(cells)
             err = [abs(p - y) / y for p, y in zip(pred, truth)]
             out.append(CurvePoint(size=k, trained_on=subset,

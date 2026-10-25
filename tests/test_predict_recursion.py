@@ -242,8 +242,29 @@ def test_sync_fields_on_a_kernel_or_copy_are_refused():
         run([kernel_op(1, 1, mechanism="item")])
     with pytest.raises(CostModelError, match="synchronisations only"):
         run([copy_op(1, 1, loaded=True)])
-    with pytest.raises(CostModelError, match="synchronisations only"):
-        run([copy_op(1, 1, payload_bytes=8)])
+    with pytest.raises(CostModelError, match="moves no host-device bytes"):
+        run([kernel_op(1, 1, payload_bytes=8)])
+
+
+def test_a_copy_may_state_its_bytes_without_changing_its_price():
+    # The bytes feed transfer demand (T2.10); l stays the priced cost.
+    # K(h1,d2): D1 = 3.  C(h1,l4, 4096 bytes): D2 = max(2, 3) + 4 = 7.
+    ops = [kernel_op(1, 2), copy_op(1, 4, payload_bytes=4096),
+           sync_op("item", payload_bytes=4)]
+    p = price(ops, COSTS)
+    assert p.payload_bytes == (0, 4096, 4)
+    assert recurse(p, None).device_done[:2] == (3, 7)
+    assert recurse(p, None) == recurse(price([kernel_op(1, 2), copy_op(1, 4),
+                                              sync_op("item", payload_bytes=4)],
+                                             COSTS), None)
+
+
+@pytest.mark.parametrize("bad", [-1, 2.5, True])
+def test_payload_bytes_must_be_a_non_negative_int_on_any_operation(bad):
+    with pytest.raises(CostModelError, match="payload_bytes"):
+        run([copy_op(1, 1, payload_bytes=bad)])
+    with pytest.raises(CostModelError, match="payload_bytes"):
+        run([sync_op("item", payload_bytes=bad)])
 
 
 @pytest.mark.parametrize("bad", [-1, float("nan"), float("inf"), True, "1"])

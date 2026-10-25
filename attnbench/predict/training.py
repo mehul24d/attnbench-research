@@ -12,19 +12,29 @@ run later, is the retrospective secondary analysis and is labelled as such.
 
 The rows hold components priced by `recursion.price`, so a fitted baseline
 reads the same h, l, d and s_0 as the recursion.
+
+**Which statistic.** Section 5.3's ground truth reports the median, p90 and
+p99 over repeats and names none of them as the one predicted, so rows carry
+the median unless they say otherwise (researcher's decision, 25 Oct 2026).
+The statistic is a field on every row, and a training set refuses rows that
+mix statistics: a fit across them would average a median with a tail.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Literal
+from typing import Iterable, Literal, Optional
 
+from .intensity import ModelShape
 from .recursion import CostModelError, PricedSequence
 
 COMMITTED = "committed"
 RETROSPECTIVE = "retrospective"
 Kind = Literal["committed", "retrospective"]
+
+STATISTICS = ("median", "p90", "p99")
+GROUND_TRUTH_STATISTIC = "median"
 
 
 @dataclass(frozen=True)
@@ -41,7 +51,8 @@ class Cell:
 
     Everything a predictor may read before the workload is timed: the
     priced operation sequence for this cell (components measured on the
-    target, or transferred under H2) and the pairing's link figures.
+    target, or transferred under H2), the pairing's link figures, and the
+    model's shape for the analytic arithmetic intensities (T2.10).
     """
 
     pairing: str
@@ -51,14 +62,17 @@ class Cell:
     batch: int
     priced: PricedSequence
     hardware: HardwareFeatures
+    model: Optional[ModelShape] = None
 
 
 @dataclass(frozen=True)
 class GroundTruthRow:
-    """A cell and its measured untraced end-to-end prefill, in seconds."""
+    """A cell and its measured untraced end-to-end prefill, in seconds, as
+    the named statistic over repeats."""
 
     cell: Cell
     measured: float
+    statistic: str = GROUND_TRUTH_STATISTIC
 
     @property
     def pairing(self) -> str:
@@ -74,11 +88,16 @@ class TrainingSet:
     kind: Kind
     trained_on: tuple[str, ...]
     rows: tuple[GroundTruthRow, ...]
+    statistic: str = GROUND_TRUTH_STATISTIC
 
 
 def _check_rows(rows: Iterable[GroundTruthRow]) -> list[GroundTruthRow]:
     rows = list(rows)
     for r in rows:
+        if r.statistic not in STATISTICS:
+            raise CostModelError(
+                f"statistic must be one of {STATISTICS}, got {r.statistic!r} "
+                f"for {r.cell.pairing}/{r.cell.arm}")
         m = r.measured
         if (isinstance(m, bool) or not isinstance(m, (int, float))
                 or not math.isfinite(m) or m <= 0):
@@ -86,6 +105,15 @@ def _check_rows(rows: Iterable[GroundTruthRow]) -> list[GroundTruthRow]:
                 f"measured time must be a positive finite number of "
                 f"seconds; got {m!r} for {r.cell.pairing}/{r.cell.arm}")
     return rows
+
+
+def statistic_of(rows: Iterable[GroundTruthRow]) -> str:
+    """The one statistic these rows share; refuses a mix."""
+    found = sorted({r.statistic for r in rows})
+    if len(found) != 1:
+        raise CostModelError(
+            f"rows mix ground-truth statistics {found}; fit on one")
+    return found[0]
 
 
 def committed_training_set(rows: Iterable[GroundTruthRow], target: str,
@@ -116,7 +144,7 @@ def committed_training_set(rows: Iterable[GroundTruthRow], target: str,
             f"committed fit must use every pairing it names")
     chosen = tuple(r for r in rows if r.pairing in banked)
     return TrainingSet(target=target, kind=COMMITTED, trained_on=banked,
-                       rows=chosen)
+                       rows=chosen, statistic=statistic_of(chosen))
 
 
 def retrospective_training_set(rows: Iterable[GroundTruthRow],
@@ -129,4 +157,4 @@ def retrospective_training_set(rows: Iterable[GroundTruthRow],
         raise CostModelError(f"no pairing other than {target} has rows")
     return TrainingSet(target=target, kind=RETROSPECTIVE,
                        trained_on=tuple(sorted({r.pairing for r in chosen})),
-                       rows=chosen)
+                       rows=chosen, statistic=statistic_of(chosen))
