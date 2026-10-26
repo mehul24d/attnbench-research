@@ -2886,6 +2886,19 @@ haystack is exactly what per-layer calibration exists to correct. So the
 phase's negative result is bounded by this deviation, not independent of
 it.
 
+*Update 27 Oct 2026 (researcher's decision; plan Appendix A): the
+`niah_multivalue` collapse above is confounded and is not a finding. Every
+NIAH row at 32768 decodes past the model's 32,768 positions: 50 of 50 per
+task in the scalar phase at every tau (`results/positions_over_limit/`, not
+tracked) and in each of Session B's four files, where about a fifth of the
+`qa_1` rows at 32768 do too (19 to 21 of 100;
+`docs/t4_xattention_calibrated.md`, checked by
+`tests/test_t4_session_b_positions.py`). Dense answers 17 of 50 in that cell
+with every row past the limit, so the collapse cannot be separated from the
+overrun. It is not evidence about the threshold's prompt dependence either.
+Future accuracy runs keep prompt plus generation cap within 32,768 (plan
+Section 5.3 step 7).*
+
 *Update 2026-10-03: a calibrated phase that removes the first deviation is
 pre-registered in `docs/t4_xattention_calibrated.md`. It profiles
 per-(layer, head) thresholds with the method's own profiler, on the

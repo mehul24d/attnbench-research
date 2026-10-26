@@ -483,3 +483,19 @@ each task's generation cap (`attnbench/accuracy/stopping.py`): 42 tokens for
   `ruler_heldout`.
 - `tests/test_t4_session_b_positions.py` derives this table from the banked
   files and checks it against this section.
+
+**The 32768 NIAH cells are confounded by the position limit (27 Oct 2026,
+researcher's decision; plan Appendix A).** Every NIAH row at 32768 (50 of 50
+on `niah_multivalue` and on `niah_multiquery`, in every file) and about a
+fifth of the `qa_1` rows there (19, 20, 20 and 21 of 100) decode past the
+model's 32,768 positions. So the `niah_multivalue` collapse at 32768 (1 or
+0 of 50 against dense's 17) is confounded and is not a finding. The same
+holds for the scalar phase's collapse in that cell: all 50 of its rows there
+at every tau are flagged too (`results/positions_over_limit/`, which is not
+tracked). The "No secondary cell certifies" bullet above stands as a
+statement that the cell did not certify, not as evidence of a collapse. The
+`qa_1` 32768 claim keeps its "[32K-positions caveat]" (`docs/claims.md`).
+Future accuracy runs follow the plan's grid rule (Section 5.3 step 7): a
+cell's prompt plus its task's generation cap must be within 32,768.
+`tests/test_t4_session_b_positions.py` checks these counts against the banked
+files.

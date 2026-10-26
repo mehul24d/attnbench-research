@@ -76,3 +76,46 @@ def test_the_field_is_the_registered_definition_and_decoding_reaches_the_cap():
         for (task, band), x in d.groupby(["task", "band"]):
             assert int(x.n_generated.max()) == CAPS[task], (table, task, band)
             assert int(x.n_generated.max()) <= CAPS[task]
+
+
+def _confound_paragraph() -> str:
+    text = DOC.read_text().split("confounded by the position limit (27 Oct 2026")[1]
+    return " ".join(text.split("\n\n")[0].split())
+
+
+@needs_banked
+def test_the_multivalue_collapse_is_recorded_as_confounded():
+    """Plan Appendix A, 27 Oct 2026: every NIAH row at 32768 and about a fifth
+    of qa_1's are past the limit, so the niah_multivalue collapse is not a
+    finding. The paragraph's numbers are recomputed from the banked rows."""
+    para = _confound_paragraph()
+    assert "is confounded and is not a finding" in para
+    qa = [int(x) for x in re.search(
+        r"\((\d+), (\d+), (\d+) and (\d+) of 100\)", para).groups()]
+    mv = re.search(r"\((\d+) or (\d+) of 50 against dense's (\d+)\)", para)
+    mv_sparse, dense_mv = {int(mv[1]), int(mv[2])}, int(mv[3])
+    got_mv = set()
+    for table, want_qa in zip(TABLES, qa):
+        d = _rows(table)
+        big = d[d.band == 32768]
+        for task in ("niah_multivalue", "niah_multiquery"):
+            x = big[big.task == task]
+            assert len(x) == 50 and (x.positions_over_limit > 0).all(), (table, task)
+        q = big[big.task == "qa_1"]
+        n_over = int((q.positions_over_limit > 0).sum())
+        assert n_over == want_qa and 15 <= n_over <= 25, table   # "about a fifth"
+        correct = int(big[big.task == "niah_multivalue"].correct.sum())
+        if table == "dense":
+            assert correct == dense_mv
+        else:
+            got_mv.add(correct)
+    assert got_mv == mv_sparse
+
+
+def test_limitations_and_plan_record_the_confound_and_the_grid_rule():
+    lim = " ".join((REPO / "docs" / "limitations.md").read_text().split())
+    assert "*Update 27 Oct 2026 (researcher's decision; plan Appendix A): the `niah_multivalue` collapse above is confounded and is not a finding." in lim
+    plan = " ".join((REPO / "docs" / "RESEARCH_PLAN.md").read_text().split())
+    assert ("**Grid rule for accuracy runs:** a cell's prompt plus its task's "
+            "generation cap must be within 32,768 positions") in plan
+    assert "Position limit (researcher's decision)" in plan
