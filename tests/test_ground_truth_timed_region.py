@@ -2,7 +2,7 @@
 
 Every deployable arm's timed region includes its estimator, mask build, copies
 and synchronisations; the oracle may use cached scores and is labelled a
-non-deployable upper bound. These tests run the real wrapper on a toy Llama on
+non-deployable reference (scoring cost outside the timed path). These tests run the real wrapper on a toy Llama on
 CPU, with `NaiveAttention` standing in for the block-sparse kernel.
 
 The acceptance test is `test_scores_computed_before_the_timed_block_are_refused`:
@@ -98,7 +98,8 @@ def test_the_oracle_may_cache_its_scores_and_is_labelled(tmp_path):
                        score_kwargs=dict(task="t", example_id="e", cache_dir=str(tmp_path)))
     (row,) = out["rows"]
     assert not row["deployable"]
-    assert row["arm_label"] == gt.ORACLE_LABEL == "non-deployable upper bound"
+    assert row["arm_label"] == gt.ORACLE_LABEL == ("non-deployable reference "
+                                                  "(scoring cost outside the timed path)")
     assert row["score_calls_timed"] == 0              # scored before the clock
     assert row["mask_builds_timed"] == REPS * LAYERS  # masks are still timed
 
@@ -189,5 +190,6 @@ def test_the_plan_states_the_requirement():
     text = " ".join(PLAN.read_text().split())
     assert ("every deployable arm's timed region includes its estimator, mask build, "
             "copies and synchronisations") in text
-    assert "non-deployable upper bound" in text
+    assert "non-deployable reference (scoring cost outside the timed path)" in text
+    assert "upper bound" not in text.split("## Appendix A")[0]
     assert "attnbench/ground_truth.py" in text

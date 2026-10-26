@@ -3,7 +3,9 @@
 **The requirement** (researcher's decision, plan Appendix A, 26 Oct 2026).
 For every deployable arm, the timed region includes its estimator, its mask
 build, its copies and its synchronisations. The oracle arm may use cached
-scores; its rows are labelled a non-deployable upper bound.
+scores; its rows are labelled a non-deployable reference (scoring cost
+outside the timed path). It is an attention-mass reference, not a quality
+or speed ceiling (plan Appendix A, 4 Oct 2026).
 
 **Why this is a check and not a convention.** Both scripts T2.13 adapts
 compute importance scores before the clock starts: `run_vectorised_endtoend.py`
@@ -53,7 +55,7 @@ ORACLE = "oracle"          # cached scores from a separate dense pass
 
 KINDS = (DENSE, INLINE, IN_BACKEND, ORACLE)
 DEPLOYABLE_KINDS = (INLINE, IN_BACKEND)
-ORACLE_LABEL = "non-deployable upper bound"
+ORACLE_LABEL = "non-deployable reference (scoring cost outside the timed path)"
 DEPLOYABLE_LABEL = "deployable"
 
 # (module, attribute path) of every function that computes importance scores.
