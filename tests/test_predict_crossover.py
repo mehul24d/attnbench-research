@@ -24,7 +24,7 @@ from attnbench.predict.recursion import CostModelError
 from attnbench.predict.scoring import (
     CORRECT, FALSE_PROFITABLE, MISSED_PROFITABLE, NOT_INTERPRETED,
     absolute_relative_error, decision_error, measured_profitable,
-    predicted_profitable, sign_agreement)
+    predicted_profitable, score_cells, sign_agreement)
 
 GRID = (2048, 4096, 8192, 16384, 32768)
 
@@ -289,3 +289,53 @@ def test_sign_agreement():
     assert sign_agreement(3, 2, 3, 2, floor=0) is True
     with pytest.raises(CostModelError, match="resolution floor"):
         sign_agreement(1, 2, 1, 2, floor=float("nan"))
+
+
+# Ties (plan Appendix A, 26 Oct 2026): a predicted tie is "not profitable",
+# dense, in both metrics.
+
+def test_a_predicted_tie_is_dense_in_decision_error():
+    assert not predicted_profitable(2.0, 2.0, True)
+    # Sparse measured faster: the tie missed it.
+    assert decision_error(2.0, 2.0, 1.0, 2.0, admissible=True, floor=0.1) == MISSED_PROFITABLE
+    # Sparse measured slower: the tie chose dense, correctly.
+    assert decision_error(2.0, 2.0, 3.0, 2.0, admissible=True, floor=0.1) == CORRECT
+
+
+def test_a_predicted_tie_is_dense_in_sign_agreement():
+    assert sign_agreement(2.0, 2.0, 1.0, 2.0, floor=0.1) is False   # sparse was faster
+    assert sign_agreement(2.0, 2.0, 3.0, 2.0, floor=0.1) is True    # sparse was slower
+    assert sign_agreement(2.0, 2.0, 2.05, 2.0, floor=0.1) is None   # inside the floor
+
+
+def test_sign_agreement_is_decision_error_without_admissibility():
+    """Break-test for the tie rule: the two metrics must agree on every
+    admissible cell outside the floor, ties included. Under the pre-26 Oct
+    rule (a predicted tie read as sparse not slower) the tie rows fail."""
+    values = (1.0, 2.0, 3.0)
+    for ps in values:
+        for pd in values:
+            for ms in values:
+                for md in values:
+                    sign = sign_agreement(ps, pd, ms, md, floor=0.5)
+                    outcome = decision_error(ps, pd, ms, md, admissible=True, floor=0.5)
+                    if sign is None:
+                        assert outcome == NOT_INTERPRETED
+                    else:
+                        assert sign == (outcome == CORRECT), (ps, pd, ms, md)
+
+
+def test_cells_inside_the_floor_are_not_scored_and_are_listed():
+    got = score_cells([
+        ("a", 1.0, 2.0, 1.0, 2.0, True),    # correct, signs agree
+        ("b", 2.0, 2.0, 1.0, 2.0, True),    # tie missed a profitable cell
+        ("c", 1.0, 2.0, 2.05, 2.0, True),   # inside the floor
+        ("d", 1.0, 2.0, 1.95, 2.0, False),  # inside the floor, inadmissible
+        ("e", 1.0, 2.0, 3.0, 2.0, True),    # predicted profitable, it is not
+    ], floor=0.1)
+    assert got.inside_floor == ("c", "d")
+    assert got.decision == {CORRECT: 1, MISSED_PROFITABLE: 1, FALSE_PROFITABLE: 1}
+    assert (got.sign_agree, got.sign_disagree) == (1, 2)
+    assert got.n_scored == 3
+    with pytest.raises(CostModelError, match="twice"):
+        score_cells([("a", 1, 2, 1, 2, True)] * 2, floor=0.1)
