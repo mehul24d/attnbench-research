@@ -299,6 +299,19 @@ unexplained. The rerun also shows the dense arm's time climbing 1602 → 1648 ms
 across ten reps with clocks locked — the drift a builder-major loop folds into
 the comparison and interleaving cancels.
 
+*Update 27 Oct 2026: a narrower range, quotable only with its qualifier.
+**In the eight cells where the A100's in-model cost exceeds the first L4
+run's 44 ms dense-control drift, the A100's forward pays 34–88% of the
+standalone cost** (33.7% at 16384/0.90 to 88.2% at 32768/0.50: A100 in model
+over A100 standalone, from the table above). The one cell left out is
+8192/0.90, at 15.1 of 113.1 ms (13.4%). This range does not replace
+"13–88%". The 44 ms threshold is a property of the L4 run, not of the A100,
+and the A100's 13.4% is an interleaved measurement that is not in doubt. So
+"34–88%" without "in the cells above the L4 run's 44 ms drift" misstates the
+A100 result. Using the L4 host's standalone cost as the denominator moves no
+share by more than 1.3%. `tests/test_overlap_paired.py` re-derives the range
+from the banked files.*
+
 **One new A100 measurement.** These sessions are the first to run 32768 on the
 A100 with the vectorised builder: block-sparse beats flash by **1.250× /
 1.481× / 1.666×** at 0.50 / 0.75 / 0.90, against 0.28× / 0.48× / 0.84× with

@@ -32,6 +32,7 @@ everywhere but one workstation is decoration (instances #52, #53).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -186,3 +187,47 @@ def test_limitations_states_the_paired_table():
     figures += [f"{x:.3f}" for x in A100_32K_VEC_SPEEDUP]
     missing = sorted({f for f in figures if f not in text})
     assert not missing, f"limitations.md no longer states {missing}"
+
+
+# limitations.md, update of 27 Oct 2026: the A100's share in the cells where
+# its in-model cost clears the first L4 run's drift, quoted only with that
+# qualifier.
+ABOVE_DRIFT_RANGE = (34, 88)
+ABOVE_DRIFT_QUALIFIER = ("In the eight cells where the A100's in-model cost exceeds "
+                         "the first L4 run's 44 ms dense-control drift, the A100's "
+                         "forward pays 34–88% of the standalone cost")
+
+
+def _shares_above_drift(table_or_parquets):
+    return {k: a_in / a_sa for k, (a_sa, a_in) in table_or_parquets.items()
+            if a_in > L4_DRIFT_MS}
+
+
+@needs_banked
+def test_the_above_drift_range_is_derived_from_the_parquets():
+    cells = {(b, s): (standalone(A100_SA, b, s), in_model(A100_IN, b, s))
+             for b in BANDS for s in SPARSITIES}
+    shares = _shares_above_drift(cells)
+    assert set(cells) - set(shares) == {(8192, 0.9)}
+    assert len(shares) == 8
+    lo, hi = min(shares.values()), max(shares.values())
+    assert (round(100 * lo), round(100 * hi)) == ABOVE_DRIFT_RANGE, (lo, hi)
+    assert min(shares, key=shares.get) == (16384, 0.9)
+    assert max(shares, key=shares.get) == (32768, 0.5)
+    # The other host's standalone cost as denominator moves no share by > 1.3%.
+    for b, s in shares:
+        alt = in_model(A100_IN, b, s) / standalone(L4_SA, b, s)
+        assert abs(alt / shares[(b, s)] - 1) < 0.013, (b, s)
+
+
+def test_limitations_states_the_above_drift_range_with_its_qualifier():
+    shares = _shares_above_drift({k: (v[0], v[2]) for k, v in TABLE.items()})
+    lo, hi = min(shares.values()), max(shares.values())
+    assert (round(100 * lo), round(100 * hi)) == ABOVE_DRIFT_RANGE
+    text = " ".join(LIMITATIONS.read_text().split())
+    assert ABOVE_DRIFT_QUALIFIER in text
+    assert f"{100 * lo:.1f}% at 16384/0.90 to {100 * hi:.1f}% at 32768/0.50" in text
+    # Every bare "34–88%" in the doc carries the qualifier in its sentence.
+    for sentence in re.split(r"(?<=[.?!])[*_)`]*\s+", text):
+        if "34–88%" in sentence:
+            assert "44 ms" in sentence, sentence
