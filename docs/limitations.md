@@ -646,6 +646,27 @@ Two substitutions, both forced by dependencies deliberately not added
 Both raise `NotImplementedError` rather than silently substituting, and
 `AccuracyResult.haystack_mode` records which was used on every row.
 
+*Update 26 Oct 2026: this section is stale for tasks added on 2026-10-01
+(audit T4), and is annotated rather than rewritten. Running every generator
+on 26 Oct 2026 (`ruler.generate_examples`, 2048 tokens, with the pinned data
+fetched by `scripts/fetch_ruler_data.py`) gives eight tasks:
+`niah_single` (noise haystack, uuid keys), `niah_multikey` (needle-shaped
+decoys, uuid keys, 4 keys where RULER's preset has 1), `niah_multikey_1`,
+`niah_multivalue` and `niah_multiquery` (RULER's essay haystack and word
+keys, as in its presets), `vt` (noise haystack), and `qa_1` and `qa_2`
+(SQuAD 2.0 and HotpotQA documents). The two substitutions above therefore
+hold for `niah_single`, `niah_multikey` and `vt` only. Essay haystacks and
+word needles exist, with the corpus and word lists injected by the caller
+(`attnbench/accuracy/ruler_data.py`); the vendored generators still raise
+`NotImplementedError` when called without them. QA's generator is adapted,
+not vendored as shipped: data passed in, a local RNG, and the question
+chosen by index so every band asks the same questions
+(`attnbench/_vendor/ruler/VENDORED.md`). CWE and FWE are still not
+implemented, and an unknown task name is refused. Session B and the T4
+pilots ran `qa_1` on documents and `niah_multivalue` and `niah_multiquery`
+on essays; the T4 dense probe (`results/t4_dense_probe_20261001/`) also ran
+`niah_multikey_1` (essay) and `qa_2` (documents), 10 rows each.*
+
 ## Common-words-extraction (CWE) is not implemented
 
 The task needs a large natural-vocabulary word list. RULER and Sparse
