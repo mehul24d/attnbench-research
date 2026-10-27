@@ -38,6 +38,14 @@ five candidates without it.
 
 The section below is the original 2026-09-02 record; its first two bullets
 are superseded by the table above.
+*Note added 26 Oct 2026: so is its fourth bullet, on QA (`qa.py` above),
+and the "Consequence for comparability" paragraph holds only for
+`niah_single`, `niah_multikey` and `vt`. Running every generator on 26 Oct
+2026 gives eight tasks: those three on noise or needle haystacks with uuid
+or number needles, `niah_multikey_1`, `niah_multivalue` and
+`niah_multiquery` on RULER's essay haystack with word keys, and `qa_1` and
+`qa_2` on SQuAD 2.0 and HotpotQA documents. CWE and FWE are not
+implemented. The original text is kept below unedited.*
 
 ## What's deliberately not implemented (and why)
 
