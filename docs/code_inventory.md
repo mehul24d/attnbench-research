@@ -108,3 +108,9 @@ Branch `frontier-prereg-2026-10-03` was merged and pruned (plan T0.16, Appendix 
 | `attnbench/accuracy/frontier_splits.py`, `analysis/splits_and_budgets.py` | Keep | Split firewall and gate G12 (T1.1 A1, A8; K3); matched row budgets for the per-head selector (K1, K5) |
 | `attnbench/kernels.py`, `accuracy/pins.py`, `accuracy/prompting.py` | Keep | `bsa_prefill` with per-head masks (K1); Llama pins and prompts (K4) |
 | `analysis/frontier_prereg.py`, `scripts/frontier_budget_gate.py`, `scripts/frontier_gate.sh` | Archived to `docs/archive/` | The superseded pre-registration as code and its budget gate |
+
+## Arrived with T2.12, T2.13 and T2.16 (27 Oct 2026)
+
+| Path | Decision | Reason / plan task |
+|---|---|---|
+| `attnbench/ground_truth.py`, `attnbench/clock_sampling.py` | New | The ground-truth harness (T2.13): timed region, dense control and rerun rule, clock and throttle sampling, traced-against-untraced overhead, one compiled setting per process; adapts what `run_vectorised_endtoend.py` and `phase_timing.py` did, with the estimator inside the timed region |

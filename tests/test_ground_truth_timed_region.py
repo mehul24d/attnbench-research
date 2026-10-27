@@ -28,6 +28,7 @@ from attnbench import ground_truth as gt  # noqa: E402
 from attnbench.accuracy.model import SwappableAttentionModel  # noqa: E402
 from attnbench.backends.impls import NaiveAttention  # noqa: E402
 from attnbench.backends.xattention import XAttentionBackend  # noqa: E402
+from attnbench.clock_sampling import BlockSampler, ClockSample, SW_THERMAL_SLOWDOWN  # noqa: E402
 from attnbench.config import AttnConfig  # noqa: E402
 
 SEQ, BLOCK, LAYERS, REPS = 64, 8, 3, 3
@@ -70,6 +71,21 @@ def _oracle():
     return gt.Arm("oracle", gt.ORACLE, NaiveAttention(), _cfg())
 
 
+class _QuietCard:
+    """A card that never throttles. These tests are about the timed region;
+    the controls have their own file (test_ground_truth_controls.py), so the
+    floor here is too large to flag a round on a real CPU clock."""
+    observes_transients = True
+
+    def read(self):
+        return ClockSample(1000, 1000, 0, {"power": 0, "thermal": 0})
+
+
+def _controls():
+    return gt.Controls(resolution_floor_ms=1e9, max_rerun_rounds=0,
+                       sampler=BlockSampler(_QuietCard(), flag_bits=SW_THERMAL_SLOWDOWN))
+
+
 class _Syncs:
     def __init__(self):
         self.n = 0
@@ -81,7 +97,7 @@ class _Syncs:
 def test_a_deployable_inline_arm_times_its_estimator():
     syncs = _Syncs()
     out = gt.time_arms(_wrapped(), _ids(), [_inline(), _dense()], reps=REPS,
-                       synchronize=syncs)
+                       controls=_controls(), synchronize=syncs)
     inline, dense = out["rows"]
     assert inline["deployable"] and inline["arm_label"] == gt.DEPLOYABLE_LABEL
     # One scoring call and one mask build per layer, in every timed block.
@@ -89,14 +105,16 @@ def test_a_deployable_inline_arm_times_its_estimator():
     assert inline["mask_builds_timed"] == REPS * LAYERS
     assert dense["score_calls_timed"] == dense["mask_builds_timed"] == 0
     assert len(inline["prefill_ms_samples"]) == REPS
-    assert syncs.n == 2 * 2 * REPS   # both sides of every timed block
+    # Both sides of every timed block, and of every clocked warm-up forward.
+    assert syncs.n == 2 * 2 * REPS + 2 * 2 * 3
     assert out["first_timed_block_started_at"] is not None
 
 
 def test_the_oracle_may_cache_its_scores_and_is_labelled(tmp_path):
-    out = gt.time_arms(_wrapped(), _ids(), [_oracle()], reps=REPS,
+    out = gt.time_arms(_wrapped(), _ids(), [_oracle(), _dense()], reps=REPS,
+                       controls=_controls(),
                        score_kwargs=dict(task="t", example_id="e", cache_dir=str(tmp_path)))
-    (row,) = out["rows"]
+    row = out["rows"][0]
     assert not row["deployable"]
     assert row["arm_label"] == gt.ORACLE_LABEL == ("non-deployable reference "
                                                   "(scoring cost outside the timed path)")
@@ -112,14 +130,16 @@ def test_scores_computed_before_the_timed_block_are_refused(monkeypatch, tmp_pat
             input_ids, task="t", example_id="e", cache_dir=str(tmp_path))}
     monkeypatch.setattr(gt, "untimed_setup", score_first)
     with pytest.raises(gt.TimedRegionError, match="outside the timed block"):
-        gt.time_arms(_wrapped(), _ids(), [_inline()], reps=REPS)
+        gt.time_arms(_wrapped(), _ids(), [_inline(), _dense()], reps=REPS,
+                     controls=_controls())
 
 
 def test_a_probe_that_sees_no_scorer_is_refused(monkeypatch):
     """Break-test: blind the probe and the inline arm must fail, not pass."""
     monkeypatch.setattr(gt, "SCORE_TARGETS", ())
     with pytest.raises(gt.TimedRegionError, match="computed no scores"):
-        gt.time_arms(_wrapped(), _ids(), [_inline()], reps=REPS)
+        gt.time_arms(_wrapped(), _ids(), [_inline(), _dense()], reps=REPS,
+                     controls=_controls())
 
 
 def test_an_estimator_inside_the_backend_is_seen(monkeypatch):
@@ -134,7 +154,8 @@ def test_an_estimator_inside_the_backend_is_seen(monkeypatch):
 
     arm = gt.Arm("xa", gt.IN_BACKEND, _XAStandIn(), _cfg(mask="causal", sparsity=None,
                                                           block_size=None))
-    (row,) = gt.time_arms(_wrapped(), _ids(), [arm], reps=REPS)["rows"]
+    row = gt.time_arms(_wrapped(), _ids(), [arm, _dense()], reps=REPS,
+                       controls=_controls())["rows"][0]
     assert row["deployable"] and row["score_calls_timed"] == REPS * LAYERS
 
 

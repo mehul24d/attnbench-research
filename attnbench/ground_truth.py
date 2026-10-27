@@ -31,10 +31,49 @@ synchronises the device on entry and again before the clock stops, so queued
 GPU work is charged to the arm that queued it. The closing synchronise is
 logged and checked.
 
-**Scope.** This is the timed region, arm interleaving, the timestamp of the
-first timed block (Appendix A, 25 Oct 2026) and the median, p90 and p99. It
-is not yet the dense control's drift check, traced-against-untraced overhead,
-or GPU clock and throttle sampling. Those are still owed under T2.13.
+**The dense control and the rerun rule** (plan Section 5.6). Every session
+has exactly one dense arm, the control. Its forwards are clocked in the
+warm-up block (the first is dropped as the cold call) and their median is its
+warm-up time. In every round its time is compared with that: a difference
+beyond the resolution floor, in either direction, flags the round. A round is
+also flagged when the clock sampler (`clock_sampling`) flags any arm's block
+as throttled. A flagged round is excluded from every statistic and rerun, up
+to `Controls.max_rerun_rounds` extra rounds; if fewer than `reps` clean rounds
+result, the result says `complete: False` and nothing hides it. The floor is
+fixed at lock from the measured run-to-run spread (Appendix A, 25 Oct 2026),
+so it has no default here.
+
+**The first timed block's timestamp** (Appendix A, 25 Oct 2026) is the wall
+clock read immediately before the first ground-truth block's opening
+synchronise, so it is no later than the block's own clock start. It is not a
+warm-up's: `predict.commit.ground_truth_start` says the caller passes the
+first timed block, not a warm-up, and the dense control's clocked warm-up
+forwards are warm-ups. A rerun round never moves it.
+
+**Traced against untraced** (Section 5.3 step 8). Ground truth is untraced.
+`time_with_profiler_overhead` runs the whole untraced measurement first and
+only then the traced one, in that order and in one process, because a
+profiler that has been started once can leave its hooks and its flush work
+behind, and an untraced block measured after it would no longer be untraced.
+The tracer is entered outside each timed block, so its start and stop are not
+charged: what the traced time includes is the forwards running while the
+trace is being recorded. Traced rows are labelled and are never ground truth.
+
+**One compiled variant per process** (Section 5.5, Compiled variants).
+Dynamo caches compiled code per Python code object and does not guard on its
+own settings, so a second setting compiled in the same process silently
+reuses the first (measured on PyTorch 2.14.1, 25 Oct 2026; see
+`backends/compiled.py` on the T2.21 branch). An arm names its
+`compile_setting`, the harness checks that against the backend, and
+`time_arms` refuses a second distinct setting in the call or in the process.
+This is the harness's own check, so it holds whether or not the backend
+enforces the same rule.
+
+**Scope.** The timed region, arm interleaving, the dense control and the
+rerun rule, clock and throttle sampling, the traced-against-untraced
+overhead, the one-compiled-variant rule, the first block's timestamp, and the
+median, p90 and p99. Not here: running it on a GPU (the L4 dry run, T2.27);
+a clock sampler's own cost on a host-bound arm, which that dry run measures.
 """
 
 from __future__ import annotations
@@ -48,11 +87,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .clock_sampling import BlockClock, BlockSampler, reason_names
+
 DENSE = "dense"
 INLINE = "inline"          # estimator called per layer inside run_measured
 IN_BACKEND = "in_backend"  # estimator inside the backend's own forward (XAttention)
 ORACLE = "oracle"          # cached scores from a separate dense pass
-
 KINDS = (DENSE, INLINE, IN_BACKEND, ORACLE)
 DEPLOYABLE_KINDS = (INLINE, IN_BACKEND)
 ORACLE_LABEL = "non-deployable reference (scoring cost outside the timed path)"
@@ -78,6 +118,11 @@ class TimedRegionError(RuntimeError):
     """A measurement whose timed region does not contain what it must."""
 
 
+class CompileSettingError(TimedRegionError):
+    """Two compiled settings in one process, or a declaration the backend
+    does not bear out."""
+
+
 @dataclass(frozen=True)
 class Arm:
     name: str
@@ -85,6 +130,7 @@ class Arm:
     backend: object
     cfg: object
     inline_estimator: Optional[str] = None
+    compile_setting: Optional[str] = None   # None: eager
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -176,11 +222,20 @@ class ScoringProbe:
 
 @contextlib.contextmanager
 def timed_block(log: EventLog, rep: int, *, synchronize: Callable[[], None],
-                clock: Callable[[], float], out: list):
+                clock: Callable[[], float], out: list,
+                sampler: Optional[BlockSampler] = None,
+                clock_out: Optional[list] = None):
     """Synchronise, start the clock, run the body, synchronise, stop the
     clock. Appends the elapsed seconds to `out`. The closing synchronise is
-    inside the block and is logged as such."""
+    inside the block and is logged as such. With a `sampler`, its opening
+    read comes after the opening synchronise and before the clock starts, and
+    its closing read after the clock has stopped, so neither is timed; the
+    block's `BlockClock` is appended to `clock_out`."""
+    if sampler is not None and clock_out is None:
+        raise ValueError("a sampler needs clock_out to hand its record to")
     synchronize()
+    if sampler is not None:
+        sampler.begin()
     log.open_rep = rep
     t0 = clock()
     try:
@@ -188,6 +243,13 @@ def timed_block(log: EventLog, rep: int, *, synchronize: Callable[[], None],
         synchronize()
         log.record("sync", "closing synchronise")
         out.append(clock() - t0)
+    except BaseException:
+        if sampler is not None:
+            sampler.abort()
+        raise
+    else:
+        if sampler is not None:
+            clock_out.append(sampler.end())
     finally:
         log.open_rep = None
 
@@ -242,23 +304,105 @@ def quantile(samples: list, q: float) -> float:
     return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
 
 
-def time_arms(wrapped, input_ids, arms, *, reps: int, warmup: int = 1,
+@dataclass(frozen=True)
+class Controls:
+    """What the session decided before timing anything. No defaults: each is
+    a lock-time decision (plan Section 5.6) and is recorded on the result."""
+    resolution_floor_ms: float   # dense drift beyond this flags a round
+    max_rerun_rounds: int        # extra rounds allowed to replace flagged ones
+    sampler: BlockSampler        # clocks and throttle reasons, every block
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.resolution_floor_ms) and self.resolution_floor_ms > 0):
+            raise ValueError("resolution_floor_ms must be a positive number")
+        if self.max_rerun_rounds < 0:
+            raise ValueError("max_rerun_rounds must be >= 0")
+
+
+_PROCESS_COMPILE_SETTING: Optional[str] = None
+
+
+def reset_process_compile_setting() -> None:
+    """Forget the process's compiled setting. Only valid after Dynamo's caches
+    were cleared (`torch._dynamo.reset()`); in tests otherwise."""
+    global _PROCESS_COMPILE_SETTING
+    _PROCESS_COMPILE_SETTING = None
+
+
+def _claim_compile_setting(arms) -> None:
+    for a in arms:
+        actual = getattr(a.backend, "setting", None)
+        if actual != a.compile_setting:
+            raise CompileSettingError(
+                f"{a.name} declares compile_setting={a.compile_setting!r} but its "
+                f"backend carries setting={actual!r}")
+    settings = sorted({a.compile_setting for a in arms if a.compile_setting is not None})
+    if len(settings) > 1:
+        raise CompileSettingError(
+            f"arms carry the compiled settings {settings} in one process; Dynamo "
+            f"would reuse the first setting's compiled code for the rest. Run "
+            f"each setting in its own process")
+    global _PROCESS_COMPILE_SETTING
+    if settings:
+        if _PROCESS_COMPILE_SETTING not in (None, settings[0]):
+            raise CompileSettingError(
+                f"this process already timed the {_PROCESS_COMPILE_SETTING!r} "
+                f"compiled setting; {settings[0]!r} would reuse its compiled code")
+        _PROCESS_COMPILE_SETTING = settings[0]
+
+
+def _tracing(tracer):
+    return contextlib.nullcontext() if tracer is None else tracer()
+
+
+def _clocked(fn, synchronize, clock) -> float:
+    synchronize()
+    t0 = clock()
+    fn()
+    synchronize()
+    return clock() - t0
+
+
+def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
+              warmup: int = 3,
               synchronize: Callable[[], None] = lambda: None,
               clock: Callable[[], float] = time.perf_counter,
               wall_clock: Callable[[], float] = time.time,
-              score_kwargs: Optional[dict] = None) -> dict:
-    """Time `arms` interleaved per rep, the order rotating each rep. Returns
-    {"first_timed_block_started_at": unix seconds, "rows": [...]}, one row
-    per arm, after checking every arm's timed region."""
+              score_kwargs: Optional[dict] = None,
+              tracer: Optional[Callable] = None) -> dict:
+    """Time `arms` interleaved per round, the order rotating each round, until
+    `reps` clean rounds exist or the rerun budget is spent. Every arm's timed
+    region is checked, the dense control's drift and the clock sampler decide
+    which rounds are flagged, and statistics are over unflagged rounds only.
+
+    Returns {"first_timed_block_started_at": unix seconds, "complete": bool,
+    "clean_rounds": int, "dense_control": {...}, "rounds": [...],
+    "rows": [one per arm]}. With a `tracer` (a context-manager factory) every
+    forward, warm-up included, runs inside it and the result is labelled
+    traced; use `time_with_profiler_overhead` for that.
+    """
     if reps < 1:
         raise ValueError("reps must be >= 1")
+    if warmup < 2:
+        raise ValueError("warmup must be >= 2: the first clocked forward is the "
+                         "cold call and is dropped from the dense control's "
+                         "warm-up time")
     names = [a.name for a in arms]
     if len(set(names)) != len(names):
         raise ValueError(f"arm names must be unique: {names}")
+    dense = [a for a in arms if a.kind == DENSE]
+    if len(dense) != 1:
+        raise TimedRegionError(
+            f"a ground-truth run has exactly one dense control, got {len(dense)} "
+            f"({[a.name for a in dense]}); without it a drifting machine looks "
+            f"like a result (plan Section 5.6)")
+    control = dense[0]
+    _claim_compile_setting(arms)
+    sampler, floor = controls.sampler, controls.resolution_floor_ms
+
     logs = {a.name: EventLog() for a in arms}
-    samples = {a.name: [] for a in arms}
     kwargs = {}
-    first_started = None
+    dense_warmup_ms = []
     for a in arms:
         log = logs[a.name]
         with ScoringProbe(log):
@@ -266,31 +410,130 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, warmup: int = 1,
             kwargs[a.name] = untimed_setup(wrapped, input_ids, a, score_kwargs=score_kwargs)
             log.phase = WARMUP
             for _ in range(warmup):
-                wrapped.run_measured(input_ids, a.backend, cfg=a.cfg, logits_to_keep=1,
-                                     **kwargs[a.name])
-    for r in range(reps):
+                with _tracing(tracer):
+                    took = _clocked(
+                        lambda: wrapped.run_measured(input_ids, a.backend, cfg=a.cfg,
+                                                     logits_to_keep=1, **kwargs[a.name]),
+                        synchronize, clock)
+                if a is control:
+                    dense_warmup_ms.append(took * 1e3)
+    reference_ms = statistics.median(dense_warmup_ms[1:])
+
+    samples = {a.name: [] for a in arms}       # (round, ms), every round
+    block_clock = {a.name: {} for a in arms}   # round -> BlockClock
+    rounds = []
+    first_started = None
+    clean = r = 0
+    while clean < reps and r < reps + controls.max_rerun_rounds:
         k = r % len(arms)
-        for a in arms[k:] + arms[:k]:
+        order = arms[k:] + arms[:k]
+        round_ms, clocks = {}, {}
+        for a in order:
             if first_started is None:
                 first_started = wall_clock()
-            with ScoringProbe(logs[a.name]):
+            took, got = [], []
+            with ScoringProbe(logs[a.name]), _tracing(tracer):
                 with timed_block(logs[a.name], r, synchronize=synchronize,
-                                 clock=clock, out=samples[a.name]):
+                                 clock=clock, out=took, sampler=sampler,
+                                 clock_out=got):
                     wrapped.run_measured(input_ids, a.backend, cfg=a.cfg,
                                          logits_to_keep=1, **kwargs[a.name])
+            round_ms[a.name] = took[0] * 1e3
+            clocks[a.name] = got[0]
+            samples[a.name].append((r, round_ms[a.name]))
+            block_clock[a.name][r] = got[0]
+        drift = round_ms[control.name] - reference_ms
+        reasons = []
+        if abs(drift) > floor:
+            reasons.append(f"dense_drift_{drift:+.3f}ms_vs_{floor}ms_floor")
+        for a in arms:
+            if clocks[a.name].flagged:
+                reasons.append(f"{a.name}:throttled:" + "+".join(clocks[a.name].flag_reasons))
+        rounds.append({"round": r, "order": [a.name for a in order],
+                       "dense_ms": round_ms[control.name], "dense_drift_ms": drift,
+                       "flagged": bool(reasons), "flag_reasons": reasons,
+                       "blocks": {n: c.to_dict() for n, c in clocks.items()}})
+        clean += not reasons
+        r += 1
+
+    for a in arms:
+        check_timed_region(logs[a.name], a, list(range(r)))
+    flagged_rounds = {x["round"] for x in rounds if x["flagged"]}
     rows = []
     for a in arms:
-        check_timed_region(logs[a.name], a, list(range(reps)))
-        ms = [s * 1e3 for s in samples[a.name]]
+        ms = [v for rd, v in samples[a.name] if rd not in flagged_rounds]
         ev = [e for e in logs[a.name].events if e.inside]
+        seen = 0
+        for c in block_clock[a.name].values():
+            seen |= c.throttle_bits_seen
         rows.append({
             "arm": a.name, "arm_kind": a.kind, "deployable": a.deployable,
-            "arm_label": a.label, "reps": reps,
+            "arm_label": a.label, "compile_setting": a.compile_setting,
+            "traced": tracer is not None,
+            "reps": reps, "rounds_run": r, "clean_rounds": len(ms),
             "prefill_ms_samples": ms,
-            "prefill_ms_median": statistics.median(ms),
-            "prefill_ms_p90": quantile(ms, 0.90),
-            "prefill_ms_p99": quantile(ms, 0.99),
+            "prefill_ms_median": statistics.median(ms) if ms else None,
+            "prefill_ms_p90": quantile(ms, 0.90) if ms else None,
+            "prefill_ms_p99": quantile(ms, 0.99) if ms else None,
+            "flagged_ms_samples": [v for rd, v in samples[a.name] if rd in flagged_rounds],
+            "throttle_reasons_seen": reason_names(seen),
+            "sm_mhz_min": min(c.sm_mhz_min for c in block_clock[a.name].values()),
+            "sm_mhz_max": max(c.sm_mhz_max for c in block_clock[a.name].values()),
             "score_calls_timed": sum(e.kind == "score" for e in ev),
             "mask_builds_timed": sum(e.kind == "mask_build" for e in ev),
         })
-    return {"first_timed_block_started_at": first_started, "rows": rows}
+    return {
+        "first_timed_block_started_at": first_started,
+        "complete": clean == reps, "clean_rounds": clean, "rounds_run": r,
+        "traced": tracer is not None,
+        "dense_control": {"arm": control.name, "warmup_ms": dense_warmup_ms,
+                          "reference_ms": reference_ms,
+                          "resolution_floor_ms": floor},
+        "controls": {"max_rerun_rounds": controls.max_rerun_rounds,
+                     "flag_bits": reason_names(sampler.flag_bits),
+                     "sampler_interval_s": sampler.interval_s},
+        "rounds": rounds, "rows": rows,
+    }
+
+
+def profiler_overhead(untraced: dict, traced: dict, *, resolution_floor_ms: float) -> list:
+    """Per arm, the traced median minus the untraced median, from two results
+    of `time_arms`. Refuses a pair that is not one untraced and one traced
+    result over the same arms. An overhead inside the resolution floor is
+    reported as such and is not to be interpreted; an arm with no clean round
+    on either side has none."""
+    if untraced.get("traced") or not traced.get("traced"):
+        raise TimedRegionError("profiler_overhead takes the untraced result first "
+                               "and the traced result second")
+    u = {r["arm"]: r for r in untraced["rows"]}
+    t = {r["arm"]: r for r in traced["rows"]}
+    if set(u) != set(t):
+        raise TimedRegionError(f"untraced arms {sorted(u)} differ from traced arms {sorted(t)}")
+    out = []
+    for name in u:
+        mu, mt = u[name]["prefill_ms_median"], t[name]["prefill_ms_median"]
+        row = {"arm": name, "untraced_median_ms": mu, "traced_median_ms": mt,
+               "untraced_clean_rounds": u[name]["clean_rounds"],
+               "traced_clean_rounds": t[name]["clean_rounds"]}
+        if mu is None or mt is None:
+            row.update(overhead_ms=None, overhead_ratio=None, inside_resolution_floor=None)
+        else:
+            row.update(overhead_ms=mt - mu, overhead_ratio=mt / mu,
+                       inside_resolution_floor=abs(mt - mu) <= resolution_floor_ms)
+        out.append(row)
+    return out
+
+
+def time_with_profiler_overhead(wrapped, input_ids, arms, *, reps: int,
+                                controls: Controls, tracer: Callable, **kw) -> dict:
+    """The untraced measurement, then the traced one, then the per-arm
+    overhead. The order is fixed here so no caller can trace first (module
+    docstring). The timestamp to hand to the late-prediction check is the
+    untraced result's."""
+    untraced = time_arms(wrapped, input_ids, arms, reps=reps, controls=controls, **kw)
+    traced = time_arms(wrapped, input_ids, arms, reps=reps, controls=controls,
+                       tracer=tracer, **kw)
+    return {"untraced": untraced, "traced": traced,
+            "first_timed_block_started_at": untraced["first_timed_block_started_at"],
+            "overhead": profiler_overhead(
+                untraced, traced, resolution_floor_ms=controls.resolution_floor_ms)}
