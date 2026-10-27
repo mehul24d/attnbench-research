@@ -254,6 +254,26 @@ class Harness:
         return PreparedArm(spec, length, prompt_id, run_prefill, wrapped._layers, be,
                            extra={"cfg": cfg, "input_ids": ids, "wrapped": wrapped})
 
+    def timing_arms(self, names: Sequence[str], length: int, *, index: int = 0):
+        """What `ground_truth.time_arms` takes, for these arms on one prompt:
+        (wrapped model, input_ids, prompt_id, [ground_truth.Arm], score_kwargs).
+        One model wrapper serves every arm, as `time_arms` needs; the dense
+        arm's preparation builds it and must come first in `names` (it is the
+        control). Call `unwrap()` when done."""
+        from .. import ground_truth as gt
+        if not names or names[0] != "dense":
+            raise ValueError("the dense control comes first")
+        first = self.prepare("dense", length, index=index)
+        arms = []
+        for n in names:
+            spec = ARMS[n]
+            kind = (gt.DENSE if n == "dense" else gt.ORACLE if spec.scores_before
+                    else gt.INLINE if spec.inline_estimator else gt.IN_BACKEND)
+            arms.append(gt.Arm(n, kind, first.backend if n == "dense" else self._backend(spec),
+                               self._cfg(spec, length), inline_estimator=spec.inline_estimator))
+        score_kwargs = dict(task=TASK, example_id=first.prompt_id, cache_dir=self.score_cache_dir)
+        return first.extra["wrapped"], first.extra["input_ids"], first.prompt_id, arms, score_kwargs
+
     def code_path(self, arm: PreparedArm) -> CodePath:
         """The arm's code path, read after one run of it, so the XAttention
         arms name the path the estimator actually took (Triton or torch)."""

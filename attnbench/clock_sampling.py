@@ -330,6 +330,22 @@ def nvml_reader_factory(index: int = 0) -> "NvmlReader":
     return NvmlReader(index)
 
 
+class _ScriptedReader:
+    observes_transients = False
+
+    def __init__(self, sm_mhz, mem_mhz, bits):
+        self.sample = ClockSample(sm_mhz=sm_mhz, mem_mhz=mem_mhz, throttle_bits=bits)
+
+    def read(self) -> ClockSample:
+        return self.sample
+
+
+def scripted_reader_factory(sm_mhz: int = 2040, mem_mhz: int = 6250, bits: int = 0):
+    """A reader that always reports the same state: the stand-in for NVML in a
+    CPU dry run. It validates nothing about a card."""
+    return _ScriptedReader(sm_mhz, mem_mhz, bits)
+
+
 _FIELDS = 4          # monotonic seconds, sm MHz, mem MHz, throttle bits
 _ERR_BYTES = 512
 _LOCK_TIMEOUT_S = 2.0
@@ -473,6 +489,21 @@ class ProcessSampler:
             self._lock.release()
         return [ClockSample(sm_mhz=int(r[1]), mem_mhz=int(r[2]), throttle_bits=int(r[3]))
                 for r in rows]
+
+    def timing_stats(self, last: int = 200) -> dict:
+        """How the sampler has been keeping its interval: the samples taken,
+        the achieved rate and the longest gap, over the latest `last`."""
+        self._acquire()
+        try:
+            n = self._count.value
+            lo = max(0, n - min(last, self.capacity))
+            t = [self._ring[(i % self.capacity) * _FIELDS] for i in range(lo, n)]
+        finally:
+            self._lock.release()
+        gaps = [b - a for a, b in zip(t, t[1:])]
+        return {"samples_total": n, "samples_measured": len(t),
+                "achieved_hz": (len(gaps) / (t[-1] - t[0])) if gaps and t[-1] > t[0] else None,
+                "max_gap_s": max(gaps) if gaps else None, "interval_s": self.interval_s}
 
     # -- the BlockSampler interface -----------------------------------------
     def begin(self) -> None:

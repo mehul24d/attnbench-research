@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import statistics
 import time
 from dataclasses import asdict, dataclass, field
@@ -298,7 +299,9 @@ def _canonical(d: dict) -> bytes:
 
 
 def _filename(choice: Choice) -> str:
-    return f"dense_choice_{choice.cell.key}.json"
+    # A card is named as the driver names it ("NVIDIA L4"); a space in the file
+    # name breaks the sha256sum-format sidecar, which is split on whitespace.
+    return f"dense_choice_{re.sub(r'[^A-Za-z0-9._-]+', '_', choice.cell.key)}.json"
 
 
 def write_choice(choice: Choice, directory) -> Path:

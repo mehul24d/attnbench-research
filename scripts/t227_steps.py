@@ -842,12 +842,12 @@ if tuple(STEP_FUNCS) != STEPS:     # not `assert`: T2.17 keeps the harness free 
     raise RuntimeError("STEP_FUNCS and STEPS disagree")
 
 
-def run_step(name: str, args) -> int:
+def run_step(name: str, args, funcs: dict | None = None) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     started = time.time()
     try:
-        status, reason, findings = PASSED, "", STEP_FUNCS[name](args)
+        status, reason, findings = PASSED, "", (funcs or STEP_FUNCS)[name](args)
     except Skip as e:
         status, reason, findings = SKIPPED, str(e), {}
     except StepFailed as e:

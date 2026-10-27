@@ -49,7 +49,9 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -73,8 +75,28 @@ if tuple(CHECKLIST) != STEPS:      # not `assert`: T2.17 keeps the harness free 
     raise RuntimeError("CHECKLIST and t227_steps.STEPS disagree")
 
 
-def step_dir(session: Path, step: str) -> Path:
-    return session / f"{STEPS.index(step) + 1:02d}_{step}"
+@dataclass(frozen=True)
+class Shakedown:
+    """What distinguishes one shakedown from another: its steps, the script
+    that runs one, the phase prefix its GCS sync uses and its session name.
+    `scripts/t228_steps.py` is the second (Shakedown 2); the runner below is
+    shared."""
+    steps: tuple
+    checklist: dict
+    script: str
+    phase_prefix: str
+    session_prefix: str
+    parser: Callable
+    title: str
+
+
+T227 = Shakedown(STEPS, CHECKLIST, "t227_steps.py", "t227", "t227_shakedown",
+                 lambda: __import__("t227_steps").parser(),
+                 "The L4 shakedown (T2.27)")
+
+
+def step_dir(session: Path, step: str, config: Shakedown = T227) -> Path:
+    return session / f"{config.steps.index(step) + 1:02d}_{step}"
 
 
 def _now() -> str:
@@ -98,12 +120,13 @@ def last_status(manifest: dict) -> dict[str, str]:
 
 
 def step_command(step: str, out: Path, extra: list[str], *, dry_run: bool,
-                 sync: bool) -> list[str]:
-    cmd = [sys.executable, str(ROOT / "scripts" / "t227_steps.py"), step, "--out", str(out),
+                 sync: bool, config: Shakedown = T227) -> list[str]:
+    cmd = [sys.executable, str(ROOT / "scripts" / config.script), step, "--out", str(out),
            *extra, *(["--dry-run"] if dry_run else [])]
     if sync:
-        n = STEPS.index(step) + 1
-        cmd = ["bash", str(ROOT / "scripts" / "run_phase.sh"), f"t227_{n:02d}_{step}", "--", *cmd]
+        n = config.steps.index(step) + 1
+        cmd = ["bash", str(ROOT / "scripts" / "run_phase.sh"),
+               f"{config.phase_prefix}_{n:02d}_{step}", "--", *cmd]
     return cmd
 
 
@@ -129,7 +152,8 @@ def tree_clean() -> bool:
 
 
 def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, sync: bool,
-                runner=run_logged) -> int:
+                runner=run_logged, config: Shakedown = T227) -> int:
+    STEPS, CHECKLIST = config.steps, config.checklist     # this session's, not T2.27's
     session.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(session)
     manifest.setdefault("dry_run", dry_run)
@@ -145,7 +169,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
               f"{unpassed}", file=sys.stderr)
         return 2
     for step in STEPS[first:]:
-        d = step_dir(session, step)
+        d = step_dir(session, step, config)
         if d.exists():
             kept = d.with_name(f"{d.name}.{done.get(step, 'previous')}.{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
             shutil.move(str(d), str(kept))
@@ -153,7 +177,8 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         n = STEPS.index(step) + 1
         print(f"\n===== {n:02d}/{len(STEPS)} {step}: {CHECKLIST[step]} =====", flush=True)
         t0, started = time.time(), _now()
-        rc = runner(step_command(step, d, extra, dry_run=dry_run, sync=sync), d / "step.log")
+        rc = runner(step_command(step, d, extra, dry_run=dry_run, sync=sync, config=config),
+                    d / "step.log")
         res_path = d / "result.json"
         if res_path.exists():
             res = json.loads(res_path.read_text())
@@ -172,18 +197,19 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         print(f"----- {step}: {status.upper()}{': ' + reason if reason else ''}", flush=True)
         if status == "failed":
             print(f"\nSTOPPED at step {n} ({step}). Log: {d / 'step.log'}\n"
-                  f"After the fix: python3 scripts/t227_shakedown.py --from {step} "
-                  f"--session {session}", flush=True)
+                  f"After the fix: python3 scripts/{config.script.replace('_steps', '_shakedown')}"
+                  f" --from {step} --session {session}", flush=True)
             return 1
     statuses = last_status(manifest)
-    print("\nT2.27 shakedown: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS))
+    print(f"\n{config.title}: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS))
     return 0
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+def main(argv=None, config: Shakedown = T227) -> int:
+    STEPS, CHECKLIST = config.steps, config.checklist
+    ap = argparse.ArgumentParser(description=config.title)
     ap.add_argument("--session", default=None,
-                    help="session directory (default results/t227_shakedown_<UTC time>)")
+                    help=f"session directory (default results/{config.session_prefix}_<UTC time>)")
     ap.add_argument("--from", dest="start", default=STEPS[0], choices=STEPS)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-sync", action="store_true",
@@ -195,20 +221,20 @@ def main(argv=None) -> int:
             print(f"{i:2d} {s:13s} {CHECKLIST[s]}")
         return 0
     # Step options are validated here, before anything runs.
-    from t227_steps import parser as step_parser
-    step_parser().parse_args([STEPS[0], "--out", "x", *extra])
+    config.parser().parse_args([STEPS[0], "--out", "x", *extra])
 
     if args.session is None:
         if args.start != STEPS[0]:
             print("REFUSING: --from needs the --session it continues", file=sys.stderr)
             return 2
-        args.session = str(ROOT / "results" / f"t227_shakedown_{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}")
+        args.session = str(ROOT / "results" / f"{config.session_prefix}_{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}")
     if not args.dry_run and not tree_clean():
         print("REFUSING: the tree is dirty, so no row could be banked with git_dirty = False",
               file=sys.stderr)
         return 2
     return run_session(Path(args.session), start=args.start, extra=extra,
-                       dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync))
+                       dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync),
+                       config=config)
 
 
 if __name__ == "__main__":
