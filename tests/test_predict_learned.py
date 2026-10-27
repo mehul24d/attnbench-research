@@ -56,8 +56,9 @@ class MeanModel:
 def cell(pairing="P1", ops=None, L=4, density=0.5, batch=1, arm="xattn",
          model=TOY):
     ops = ops or [kernel_op(1, 1)]
-    return Cell(pairing=pairing, arm=arm, context_length=L, density=density,
-                batch=batch, priced=price(ops, COSTS), hardware=HW, model=model)
+    return Cell(pairing=pairing, model_name="m-small", code_path="cp-a", arm=arm,
+                context_length=L, density=density, batch=batch,
+                priced=price(ops, COSTS), hardware=HW, model=model)
 
 
 def row(pairing, measured, statistic="median", **kw):

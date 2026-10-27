@@ -1,8 +1,11 @@
 """The prediction commit of plan Sections 5.1, 5.3 step 6 and 5.4 (T2.11, K9).
 
-One prediction file per pairing holds, for every cell (arm, context length,
-density, batch), the recursion's prediction and its baselines' committed
-predictions together:
+One prediction file per pairing holds, for every cell, the recursion's
+prediction and its baselines' committed predictions together. A cell is keyed
+by model, code path, arm, density, context length and batch (plan Section
+5.3 step 6; Appendix A, 25 Oct 2026), so two cells that differ only in the
+model or in the code path (XAttention's Triton and PyTorch paths on one card,
+for instance) are two cells and never one:
 
   - computed here, from the cell's priced components, so no predictor can
     be priced from different numbers: the recursion at the measured Q, the
@@ -67,9 +70,12 @@ from .learned import LIGHTGBM_VERSION, LearnedModel
 from . import learned as _learned
 from .naive import Nearest, nearest_pairing, with_constant_host_cost
 from .recursion import CostModelError, OpKind, PricedSequence, recurse
-from .training import COMMITTED, GROUND_TRUTH_STATISTIC, STATISTICS, Cell
+from .training import (COMMITTED, GROUND_TRUTH_STATISTIC, STATISTICS, Cell,
+                       CellKey, make_cell_key)
 
-SCHEMA = "attnbench.prediction/1"
+# /2: the cell key gained its model and code path, and the file carries each
+# code path's definition. A /1 file has neither and is refused.
+SCHEMA = "attnbench.prediction/2"
 
 # Computed here from every cell's components.
 COMPUTED = ("recursion", "sum", "sum_plus_s0", "step_form")
@@ -168,9 +174,58 @@ def ground_truth_start(timestamps: Iterable) -> datetime:
 # Building the record
 # --------------------------------------------------------------------------
 
-def cell_key(arm: str, context_length: int, density: float,
-             batch: int) -> tuple:
-    return (arm, int(context_length), float(density), int(batch))
+def cell_key(model: str, code_path: str, arm: str, density: float,
+             context_length: int, batch: int) -> CellKey:
+    """The key of a cell, in the plan's order (`training.CellKey`)."""
+    try:
+        return make_cell_key(model, code_path, arm, density, context_length,
+                             batch)
+    except ValueError as e:
+        raise PredictionCommitError(str(e)) from e
+
+
+# What a code path is (plan Section 5.1): the GPU architecture, the library
+# versions and which implementation runs, and `sys.flags.optimize` (K8). The
+# arm is not part of it; the key has the arm already.
+_CODE_PATH_FIELDS = ("gpu", "implementation", "libraries", "python_optimize")
+
+
+def code_path_definition(code_path) -> dict:
+    """The definition of an `op_sequence.CodePath`, as the file records it."""
+    return {"gpu": code_path.gpu, "implementation": code_path.implementation,
+            "libraries": [list(x) for x in code_path.libraries],
+            "python_optimize": code_path.python_optimize}
+
+
+def _check_definition(defn: Mapping, where: str) -> dict:
+    if not isinstance(defn, Mapping) or set(defn) != set(_CODE_PATH_FIELDS):
+        raise PredictionCommitError(
+            f"{where}: a code path is defined by {list(_CODE_PATH_FIELDS)}, "
+            f"got {sorted(defn) if isinstance(defn, Mapping) else defn!r}")
+    gpu, impl, libs, opt = (defn[f] for f in _CODE_PATH_FIELDS)
+    if not (isinstance(gpu, str) and gpu and isinstance(impl, str) and impl):
+        raise PredictionCommitError(
+            f"{where}: gpu and implementation are non-empty strings")
+    if isinstance(opt, bool) or not isinstance(opt, int) or opt not in (0, 1, 2):
+        raise PredictionCommitError(
+            f"{where}: python_optimize is 0, 1 or 2, got {opt!r}")
+    try:
+        libs = sorted([str(n), str(v)] for n, v in libs)
+    except (TypeError, ValueError) as e:
+        raise PredictionCommitError(
+            f"{where}: libraries are (name, version) pairs") from e
+    return {"gpu": gpu, "implementation": impl, "libraries": libs,
+            "python_optimize": opt}
+
+
+def code_path_label(defn: Mapping) -> str:
+    """A label that names a code path and cannot be reused for another: the
+    GPU, the implementation, the optimise flag, and a hash of the whole
+    definition (so a library version changes the label)."""
+    d = _check_definition(defn, "code path")
+    digest = hashlib.sha256(json.dumps(d, sort_keys=True,
+                                       separators=(",", ":")).encode()).hexdigest()
+    return f"{d['gpu']}|{d['implementation']}|O{d['python_optimize']}|{digest[:12]}"
 
 
 def _components(p: PricedSequence) -> dict:
@@ -296,6 +351,7 @@ def _learned_record(lm: LearnedModel, pairing: str, banked: tuple[str, ...],
 
 
 def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
+                 code_paths: Mapping[str, Mapping],
                  banked: Iterable[str],
                  fitted_sum: Optional[FittedSum],
                  learned: Optional[LearnedModel],
@@ -306,6 +362,13 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
                  intervals: Optional[Mapping[tuple, Mapping[str, Interval]]] = None,
                  statistic: str = GROUND_TRUTH_STATISTIC) -> dict:
     """Check everything and compute every prediction for one pairing.
+
+    `code_paths` defines every code path the cells name, by label
+    (`code_path_definition` and `code_path_label` build them from an
+    `op_sequence.CodePath`). A label with no definition, a definition whose
+    label is not the one its content gives, and a definition no cell uses
+    are all refused: the label is what the key carries, and it must say the
+    same thing to every reader.
 
     `banked` is the pairings whose ground truth was banked before this
     prediction is written (the same list `training.committed_training_set`
@@ -344,11 +407,12 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
         if c.pairing != pairing:
             raise PredictionCommitError(
                 f"a cell of {c.pairing} in {pairing}'s prediction file")
-        k = cell_key(c.arm, c.context_length, c.density, c.batch)
+        k = cell_key(*c.key)
         if k in seen:
             raise PredictionCommitError(f"cell {k} appears twice")
         seen.add(k)
         _check_closing_sync(c.priced, f"cell {k}")
+    code_paths = _check_code_paths(code_paths, {k.code_path for k in seen})
 
     training: dict[str, Any] = {}
     not_fitted: dict[str, str] = {}
@@ -409,7 +473,7 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
     learned_values = learned.predict(cells) if banked else None
     out_cells = []
     for i, c in enumerate(cells):
-        k = cell_key(c.arm, c.context_length, c.density, c.batch)
+        k = c.key
         preds = computed_predictions(c.priced, queue_depth)
         if banked:
             preds["fitted_sum"] = fitted_sum.predict(c.priced)
@@ -435,8 +499,9 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
         for name, iv in intervals.get(k, {}).items():
             cell_intervals[name] = _check_interval(iv, name, preds, k)
         out_cells.append({
-            "arm": c.arm, "context_length": int(c.context_length),
-            "density": float(c.density), "batch": int(c.batch),
+            "model": k.model, "code_path": k.code_path, "arm": k.arm,
+            "context_length": k.context_length, "density": k.density,
+            "batch": k.batch,
             "components": _components(c.priced),
             "predictions": preds,
             "not_predicted": not_predicted,
@@ -451,8 +516,36 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
         "training": training, "not_fitted": not_fitted,
         "constant_host_cost": constant_host_cost,
         "nearest_pairing": near_record,
+        "code_paths": code_paths,
         "cells": out_cells,
     }
+
+
+def _check_code_paths(code_paths: Mapping[str, Mapping],
+                      used: set) -> dict:
+    """The definitions, checked against the labels the cells use."""
+    if not isinstance(code_paths, Mapping):
+        raise PredictionCommitError(
+            f"code_paths maps a label to a definition, got {code_paths!r}")
+    out = {}
+    for label, defn in code_paths.items():
+        d = _check_definition(defn, f"code path {label!r}")
+        want = code_path_label(d)
+        if label != want:
+            raise PredictionCommitError(
+                f"code path {label!r} is defined as {d}, whose label is "
+                f"{want!r}; a label says one thing")
+        out[label] = d
+    missing = sorted(used - set(out))
+    if missing:
+        raise PredictionCommitError(
+            f"cells name code path(s) {missing} that code_paths does not "
+            f"define")
+    unused = sorted(set(out) - used)
+    if unused:
+        raise PredictionCommitError(
+            f"code_paths defines {unused}, which no cell uses")
+    return out
 
 
 def _constant_host_prediction(p: PricedSequence, constant: float,
@@ -669,6 +762,8 @@ def sync_prediction(committed: CommittedFile, store: Store,
 
 @dataclass(frozen=True)
 class CommittedCell:
+    model: str
+    code_path: str
     arm: str
     context_length: int
     density: float
@@ -677,8 +772,9 @@ class CommittedCell:
     predictions: Mapping[str, float]
 
     @property
-    def key(self) -> tuple:
-        return cell_key(self.arm, self.context_length, self.density, self.batch)
+    def key(self) -> CellKey:
+        return cell_key(self.model, self.code_path, self.arm, self.density,
+                        self.context_length, self.batch)
 
 
 @dataclass(frozen=True)
@@ -695,10 +791,11 @@ class CommittedPrediction:
     not_fitted: Mapping[str, str]
     cells: tuple[CommittedCell, ...]
     constant_host_cost: Optional[float] = None
+    code_paths: Mapping[str, Mapping] = dataclasses.field(default_factory=dict)
 
-    def cell(self, arm: str, context_length: int, density: float,
-             batch: int) -> CommittedCell:
-        k = cell_key(arm, context_length, density, batch)
+    def cell(self, model: str, code_path: str, arm: str, density: float,
+             context_length: int, batch: int) -> CommittedCell:
+        k = cell_key(model, code_path, arm, density, context_length, batch)
         for c in self.cells:
             if c.key == k:
                 return c
@@ -777,10 +874,27 @@ def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPredictio
                 f"{filename}: the nearest pairing is recorded as {near}, but "
                 f"with {list(banked)} banked it is {want_near}")
 
+    try:
+        code_paths = _check_code_paths(
+            rec["code_paths"], {c["code_path"] for c in rec["cells"]})
+    except KeyError as e:
+        raise PredictionCommitError(
+            f"{filename}: a cell or the file lacks {e}; the key carries a "
+            f"model and a code path") from e
     cells = []
+    seen_keys = set()
     for c in rec["cells"]:
         p = priced_from_components(c["components"])
-        k = cell_key(c["arm"], c["context_length"], c["density"], c["batch"])
+        try:
+            k = cell_key(c["model"], c["code_path"], c["arm"], c["density"],
+                         c["context_length"], c["batch"])
+        except KeyError as e:
+            raise PredictionCommitError(
+                f"{filename}: a cell lacks {e}; a cell is keyed by model, "
+                f"code path, arm, density, context length and batch") from e
+        if k in seen_keys:
+            raise PredictionCommitError(f"{filename}: cell {k} appears twice")
+        seen_keys.add(k)
         _check_closing_sync(p, f"{filename} cell {k}")
         want = computed_predictions(p, Q)
         want.update({n: fs.predict(p) for n, fs in fitted.items()})
@@ -810,15 +924,16 @@ def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPredictio
                     f"{filename} cell {k}: the committed {n} prediction "
                     f"{got[n]!r} does not follow from the committed "
                     f"components ({v!r})")
-        cells.append(CommittedCell(arm=c["arm"], context_length=k[1],
-                                   density=k[2], batch=k[3], priced=p,
+        cells.append(CommittedCell(model=k.model, code_path=k.code_path,
+                                   arm=k.arm, context_length=k.context_length,
+                                   density=k.density, batch=k.batch, priced=p,
                                    predictions=dict(got)))
     return CommittedPrediction(
         pairing=pairing, statistic=rec["statistic"], queue_depth=Q,
         banked_before=banked, written_at=_from_iso(rec["written_at"]),
         synced_at=None, sha256=digest, code=code, training=training,
         not_fitted=rec["not_fitted"], cells=tuple(cells),
-        constant_host_cost=constant)
+        constant_host_cost=constant, code_paths=code_paths)
 
 
 def load_committed(store: Store, remote: str, *,

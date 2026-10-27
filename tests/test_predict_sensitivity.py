@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import pytest
 
 from attnbench.predict.commit import (
-    CodeStamp, PredictionCommitError, build_record, verify_bytes,
+    CodeStamp, PredictionCommitError, build_record, cell_key, verify_bytes,
     write_prediction)
 from attnbench.predict.recursion import (
     close_prefill, copy_op, kernel_op, price, sync_op)
@@ -25,7 +25,12 @@ from attnbench.predict.sensitivity import (
     decision_sensitivity, queue_sensitivity)
 from attnbench.predict.training import Cell, HardwareFeatures
 
+from test_predict_commit import CODE_PATHS, CP, CP2, CP2_DEF, CP_DEF, MODEL
 from test_predict_recursion import COSTS, oracle
+
+def KEY(arm, density, L, batch=1):
+    return cell_key(MODEL, CP, arm, density, L, batch)
+
 
 T0 = datetime(2026, 11, 2, 3, 0, tzinfo=timezone.utc)
 CLEAN = CodeStamp("a" * 40, False)
@@ -44,12 +49,15 @@ SYNC_SEQ = close_prefill([kernel_op(1, 10, layer=0),
                           kernel_op(1, 1, layer=0)])
 
 
-def cell(ops, arm, L=4096, density=0.5, batch=1):
-    return Cell(pairing="P1", arm=arm, context_length=L, density=density,
-                batch=batch, priced=price(ops, COSTS), hardware=HW)
+def cell(ops, arm, L=4096, density=0.5, batch=1, code_path=CP,
+         model_name=MODEL):
+    return Cell(pairing="P1", model_name=model_name, code_path=code_path,
+                arm=arm, context_length=L, density=density, batch=batch,
+                priced=price(ops, COSTS), hardware=HW)
 
 
 def committed(tmp_path, cells, Q=4, **kw):
+    kw.setdefault("code_paths", CODE_PATHS)
     rec = build_record("P1", cells, Q, banked=[], fitted_sum=None, learned=None,
                        code=CLEAN, written_at=T0, **kw)
     f = write_prediction(rec, tmp_path)
@@ -137,8 +145,8 @@ def test_decision_sensitivity_names_the_depths_that_flip_the_sign(tmp_path):
                               cell(DENSE_SEQ, "dense", density=1.0),
                               cell(QSEQ, "xattn", L=8192)])
     (d,) = decision_sensitivity(queue_sensitivity(cp), dense_arm="dense")
-    assert d.sparse_key == ("xattn", 4096, 0.5, 1)
-    assert d.dense_key == ("dense", 4096, 1.0, 1)
+    assert d.sparse_key == KEY("xattn", 0.5, 4096)
+    assert d.dense_key == KEY("dense", 1.0, 4096)
     assert d.committed_sparse_faster and d.flips_at == (0.25, 0.5)
     with pytest.raises(PredictionCommitError, match="no 'base' cells"):
         decision_sensitivity(queue_sensitivity(cp), dense_arm="base")
@@ -159,7 +167,7 @@ def test_a_cell_without_a_dense_partner_at_its_batch_is_left_out(tmp_path):
                               cell(QSEQ, "xattn", batch=4),
                               cell(DENSE_SEQ, "dense", density=1.0)])
     ds = decision_sensitivity(queue_sensitivity(cp), dense_arm="dense")
-    assert [d.sparse_key for d in ds] == [("xattn", 4096, 0.5, 1)]
+    assert [d.sparse_key for d in ds] == [KEY("xattn", 0.5, 4096)]
 
 
 def test_the_dense_partner_is_the_one_at_the_same_batch(tmp_path):
@@ -167,7 +175,44 @@ def test_the_dense_partner_is_the_one_at_the_same_batch(tmp_path):
                               cell(DENSE_SEQ, "dense", density=1.0),
                               cell(DENSE_SEQ, "dense", density=1.0, batch=4)])
     (d,) = decision_sensitivity(queue_sensitivity(cp), dense_arm="dense")
-    assert d.dense_key == ("dense", 4096, 1.0, 1)
+    assert d.dense_key == KEY("dense", 1.0, 4096)
+
+
+BOTH_PATHS = {CP: CP_DEF, CP2: CP2_DEF}
+
+
+def test_the_dense_partner_may_be_on_another_code_path(tmp_path):
+    # The code path names the implementation, so the dense arm's is never a
+    # sparse arm's; the partner is found by model, length and batch.
+    cp = committed(tmp_path, [cell(QSEQ, "xattn"),
+                              cell(DENSE_SEQ, "dense", density=1.0, code_path=CP2)],
+                   code_paths=BOTH_PATHS)
+    (d,) = decision_sensitivity(queue_sensitivity(cp), dense_arm="dense")
+    assert d.dense_key.code_path == CP2 and d.sparse_key.code_path == CP
+
+
+def test_the_dense_partner_is_the_one_of_the_same_model(tmp_path):
+    cp = committed(tmp_path, [cell(QSEQ, "xattn"),
+                              cell(DENSE_SEQ, "dense", density=1.0),
+                              cell(QSEQ, "xattn", model_name="m-large"),
+                              cell(QSEQ, "dense", density=1.0, model_name="m-large")])
+    by = {d.sparse_key.model: d for d in
+          decision_sensitivity(queue_sensitivity(cp), dense_arm="dense")}
+    assert by["m-small"].dense_key.model == "m-small"
+    assert by["m-large"].dense_key.model == "m-large"
+    # m-small: xattn 15 vs dense 16 (sparse faster). m-large: xattn 15 vs
+    # dense 15 (a tie, which is not faster).
+    assert by["m-small"].committed_sparse_faster
+    assert not by["m-large"].committed_sparse_faster
+
+
+def test_two_dense_cells_at_one_model_length_and_batch_are_refused(tmp_path):
+    cp = committed(tmp_path, [cell(QSEQ, "xattn"),
+                              cell(DENSE_SEQ, "dense", density=1.0),
+                              cell(DENSE_SEQ, "dense", density=1.0, code_path=CP2)],
+                   code_paths=BOTH_PATHS)
+    with pytest.raises(PredictionCommitError, match="needs one dense cell"):
+        decision_sensitivity(queue_sensitivity(cp), dense_arm="dense")
 
 
 def test_decision_sensitivity_refuses_mixed_predictors(tmp_path):
@@ -183,9 +228,9 @@ def test_decision_sensitivity_refuses_mixed_predictors(tmp_path):
 # Residuals
 # --------------------------------------------------------------------------
 
-XK = ("xattn", 4096, 0.5, 1)
-DK = ("dense", 4096, 1.0, 1)
-MK = ("meanpool", 4096, 0.5, 1)
+XK = KEY("xattn", 0.5, 4096)
+DK = KEY("dense", 1.0, 4096)
+MK = KEY("meanpool", 0.5, 4096)
 
 
 def three_arms(tmp_path):
@@ -229,7 +274,7 @@ def test_every_committed_predictor_by_default(tmp_path):
 
 def test_unmeasured_and_unpredicted_cells_are_named(tmp_path):
     cp = three_arms(tmp_path)
-    extra = ("xattn", 8192, 0.5, 1)
+    extra = KEY("xattn", 0.5, 8192)
     rs = residuals(cp, {XK: 20.0, extra: 30.0}, statistic="median",
                    dense_arms={"dense"}, relative_floor=0.1)
     assert rs.unpredicted == (extra,) and rs.unmeasured == (DK, MK)
@@ -296,3 +341,15 @@ def test_summarise_needs_known_fields():
     with pytest.raises(PredictionCommitError, match="group by"):
         summarise([], [])
     assert summarise([], ["arm"]) == []
+
+
+def test_a_measurement_under_another_model_or_code_path_is_not_this_cells(tmp_path):
+    cp = three_arms(tmp_path)
+    other_model = cell_key("m-large", CP, "xattn", 0.5, 4096, 1)
+    other_path = cell_key(MODEL, CP2, "xattn", 0.5, 4096, 1)
+    rs = residuals(cp, {XK: 20.0, other_model: 20.0, other_path: 20.0},
+                   statistic="median", dense_arms={"dense"}, relative_floor=0.1)
+    assert {(r.model, r.code_path, r.arm) for r in rs.residuals} == \
+        {(MODEL, CP, "xattn")}
+    assert set(rs.unpredicted) == {other_model, other_path}
+    assert set(rs.unmeasured) == {DK, MK}
