@@ -91,6 +91,35 @@ def queue_sensitivity(cp: CommittedPrediction,
     return out
 
 
+def partner_of(key) -> tuple:
+    """What a sparse cell is compared with its dense cell on: model, context
+    length and batch. The code path is not matched: it names the
+    implementation, which differs between the dense arm and a sparse one by
+    construction (a sparse arm on two code paths has one dense partner)."""
+    return (key.model, key.context_length, key.batch)
+
+
+def dense_partners(keys, dense_arm: str) -> dict:
+    """{partner_of(key): the dense cell's key} over `keys`. Two dense cells at
+    one model, length and batch (two dense code paths) have no rule for
+    which is meant, so that is refused; no dense cell at all is refused too.
+    """
+    dense: dict = {}
+    for k in keys:
+        if k.arm != dense_arm:
+            continue
+        w = partner_of(k)
+        if w in dense:
+            raise PredictionCommitError(
+                f"two {dense_arm!r} cells at {w} (code paths "
+                f"{dense[w].code_path!r} and {k.code_path!r}); the comparison "
+                f"needs one dense cell")
+        dense[w] = k
+    if not dense:
+        raise PredictionCommitError(f"no {dense_arm!r} cells to compare against")
+    return dense
+
+
 @dataclass(frozen=True)
 class DecisionSensitivity:
     sparse_key: tuple
@@ -108,31 +137,12 @@ def decision_sensitivity(results: list[CellQueueSensitivity], *,
     by_key = {r.key: r for r in results}
     if len({r.predictor for r in results}) > 1:
         raise PredictionCommitError("mix of predictors; pass one at a time")
-    # A sparse cell is compared with the dense cell of its own model, length
-    # and batch. The code path is not matched: it names the implementation,
-    # which differs between the dense arm and a sparse one by construction.
-    # Two dense cells at one (model, length, batch) (two dense code paths)
-    # have no rule for which is meant, so that is refused.
-    def where(k):
-        return (k.model, k.context_length, k.batch)
-
-    dense: dict = {}
-    for k, r in by_key.items():
-        if k.arm != dense_arm:
-            continue
-        if where(k) in dense:
-            raise PredictionCommitError(
-                f"two {dense_arm!r} cells at {where(k)} (code paths "
-                f"{dense[where(k)].key.code_path!r} and {k.code_path!r}); the "
-                f"comparison needs one dense cell")
-        dense[where(k)] = r
-    if not dense:
-        raise PredictionCommitError(f"no {dense_arm!r} cells to compare against")
+    dense = {w: by_key[k] for w, k in dense_partners(by_key, dense_arm).items()}
     out = []
     for k, r in by_key.items():
         if k.arm == dense_arm:
             continue
-        d = dense.get(where(k))
+        d = dense.get(partner_of(k))
         if d is None:
             continue
         base = r.committed < d.committed
