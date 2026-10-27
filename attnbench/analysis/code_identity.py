@@ -69,6 +69,17 @@ BACKEND_SOURCES: dict[str, tuple[str, str]] = {
     "xformers":     ("attnbench/backends/xformers_backend.py", "XFormersAttention"),
     "xattention":   ("attnbench/backends/xattention.py", "XAttentionBackend"),
     "block_masked_sdpa": ("attnbench/backends/block_masked.py", "BlockMaskedSDPA"),
+    "xattention_noassert": ("attnbench/backends/xattention_noassert.py",
+                            "XAttentionNoAssertBackend"),
+}
+
+# Backends that inherit part of their timed region: row-name -> base classes,
+# nearest first. A base's timed-region method counts wherever the backend does
+# not define its own, so a change to an inherited `forward` is drift for the
+# subclass too. (Added 2026-10-25 with the asserts-removed XAttention arm,
+# which inherits `forward` and overrides only `estimate`.)
+INHERITED_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
+    "xattention_noassert": (("attnbench/backends/xattention.py", "XAttentionBackend"),),
 }
 
 # Methods that execute per timed call, or that build what the timed call
@@ -137,6 +148,14 @@ def _class_for(backend: str) -> tuple[str, str]:
     )
 
 
+def _timed_methods(src: str, class_name: str) -> Optional[dict[str, ast.FunctionDef]]:
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return {f.name: f for f in node.body
+                    if isinstance(f, ast.FunctionDef) and f.name in TIMED_REGION_METHODS}
+    return None
+
+
 def fingerprint(repo: Path | str, commit: str, backend: str) -> BackendFingerprint:
     """AST fingerprint of one backend's timed region at one commit."""
     repo = Path(repo)
@@ -148,17 +167,19 @@ def fingerprint(repo: Path | str, commit: str, backend: str) -> BackendFingerpri
             f"provenance points at a tree this backend was not in.")
 
     parts: dict[str, str] = {}
-    tree = ast.parse(src)
-    found_class = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == class_name:
-            found_class = True
-            for f in node.body:
-                if isinstance(f, ast.FunctionDef) and f.name in TIMED_REGION_METHODS:
-                    parts[f"{class_name}.{f.name}"] = _ast_digest(f)
-    if not found_class:
-        raise CodeIdentityError(
-            f"class {class_name} not found in {path} at commit {commit[:12]}")
+    defined: set[str] = set()
+    for p, cls in ((path, class_name), *INHERITED_SOURCES.get(backend, ())):
+        cls_src = src if p == path else _git_show(repo, commit, p)
+        if cls_src is None:
+            raise CodeIdentityError(f"{p} missing at {commit[:12]}")
+        methods = _timed_methods(cls_src, cls)
+        if methods is None:
+            raise CodeIdentityError(
+                f"class {cls} not found in {p} at commit {commit[:12]}")
+        for name, node in methods.items():
+            if name not in defined:
+                parts[f"{cls}.{name}"] = _ast_digest(node)
+                defined.add(name)
 
     for shared_path, func_name in SHARED_FUNCTIONS:
         shared_src = _git_show(repo, commit, shared_path)
