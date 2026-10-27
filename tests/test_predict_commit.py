@@ -1074,3 +1074,144 @@ def test_a_schema_1_file_is_refused(tmp_path):
     _tamper(store, r, lambda rec: rec.update(schema="attnbench.prediction/1"))
     with pytest.raises(PredictionCommitError, match="schema"):
         load(store, r, T0 + timedelta(seconds=1))
+
+
+# --------------------------------------------------------------------------
+# The dispatcher's choice is in the hashed file (T2.22; plan Section 5.9, K9)
+# --------------------------------------------------------------------------
+# P1's two cells: xattn (recursion 16) and dense (8). The dispatcher reads the
+# recursion, so sparse is slower and it picks dense. The kernel times make the
+# sparse kernel twice as fast as the dense one, so the kernel-speedup rule and
+# the fixed best-kernel configuration pick xattn: the loss the dispatcher is
+# meant to avoid, committed before anything is timed.
+
+from attnbench.predict import dispatcher as DSP
+
+XCFG = DSP.Config("xattn", 0.5)
+
+
+def dspec(**kw):
+    args = dict(predictor="recursion", floor_s=1.0, dense_arms=("dense",),
+                admissible={"uncorrected": (XCFG,), "holm": ()},
+                kernel_times={XKEY: 2.0, DKEY: 4.0}, use_code_path={})
+    args.update(kw)
+    return DSP.DispatchSpec(**args)
+
+
+def choice(cp, policy, label="uncorrected", L=4):
+    (c,) = [c for c in cp.dispatch_choices if (c["set"], c["policy"],
+                                               c["context_length"]) == (label, policy, L)]
+    return c["choice"]["arm"] if c["choice"] else None
+
+
+def test_the_choices_are_written_and_read_back(tmp_path):
+    cp = _read_back(p1_record(dispatch=dspec()), tmp_path)
+    assert cp.dispatch_spec.to_json() == dspec().to_json()
+    assert choice(cp, "dispatcher") == "dense"
+    assert choice(cp, "kernel_speedup_rule") == "xattn"
+    assert choice(cp, "best_kernel_config") == "xattn"
+    assert choice(cp, "always_dense") == "dense"
+    # The Holm set admits nothing: the policies that can choose are dense, and
+    # the fixed best-kernel configuration has nothing to fix on.
+    assert {choice(cp, p, "holm") for p in DSP.FILE_POLICIES
+            if p != "best_kernel_config"} == {"dense"}
+    assert choice(cp, "best_kernel_config", "holm") is None
+
+
+def test_a_file_with_no_dispatcher_says_so(tmp_path):
+    cp = _read_back(p1_record(), tmp_path)
+    assert cp.dispatch_spec is None and cp.dispatch_choices == ()
+    assert p1_record()["dispatch"] is None
+
+
+def test_the_dispatch_section_is_in_the_hash(tmp_path):
+    a = write_prediction(p1_record(dispatch=dspec()), tmp_path)
+    (tmp_path / "b").mkdir()
+    b = write_prediction(p1_record(), tmp_path / "b")
+    assert a.sha256 != b.sha256
+
+
+def _dispatch_tamper(tmp_path, edit):
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, p1_record(dispatch=dspec()), store, T0)
+    _tamper(store, r, edit)
+    return lambda: load(store, r, T0 + timedelta(seconds=1))
+
+
+@pytest.mark.parametrize("name, edit", [
+    ("a choice flipped",
+     lambda rec: rec["dispatch"]["choices"][0].update(choice=None)),
+    ("a choice's arm changed",
+     lambda rec: next(c for c in rec["dispatch"]["choices"]
+                      if c["policy"] == "dispatcher")["choice"].update(arm="xattn")),
+    ("a choice removed",
+     lambda rec: rec["dispatch"]["choices"].pop()),
+    ("the admissible set changed after the fact",
+     lambda rec: rec["dispatch"]["spec"]["admissible"].update(uncorrected=[])),
+    ("the dense kernel made faster than the sparse one",
+     lambda rec: next(e for e in rec["dispatch"]["spec"]["kernel_times"]
+                      if e["key"][2] == "dense").update(seconds=0.5)),
+])
+def test_a_choice_that_does_not_follow_from_the_committed_numbers_is_refused(
+        tmp_path, name, edit):
+    # Each edit is re-hashed, so only the recomputation can catch it.
+    load_ = _dispatch_tamper(tmp_path, edit)
+    with pytest.raises(PredictionCommitError, match="do not follow"):
+        load_()
+
+
+def test_raising_the_floor_after_the_fact_is_refused_when_it_changes_the_choice(
+        tmp_path):
+    # Here sparse is the faster cell (8 against 16): the dispatcher picks it at
+    # floor 1 and would pick dense at floor 100.
+    cells = [cell(ops=OPS_HOST, arm="xattn"), cell(ops=OPS, arm="dense", density=1.0)]
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, p1_record(cells=cells, dispatch=dspec()), store, T0)
+    assert load(store, r, T0 + timedelta(seconds=1)).dispatch_spec.floor_s == 1.0
+    _tamper(store, r, lambda rec: rec["dispatch"]["spec"].update(floor_s=100.0))
+    with pytest.raises(PredictionCommitError, match="do not follow"):
+        load(store, r, T0 + timedelta(seconds=1))
+
+
+def test_a_missing_dispatch_key_is_refused(tmp_path):
+    load_ = _dispatch_tamper(tmp_path, lambda rec: rec.pop("dispatch"))
+    with pytest.raises(PredictionCommitError, match="no dispatch section"):
+        load_()
+
+
+def test_a_dispatch_section_that_cannot_be_read_is_refused(tmp_path):
+    load_ = _dispatch_tamper(tmp_path, lambda rec: rec["dispatch"].pop("spec"))
+    with pytest.raises(PredictionCommitError, match="unreadable dispatch"):
+        load_()
+    (tmp_path / "x").mkdir()
+    load_ = _dispatch_tamper(
+        tmp_path / "x", lambda rec: rec["dispatch"]["spec"].update(predictor="learned"))
+    with pytest.raises(PredictionCommitError, match="lack"):
+        load_()
+
+
+def test_the_dispatcher_cannot_be_committed_on_a_prediction_the_cells_lack():
+    with pytest.raises(PredictionCommitError, match="does not have|not have"):
+        p1_record(dispatch=dspec(predictor="learned"))
+
+
+def test_a_spec_the_dispatcher_cannot_run_is_not_committed():
+    with pytest.raises(PredictionCommitError, match="dispatch: .*dense"):
+        p1_record(dispatch=dspec(dense_arms=("base",)))
+    with pytest.raises(PredictionCommitError, match="dispatch: .*kernel time"):
+        p1_record(dispatch=dspec(kernel_times={DKEY: 4.0}))
+
+
+def test_the_dispatcher_reads_the_predictor_the_spec_names(tmp_path):
+    # xattn is the faster cell. Faster than dense by: recursion 16 - 8 = 8, Sum
+    # 13 - 8 = 5, step form 14 - 7 = 7. At floor 6 the recursion and the step
+    # form dispatch to xattn, the Sum to dense.
+    cells = [cell(ops=OPS_HOST, arm="xattn"), cell(ops=OPS, arm="dense", density=1.0)]
+    picked = {}
+    for name in ("recursion", "sum", "step_form"):
+        d = tmp_path / name
+        d.mkdir()
+        cp = _read_back(p1_record(cells=cells, dispatch=dspec(predictor=name,
+                                                              floor_s=6.0)), d)
+        picked[name] = choice(cp, "dispatcher")
+    assert picked == {"recursion": "xattn", "sum": "dense", "step_form": "xattn"}

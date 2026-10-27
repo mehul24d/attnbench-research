@@ -22,6 +22,16 @@ recomputes each deterministic prediction from them and refuses a file whose
 numbers do not follow from its own inputs, and the queue sensitivity
 (T2.15) re-runs exactly the committed inputs.
 
+**The dispatcher's choice** (T2.22; plan Section 5.9: "The choice is written
+into the same hashed prediction file as the time prediction, before the
+workload runs (K9)"). The optional `dispatch` section holds what the
+dispatcher read (the predictor, the resolution floor, the admissible sets,
+the kernel times the comparators use) and the choice of the dispatcher and
+of each comparator at every decision point. The analysis recomputes every
+choice from the file's own committed predictions and refuses a file whose
+choices do not follow, so a choice cannot be made, or changed, after the
+workload has been seen.
+
 **The order of events this module enforces.** Section 5.1: "The prediction
 file and its sha256 are synced before the timed workload starts; the
 analysis refuses any prediction stamped later." So:
@@ -64,6 +74,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
+from . import dispatcher as _dispatcher
 from .baselines import FittedSum, step_form, sum_as_written, sum_plus_s0
 from .intervals import Interval
 from .learned import LIGHTGBM_VERSION, LearnedModel
@@ -360,6 +371,7 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
                  constant_host_cost: Optional[float] = None,
                  nearest: Optional[tuple[Nearest, Mapping]] = None,
                  intervals: Optional[Mapping[tuple, Mapping[str, Interval]]] = None,
+                 dispatch: Optional[_dispatcher.DispatchSpec] = None,
                  statistic: str = GROUND_TRUTH_STATISTIC) -> dict:
     """Check everything and compute every prediction for one pairing.
 
@@ -381,6 +393,10 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
     `naive.nearest_pairing_predictions` for this pairing and `banked`;
     `intervals`, by cell key and prediction label, each an
     `intervals.Interval` whose point is that committed prediction.
+
+    Optional, from T2.22: `dispatch`, a `dispatcher.DispatchSpec`, which adds
+    the dispatcher's and the comparators' choices at every decision point,
+    computed here from the committed predictions of `spec.predictor`.
     """
     if not isinstance(pairing, str) or not pairing:
         raise PredictionCommitError(f"pairing must be a name, got {pairing!r}")
@@ -508,6 +524,13 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
             "intervals": cell_intervals,
         })
 
+    dispatch_record = None
+    if dispatch is not None:
+        dispatch_record = _dispatch_record(
+            dispatch, {cell_key(c["model"], c["code_path"], c["arm"], c["density"],
+                                c["context_length"], c["batch"]): c["predictions"]
+                       for c in out_cells})
+
     return {
         "schema": SCHEMA, "pairing": pairing, "statistic": statistic,
         "queue_depth": queue_depth, "banked_before": list(banked),
@@ -518,7 +541,25 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
         "nearest_pairing": near_record,
         "code_paths": code_paths,
         "cells": out_cells,
+        "dispatch": dispatch_record,
     }
+
+
+def _dispatch_record(spec: _dispatcher.DispatchSpec,
+                     predictions: Mapping[CellKey, Mapping[str, float]]) -> dict:
+    """The `dispatch` section: the spec and the choices it gives on the
+    committed predictions of `spec.predictor`."""
+    missing = [tuple(k) for k, p in predictions.items() if spec.predictor not in p]
+    if missing:
+        raise PredictionCommitError(
+            f"the dispatcher reads the {spec.predictor!r} prediction, which "
+            f"cells {missing} do not have")
+    try:
+        choices = _dispatcher.make_choices(
+            spec, {k: p[spec.predictor] for k, p in predictions.items()})
+    except _dispatcher.DispatchError as e:
+        raise PredictionCommitError(f"dispatch: {e}") from e
+    return {"spec": spec.to_json(), "choices": choices}
 
 
 def _check_code_paths(code_paths: Mapping[str, Mapping],
@@ -792,6 +833,8 @@ class CommittedPrediction:
     cells: tuple[CommittedCell, ...]
     constant_host_cost: Optional[float] = None
     code_paths: Mapping[str, Mapping] = dataclasses.field(default_factory=dict)
+    dispatch_spec: Optional[_dispatcher.DispatchSpec] = None
+    dispatch_choices: tuple = ()
 
     def cell(self, model: str, code_path: str, arm: str, density: float,
              context_length: int, batch: int) -> CommittedCell:
@@ -811,6 +854,37 @@ def _fitted_from_record(r: Mapping, pairing: str) -> FittedSum:
         training_loss=r["training_loss"],
         condition_number=math.inf if cond == "inf" else cond,
         unidentified=tuple(r["unidentified"]))
+
+
+def _verify_dispatch(filename: str, section: Mapping,
+                     cells: Sequence[CommittedCell]):
+    """The dispatch section, with every choice recomputed from the file's own
+    (already verified) predictions. A choice that does not follow is a
+    choice made on something other than the committed numbers."""
+    try:
+        spec = _dispatcher.spec_from_json(section["spec"])
+        stored = section["choices"]
+    except (KeyError, TypeError, _dispatcher.DispatchError) as e:
+        raise PredictionCommitError(
+            f"{filename}: unreadable dispatch section: {e}") from e
+    missing = [tuple(c.key) for c in cells if spec.predictor not in c.predictions]
+    if missing:
+        raise PredictionCommitError(
+            f"{filename}: the dispatcher reads the {spec.predictor!r} "
+            f"prediction, which cells {missing} lack")
+    try:
+        want = _dispatcher.make_choices(
+            spec, {c.key: c.predictions[spec.predictor] for c in cells})
+    except _dispatcher.DispatchError as e:
+        raise PredictionCommitError(f"{filename}: dispatch: {e}") from e
+    if stored != want:
+        diff = next((i for i, (a, b) in enumerate(zip(stored, want)) if a != b),
+                    min(len(stored), len(want)))
+        raise PredictionCommitError(
+            f"{filename}: the committed dispatcher choices do not follow from "
+            f"the committed predictions (first difference at entry {diff} of "
+            f"{len(stored)} stored, {len(want)} expected)")
+    return spec, tuple(stored)
 
 
 def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPrediction:
@@ -928,12 +1002,21 @@ def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPredictio
                                    arm=k.arm, context_length=k.context_length,
                                    density=k.density, batch=k.batch, priced=p,
                                    predictions=dict(got)))
+    dispatch_spec, dispatch_choices = None, ()
+    if "dispatch" not in rec:
+        raise PredictionCommitError(
+            f"{filename} has no dispatch section (null if the file commits "
+            f"no dispatcher choice)")
+    if rec["dispatch"] is not None:
+        dispatch_spec, dispatch_choices = _verify_dispatch(
+            filename, rec["dispatch"], cells)
     return CommittedPrediction(
         pairing=pairing, statistic=rec["statistic"], queue_depth=Q,
         banked_before=banked, written_at=_from_iso(rec["written_at"]),
         synced_at=None, sha256=digest, code=code, training=training,
         not_fitted=rec["not_fitted"], cells=tuple(cells),
-        constant_host_cost=constant, code_paths=code_paths)
+        constant_host_cost=constant, code_paths=code_paths,
+        dispatch_spec=dispatch_spec, dispatch_choices=dispatch_choices)
 
 
 def load_committed(store: Store, remote: str, *,

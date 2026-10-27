@@ -65,8 +65,8 @@ from .baselines import step_form, sum_as_written, sum_plus_s0
 from .commit import (CommittedCell, CommittedPrediction, PredictionCommitError,
                      _constant_host_prediction, _fitted_from_record)
 from .recursion import CostModelError, PricedSequence, recurse
-from .sensitivity import dense_partners, partner_of
-from .training import CellKey
+from .sensitivity import dense_partners
+from .training import CellKey, partner_of
 
 COMPONENT_FIELDS = ("host", "link", "device", "sync_cost")
 LAYOUT_FIELDS = ("kinds", "layers", "mechanisms", "payload_bytes", "is_sync")

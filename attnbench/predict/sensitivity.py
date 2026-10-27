@@ -27,6 +27,7 @@ from .ablations import sensitivity_depths
 from .commit import CommittedPrediction, PredictionCommitError
 from .naive import with_constant_host_cost
 from .recursion import recurse
+from .training import partner_of
 
 QUEUE_PREDICTORS = ("recursion", "constant_host_cost")
 NO_QUEUE = None   # the multiple reported for "no queue term"
@@ -89,14 +90,6 @@ def queue_sensitivity(cp: CommittedPrediction,
                                         measured_q=Q, committed=committed,
                                         points=tuple(points)))
     return out
-
-
-def partner_of(key) -> tuple:
-    """What a sparse cell is compared with its dense cell on: model, context
-    length and batch. The code path is not matched: it names the
-    implementation, which differs between the dense arm and a sparse one by
-    construction (a sparse arm on two code paths has one dense partner)."""
-    return (key.model, key.context_length, key.batch)
 
 
 def dense_partners(keys, dense_arm: str) -> dict:

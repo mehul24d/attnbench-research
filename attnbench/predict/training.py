@@ -76,6 +76,15 @@ def make_cell_key(model: str, code_path: str, arm: str, density: float,
                    int(batch))
 
 
+def partner_of(key: CellKey) -> tuple:
+    """What a sparse cell is compared with its dense cell on: model, context
+    length and batch. The code path is not matched: it names the
+    implementation, which differs between the dense arm and a sparse one by
+    construction (a sparse arm on two code paths has one dense partner). The
+    dispatcher decides per this triple too (plan Section 5.9)."""
+    return (key.model, key.context_length, key.batch)
+
+
 @dataclass(frozen=True)
 class Cell:
     """One arm at one grid cell on one pairing, with its components.
