@@ -81,8 +81,9 @@ class OpKind(str, Enum):
     SYNC = "sync"
 
 
-# The mechanisms Section 5.1 costs separately. These names are the keys of
-# the s_fixed table that the link microbenchmark (T2.5) has to produce.
+# The mechanisms Section 5.1 costs separately. These five are the keys of
+# the s_fixed table the link microbenchmark (T2.5) measures today;
+# `link.s_fixed_table` iterates this tuple.
 SYNC_MECHANISMS = (
     "synchronize",            # explicit torch.cuda.synchronize()
     "item",                   # .item() on a GPU tensor
@@ -90,6 +91,23 @@ SYNC_MECHANISMS = (
     "copy_to_host_pinned",    # blocking copy into pinned host memory
     "copy_to_host_pageable",  # blocking copy into pageable host memory
 )
+
+# Appendix A, 25 Oct 2026: a blocking host-to-device copy and an event
+# synchronise are mechanisms with their own s_fixed. The recursion prices
+# them; T2.5 does not measure them yet, so a cost table from a T2.5 row has
+# no entry for them and `price` refuses them for that. Once T2.5 measures
+# them they join SYNC_MECHANISMS. The names are the trace parser's.
+ADDED_MECHANISMS = (
+    "event_synchronize",        # torch.cuda.Event.synchronize()
+    "copy_from_host_pinned",    # blocking copy from pinned host memory
+    "copy_from_host_pageable",  # blocking copy from pageable host memory
+)
+
+# Every mechanism the recursion prices.
+PRICED_MECHANISMS = SYNC_MECHANISMS + ADDED_MECHANISMS
+
+# Mechanisms that move no payload: s_0 is s_fixed.
+PAYLOAD_FREE_MECHANISMS = ("synchronize", "event_synchronize")
 
 # Composite mechanisms are split before they reach the recursion (Section
 # 5.1). Named here so the refusal says what to do instead of "unknown".
@@ -175,8 +193,9 @@ class MechanismCost:
 
     `s_fixed` is measured at the smallest payload with the device idle.
     `bandwidth` and `loaded_bandwidth` are bytes per second; either may be
-    None for a mechanism that never moves a payload (an explicit
+    None for a mechanism that never moves a payload (an explicit or event
     synchronise), and a payload priced against a None bandwidth is refused.
+    For a copy from the host, B is the blocking host-to-device bandwidth.
     """
 
     s_fixed: float
@@ -299,13 +318,13 @@ def _check_operation(op: Operation, i: int) -> None:
             raise CostModelError(
                 f"{op.mechanism!r} is a composite mechanism{where}: "
                 f"{COMPOSITE_MECHANISMS[op.mechanism]}")
-        if op.mechanism not in SYNC_MECHANISMS:
+        if op.mechanism not in PRICED_MECHANISMS:
             raise CostModelError(
                 f"unknown synchronisation mechanism {op.mechanism!r}{where}; "
-                f"expected one of {SYNC_MECHANISMS}")
-        if op.mechanism == "synchronize" and op.payload_bytes:
+                f"expected one of {PRICED_MECHANISMS}")
+        if op.mechanism in PAYLOAD_FREE_MECHANISMS and op.payload_bytes:
             raise CostModelError(
-                f"an explicit synchronise moves no payload{where}; a copy to "
+                f"{op.mechanism!r} moves no payload{where}; a copy to or from "
                 f"the host is its own mechanism")
         return
 
