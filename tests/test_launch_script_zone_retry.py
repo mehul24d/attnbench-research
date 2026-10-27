@@ -59,6 +59,8 @@ case "$ARGS" in
       exit 1 ;;
   *"machine-images list"*)      exit 0 ;;
   *"instances list"*)           printf '%s' "${FAKE_EXISTING_INSTANCES:-}"; exit 0 ;;
+  # The H100 launcher polls its request by name; nothing it asks about exists.
+  *"instances describe"*)       echo "ERROR: (gcloud.compute.instances.describe) The resource 'x' was not found" >&2; exit 1 ;;
   *"instances create"*)
       ZONE=""
       for a in "$@"; do case "$a" in --zone=*) ZONE="${a#--zone=}" ;; esac; done

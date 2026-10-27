@@ -48,6 +48,7 @@ case "$*" in
   *"sourceInstanceProperties"*) printf 'g2-standard-8\tnvidia-l4\n'; exit 0 ;;
   *"machine-images describe"*) echo READY; exit 0 ;;
   *"instances list"*) exit 0 ;;
+  *"instances describe"*"value(status)"*) echo RUNNING; exit 0 ;;
   *"instances describe"*) echo inst; exit 0 ;;
   *"compute ssh"*"uptime -s"*) echo "2026-10-25 06:35:47|1792910147"; exit 0 ;;
 esac
