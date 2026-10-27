@@ -88,15 +88,19 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from .clock_sampling import BlockClock, BlockSampler, reason_names
+from .precomputed_masks import prompt_digest
 
 DENSE = "dense"
 INLINE = "inline"          # estimator called per layer inside run_measured
 IN_BACKEND = "in_backend"  # estimator inside the backend's own forward (XAttention)
 ORACLE = "oracle"          # cached scores from a separate dense pass
-KINDS = (DENSE, INLINE, IN_BACKEND, ORACLE)
+PRECOMPUTED = "precomputed"  # masks recorded offline and preloaded (T2.12)
+
+KINDS = (DENSE, INLINE, IN_BACKEND, ORACLE, PRECOMPUTED)
 DEPLOYABLE_KINDS = (INLINE, IN_BACKEND)
 ORACLE_LABEL = "non-deployable reference (scoring cost outside the timed path)"
 DEPLOYABLE_LABEL = "deployable"
+PRECOMPUTED_LABEL = "ablation (masks precomputed offline; estimator cost outside every block)"
 
 # (module, attribute path) of every function that computes importance scores.
 # The forward looks each one up at call time, so patching the attribute is
@@ -131,12 +135,16 @@ class Arm:
     cfg: object
     inline_estimator: Optional[str] = None
     compile_setting: Optional[str] = None   # None: eager
+    prompt_digest: Optional[str] = None     # the prompt a precomputed arm's masks belong to
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"arm kind must be one of {KINDS}, got {self.kind!r}")
         if (self.kind == INLINE) != (self.inline_estimator is not None):
             raise ValueError("an inline arm names its estimator, and only an inline arm does")
+        if (self.kind == PRECOMPUTED) != (self.prompt_digest is not None):
+            raise ValueError("a precomputed arm names the prompt its masks were computed on, "
+                             "and only a precomputed arm does")
 
     @property
     def deployable(self) -> bool:
@@ -144,7 +152,11 @@ class Arm:
 
     @property
     def label(self) -> str:
-        return ORACLE_LABEL if self.kind == ORACLE else DEPLOYABLE_LABEL if self.deployable else DENSE
+        if self.kind == ORACLE:
+            return ORACLE_LABEL
+        if self.kind == PRECOMPUTED:
+            return PRECOMPUTED_LABEL
+        return DEPLOYABLE_LABEL if self.deployable else DENSE
 
 
 SETUP = "setup"      # before any forward: where an oracle's cached scores come from
@@ -277,6 +289,13 @@ def check_timed_region(log: EventLog, arm: Arm, reps: list) -> None:
                     f"{arm.name} is deployable, but timed block {rep} computed "
                     f"no scores: they were computed earlier and reused, or the "
                     f"probe does not see the scorer the forward calls")
+    if arm.kind == PRECOMPUTED:
+        ran = [e for e in log.events if e.kind in ("score", "mask_build")]
+        if ran:
+            raise TimedRegionError(
+                f"{arm.name} is a precomputed-mask arm, but {len(ran)} scoring or mask "
+                f"build call(s) ran ({sorted({e.what for e in ran})}); its masks are "
+                f"computed offline and nothing here may compute one (plan Section 5.5)")
     if arm.kind == ORACLE:
         outside = [e for e in log.events if e.kind == "mask_build" and e.phase == SETUP]
         if outside:
@@ -398,6 +417,12 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
             f"like a result (plan Section 5.6)")
     control = dense[0]
     _claim_compile_setting(arms)
+    digest = prompt_digest(input_ids)
+    for a in arms:
+        if a.kind == PRECOMPUTED and a.prompt_digest != digest:
+            raise TimedRegionError(
+                f"{a.name}'s masks were computed on another prompt than the one being "
+                f"timed; a mask is valid only for the prompt it was computed from")
     sampler, floor = controls.sampler, controls.resolution_floor_ms
 
     logs = {a.name: EventLog() for a in arms}

@@ -111,6 +111,13 @@ CLASSIFIED: dict[tuple[str, str, str], str] = {
         "included, is recorded and the candidate is never launched "
         "(tests/test_dense_selection.py gives a faulting fake and asserts it "
         "was not called).",
+    ("attnbench/precomputed_masks.py", "forward", "forward"):
+        "UNGUARDED BY DESIGN. MaskRecorder.forward runs the source arm exactly "
+        "as the model wrapper would, on the config the wrapper hands it, to "
+        "record the masks it produced; a guard here would change which arm's "
+        "masks are recorded. The replay goes through kernels.bsa_prefill, "
+        "which checks the mask's shape, dtype, device and contiguity, and "
+        "PrecomputedMaskBackend.forward refuses a config it cannot replay.",
 }
 
 
