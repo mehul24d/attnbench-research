@@ -1,10 +1,12 @@
 """Audit C1: `predict/recursion.py` and `predict/ablations.py` against plan
-Sections 5.1 and 5.4. Each test fails on main at 275faac and demonstrates
-one finding. The file is not named test_*.py, so the default suite does not
-collect it; run it by name: `python -m pytest tests/audit_C1_recursion.py`.
+Sections 5.1 and 5.4. Each test failed on main at 275faac and demonstrates
+one finding.
 
-All of it ran on a CPU without torch, through a scratch loader that skips
-the package __init__; none of it needs torch.
+Findings 2 and 3 are fixed on this branch, and their tests now run as
+regression tests. Finding 1 is not fixed here: its tests are the acceptance
+tests for the fix the Mac session makes, and stay marked as expected
+failures. The mark is strict, so once the fix lands they fail as unexpected
+passes until the mark is removed. None of this file needs torch.
 """
 
 from __future__ import annotations
@@ -22,14 +24,21 @@ from attnbench.predict.recursion import (
 # ---------------------------------------------------------------------------
 # Finding 1 (high). Section 5.1: "For `.item()` and `bool()` of a tensor the
 # payload is zero by definition, so their s_0 is s_fixed (Appendix A, 25 Oct
-# 2026)." The recursion refuses a payload only for "synchronize"
-# (recursion.py:306) and otherwise prices payload / B (recursion.py:193-203).
+# 2026)." The recursion refuses a payload only for "synchronize" (on main,
+# recursion.py:306) and otherwise prices payload / B (recursion.py:193-203).
 # The trace parser records item with the scalar's bytes and bool with one
 # byte (tests/test_components_op_sequence.py:181 and :191), and the T2.5 row
 # gives these mechanisms no bandwidth (link.py:473-481). So a real sequence
 # with an item or bool wait is refused, and with a bandwidth supplied it is
 # charged payload / B.
 
+FINDING_1_OPEN = pytest.mark.xfail(
+    strict=True,
+    reason="C1 finding 1, not fixed yet: acceptance test for the Mac fix "
+           "(item and bool s_0 is s_fixed whatever the recorded payload)")
+
+
+@FINDING_1_OPEN
 @pytest.mark.parametrize("mechanism, payload", [("item", 4), ("bool", 1)])
 def test_item_and_bool_s0_is_s_fixed_whatever_the_recorded_payload(mechanism, payload):
     ops = [kernel_op(1.0, 10.0), sync_op(mechanism, payload_bytes=payload)]
@@ -37,6 +46,7 @@ def test_item_and_bool_s0_is_s_fixed_whatever_the_recorded_payload(mechanism, pa
     assert priced.sync_cost[1] == 7.0
 
 
+@FINDING_1_OPEN
 @pytest.mark.parametrize("mechanism, payload", [("item", 4), ("bool", 1)])
 def test_item_and_bool_price_from_a_table_shaped_like_the_t25_row(mechanism, payload):
     # link.mechanism_costs gives every non-copy mechanism bandwidth=None.
@@ -54,6 +64,7 @@ def _t25_row() -> dict:
     return row
 
 
+@FINDING_1_OPEN
 @pytest.mark.parametrize("mechanism, payload", [("item", 4), ("bool", 1)])
 def test_a_prefill_with_an_item_or_bool_wait_prices_from_the_real_cost_table(mechanism, payload):
     ops = close_prefill([kernel_op(1e-6, 1e-3), sync_op(mechanism, payload_bytes=payload),
@@ -67,10 +78,11 @@ def test_a_prefill_with_an_item_or_bool_wait_prices_from_the_real_cost_table(mec
 # ---------------------------------------------------------------------------
 # Finding 2 (medium). Appendix A, 25 Oct 2026: "a blocking host-to-device copy
 # and an event synchronise are synchronisation mechanisms with their own
-# s_fixed" (Section 5.1 lists both). recursion.SYNC_MECHANISMS
-# (recursion.py:86-92) has neither, so the recursion refuses them as unknown
+# s_fixed" (Section 5.1 lists both). On main, recursion.SYNC_MECHANISMS
+# (recursion.py:86-92) had neither, so the recursion refused them as unknown
 # even with a cost supplied, while T2.8 is marked Done. The names are the
-# ones the trace parser emits (op_sequence.py:135).
+# ones the trace parser emits (op_sequence.py:135). Fixed on this branch:
+# recursion.PRICED_MECHANISMS.
 
 @pytest.mark.parametrize("mechanism, payload, expected", [
     ("event_synchronize", 0, 3.0),
@@ -87,12 +99,13 @@ def test_the_section_5_1_mechanisms_decided_on_25_oct_are_priced(mechanism, payl
 # Finding 3 (low; plan ambiguity). Section 5.4: "Model ablations ...: the
 # recursion without the synchronisation term". Appendix A, 22 Oct 2026 (2)
 # adds the closing synchronise because the ground-truth timer synchronises
-# before reading the clock; it is the timer's, not the arm's. Both ablations
-# also strip it (ablations.py:33 zeroes its s_0; recursion.py:425-427 drops
-# its wait), so on a sequence with no synchronisation of its own the
-# "without the synchronisation term" model still differs from the full
-# model, by up to s_fixed(synchronize), and is no longer on the ground
-# truth's clock.
+# before reading the clock; it is the timer's, not the arm's. On main both
+# ablations also stripped it (ablations.py:33 zeroed its s_0;
+# recursion.py:425-427 dropped its wait), so on a sequence with no
+# synchronisation of its own the "without the synchronisation term" model
+# still differed from the full model, by up to s_fixed(synchronize). Fixed on
+# this branch by the researcher's decision: both act on the arm's own
+# synchronisations only.
 
 def _dense_closed():
     # Device-bound, no synchronisation of the arm's own.
