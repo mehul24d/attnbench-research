@@ -274,6 +274,19 @@ def test_a_record_round_trips_and_is_never_overwritten(tmp_path):
         ds.write_choice(ch, tmp_path)
 
 
+def test_a_card_named_with_a_space_still_round_trips(tmp_path):
+    """The driver names the L4 "NVIDIA L4"; the file name carried the space
+    into the sha256sum-format sidecar, which is split on whitespace, and the
+    first real record could not be read back (found by the Shakedown 2 step's
+    test, 28 Oct 2026)."""
+    import dataclasses
+    ch = _select()
+    ch = dataclasses.replace(ch, cell=dataclasses.replace(ch.cell, card="NVIDIA L4"))
+    path = ds.write_choice(ch, tmp_path)
+    assert " " not in path.name
+    assert ds.load_choice(path) == ch
+
+
 def test_edited_bytes_are_refused(tmp_path):
     _, path = _written(tmp_path)
     _edit(path, lambda d: d.update(chosen=ds.FA2))
@@ -346,7 +359,7 @@ def test_the_control_must_be_the_choice_recorded_before_the_first_block():
     ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at + 1.0)          # passes
     with pytest.raises(ds.SelectionError, match="recorded choice"):
         ds.check_control(ch, ds.SDPA_FLASH, ch.recorded_at + 1.0)      # the banked baseline
-    with pytest.raises(ds.SelectionError, match="not before the first timed block"):
+    with pytest.raises(ds.SelectionError, match="not before the first clocked block"):
         ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at)
     with pytest.raises(ds.SelectionError, match="not before"):
         ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at - 1.0)
