@@ -209,8 +209,14 @@ def test_a_power_cap_is_recorded_and_flags_only_if_chosen():
     quiet = Rig(windows=win, flag_bits=THERMAL, reader=None).run(reps=1)
     assert not quiet["rounds"][0]["flagged"]
     assert quiet["rounds"][0]["blocks"]["dense"]["violation_delta_ns"]["power"] > 0
-    loud = Rig(windows=win, flag_bits=THERMAL | cs.SW_POWER_CAP, max_rerun=0).run(reps=1)
+    # The power counter integrates the cap and the brake together, so it flags
+    # only for a session that chose both (28 Oct 2026); the cap alone is the
+    # process sampler's to judge, from the bits.
+    loud = Rig(windows=win, flag_bits=THERMAL | cs.SW_POWER_CAP | cs.HW_POWER_BRAKE_SLOWDOWN,
+               max_rerun=0).run(reps=1)
     assert loud["rounds"][0]["flagged"] and not loud["complete"]
+    cap_only = Rig(windows=win, flag_bits=THERMAL | cs.SW_POWER_CAP, max_rerun=0).run(reps=1)
+    assert not cap_only["rounds"][0]["flagged"]
 
 
 def test_instantaneous_reasons_are_recorded_and_the_idle_bit_never_flags():

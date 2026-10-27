@@ -95,6 +95,12 @@ class NullSampler:
                           flagged=False)
 
 
+def _controls(args, sampler):
+    from attnbench import ground_truth as gt
+    return gt.Controls(resolution_floor_ms=args.floor_ms,
+                       max_rerun_rounds=args.max_rerun, sampler=sampler)
+
+
 def _tracer():
     import torch
     acts = [torch.profiler.ProfilerActivity.CPU]
@@ -254,22 +260,18 @@ def step_t213(args) -> dict:
     sync = (lambda: __import__("torch").cuda.synchronize()) if cuda else (lambda: None)
     kw = dict(reps=args.reps, warmup=args.warmup, synchronize=sync, score_kwargs=score_kwargs)
 
-    def controls(sampler):
-        return gt.Controls(resolution_floor_ms=args.floor_ms,
-                           max_rerun_rounds=args.max_rerun, sampler=sampler)
-
     gt.reset_process_compile_setting()
     t_call = time.time()
-    a1 = gt.time_arms(wrapped, ids, arms, controls=controls(NullSampler()), **kw)
+    a1 = gt.time_arms(wrapped, ids, arms, controls=_controls(args, NullSampler()), **kw)
     gt.reset_process_compile_setting()
     with _sampler(args) as ps:
         t_b = time.time()
-        both = gt.time_with_profiler_overhead(wrapped, ids, arms, controls=controls(ps),
+        both = gt.time_with_profiler_overhead(wrapped, ids, arms, controls=_controls(args, ps),
                                               tracer=_tracer(), **kw)
         t_b_end = time.time()
         stats = ps.timing_stats()
     gt.reset_process_compile_setting()
-    a2 = gt.time_arms(wrapped, ids, arms, controls=controls(NullSampler()), **kw)
+    a2 = gt.time_arms(wrapped, ids, arms, controls=_controls(args, NullSampler()), **kw)
     h.unwrap()
     b = both["untraced"]
     stamp = both["first_clocked_block_started_at"]
@@ -394,7 +396,7 @@ def step_t212(args) -> dict:
         sync = torch.cuda.synchronize
         with _sampler(args) as ps:
             res = gt.time_arms(wrapped, ids, timed, reps=args.reps, warmup=args.warmup,
-                               controls=gt.Controls(args.floor_ms, args.max_rerun, ps),
+                               controls=_controls(args, ps),
                                synchronize=sync, score_kwargs=score_kwargs)
         med = _medians(res)
         findings["timing"] = {"medians_ms": med, "complete": res["complete"],

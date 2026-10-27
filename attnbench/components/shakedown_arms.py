@@ -259,7 +259,9 @@ class Harness:
         (wrapped model, input_ids, prompt_id, [ground_truth.Arm], score_kwargs).
         One model wrapper serves every arm, as `time_arms` needs; the dense
         arm's preparation builds it and must come first in `names` (it is the
-        control). Call `unwrap()` when done."""
+        control). Every arm's config takes the prompt's own length
+        (`first.length`), which is `length` unless the sizer landed below the
+        budget. Call `unwrap()` when done."""
         from .. import ground_truth as gt
         if not names or names[0] != "dense":
             raise ValueError("the dense control comes first")
@@ -270,7 +272,7 @@ class Harness:
             kind = (gt.DENSE if n == "dense" else gt.ORACLE if spec.scores_before
                     else gt.INLINE if spec.inline_estimator else gt.IN_BACKEND)
             arms.append(gt.Arm(n, kind, first.backend if n == "dense" else self._backend(spec),
-                               self._cfg(spec, length), inline_estimator=spec.inline_estimator))
+                               self._cfg(spec, first.length), inline_estimator=spec.inline_estimator))
         score_kwargs = dict(task=TASK, example_id=first.prompt_id, cache_dir=self.score_cache_dir)
         return first.extra["wrapped"], first.extra["input_ids"], first.prompt_id, arms, score_kwargs
 

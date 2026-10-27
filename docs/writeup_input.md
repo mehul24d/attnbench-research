@@ -246,6 +246,7 @@ rather than discovering one**, which is the more accurate framing and the more
 defensible. *(~91%: restated 19 Oct 2026; see plan Appendix A. The profile's own
 figures give (0.212 − 0.013) / 0.212 = 93.9%, about 94% of the builder's
 loop time, from a laptop profile that was not banked.)*
+*(Note, 28 Oct 2026: the ~94% is what `cProfile` reports. `cProfile` does not count a tensor `__setitem__` or `__getitem__` as a call, so the builder's ~100,000 tensor operations per build at 32768 are charged to the function's own time. `torch.profiler` counts them as operators and gives a Python share of about 0.53, with a lower bound of 0.28 (one minus its operator time over the unprofiled wall time). Both come from a development run on a laptop, not the target host, and neither is banked. Name the instrument whenever this figure is repeated. T2.2 banks both on the target host; Shakedown 2 step `t22` is where they are first measured there.)*
 
 **The mechanism has prior art; the location and size are what is new.**
 Fernandez et al., *The Framework Tax* (arXiv:2302.06117, EMNLP 2023), showed

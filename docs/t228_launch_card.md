@@ -86,6 +86,14 @@ bash scripts/gcp_cleanup_check.sh
 
 ## Known before launch
 
+- **Not launchable on `main` `275faac` alone.** Shakedown 1 found that
+  `Harness.input_ids` demands a RULER prompt of exactly the budget, while
+  `qa_1` lands below it (8192 gives 8075 tokens). `t213`, `t212` and `t22` all
+  prepare a real prompt and would fail there. The fix is on the local branch
+  `t227-fixes-2026-10-28` (Action (q), not yet merged). This branch's
+  `Harness.timing_arms` already reads the prompt's own length from the
+  prepared arm, so it works with or without that fix; launch from a commit that
+  has both. `t216` and `nvml` use no prompt.
 - **`nvidia-ml-py` on v6 is not on record.** It is a declared dependency
   (`pyproject.toml`), but no run has used it. If step 1 reports that `pynvml`
   is missing, `pip install nvidia-ml-py` on the instance, note the version in
