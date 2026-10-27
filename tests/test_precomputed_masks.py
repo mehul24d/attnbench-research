@@ -72,11 +72,12 @@ def fake_kernel(q_, k_, v_, cu_q, cu_k, head_mask_type, streaming, base_blockmas
 
 
 def _record_meanpool(wrapped, ids):
-    # BlockMaskedSDPA, not NaiveAttention, as the source: NaiveAttention caches
-    # its dense mask under `cfg.key()` alone, so on one instance a second
-    # layer's different mask gets the first layer's (measured 27 Oct 2026, max
-    # output difference 0.51 against a fresh instance). A per-layer estimator
-    # cannot be run through it.
+    # BlockMaskedSDPA, not NaiveAttention, as the source: this was written
+    # when NaiveAttention cached its dense mask under `cfg.key()` alone, so on
+    # one instance a second layer's different mask got the first layer's
+    # (max output difference 0.51 against a fresh instance). The cache is
+    # keyed on the mask's contents since 27 Oct 2026
+    # (tests/test_naive_mask_cache.py); the source is unchanged.
     rec = pm.MaskRecorder(BlockMaskedSDPA(), estimator="meanpool", code_path="inline_meanpool",
                           mask_selector="head_uniform")
     source = wrapped.run_measured(ids, rec, cfg=_sparse_cfg(), logits_to_keep=1,
