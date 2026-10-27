@@ -106,6 +106,63 @@ def test_the_kernel_call_matches_xattention_prefill(fakes):
     assert out.shape == q.shape
 
 
+def _one_tensor_build(backend, q, k, v, cfg):
+    """The kernel call as this backend made it before 27 Oct 2026, the build
+    the T1.1 results were measured with: one cumulative-length tensor shared
+    by query and key, and a `torch.ones` head-mask type."""
+    from block_sparse_attn import block_sparse_attn_func
+    from attnbench.backends.xattention import _expand_kv
+    k_rep, v_rep = _expand_kv(k, v, cfg)
+    simple_mask = backend.estimate(q, k_rep)
+    _, h, s, d = q.shape
+    nb = -(-s // 128)
+    cu = torch.tensor([0, s], dtype=torch.int32, device=q.device)
+    head_mask_type = torch.ones(h, dtype=torch.int32, device=q.device)
+    out = block_sparse_attn_func(
+        q.transpose(1, 2).reshape(s, h, d), k_rep.transpose(1, 2).reshape(s, h, d),
+        v_rep.transpose(1, 2).reshape(s, h, d), cu, cu, head_mask_type, None,
+        simple_mask[:, :, :nb, :nb].contiguous(), s, s,
+        p_dropout=0.0, deterministic=True, is_causal=True)
+    return out.view(1, s, h, d).transpose(1, 2)
+
+
+def test_the_kernel_gets_three_list_built_tensors_as_upstream_builds_them(fakes, monkeypatch):
+    """At e379887 `Xattention_prefill` builds query lengths, key lengths and
+    the head-mask type as three device tensors from Python lists, so three
+    host-to-device copies per layer are the method's. One shared tensor and a
+    `torch.ones` fill would give the same values with one copy."""
+    built = []
+    real = torch.tensor
+
+    def counting(data, *a, **kw):
+        if isinstance(data, list):
+            built.append(list(data))
+        return real(data, *a, **kw)
+
+    monkeypatch.setattr(torch, "tensor", counting)
+    XAttentionBackend().forward(*_qkv(), _cfg())
+    monkeypatch.setattr(torch, "tensor", real)
+    assert built == [[0, S], [0, S], [1] * HQ]
+    c = fakes["kernel"]
+    assert c["cu_q"] is not c["cu_k"]
+    assert {t.dtype for t in (c["cu_q"], c["cu_k"], c["head_mask_type"])} == {torch.int32}
+
+
+def test_every_kernel_argument_is_bitwise_the_one_tensor_builds(fakes):
+    """The CPU half of the output test below: the kernel gets the same
+    values, dtypes and shapes from both builds, argument by argument."""
+    q, k, v = _qkv()
+    XAttentionBackend().forward(q, k, v, _cfg())
+    ours = dict(fakes["kernel"])
+    _one_tensor_build(XAttentionBackend(), q, k, v, _cfg())
+    old = fakes["kernel"]
+    for name in ("q", "k", "v", "cu_q", "cu_k", "head_mask_type", "mask"):
+        assert ours[name].dtype == old[name].dtype, name
+        assert torch.equal(ours[name], old[name]), name
+    assert (ours["sq"], ours["sk"], ours["kw"], ours["streaming"]) == \
+        (old["sq"], old["sk"], old["kw"], old["streaming"])
+
+
 def test_official_chunk_size_at_known_lengths():
     """Hand-evaluated from Xattention_prefill's expression."""
     assert official_chunk_size(100) == 2048
@@ -198,6 +255,22 @@ def test_bitwise_equal_to_xattention_prefill_on_cuda(seq_len, threshold):
     theirs = Xattention_prefill(q, kr, vr, stride=8, norm=1, threshold=threshold,
                                 use_triton=True, keep_sink=True, keep_recent=True)
     assert torch.equal(ours, theirs)
+
+
+@pytest.mark.skipif(not _real_xattn(), reason="needs CUDA + x-attention + block-sparse-attn (Phase A gate)")
+@pytest.mark.parametrize("seq_len", [4096, 16384])
+def test_bitwise_equal_to_the_one_tensor_build_on_cuda(seq_len):
+    """The T1.1 results were measured with the one-tensor build. Their code
+    fingerprint is the earlier one; their outputs are this build's, bit for bit."""
+    g = torch.Generator(device="cuda").manual_seed(seq_len)
+    q = torch.randn(1, 12, seq_len, 128, device="cuda", dtype=torch.bfloat16, generator=g)
+    k = torch.randn(1, 2, seq_len, 128, device="cuda", dtype=torch.bfloat16, generator=g)
+    v = torch.randn(1, 2, seq_len, 128, device="cuda", dtype=torch.bfloat16, generator=g)
+    cfg = AttnConfig(seq_len=seq_len, batch=1, n_heads_q=12, n_heads_kv=2,
+                     head_dim=128, dtype="bfloat16", mask="causal")
+    ours = XAttentionBackend(threshold=0.9).forward(q, k, v, cfg)
+    old = _one_tensor_build(XAttentionBackend(threshold=0.9), q, k, v, cfg)
+    assert torch.equal(ours, old)
 
 
 @pytest.mark.skipif(not _real_xattn(), reason="needs CUDA + x-attention + block-sparse-attn (Phase A gate)")
