@@ -164,8 +164,16 @@ class Run:
         self.env.update({k: str(v) for k, v in env.items()})
 
     def start(self, *args) -> subprocess.Popen:
+        # A suite started with nohup or in the background inherits ignored
+        # SIGINT and SIGHUP, and bash cannot trap a signal that was ignored
+        # when it started. The child gets the default handlers back, so the
+        # interrupt tests mean the same thing wherever pytest was started.
+        def default_signals():
+            for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
+                signal.signal(sig, signal.SIG_DFL)
         return subprocess.Popen(["bash", str(LAUNCHER), *(args or ("h100-test",))],
                                 env=self.env, cwd=self.dir, text=True,
+                                preexec_fn=default_signals,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def run(self, *args) -> subprocess.CompletedProcess:
