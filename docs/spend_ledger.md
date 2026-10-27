@@ -101,6 +101,7 @@ authority is the billing console.
 | 2026-10-02 | `attnbench-l4-t4pilot-16384-20261002-0312`; row added 18 Oct 2026, date from the instance name | no cost file | no cost file | no cost file (`results/t4_sparse_pilot_session_16384_20261002/` has none) |
 | 2026-10-21 | `attnbench-a100-t11a-20261022`, asia-southeast1-c, **Flex Start**, ₹297.47/h (planning rate, all-in); T1.1 Session A, the three calibrations; date from the boot clock in UTC (01:02 IST on 22 Oct) | **55** | **273** | `session_cost.txt` (`results/t11a_session_20261022/`) |
 | 2026-10-25 | `attnbench-l4-t11b-20261025`, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); T1.1 Session B, the dense reference and the three calibrated XAttention runs; image `attnbench-env-v7-20261025` captured before teardown (its storage is not in this row) | **210** | **380** | `session_cost.txt` (`results/t11b_session_20261025/`) |
+| 2026-10-27 | `attnbench-l4-t227-20261028-0015`, T2.27 Shakedown 1, asia-northeast1-a, ₹108.64/h; 4 of 11 steps passed, 7 stopped by one prompt-length defect | **23** | **42** | `session_cost.txt` (`results/t227_shakedown1_l4_20261028/`) |
 
 **Notes on the table (18 Oct 2026).**
 
@@ -567,3 +568,11 @@ teardown: 2026-10-02T18:51:25Z
 minutes: 201
 rate_inr_hr: 80
 est_inr: 268
+
+instance: attnbench-l4-t227-20261028-0015
+zone: asia-northeast1-a
+boot: 2026-10-27 18:44:51
+teardown: 2026-10-27T19:07:44Z
+minutes: 23
+rate_inr_hr: 108.64
+est_inr: 42

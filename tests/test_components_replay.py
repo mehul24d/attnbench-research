@@ -341,3 +341,99 @@ def test_isolated_replay_holds_the_tape(tmp_path):
     with pytest.raises(TapeMismatch, match="used 0 of 1"):
         RP.isolated_replay(lambda: None, rec.tape, tmp_path / "iso.json", device="cpu",
                            flush=lambda: None, sync=lambda: None)
+
+
+# --- substituted positions (Appendix A, 27 Oct 2026) --------------------------------------
+
+GRAPH_SUB = nodes(("gemm", 1.0), ("nonzero_static", 0.5), ("write", 0.25),
+                  ("g0", 2.0), ("g1", 3.0), ("gemm", 4.0))
+ORIGINAL = nodes(("gemm", 1.5), ("scan", 0.625), ("write", 0.375),
+                 ("g0", 2.5), ("g1", 3.5), ("gemm", 4.5))
+
+
+def test_a_complete_graph_prices_every_position_from_the_graph():
+    m = RP.match(SEQ, nodes(("gemm", 1.0), ("scan", 0.5), ("write", 0.25),
+                            ("g0", 2.0), ("g1", 3.0), ("gemm", 4.0)))
+    p = RP.price_positions(SEQ, m, None)
+    assert p.device_s == {0: 1.0, 2: 0.75, 4: 5.0, 5: 4.0}
+    assert set(p.source.values()) == {RP.GRAPH} and p.substitute_nodes == ()
+
+
+def test_a_substituted_position_is_priced_from_the_original_operator_and_flagged():
+    p = RP.price_positions(SEQ, RP.match(SEQ, GRAPH_SUB), RP.match(SEQ, ORIGINAL))
+    # position 2 from the isolated original (0.625 + 0.375); the rest from the graph
+    assert p.device_s == {0: 1.0, 2: 1.0, 4: 5.0, 5: 4.0}
+    assert p.source == {0: RP.GRAPH, 2: RP.ISOLATED_ORIGINAL, 4: RP.GRAPH, 5: RP.GRAPH}
+    assert p.counts() == {RP.GRAPH: 3, RP.ISOLATED_ORIGINAL: 1}
+    assert p.substitute_nodes == ("nonzero_static",)
+
+
+def test_substituted_positions_without_a_complete_original_replay_are_refused():
+    g = RP.match(SEQ, GRAPH_SUB)
+    with pytest.raises(ReplayError, match="which was not run"):
+        RP.price_positions(SEQ, g, None)
+    part = RP.match(SEQ, ORIGINAL[:3])
+    with pytest.raises(ReplayError, match="does not match the sequence"):
+        RP.price_positions(SEQ, g, part)
+
+
+def test_an_unmatched_position_the_tape_does_not_substitute_is_refused():
+    g = RP.match(SEQ, nodes(("gemm", 1.0), ("scan", 0.5), ("write", 0.25),
+                            ("g0", 2.0), ("g1", 3.0), ("other_mm", 4.0)))
+    assert g.unmatched_positions == (5,)
+    with pytest.raises(ReplayError, match=r"not substitutions \(\['kernel:aten::mm'\]\)"):
+        RP.price_positions(SEQ, g, RP.match(SEQ, ORIGINAL))
+
+
+def test_extra_graph_nodes_with_nothing_substituted_are_refused():
+    g = RP.match(SEQ, nodes(("gemm", 1.0), ("scan", 0.5), ("write", 0.25), ("g0", 2.0),
+                            ("g1", 3.0), ("gemm", 4.0), ("stray", 9.0)))
+    with pytest.raises(ReplayError, match="substitutes nothing"):
+        RP.price_positions(SEQ, g, RP.match(SEQ, ORIGINAL))
+
+
+def test_the_record_carries_each_position_and_its_cost_source():
+    from attnbench.components.sync_tape import SyncTape, TapeEntry
+    tape = SyncTape("cuda", [TapeEntry("nonzero", "nonzero", ((4,), "torch.bool"), 2)])
+    g = RP.match(SEQ, GRAPH_SUB)
+    p = RP.price_positions(SEQ, g, RP.match(SEQ, ORIGINAL))
+    rec = json.loads(json.dumps(RP.to_record(seq=SEQ, prompt_id="p", m=g, timing=None,
+                                             agreement=None, tape=tape, masks=None,
+                                             pricing=p)))
+    assert rec["schema"] == "attnbench.replay/2" and rec["complete"] is False
+    assert RP.device_costs_from_record(rec) == {0: 1.0, 2: 1.0, 4: 5.0, 5: 4.0}
+    assert RP.cost_sources_from_record(rec)[2] == RP.ISOLATED_ORIGINAL
+    assert rec["substitute_nodes"] == ["nonzero_static"]
+    with pytest.raises(ReplayError, match="cost sources differ"):
+        RP.device_costs_from_record({**rec, "cost_source": {"0": RP.GRAPH}})
+    unpriced = RP.to_record(seq=SEQ, prompt_id="p", m=g, timing=None, agreement=None,
+                            tape=tape, masks=None)
+    with pytest.raises(ReplayError, match="no device costs"):
+        RP.device_costs_from_record(unpriced)
+
+
+def test_a_version_one_record_with_a_complete_match_is_still_read():
+    full = RP.match(SEQ, nodes(("gemm", 1.0), ("scan", 0.5), ("write", 0.25),
+                               ("g0", 2.0), ("g1", 3.0), ("gemm", 4.0)))
+    from attnbench.components.sync_tape import SyncTape
+    rec = RP.to_record(seq=SEQ, prompt_id="p", m=full, timing=None, agreement=None,
+                       tape=SyncTape("cuda", []), masks=None)
+    old = {k: v for k, v in rec.items() if k not in ("priced_s", "cost_source", "substitute_nodes")}
+    old["schema"] = "attnbench.replay/1"
+    assert RP.device_costs_from_record(old) == {0: 1.0, 2: 0.75, 4: 5.0, 5: 4.0}
+    assert set(RP.cost_sources_from_record(old).values()) == {RP.GRAPH}
+
+
+def test_the_original_isolated_replay_runs_the_operators_not_the_tape(tmp_path):
+    x = torch.arange(4.0)
+    seen = []
+
+    def prefill():
+        seen.append(int(x.sum()))
+    with TapeRecorder("cpu") as rec:
+        prefill()
+    x += 1                                          # the live value now differs
+    kw = dict(device="cpu", flush=lambda: None, sync=lambda: None)
+    RP.isolated_replay(prefill, rec.tape, tmp_path / "t.json", **kw)
+    RP.isolated_replay(prefill, rec.tape, tmp_path / "o.json", substitute=False, **kw)
+    assert seen == [6, 6, 10]                       # recorded, served from the tape, live

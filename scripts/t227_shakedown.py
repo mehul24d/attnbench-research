@@ -15,6 +15,12 @@ session, and the failed attempt's directory is kept beside the new one
 (`<NN>_<step>.failed.<time>`), so the failure and its fix are both on record,
 as T2.27 asks.
 
+`--keep-going` records a failure and goes on to the next step, and lets
+`--from` skip earlier steps that have not passed, so one session collects
+every step that does not depend on the failed one (Shakedown 1, 28 Oct
+2026: step 1 failed and `--from` refused the four independent steps after
+it). The session still exits 1 if any step failed.
+
 The checklist (T2.27, as run on the L4; plan Section T2.27 has the rows):
 
    1 t21_t220      T2.1 host-speed probe; T2.20 provenance fields
@@ -129,7 +135,7 @@ def tree_clean() -> bool:
 
 
 def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, sync: bool,
-                runner=run_logged) -> int:
+                runner=run_logged, keep_going: bool = False) -> int:
     session.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(session)
     manifest.setdefault("dry_run", dry_run)
@@ -140,7 +146,8 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
     done = last_status(manifest)
     first = STEPS.index(start)
     unpassed = [s for s in STEPS[:first] if done.get(s) != "passed"]
-    if unpassed and not (dry_run and all(done.get(s) == "skipped" for s in unpassed)):
+    if unpassed and not keep_going and \
+            not (dry_run and all(done.get(s) == "skipped" for s in unpassed)):
         print(f"REFUSING --from {start}: earlier steps have not passed in {session}: "
               f"{unpassed}", file=sys.stderr)
         return 2
@@ -170,14 +177,16 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
             "dir": d.name, "log": f"{d.name}/step.log"})
         save_manifest(session, manifest)
         print(f"----- {step}: {status.upper()}{': ' + reason if reason else ''}", flush=True)
-        if status == "failed":
+        if status == "failed" and keep_going:
+            print(f"(--keep-going: step {n} failed; going on to the next step)", flush=True)
+        elif status == "failed":
             print(f"\nSTOPPED at step {n} ({step}). Log: {d / 'step.log'}\n"
                   f"After the fix: python3 scripts/t227_shakedown.py --from {step} "
                   f"--session {session}", flush=True)
             return 1
     statuses = last_status(manifest)
     print("\nT2.27 shakedown: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS))
-    return 0
+    return 1 if any(statuses.get(s) == "failed" for s in STEPS) else 0
 
 
 def main(argv=None) -> int:
@@ -189,6 +198,8 @@ def main(argv=None) -> int:
     ap.add_argument("--no-sync", action="store_true",
                     help="do not wrap steps in run_phase.sh (implied by --dry-run)")
     ap.add_argument("--list", action="store_true", help="print the checklist and exit")
+    ap.add_argument("--keep-going", action="store_true",
+                    help="record a failed step and go on; --from may then skip unpassed steps")
     args, extra = ap.parse_known_args(argv)
     if args.list:
         for i, s in enumerate(STEPS, 1):
@@ -208,7 +219,8 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
     return run_session(Path(args.session), start=args.start, extra=extra,
-                       dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync))
+                       dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync),
+                       keep_going=args.keep_going)
 
 
 if __name__ == "__main__":

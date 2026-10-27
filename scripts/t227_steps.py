@@ -210,7 +210,7 @@ def step_t21_t220(args) -> dict:
         torch.cuda.synchronize()
         ed = rec.executed_density()
         dp = dens.density_problems({"mask_density": ed, "executed_density": ed}, dense=False)
-        densities = {"arm": "meanpool", "length": args.probe_short,
+        densities = {"arm": "meanpool", "length": arm.length, "budget": arm.budget,
                      "kernel_calls": len(rec.per_call), "executed_density": ed,
                      "dense_fields_ok": not dens.density_problems(dens.DENSE_FIELDS, dense=True)}
         if dp or len(rec.per_call) != len(arm.layers):
@@ -413,7 +413,7 @@ def cmd_arm_pass(args) -> int:
     import torch
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-    print(f"arm-pass {name} at {args.length}: one prefill of {arm.prompt_id}")
+    print(f"arm-pass {name} at {arm.length} (budget {args.length}): one prefill of {arm.prompt_id}")
     return 0
 
 
@@ -437,10 +437,11 @@ def step_replay(args) -> dict:
     h = _harness(args)
     arm = h.ready(args.replay_arm, args.length)
     rec = recorder.record_arm_prefill(arm.run_prefill, out / "recording",
-                                      code_path=arm.code_path, context_length=args.length,
+                                      code_path=arm.code_path, context_length=arm.length,
                                       batch=1, prompt_id=arm.prompt_id, layers=arm.layers)
     seq = rec.sequence
-    findings: dict = {"arm": arm.name, "length": args.length, "prompt_id": arm.prompt_id,
+    findings: dict = {"arm": arm.name, "length": arm.length, "budget": args.length,
+                      "prompt_id": arm.prompt_id,
                       "sequence": _sequence_summary(seq),
                       "tape_entries": len(rec.tape), "tape_substitutions": rec.tape.substitutions,
                       "mask_calls": len(rec.masks.masks) if rec.masks else 0}
@@ -457,9 +458,21 @@ def step_replay(args) -> dict:
                                       device="cuda", masks=rec.masks)
     iso = replay.match(seq, replay.replay_nodes(iso_path, exclude=replay.FLUSH))
     ce = replay.cache_effect(seq, m.device_s, iso.device_s)
+    original, pricing, pricing_error = None, None, None
+    if not m.complete:
+        # Substituted positions, priced from the original operators alone.
+        torch.cuda.synchronize()
+        orig_path = replay.isolated_replay(arm.run_prefill, rec.tape,
+                                           out / "isolated_original_trace.json",
+                                           device="cuda", masks=rec.masks, substitute=False)
+        original = replay.match(seq, replay.replay_nodes(orig_path, exclude=replay.FLUSH))
+    try:
+        pricing = replay.price_positions(seq, m, original)
+    except replay.ReplayError as e:
+        pricing_error = str(e)
     record = replay.to_record(seq=seq, prompt_id=arm.prompt_id, m=m, timing=timing,
                               agreement=agreement, tape=rec.tape, masks=rec.masks,
-                              isolated=iso.device_s)
+                              isolated=iso.device_s, pricing=pricing)
     _write_json(out / "replay_record.json", record)
     _write_json(out / "replay_vs_trace.json", rvt)
     _write_json(out / "cache_effect.json", ce)
@@ -470,7 +483,11 @@ def step_replay(args) -> dict:
                      "profiled_over_unprofiled": record["profiled_over_unprofiled"],
                      "replay_vs_trace_families": rvt["families"],
                      "isolated_complete": iso.complete,
-                     "isolated_over_in_order": ce["isolated_over_in_order"]})
+                     "isolated_over_in_order": ce["isolated_over_in_order"],
+                     "original_complete": None if original is None else original.complete,
+                     "priced": pricing is not None,
+                     "cost_sources": None if pricing is None else pricing.counts(),
+                     "pricing_error": pricing_error})
     if agreement is not None and not agreement.get("identical"):
         raise StepFailed("the replay's live masks differ from the bank on the code "
                          "path that recorded them", findings)
@@ -481,10 +498,12 @@ def step_replay(args) -> dict:
 
 def step_probe(args) -> dict:
     """T2.18 for each arm: recorded at the two probe lengths (traces deleted,
-    durations discarded), extended by the arm's chunking rule to `--length`,
-    and checked against a sequence recorded at `--length` itself (the test of
-    record). Each arm passes only if the extension exists and is the same
-    sequence as the full recording."""
+    durations discarded), or a chunked arm at its three
+    (`structural_probe.chunked_probe_lengths`, checked at the third),
+    extended by the arm's chunking rule to the length the full recording
+    ran at (`--length` is its budget), and checked against that recording
+    (the test of record). Each arm passes only if the extension exists and
+    is the same sequence as the full recording."""
     _need_cuda(args, "the structural probe (the parser needs CUDA activity)")
     from attnbench.components import recorder, structural_probe as sp
 
@@ -498,16 +517,22 @@ def step_probe(args) -> dict:
         def record(L, d, name=name):
             a = h.ready(name, L)
             return recorder.record_arm_prefill(
-                a.run_prefill, d, code_path=a.code_path, context_length=L, batch=1,
+                a.run_prefill, d, code_path=a.code_path, context_length=a.length, batch=1,
                 prompt_id=a.prompt_id, layers=a.layers).sequence
 
         try:
             from attnbench.components.shakedown_arms import ARMS
             rule = sp.xattention_rule() if ARMS[name].xattention else sp.NO_CHUNKING
-            seqs = sp.probe(record, spec_dir, lengths=(args.probe_short, args.probe_long))
-            ext = sp.extend(seqs, rule, args.length)
+            lengths = (sp.chunked_probe_lengths(rule) if rule.chunked
+                       else (args.probe_short, args.probe_long))
+            seqs = sp.probe(record, spec_dir, lengths=lengths)
             full = record(args.length, spec_dir / f"full_{args.length}")
-            r = {"rule": rule.name, "chunks": ext.chunks, "extension": ext.verdict,
+            target = full.context_length
+            ext = (sp.extend_checked(seqs, rule, target) if rule.chunked
+                   else sp.extend(seqs, rule, target))
+            r = {"rule": rule.name, "probe_budgets": list(lengths),
+                 "probe_lengths": sorted(seqs), "chunks": ext.chunks,
+                 "checked_at": ext.checked_at, "extension": ext.verdict,
                  "reason": ext.reason, "payload_exponents": ext.payload_exponents,
                  "full": _sequence_summary(full)}
             if ext.extended:
@@ -573,7 +598,8 @@ def step_assert_gate(args) -> dict:
         arm = h.prepare("xattention", args.length, index=i, backend=gate)
         before = len(gate.records)
         arm.run_prefill()
-        prompts.append({"prompt_id": arm.prompt_id, "layers": len(gate.records) - before})
+        prompts.append({"prompt_id": arm.prompt_id, "length": arm.length,
+                        "layers": len(gate.records) - before})
     fails = gate.failures()
     findings.update({"table": table.label, "prompts": prompts, "layer_records": len(gate.records),
                      "failures": [{"layer": r.layer, "mask_equal": r.mask_equal,
@@ -665,7 +691,7 @@ def cmd_graph_breaks_one(args) -> int:
     t0 = time.time()
     report = compiled.graph_break_report(inner, layers, args.setting)
     _write_json(out / "graph_breaks.json", {
-        "arm": name, "setting": args.setting, "length": args.gb_length,
+        "arm": name, "setting": args.setting, "length": arm.length, "budget": args.gb_length,
         "variant": compiled.variant_name(name, args.setting), "seconds": time.time() - t0,
         "layers": [{"layer": l.layer, "graphs": l.graphs,
                     "breaks": [{"reason": b.reason, "where": list(b.where)} for b in l.breaks]}
@@ -805,13 +831,13 @@ def step_figure1(args) -> dict:
     out = Path(args.out)
     h = _harness(args)
     arm = h.ready(args.fig1_arm, args.fig1_length)
-    seqs, findings = {}, {"arm": arm.name, "length": args.fig1_length, "prompt_id": arm.prompt_id,
-                          "layer": args.fig1_layer}
+    seqs, findings = {}, {"arm": arm.name, "length": arm.length, "budget": args.fig1_length,
+                          "prompt_id": arm.prompt_id, "layer": args.fig1_layer}
     with _host_compute_around_mask_build(arm):
         for k in ("a", "b"):
             p = tr.record_prefill_trace(arm.run_prefill, out / f"fig1_{k}_trace.json",
                                         layers=arm.layers, warmup=1, cuda=True)
-            seqs[k] = ops.parse_trace(p, arm.code_path, context_length=args.fig1_length,
+            seqs[k] = ops.parse_trace(p, arm.code_path, context_length=arm.length,
                                       batch=1)
             _save_sequence(seqs[k], out / f"fig1_{k}_sequence.json")
             markers = [o for o in seqs[k].ops
