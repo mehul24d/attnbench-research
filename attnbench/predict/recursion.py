@@ -391,6 +391,18 @@ def price(ops: Iterable[Operation], sync_costs: SyncCosts) -> PricedSequence:
     )
 
 
+def is_closed(priced: PricedSequence) -> bool:
+    """Whether the last operation is the closing synchronise.
+
+    Priced components carry no labels, so this reads what the closing
+    synchronise is (`close_prefill`): a payload-free explicit synchronise,
+    last. `commit` checks the same.
+    """
+    return bool(len(priced) and priced.is_sync[-1]
+                and priced.mechanisms[-1] == "synchronize"
+                and priced.payload_bytes[-1] == 0)
+
+
 def recurse(priced: PricedSequence, queue_depth: Optional[int], *,
             sync_wait: bool = True) -> Timeline:
     """Run the recursion over priced components.
@@ -405,12 +417,18 @@ def recurse(priced: PricedSequence, queue_depth: Optional[int], *,
     device work, and the queue counts launches only. With the wait in place
     the two queue counts agree (a synchronisation drains the queue), so the
     full model keeps the plan's D_(i-Q) as written; without it they do not,
-    and a synchronisation is not a launch.
+    and a synchronisation is not a launch. The ablation removes the arm's
+    own waits only: the closing synchronise is the ground-truth timer's, so
+    it still waits, and the sequence must end with it (`is_closed`).
     """
     _check_queue_depth(queue_depth)
     n = len(priced)
     if n == 0:
         raise CostModelError("an empty operation sequence has no D_N")
+    if not sync_wait and not is_closed(priced):
+        raise CostModelError(
+            "the no-wait ablation keeps the closing synchronise's wait, and "
+            "this sequence does not end with one; build it with close_prefill")
     h, l, d = priced.host, priced.link, priced.device
     s, is_sync = priced.sync_cost, priced.is_sync
     Q = queue_depth
@@ -436,7 +454,7 @@ def recurse(priced: PricedSequence, queue_depth: Optional[int], *,
                 stall[k] = bound - t
                 t = bound
         if is_sync[k]:
-            if sync_wait:
+            if sync_wait or k == n - 1:
                 start = D_prev if D_prev > t else t
                 wait[k] = start - t
                 t = start + s[k]
