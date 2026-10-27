@@ -220,6 +220,49 @@ def test_a_frame_without_git_commit_refuses(tmp_path):
         backends_with_drift(pd.DataFrame([{"backend": "fa2"}]), repo=repo)
 
 
+XA = "attnbench/backends/xattention.py"
+XA_NOASSERT = "attnbench/backends/xattention_noassert.py"
+
+
+def _xa(forward_body: str, estimate_body: str = "return q") -> str:
+    return textwrap.dedent(f"""
+        class XAttentionBackend:
+            def estimate(self, q, k):
+                {estimate_body}
+            def forward(self, q, k, v, cfg, mask=None):
+                {forward_body}
+    """)
+
+
+def _xa_noassert(estimate_body: str = "return k") -> str:
+    return textwrap.dedent(f"""
+        class XAttentionNoAssertBackend(XAttentionBackend):
+            def estimate(self, q, k):
+                {estimate_body}
+    """)
+
+
+def test_an_inherited_forward_is_part_of_the_subclass_fingerprint(tmp_path):
+    repo, shas = _repo(tmp_path, [
+        {XA: _xa("return q"), XA_NOASSERT: _xa_noassert(), TIMING: _timing()},
+        {XA: _xa("return q * 2"), XA_NOASSERT: _xa_noassert(), TIMING: _timing()},
+        {XA: _xa("return q * 2", estimate_body="return v"),
+         XA_NOASSERT: _xa_noassert(), TIMING: _timing()},
+    ])
+    fp = fingerprint(repo, shas[0], "xattention_noassert")
+    assert set(fp.parts) == {"XAttentionNoAssertBackend.estimate",
+                             "XAttentionBackend.forward", f"{TIMING}:_do_bench"}
+    drifts = backends_with_drift(
+        _frame([("xattention_noassert", shas[0]), ("xattention_noassert", shas[1])]),
+        repo=repo)
+    assert [d.methods for d in drifts] == [("XAttentionBackend.forward",)]
+    # The parent's estimate is overridden, so its change is not the subclass's.
+    assert fingerprint(repo, shas[1], "xattention_noassert").digest == \
+        fingerprint(repo, shas[2], "xattention_noassert").digest
+    assert fingerprint(repo, shas[1], "xattention").digest != \
+        fingerprint(repo, shas[2], "xattention").digest
+
+
 def test_every_registered_backend_has_a_source_mapping():
     """Static coverage check: a backend added to the registry without a
     BACKEND_SOURCES entry would be unmapped, and unmapped only shows up when

@@ -275,10 +275,21 @@ class XAttentionBackend(AttentionBackend):
         qf = q.transpose(1, 2).reshape(s, h, d)
         kf = k_rep.transpose(1, 2).reshape(s, h, d)
         vf = v_rep.transpose(1, 2).reshape(s, h, d)
-        cu = torch.tensor([0, s], dtype=torch.int32, device=q.device)
-        head_mask_type = torch.ones(h, dtype=torch.int32, device=q.device)
+        # Built per layer, exactly as upstream builds them: at e379887
+        # `Xattention_prefill` makes three device tensors from Python lists on
+        # every call (query lengths, key lengths, head-mask type), so the three
+        # host-to-device copies, and any wait in them, are the method's own,
+        # not this harness's. Before 27 Oct 2026 this built one tensor, shared
+        # by query and key, and a `torch.ones` fill: the same values and the
+        # same output (tests/test_xattention_backend.py), one copy instead of
+        # three. The T1.1 results were measured with that build. Whether a
+        # list-built device tensor waits is step 9 of the T2.3 mechanism zoo.
+        q_cu_seq_lens = torch.tensor([0, s], dtype=torch.int32, device=q.device)
+        k_cu_seq_lens = torch.tensor([0, s], dtype=torch.int32, device=q.device)
+        head_mask_type = torch.tensor(
+            [1 for _ in range(h)], device=q.device, dtype=torch.int32)
         out = block_sparse_attn_func(
-            qf, kf, vf, cu, cu, head_mask_type, None,
+            qf, kf, vf, q_cu_seq_lens, k_cu_seq_lens, head_mask_type, None,
             simple_mask[:, :, :nb, :nb].contiguous(), s, s,
             p_dropout=0.0, deterministic=True, is_causal=True)
         return out.view(1, s, h, d).transpose(1, 2)
