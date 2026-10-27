@@ -346,7 +346,7 @@ def test_the_control_must_be_the_choice_recorded_before_the_first_block():
     ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at + 1.0)          # passes
     with pytest.raises(ds.SelectionError, match="recorded choice"):
         ds.check_control(ch, ds.SDPA_FLASH, ch.recorded_at + 1.0)      # the banked baseline
-    with pytest.raises(ds.SelectionError, match="not before the first timed block"):
+    with pytest.raises(ds.SelectionError, match="not before the first clocked block"):
         ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at)
     with pytest.raises(ds.SelectionError, match="not before"):
         ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at - 1.0)

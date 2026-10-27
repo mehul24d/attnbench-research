@@ -1,6 +1,6 @@
 """T2.13's controls: the dense control's drift check and the rerun rule, clock
 and throttle sampling, traced against untraced, one compiled setting per
-process, and the first timed block's timestamp (plan Sections 5.3 steps 1, 7
+process, and the first clocked block's timestamp (plan Sections 5.3 steps 1, 7
 and 8, 5.5 and 5.6).
 
 Each check here is one a mutation has been watched to break (recorded in the
@@ -410,8 +410,8 @@ def test_an_overhead_inside_the_floor_is_labelled_so():
 
 def test_the_timestamp_handed_on_is_the_untraced_one():
     rig, tracing, out = _traced_session(9.0)
-    assert out["first_timed_block_started_at"] == out["untraced"]["first_timed_block_started_at"]
-    assert out["traced"]["first_timed_block_started_at"] > out["first_timed_block_started_at"]
+    assert out["first_clocked_block_started_at"] == out["untraced"]["first_clocked_block_started_at"]
+    assert out["traced"]["first_clocked_block_started_at"] > out["first_clocked_block_started_at"]
 
 
 def test_profiler_overhead_refuses_swapped_or_mismatched_results():
@@ -472,17 +472,19 @@ def test_a_declaration_the_backend_does_not_bear_out_is_refused():
         rig.run(reps=1)
 
 
-# --- the first timed block's timestamp ---------------------------------------------
+# --- the first clocked block's timestamp ---------------------------------------------
 
-def test_the_timestamp_is_the_first_ground_truth_block_not_a_warmup():
+def test_the_timestamp_is_the_first_clocked_block_warmups_included():
+    """The strict rule (Appendix A, 27 Oct 2026): the stamp is the start of the
+    first block of any kind that is clocked, so it precedes every warm-up
+    forward and every timed one."""
     rig = Rig()
     out = rig.run()
-    stamp = out["first_timed_block_started_at"] - 1_000_000.0
-    first_timed = min(t for (n, i, t, _) in rig.log
-                      if i >= WARMUP)                     # a timed forward's start
-    last_warmup_end = max(t for (n, i, t, _) in rig.log if i == WARMUP - 1) + 18.0 / 1e3
-    assert stamp == pytest.approx(first_timed)
-    assert stamp > last_warmup_end - 1e-9               # after every warm-up
+    stamp = out["first_clocked_block_started_at"] - 1_000_000.0
+    first_clocked = min(t for (n, i, t, _) in rig.log)            # any forward, warm-up or timed
+    first_timed = min(t for (n, i, t, _) in rig.log if i >= WARMUP)
+    assert stamp == pytest.approx(first_clocked)
+    assert stamp < first_timed - 1e-9                           # not the first timed block's
 
 
 def test_a_rerun_round_does_not_move_the_timestamp():
@@ -490,7 +492,7 @@ def test_a_rerun_round_does_not_move_the_timestamp():
     plain = Rig()
     a, b = flagged_first.run(), plain.run()
     assert a["rounds"][0]["flagged"]
-    assert a["first_timed_block_started_at"] == pytest.approx(b["first_timed_block_started_at"])
+    assert a["first_clocked_block_started_at"] == pytest.approx(b["first_clocked_block_started_at"])
 
 
 def test_the_timestamp_is_taken_once_and_not_per_block():
@@ -503,15 +505,14 @@ def test_the_timestamp_is_taken_once_and_not_per_block():
 def test_the_timestamp_is_in_the_form_the_late_prediction_check_reads():
     from attnbench.predict.commit import ground_truth_start, utc_from_epoch
     out = Rig().run()
-    stamp = out["first_timed_block_started_at"]
+    stamp = out["first_clocked_block_started_at"]
     assert ground_truth_start([stamp]) == utc_from_epoch(stamp)
 
 
 def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late(tmp_path):
-    """The consumer, end to end: a prediction synced after the first
-    ground-truth block started is refused by `load_committed`, one synced
-    while only warm-up had run is accepted (`ground_truth_start` says a
-    warm-up is not the first timed block), and so is an earlier one."""
+    """The consumer, end to end: a prediction synced at or after the first
+    clocked block started, warm-up included, is refused by `load_committed`,
+    and one synced before it is accepted."""
     from datetime import datetime, timedelta, timezone
 
     from test_predict_commit import Clock, MemoryStore, committed, p1_record
@@ -519,10 +520,11 @@ def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late
 
     epoch = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc).timestamp()
     rig = Rig()
-    out = rig.run(wall_clock=lambda: epoch + rig.clock.t)
-    stamp = out["first_timed_block_started_at"]
+    start = 10.0                       # the instance starts its first clocked block 10 s after the file
+    out = rig.run(wall_clock=lambda: epoch + start + rig.clock.t)
+    stamp = out["first_clocked_block_started_at"]
     warmup_s = WARMUP * (30.0 + 18.0) / 1e3
-    assert stamp == pytest.approx(epoch + warmup_s)
+    assert stamp == pytest.approx(epoch + start)           # the first warm-up forward
 
     def load(sync_offset_s):
         store = MemoryStore(Clock(None))
@@ -533,8 +535,9 @@ def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late
                               ground_truth_started_at=utc_from_epoch(stamp),
                               clock_skew=timedelta(0), local=f.path)
 
-    assert load(0.0).pairing == "P1"                       # before any run
-    assert load(warmup_s / 2).pairing == "P1"              # during warm-up: not yet timed
-    for late in (warmup_s, warmup_s + 0.001):              # at, or after, the first block
+    assert load(0.0).pairing == "P1"                       # before any block was clocked
+    # At the stamp, during the dense control's clocked warm-up, and after it
+    # (the strict rule: a warm-up is a clocked block, so these are all late).
+    for late in (start, start + warmup_s / 2, start + warmup_s, start + warmup_s + 0.001):
         with pytest.raises(LatePredictionError):
             load(late)

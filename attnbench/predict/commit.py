@@ -171,8 +171,9 @@ def utc_from_epoch(seconds: float) -> datetime:
 
 def ground_truth_start(timestamps: Iterable) -> datetime:
     """The earliest of the timed workload's stamps (epoch seconds or aware
-    datetimes). The caller passes the stamp of the first timed block, not
-    of a warm-up or of the structural probe."""
+    datetimes). The caller passes the stamp of the first clocked block of any
+    kind, warm-up included (strict rule, Appendix A, 27 Oct 2026), not the
+    structural probe's."""
     ts = [utc_from_epoch(t) if isinstance(t, (int, float)) and not
           isinstance(t, bool) else _check_aware(t, "a ground-truth stamp")
           for t in timestamps]
@@ -1026,7 +1027,7 @@ def load_committed(store: Store, remote: str, *,
                    local: Optional[Path | str] = None) -> CommittedPrediction:
     """The committed prediction the analysis may score, or a refusal.
 
-    `ground_truth_started_at` is when the pairing's first timed block began
+    `ground_truth_started_at` is when the pairing's first clocked block began
     (`ground_truth_start`). `clock_skew` is the largest difference allowed
     between the store's clock and the instance's; it only ever makes the
     check stricter. `banked_at` gives, for every pairing a committed
