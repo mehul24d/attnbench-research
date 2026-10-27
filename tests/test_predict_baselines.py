@@ -128,8 +128,9 @@ def test_baseline_orderings(seed):
 # --------------------------------------------------------------------------
 
 def row(pairing, ops, measured, arm="dense", L=8192, statistic="median"):
-    cell = Cell(pairing=pairing, arm=arm, context_length=L, density=1.0,
-                batch=1, priced=P(ops), hardware=HW)
+    cell = Cell(pairing=pairing, model_name="m-small", code_path="cp-a", arm=arm,
+                context_length=L, density=1.0, batch=1, priced=P(ops),
+                hardware=HW)
     return GroundTruthRow(cell=cell, measured=measured, statistic=statistic)
 
 

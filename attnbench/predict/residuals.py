@@ -5,7 +5,8 @@ A residual is a committed prediction against the measured statistic of the
 same cell: predicted - measured in seconds, and divided by measured. Each
 carries what the analysis groups by:
 
-  - the arm;
+  - the model, the code path and the arm (the cell's key, so a residual is
+    never pooled across a code path, rule 3);
   - its synchronisation count: the synchronisations in the committed
     sequence, not counting the closing synchronise every prefill ends with
     (Appendix A, 22 Oct 2026; commit.py checks it is there);
@@ -33,13 +34,15 @@ from .commit import CommittedPrediction, PredictionCommitError, cell_key
 DENSE = "dense"
 SYNC_FREE = "synchronisation-free"
 SYNCHRONISING = "synchronising"
-GROUP_FIELDS = ("predictor", "arm", "n_synchronisations", "arm_class",
-                "context_length", "batch", "density")
+GROUP_FIELDS = ("predictor", "model", "code_path", "arm", "n_synchronisations",
+                "arm_class", "context_length", "batch", "density")
 
 
 @dataclass(frozen=True)
 class Residual:
     predictor: str
+    model: str
+    code_path: str
     arm: str
     context_length: int
     density: float
@@ -88,8 +91,9 @@ def residuals(cp: CommittedPrediction, measured: Mapping[tuple, float], *,
               relative_floor: float,
               predictors: Optional[Sequence[str]] = None) -> ResidualSet:
     """Residuals of every committed prediction (or of `predictors`) on the
-    measured cells. `measured` maps (arm, length, density, batch) to the
-    measured `statistic`, which must be the one the file predicts."""
+    measured cells. `measured` maps a cell key (model, code path, arm,
+    density, length, batch; `training.CellKey`) to the measured `statistic`,
+    which must be the one the file predicts."""
     if statistic != cp.statistic:
         raise PredictionCommitError(
             f"the file predicts the {cp.statistic}; these are {statistic}s")
@@ -119,7 +123,8 @@ def residuals(cp: CommittedPrediction, measured: Mapping[tuple, float], *,
             p, m = c.predictions[name], meas[k]
             rel = (p - m) / m
             out.append(Residual(
-                predictor=name, arm=c.arm, context_length=c.context_length,
+                predictor=name, model=c.model, code_path=c.code_path,
+                arm=c.arm, context_length=c.context_length,
                 density=c.density, batch=c.batch, n_synchronisations=n,
                 arm_class=cls, predicted=p, measured=m, residual=p - m,
                 relative=rel, inside_floor=abs(rel) <= floor))
