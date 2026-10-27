@@ -24,11 +24,19 @@ it belongs to T2.22.
 
 `sign_agreement` is H1's "sparse-vs-dense sign correct outside the
 resolution floor": the decision error with admissibility set aside.
+
+**Ties** (researcher's decision, plan Appendix A, 26 Oct 2026). A predicted
+tie (sparse == dense) is "not profitable": dense. Both metrics read it that
+way. Until 26 Oct 2026 `sign_agreement` read a predicted tie as "sparse not
+slower", so the same tie scored as agreement in one metric and as a missed
+profitable configuration in the other. Cells inside the resolution floor are
+not scored by either metric; `score_cells` reports them separately.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Optional
 
 from .recursion import CostModelError
@@ -112,4 +120,50 @@ def sign_agreement(predicted_sparse: float, predicted_dense: float,
     m = measured_sparse - measured_dense
     if abs(m) <= floor:
         return None
-    return (predicted_sparse - predicted_dense > 0) == (m > 0)
+    # A predicted tie is dense, as in predicted_profitable.
+    return (predicted_sparse < predicted_dense) == (m < 0)
+
+
+@dataclass(frozen=True)
+class ScoredCells:
+    """Decision error and sign agreement over a set of cells. Cells inside
+    the resolution floor are counted in neither and listed in
+    `inside_floor`, by key."""
+
+    decision: dict          # outcome -> count, scored cells only
+    sign_agree: int
+    sign_disagree: int
+    inside_floor: tuple     # keys of the cells not scored
+
+    @property
+    def n_scored(self) -> int:
+        return sum(self.decision.values())
+
+
+def score_cells(cells, *, floor: float) -> ScoredCells:
+    """`cells`: iterable of (key, predicted_sparse, predicted_dense,
+    measured_sparse, measured_dense, admissible). "Inside the floor" is
+    decided on measured time alone, |sparse - dense| <= floor, and such a
+    cell is listed in `inside_floor` and scored by neither metric. That
+    includes an inadmissible cell: `decision_error` on its own scores one as
+    correct whatever the times, since it can never be profitable, but here
+    the floor rule applies to every cell."""
+    decision = {CORRECT: 0, FALSE_PROFITABLE: 0, MISSED_PROFITABLE: 0}
+    agree = disagree = 0
+    inside = []
+    seen = set()
+    for key, ps, pd, ms, md, admissible in cells:
+        if key in seen:
+            raise CostModelError(f"cell {key!r} appears twice")
+        seen.add(key)
+        sign = sign_agreement(ps, pd, ms, md, floor=floor)
+        outcome = decision_error(ps, pd, ms, md, admissible=admissible, floor=floor)
+        if sign is None:
+            inside.append(key)
+            continue
+        agree += sign
+        disagree += not sign
+        if outcome != NOT_INTERPRETED:
+            decision[outcome] += 1
+    return ScoredCells(decision=decision, sign_agree=agree, sign_disagree=disagree,
+                       inside_floor=tuple(inside))
