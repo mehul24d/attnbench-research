@@ -262,6 +262,34 @@ def test_probe_extends_and_checks_each_arm(tmp_path, gpu, monkeypatch):
     assert "oracle" in res["reason"] and "dense" not in res["reason"]
 
 
+def test_figure1_records_its_pair_at_16384_not_at_the_cell_length(tmp_path, gpu, monkeypatch):
+    import contextlib
+    from attnbench.components import op_sequence as ops, trace_recording as tr
+    arm = FakeArm(name="oracle", run_prefill=lambda: None, code_path="cp", prompt_id="p",
+                  layers=())
+    lengths = []
+    monkeypatch.setattr(st, "_harness", lambda args: SimpleNamespace(
+        ready=lambda name, L, index=0: lengths.append(L) or arm))
+    monkeypatch.setattr(st, "_host_compute_around_mask_build",
+                        lambda arm: contextlib.nullcontext())
+    monkeypatch.setattr(tr, "record_prefill_trace", mock.create_autospec(
+        tr.record_prefill_trace, side_effect=lambda fn, path, **k: path))
+    marker = SimpleNamespace(layer=14, kind=ops.SeqKind.HOST_COMPUTE)
+    parse = mock.create_autospec(ops.parse_trace,
+                                 return_value=SimpleNamespace(ops=[marker]))
+    monkeypatch.setattr(ops, "parse_trace", parse)
+    monkeypatch.setattr(ops, "compare", mock.create_autospec(ops.compare, return_value=(
+        SimpleNamespace(verdict=ops.SAME, first_difference=None, reason=""))))
+    monkeypatch.setattr(st, "_crop_layer", lambda p, layer, out: {"layer_us": 1.0})
+    monkeypatch.setattr(st, "_save_sequence", lambda seq, path: None)
+    assert st.parser().parse_args(["figure1", "--out", "x"]).fig1_length == 16384
+    assert st.run_step("figure1", _args(tmp_path, dry_run=False)) == 0
+    assert lengths == [16384]
+    assert {c.kwargs["context_length"] for c in parse.call_args_list} == {16384}
+    res = json.loads((tmp_path / "result.json").read_text())
+    assert res["findings"]["length"] == 16384 and res["findings"]["pair"] == ops.SAME
+
+
 def test_the_figure1_crop_keeps_one_layer_and_its_device_work(tmp_path):
     from attnbench.components import op_sequence as ops
     ev = [

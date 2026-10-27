@@ -5,12 +5,10 @@ runs on its own.
 
 ## What runs
 
-`scripts/t227_shakedown.py` from branch `t227-shakedown-2026-10-27` (local,
-not pushed; `gcp_deploy_source.sh` bundles the local HEAD and confirms the
-commit and a clean tree on the instance). The branch is main `ac74540`
-with `t23-sequence-2026-10-25` (T2.17, T2.21) and `t24-replay-2026-10-25`
-(T2.4, T2.18) merged in, because the runner exercises their code, plus the
-runner itself.
+`scripts/t227_shakedown.py` from branch `t227-shakedown-2026-10-27`
+(`gcp_deploy_source.sh` bundles the local HEAD and confirms the commit and a
+clean tree on the instance). The branch is main `615a522`, which already
+holds T2.4, T2.17, T2.18 and T2.21, plus the runner and this card.
 
 The eleven steps, in order, stopping at the first failure, each with its own
 log (`results/t227_shakedown_<UTC>/<NN>_<step>/step.log`) and each synced to
@@ -28,7 +26,7 @@ GCS as it ends (`run_phase.sh`, phase `t227_<NN>_<step>`):
 | 8 | `assert_gate` | T2.17: x-attention checkout is `e379887` and clean; session check; bitwise gate on 5 real `qa_1` prompts at 8192 | 3 |
 | 9 | `graph_breaks` | T2.21 report, 5 arms × 2 settings, each in its own process, all 28 layers | 25 (the least certain figure) |
 | 10 | `null_kernel` | 64 null kernels under the profiler, one launch and one kernel each | 1 |
-| 11 | `figure1` | oracle at 8192, `host_compute()` around the mask build, recorded twice, layer 14 cut out of each; pair must be the same sequence | 3 |
+| 11 | `figure1` | oracle at 16384 (`--fig1-length`), `host_compute()` around the mask build, recorded twice, layer 14 cut out of each; pair must be the same sequence. The L4 half only: the A100 counterpart is not part of this session | 5 |
 
 The arms: dense (`sdpa_flash`), oracle (block-sparse, reference builder on
 the host, scores before the prefill), meanpool (block-sparse, inline
@@ -53,9 +51,9 @@ examples sized by the Qwen tokenizer.
 | | Hours | ₹ at 108.64/h |
 |---|---|---|
 | Setup: launch to write gate (v6: about 2 min), deploy, preflight, bootstrap with XAttention | 0.35 | 38 |
-| The eleven steps | 1.2 | 130 |
+| The eleven steps (75 min) | 1.25 | 136 |
 | Teardown: serial log, results pull (the traces are large), delete, cleanup check | 0.15 | 16 |
-| **Expected, nothing fails** | **1.7** | **185** |
+| **Expected, nothing fails** | **1.75** | **190** |
 | One failure, fixed on the instance, resumed with `--from` | 2.5 | 272 |
 | In-guest halt (`GCP_HALT_MINUTES=180`): GPU billing stops here | 3.0 | 326 |
 | Hard delete (`GCP_MAX_RUN=3h30m`) | 3.5 | disk only after the halt |
@@ -124,6 +122,9 @@ bash scripts/gcp_cleanup_check.sh
   profiler. This session runs the list as asked for on 27 Oct 2026:
   T2.2 is not built, so step 10 profiles the null kernel and step 11 profiles
   the reference mask builder on the L4's host.
+- **Figure 1 is the L4 half.** Step 11 records the pair at 16384 tokens on
+  the L4. The A100 counterpart (same arm, length and layer) is not part of
+  this session and is not costed here.
 - The dry run on a Mac CPU passes steps 1, 3, 4 and 9 (dense arm only) and
   skips the seven that need CUDA; their wiring is tested with signature-checked
   fakes (`tests/test_t227_shakedown.py`).

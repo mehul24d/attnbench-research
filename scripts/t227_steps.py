@@ -792,25 +792,27 @@ def _crop_layer(trace_path: Path, layer: int, dest: Path) -> dict:
 
 
 def step_figure1(args) -> dict:
-    """Figure 1's trace pair: the same arm (`--fig1-arm`) and length, the same
-    prompt, recorded twice under T2.3's recording rules with `host_compute()`
+    """Figure 1's trace pair: the same arm (`--fig1-arm`) and length
+    (`--fig1-length`, 16384 tokens), the same prompt, recorded twice under T2.3's recording rules with `host_compute()`
     around the mask build, and one layer (`--fig1-layer`) cut out of each.
     The pair must be the same sequence, and the layer must hold a
-    `host_compute` marker in both."""
+    `host_compute` marker in both. This is the L4 half only: the A100
+    counterpart is not part of this session."""
     _need_cuda(args, "the Figure 1 traces")
     from attnbench.components import op_sequence as ops
     from attnbench.components import trace_recording as tr
 
     out = Path(args.out)
     h = _harness(args)
-    arm = h.ready(args.fig1_arm, args.length)
-    seqs, findings = {}, {"arm": arm.name, "length": args.length, "prompt_id": arm.prompt_id,
+    arm = h.ready(args.fig1_arm, args.fig1_length)
+    seqs, findings = {}, {"arm": arm.name, "length": args.fig1_length, "prompt_id": arm.prompt_id,
                           "layer": args.fig1_layer}
     with _host_compute_around_mask_build(arm):
         for k in ("a", "b"):
             p = tr.record_prefill_trace(arm.run_prefill, out / f"fig1_{k}_trace.json",
                                         layers=arm.layers, warmup=1, cuda=True)
-            seqs[k] = ops.parse_trace(p, arm.code_path, context_length=args.length, batch=1)
+            seqs[k] = ops.parse_trace(p, arm.code_path, context_length=args.fig1_length,
+                                      batch=1)
             _save_sequence(seqs[k], out / f"fig1_{k}_sequence.json")
             markers = [o for o in seqs[k].ops
                        if o.layer == args.fig1_layer and o.kind is ops.SeqKind.HOST_COMPUTE]
@@ -868,7 +870,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--arms", default=",".join(ARMS))
     ap.add_argument("--length", type=int, default=8192,
-                    help="the cell: T2.4's, T2.17's, T2.18's target and Figure 1's")
+                    help="the cell: T2.4's, T2.17's and T2.18's target")
     ap.add_argument("--probe-short", type=int, default=2048)
     ap.add_argument("--probe-long", type=int, default=4096)
     ap.add_argument("--replay-arm", default="meanpool", choices=sorted(ARMS))
@@ -880,6 +882,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--null-burst", type=int, default=64)
     ap.add_argument("--fig1-arm", default="oracle", choices=("oracle", "meanpool", "xattention"))
     ap.add_argument("--fig1-layer", type=int, default=14)
+    ap.add_argument("--fig1-length", type=int, default=16384,
+                    help="Figure 1's pair, on the L4 (the A100 counterpart is not this session's)")
     return ap
 
 
