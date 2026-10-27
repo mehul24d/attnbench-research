@@ -105,6 +105,12 @@ CLASSIFIED: dict[tuple[str, str, str], str] = {
     ("attnbench/timing.py", "measure", "timed_call"):
         "GUARDED in-function: measure() returns Measurement(False, "
         "'unsupported') before allocating anything.",
+    ("attnbench/dense_selection.py", "select_dense_baseline", "timed_call"):
+        "GUARDED in-function. Every candidate is asked claims_support before "
+        "it is correctness-checked or timed; a decline, a known device fault "
+        "included, is recorded and the candidate is never launched "
+        "(tests/test_dense_selection.py gives a faulting fake and asserts it "
+        "was not called).",
 }
 
 

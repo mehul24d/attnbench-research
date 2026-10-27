@@ -114,3 +114,4 @@ Branch `frontier-prereg-2026-10-03` was merged and pruned (plan T0.16, Appendix 
 | Path | Decision | Reason / plan task |
 |---|---|---|
 | `attnbench/ground_truth.py`, `attnbench/clock_sampling.py` | New | The ground-truth harness (T2.13): timed region, dense control and rerun rule, clock and throttle sampling, traced-against-untraced overhead, one compiled setting per process; adapts what `run_vectorised_endtoend.py` and `phase_timing.py` did, with the estimator inside the timed region |
+| `attnbench/dense_selection.py` | New | Dense-baseline selection and its recorded choice (K2, T2.16); uses `gates.py`'s correctness checks and the backends' own fault declarations |
