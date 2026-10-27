@@ -33,6 +33,19 @@ the graph. Whatever does not match is reported: positions with no node
 case) and nodes with no position. `device_costs` refuses an incomplete
 match, so a position never gets a device cost from a different kernel.
 
+**Substituted positions** (plan Section 5.1, Appendix A, 27 Oct 2026). A
+position the graph cannot hold as recorded is priced from an isolated
+replay of the original operator: `isolated_replay(..., substitute=False)`
+runs the prefill eagerly without the tape, so `nonzero` and the
+host-to-device copy run as recorded, each alone on a cold cache.
+`price_positions` takes every other position from the graph and these from
+that replay, and flags each position's cost source (`GRAPH` or
+`ISOLATED_ORIGINAL`). It refuses unless the original replay matches the
+whole sequence, every position the graph missed is an operator the tape
+substitutes (`SUBSTITUTED_ATEN_OPS`), and the graph has no extra node
+without such a position. The graph's extra nodes (the stand-in kernels)
+are recorded and priced nowhere.
+
 **Isolated replay.** The same prefill, eagerly, from the tape and the bank,
 with the device synchronised and the L2 cache flushed before every aten
 operator (`IsolationMode`), under the profiler. Each operation then runs
@@ -71,7 +84,17 @@ from .sync_tape import SyncTape, TapeReplayer
 
 REPLAY_REGION = "attnbench::replay"
 FLUSH = "attnbench::isolation_flush"
-SCHEMA = "attnbench.replay/1"
+SCHEMA = "attnbench.replay/2"
+SCHEMAS_READ = ("attnbench.replay/1", SCHEMA)
+GRAPH, ISOLATED_ORIGINAL = "graph", "isolated_original"
+# The aten operators issuing the device work at a position the tape
+# substitutes (`sync_tape.SUBSTITUTED_KINDS`): `nonzero` (and `torch.where`
+# with one argument, through `nonzero_numpy`), boolean indexing and
+# assignment, and a host-to-device `copy_`. Read from PyTorch's dispatch, not
+# yet from an L4 trace: T2.27's replay step reports the positions it prices.
+SUBSTITUTED_ATEN_OPS = frozenset({
+    "aten::nonzero", "aten::nonzero_numpy", "aten::index", "aten::index_put_",
+    "aten::_index_put_impl_", "aten::copy_"})
 
 
 class ReplayError(RuntimeError):
@@ -321,6 +344,48 @@ def device_costs(m: Match) -> dict[int, float]:
     return dict(m.device_s)
 
 
+@dataclass(frozen=True)
+class Pricing:
+    device_s: dict                 # position -> device seconds, every device position
+    source: dict                   # position -> GRAPH or ISOLATED_ORIGINAL
+    substitute_nodes: tuple        # the graph's stand-in kernels, priced nowhere
+
+    def counts(self) -> dict[str, int]:
+        out: dict = defaultdict(int)
+        for v in self.source.values():
+            out[v] += 1
+        return dict(out)
+
+
+def price_positions(seq: OpSequence, graph: Match, original: Optional[Match]) -> Pricing:
+    """c_dev for every device position: from the in-order graph where it
+    holds the position as recorded, else from the isolated replay of the
+    original operator (module docstring, "Substituted positions")."""
+    if graph.complete:
+        return Pricing(dict(graph.device_s), {i: GRAPH for i in graph.device_s}, ())
+    missing = graph.unmatched_positions
+    if not missing:
+        raise ReplayError(f"the graph has {len(graph.extra_nodes)} nodes with no position "
+                          f"and substitutes nothing; no position is priced")
+    other = [i for i in missing if seq.ops[i].aten_op not in SUBSTITUTED_ATEN_OPS]
+    if other:
+        raise ReplayError(
+            f"{len(other)} unmatched positions are not substitutions "
+            f"({sorted({operation_family(seq.ops[i]) for i in other})}); "
+            f"no device cost is taken from a different kernel")
+    if original is None or not original.complete:
+        why = "was not run" if original is None else (
+            f"does not match the sequence ({len(original.unmatched_positions)} positions "
+            f"unmatched, {len(original.extra_nodes)} extra nodes)")
+        raise ReplayError(f"{len(missing)} substituted positions need the isolated replay "
+                          f"of the original operators, which {why}")
+    costs, source = dict(graph.device_s), {i: GRAPH for i in graph.device_s}
+    for i in missing:
+        costs[i], source[i] = original.device_s[i], ISOLATED_ORIGINAL
+    return Pricing(dict(sorted(costs.items())), dict(sorted(source.items())),
+                   tuple(graph.extra_nodes))
+
+
 # --- isolated replay ---------------------------------------------------------------------
 
 class IsolationMode(TorchDispatchMode):
@@ -353,23 +418,27 @@ def isolated_replay(run_prefill: Callable[[], None], tape: SyncTape, path, *, de
                     masks: Optional[mask_bank.MaskRecord] = None,
                     flush: Optional[Callable[[], None]] = None,
                     sync: Optional[Callable[[], None]] = None,
-                    kernel_module=None, profile=True) -> Path:
+                    kernel_module=None, profile=True, substitute: bool = True) -> Path:
     """The prefill once, eagerly, each aten operator alone on a cold cache,
     under the profiler; returns the trace. Read it with `replay_nodes(...,
-    exclude=FLUSH)`."""
+    exclude=FLUSH)`. With `substitute=False` the tape is not served: the
+    original operators run, synchronisations included, which is how the
+    substituted positions are priced (`price_positions`)."""
+    from contextlib import nullcontext
     from torch.profiler import ProfilerActivity, profile as _profile
     sync = sync or torch.cuda.synchronize          # taken before the tape patches it
     flush = flush or l2_flush(device)
-    staged = tape.stage(device)
     banked = masks.tensors(device) if masks is not None else None
+    rep = TapeReplayer(tape, tape.stage(device)) if substitute else None
     acts = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if torch.cuda.is_available() else [])
     sync()
     with _profile(activities=acts) as prof:
         with record_function(REPLAY_REGION):
-            rep = TapeReplayer(tape, staged)
-            with rep, _bank_capture(banked, kernel_module) as cap, IsolationMode(flush, sync):
+            with rep or nullcontext(), _bank_capture(banked, kernel_module) as cap, \
+                    IsolationMode(flush, sync):
                 run_prefill()
-            rep.finish()
+            if rep is not None:
+                rep.finish()
             _check_calls(cap, banked)
         sync()
     prof.export_chrome_trace(str(path))
@@ -446,7 +515,8 @@ def check_passes(report: Mapping, bound: float) -> tuple[bool, list[str]]:
 def to_record(*, seq: OpSequence, prompt_id: str, m: Match, timing: Optional[dict],
               agreement: Optional[dict], tape: SyncTape,
               masks: Optional[mask_bank.MaskRecord],
-              isolated: Optional[Mapping[int, float]] = None) -> dict:
+              isolated: Optional[Mapping[int, float]] = None,
+              pricing: Optional[Pricing] = None) -> dict:
     """The banked device components of one arm, prompt and cell."""
     cp = seq.code_path
     node_sum = sum(m.device_s.values())
@@ -464,12 +534,29 @@ def to_record(*, seq: OpSequence, prompt_id: str, m: Match, timing: Optional[dic
         "profiled_over_unprofiled": (node_sum / timing["median_s"]
                                      if timing and timing["median_s"] > 0 else None),
         "mask_agreement": agreement,
+        "priced_s": None if pricing is None else {str(k): v for k, v in pricing.device_s.items()},
+        "cost_source": None if pricing is None else {str(k): v for k, v in pricing.source.items()},
+        "substitute_nodes": None if pricing is None else list(pricing.substitute_nodes),
     }
 
 
 def device_costs_from_record(record: Mapping) -> dict[int, float]:
-    if record.get("schema") != SCHEMA:
+    """c_dev by position: the priced costs where the record has them (every
+    position with its source), else the graph's, which must be complete."""
+    if record.get("schema") not in SCHEMAS_READ:
         raise ReplayError(f"schema {record.get('schema')!r}")
+    if record.get("priced_s") is not None:
+        if set(record["priced_s"]) != set(record.get("cost_source") or {}):
+            raise ReplayError("the priced positions and their cost sources differ")
+        return {int(k): float(v) for k, v in record["priced_s"].items()}
     if not record["complete"]:
         raise ReplayError("this replay did not match its sequence; it has no device costs")
     return {int(k): float(v) for k, v in record["device_s"].items()}
+
+
+def cost_sources_from_record(record: Mapping) -> dict[int, str]:
+    """Each priced position's cost source; all GRAPH for a record that has
+    only the graph's complete match."""
+    if record.get("cost_source") is not None:
+        return {int(k): v for k, v in record["cost_source"].items()}
+    return {i: GRAPH for i in device_costs_from_record(record)}

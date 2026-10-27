@@ -210,3 +210,99 @@ def test_the_probe_keeps_traces_when_asked(tmp_path):
     assert (tmp_path / "probe_2048" / "trace.json").exists()
     assert "trace_discarded" not in json.loads(
         (tmp_path / "probe_2048" / "recording.json").read_text())
+
+
+# --- chunked arms: three probe lengths (Appendix A, 27 Oct 2026) ----------------------
+
+def chunked_seqs(rule, lengths=None, **kw):
+    lengths = lengths or P.chunked_probe_lengths(rule)
+    return {L: program(L, rule.chunks(L), **kw) for L in lengths}
+
+
+def test_xattention_probe_lengths_have_three_distinct_counts_of_at_least_two():
+    rule = P.xattention_rule()
+    lengths = P.chunked_probe_lengths(rule)
+    assert lengths == (20480, 28672, 34816)
+    assert [rule.chunks(L) for L in lengths] == [3, 4, 9]
+    assert all(L % P.LENGTH_STEP == 0 for L in lengths)
+
+
+def test_probe_lengths_sit_mid_band_so_a_short_prompt_keeps_its_count():
+    rule = P.xattention_rule()
+    for L in P.chunked_probe_lengths(rule):
+        assert rule.chunks(L - 1000) == rule.chunks(L) == rule.chunks(L + 1000)
+
+
+def test_an_unchunked_rule_has_no_chunked_probe_lengths():
+    with pytest.raises(SequenceError, match="not a chunked rule"):
+        P.chunked_probe_lengths(P.NO_CHUNKING)
+
+
+def test_a_rule_without_three_counts_in_range_is_refused():
+    two = P.ChunkingRule("at most two", lambda L: 1 if L < 8192 else 2)
+    with pytest.raises(SequenceError, match="fewer than 3"):
+        P.chunked_probe_lengths(two)
+
+
+@pytest.mark.parametrize("copy_exp", [0, 1, 2])
+@pytest.mark.parametrize("target", [8192, 32768, 65536])
+def test_a_chunked_arm_extends_from_three_lengths_checked_at_the_third(target, copy_exp):
+    seqs = chunked_seqs(PER_1K, (2048, 4096, 8192), copy_exp=copy_exp)
+    ext = P.extend_checked(seqs, PER_1K, target)
+    assert ext.extended, ext.reason
+    assert ext.checked_at == 8192 and "checked at 8192" in ext.reason
+    assert ext.chunks == {2048: 2, 4096: 4, 8192: 8, target: target // 1024}
+    assert P.check_against_full(ext, program(target, target // 1024, copy_exp=copy_exp)).same
+
+
+def test_xattention_extends_from_its_three_probe_lengths():
+    rule = P.xattention_rule()
+    ext = P.extend_checked(chunked_seqs(rule), rule, 65536)
+    assert ext.extended, ext.reason
+    assert P.check_against_full(ext, program(65536, rule.chunks(65536))).same
+
+
+def test_a_payload_law_two_points_infer_wrongly_is_caught_at_the_third():
+    # L^1 between 2048 and 4096, then flat: two points say L^1, the third refutes it.
+    payload = {2048: 8, 4096: 16, 8192: 16}
+    seqs = {L: replace_copy(program(L, PER_1K.chunks(L)), payload[L])
+            for L in (2048, 4096, 8192)}
+    assert P.extend({L: seqs[L] for L in (2048, 4096)}, PER_1K, 32768).extended
+    ext = P.extend_checked(seqs, PER_1K, 32768)
+    assert ext.verdict == DIFFERENT and "differs from the one recorded there" in ext.reason
+
+
+def test_a_unit_that_changes_at_the_third_length_is_different():
+    seqs = chunked_seqs(PER_1K, (2048, 4096, 8192),
+                        extra=lambda L, layer: L == 8192 and layer == 1)
+    ext = P.extend_checked(seqs, PER_1K, 32768)
+    assert ext.verdict == DIFFERENT and ext.sequence is None
+
+
+@pytest.mark.parametrize("lengths", [(1024, 2048, 4096), (2048, 2560, 4096)])
+def test_probe_lengths_under_two_chunks_or_sharing_a_count_are_different(lengths):
+    ext = P.extend_checked(chunked_seqs(PER_1K, lengths), PER_1K, 32768)
+    assert ext.verdict == DIFFERENT and "no two the same" in ext.reason
+
+
+def test_a_chunked_arm_needs_exactly_three_lengths():
+    with pytest.raises(SequenceError, match="3 lengths, not 2"):
+        P.extend_checked(probe_seqs(PER_1K), PER_1K, 32768)
+
+
+def test_the_probe_keys_each_sequence_by_its_recorded_length(tmp_path):
+    def record(L, d):
+        return program(L - 97, PER_1K.chunks(L - 97))          # the prompt lands short
+    seqs = P.probe(record, tmp_path, lengths=(2048, 4096))
+    assert sorted(seqs) == [1951, 3999]
+
+
+def test_two_budgets_recorded_at_one_length_are_refused(tmp_path):
+    with pytest.raises(SequenceError, match="recorded at 2000"):
+        P.probe(lambda L, d: program(2000, 1), tmp_path, lengths=(2048, 4096))
+
+
+def replace_copy(seq, payload):
+    from dataclasses import replace as _r
+    ops = tuple(_r(o, payload_bytes=payload) if o.kind is SeqKind.COPY else o for o in seq.ops)
+    return _r(seq, ops=ops)

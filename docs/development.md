@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 4179 passed, 109 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 4214 passed, 109 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -33,11 +33,11 @@ Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 4249 passed, 39 skipped**, because
+**With `results/` present the suite reads 4284 passed, 39 skipped**, because
 the 65 banked-file tests run instead of skipping and, on a machine with the
 RULER data directory and the tokenizer, those five tests run too (with `results/`
-present and those two hidden it reads 4244 passed, 44 skipped). All three
-totals are 4288, which is
+present and those two hidden it reads 4279 passed, 44 skipped). All three
+totals are 4323, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 
