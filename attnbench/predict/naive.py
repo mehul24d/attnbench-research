@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional, Sequence
 
 from .recursion import CostModelError, PricedSequence, Timeline, recurse
-from .training import GroundTruthRow, statistic_of
+from .training import CellKey, GroundTruthRow, statistic_of
 
 
 @dataclass(frozen=True)
@@ -117,22 +117,27 @@ def nearest_pairing(target: str, banked: Iterable[str],
     return Nearest(target=target, source=None, rule="none")
 
 
-CellKey = tuple   # (arm, context_length, density, batch)
-
-
-def _key(cell) -> CellKey:
-    return (cell.arm, int(cell.context_length), float(cell.density),
-            int(cell.batch))
+def _without_code_path(k: CellKey) -> tuple:
+    return (k.model, k.arm, k.density, k.context_length, k.batch)
 
 
 def nearest_pairing_predictions(target: str, keys: Sequence[CellKey],
                                 rows: Iterable[GroundTruthRow],
                                 banked: Iterable[str],
-                                pairings: Mapping[str, Pairing] = PAIRINGS
+                                pairings: Mapping[str, Pairing] = PAIRINGS, *,
+                                source_code_path: Optional[str] = None
                                 ) -> tuple[Nearest, dict]:
     """For each cell key, the nearest pairing's measured time at the same
-    arm, length, density and batch, unscaled; None where that pairing has
-    no such cell (or no pairing is near)."""
+    model, arm, density, length and batch, unscaled; None where that pairing
+    has no such cell (or no pairing is near).
+
+    **The code path is not matched.** A code path names a GPU architecture,
+    so the nearest pairing's code path is by construction not the target's
+    whenever the two differ in GPU (the "same host platform" rule), and an
+    exact match would find nothing. The cost is that a source with two code
+    paths for one cell (XAttention's Triton and PyTorch paths on one card)
+    has two rows for it; that is refused, not averaged, and
+    `source_code_path` names the one to read."""
     near = nearest_pairing(target, banked, pairings)
     out: dict = {tuple(k): None for k in keys}
     if near.source is None:
@@ -142,12 +147,21 @@ def nearest_pairing_predictions(target: str, keys: Sequence[CellKey],
         raise CostModelError(
             f"{near.source} is banked but has no ground-truth rows here")
     statistic_of(source_rows)
+    if source_code_path is not None:
+        source_rows = [r for r in source_rows
+                       if r.cell.code_path == source_code_path]
+        if not source_rows:
+            raise CostModelError(
+                f"{near.source} has no ground-truth rows on code path "
+                f"{source_code_path!r}")
     by_key: dict = {}
     for r in source_rows:
-        k = _key(r.cell)
+        k = _without_code_path(r.cell.key)
         if k in by_key:
-            raise CostModelError(f"{near.source} has two rows for cell {k}")
+            raise CostModelError(
+                f"{near.source} has two rows for cell {k} (on different code "
+                f"paths, or twice); name source_code_path")
         by_key[k] = float(r.measured)
     for k in out:
-        out[k] = by_key.get(k)
+        out[k] = by_key.get(_without_code_path(CellKey(*k)))
     return near, out

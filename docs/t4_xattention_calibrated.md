@@ -456,3 +456,46 @@ researcher's decision of 25 Oct 2026, plan Appendix A).
   run on the same 400 ids (the `authors` table on the Triton path, and
   `sdpa_flash` dense) with these L4 rows. That run was not made and is not
   scheduled.
+
+**Positions past the limit (A7), re-derived 26 Oct 2026.** Counted from
+`positions_over_limit` in the four banked files under
+`results/t11b_session_20261025/results/` (`t4_xattn_cal_<table>_20261025/accuracy.parquet`,
+force-committed on 26 Oct 2026). The field equals
+max(0, prompt + generated − 32,768) on every row. Each cell is rows over the
+limit of n, then the largest overshoot in positions. The decoding maximum is
+each task's generation cap (`attnbench/accuracy/stopping.py`): 42 tokens for
+`qa_1` and 62 for both NIAH tasks, and every cell reaches it.
+
+| file | 16384, any task | `qa_1` 32768 | `niah_multivalue` 32768 | `niah_multiquery` 32768 | 32768, all tasks |
+|---|---|---|---|---|---|
+| dense | 0 of 200 | 19 of 100, 42 | 50 of 50, 62 | 50 of 50, 62 | 119 of 200 |
+| `authors` | 0 of 200 | 20 of 100, 42 | 50 of 50, 62 | 50 of 50, 62 | 120 of 200 |
+| `authors_full` | 0 of 200 | 20 of 100, 42 | 50 of 50, 62 | 50 of 50, 62 | 120 of 200 |
+| `ruler_heldout` | 0 of 200 | 21 of 100, 42 | 50 of 50, 62 | 50 of 50, 62 | 121 of 200 |
+
+- The overshoot comes from decoding, not from the prompt. The `qa_1` 32768
+  prompts are 32,383 to 32,768 tokens and the NIAH 32768 prompts 32,767 to
+  32,768. At 16384 the longest prompt is 16,384 tokens, so no row there is
+  near the limit.
+- The dense count, 119 of 200 at 32768, is the XA pilot's count in A7.
+- Of the `qa_1` 32768 rows past the limit, 7 of 19 are correct for dense,
+  7 of 20 for `authors` and for `authors_full`, and 9 of 21 for
+  `ruler_heldout`.
+- `tests/test_t4_session_b_positions.py` derives this table from the banked
+  files and checks it against this section.
+
+**The 32768 NIAH cells are confounded by the position limit (27 Oct 2026,
+researcher's decision; plan Appendix A).** Every NIAH row at 32768 (50 of 50
+on `niah_multivalue` and on `niah_multiquery`, in every file) and about a
+fifth of the `qa_1` rows there (19, 20, 20 and 21 of 100) decode past the
+model's 32,768 positions. So the `niah_multivalue` collapse at 32768 (1 or
+0 of 50 against dense's 17) is confounded and is not a finding. The same
+holds for the scalar phase's collapse in that cell: all 50 of its rows there
+at every tau are flagged too (`results/positions_over_limit/`, which is not
+tracked). The "No secondary cell certifies" bullet above stands as a
+statement that the cell did not certify, not as evidence of a collapse. The
+`qa_1` 32768 claim keeps its "[32K-positions caveat]" (`docs/claims.md`).
+Future accuracy runs follow the plan's grid rule (Section 5.3 step 7): a
+cell's prompt plus its task's generation cap must be within 32,768.
+`tests/test_t4_session_b_positions.py` checks these counts against the banked
+files.

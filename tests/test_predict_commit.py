@@ -44,6 +44,11 @@ CLEAN = CodeStamp(git_commit="a" * 40, git_dirty=False)
 HW = HardwareFeatures(pinned_bandwidth=1024, pageable_bandwidth=512)
 CONFIG = LearnedConfig(target="seconds")
 NO_SKEW = timedelta(0)
+MODEL = "m-small"
+CP_DEF = {"gpu": "L4", "implementation": "xattn:torch",
+          "libraries": [["torch", "2.8.0"]], "python_optimize": 0}
+CP = C.code_path_label(CP_DEF)
+CODE_PATHS = {CP: CP_DEF}
 
 # K(h1,d10) S(item, 4 B) K(h1,d1), all layer 0, then the closing synchronise.
 # Recursion (Q = 8 never binds): H = 1, 13, 14; D = 11, 13, 15 (as in
@@ -59,9 +64,11 @@ OPS = close_prefill([kernel_op(1, 10, layer=0),
 OPS_HOST = close_prefill([kernel_op(3, 1, layer=0), kernel_op(3, 1, layer=0)])
 
 
-def cell(pairing="P1", ops=OPS, arm="xattn", L=4, density=0.5, batch=1):
-    return Cell(pairing=pairing, arm=arm, context_length=L, density=density,
-                batch=batch, priced=price(ops, COSTS), hardware=HW, model=TOY)
+def cell(pairing="P1", ops=OPS, arm="xattn", L=4, density=0.5, batch=1,
+         model_name=MODEL, code_path=CP):
+    return Cell(pairing=pairing, model_name=model_name, code_path=code_path,
+                arm=arm, context_length=L, density=density, batch=batch,
+                priced=price(ops, COSTS), hardware=HW, model=TOY)
 
 
 class Clock:
@@ -94,7 +101,7 @@ def p1_record(**kw):
     args = dict(pairing="P1", cells=[cell(), cell(ops=OPS_HOST, arm="dense",
                                                   density=1.0)],
                 queue_depth=8, banked=[], fitted_sum=None, learned=None,
-                code=CLEAN, written_at=T0)
+                code=CLEAN, written_at=T0, code_paths=CODE_PATHS)
     args.update(kw)
     return build_record(**args)
 
@@ -124,7 +131,8 @@ def p2_record(**kw):
     args = dict(pairing="P2", cells=[cell("P2"), cell("P2", ops=OPS_HOST,
                                                       arm="dense", density=1.0)],
                 queue_depth=8, banked=["P1"], fitted_sum=fs, learned=lm,
-                fitted_sum_plus_s0=fs0, code=CLEAN, written_at=T0)
+                fitted_sum_plus_s0=fs0, code=CLEAN, written_at=T0,
+                code_paths=CODE_PATHS)
     args.update(kw)
     return build_record(**args)
 
@@ -194,7 +202,7 @@ def test_write_sync_load_round_trip(tmp_path, locked):
                         local=f.path)
     assert cp.pairing == "P2" and cp.sha256 == f.sha256 and cp.queue_depth == 8
     assert cp.synced_at == receipt.synced_at and cp.written_at == T0
-    x = cp.cell("xattn", 4, 0.5, 1)
+    x = cp.cell(MODEL, CP, "xattn", 0.5, 4, 1)
     assert x.priced == price(OPS, COSTS)
     assert x.predictions["recursion"] == 16 and x.predictions["learned"] == 15
 
@@ -801,8 +809,8 @@ from attnbench.predict.intervals import Interval, bootstrap  # noqa: E402
 from attnbench.predict.naive import (  # noqa: E402
     Nearest, nearest_pairing_predictions)
 
-XKEY = ("xattn", 4, 0.5, 1)
-DKEY = ("dense", 4, 1.0, 1)
+XKEY = C.cell_key(MODEL, CP, "xattn", 0.5, 4, 1)
+DKEY = C.cell_key(MODEL, CP, "dense", 1.0, 4, 1)
 
 
 def test_the_constant_host_cost_baseline_is_computed_and_verified(tmp_path):
@@ -830,7 +838,7 @@ def test_a_bad_constant_is_refused_at_commit():
 
 def _p2_nearest():
     rows = p1_rows()
-    keys = [XKEY, DKEY, ("xattn", 8, 0.5, 1)]
+    keys = [XKEY, DKEY, C.cell_key(MODEL, CP, "xattn", 0.5, 8, 1)]
     return nearest_pairing_predictions("P2", keys[:2], rows, ["P1"])
 
 
@@ -937,3 +945,273 @@ def test_a_bootstrapped_recursion_interval_commits(tmp_path):
 def test_bad_intervals_are_refused(ivs, match):
     with pytest.raises(PredictionCommitError, match=match):
         p1_record(intervals=ivs)
+
+
+# --------------------------------------------------------------------------
+# The key's model and code path (T2.11; Appendix A, 25 Oct 2026)
+# --------------------------------------------------------------------------
+# A cell is keyed by model, code path, arm, density, context length and batch.
+# Two cells that differ only in the model or only in the code path are two
+# cells. Before the key was widened, such a pair was refused as "appears
+# twice" or, worse for a file read later, pooled by anything keyed on the
+# four old fields.
+
+CP2_DEF = {"gpu": "L4", "implementation": "xattn:triton",
+           "libraries": [["torch", "2.8.0"]], "python_optimize": 0}
+CP2 = C.code_path_label(CP2_DEF)
+
+
+def _read_back(rec, tmp_path):
+    f = write_prediction(rec, tmp_path)
+    return verify_bytes(f.path.read_bytes(), f.sidecar.read_text(), f.path.name)
+
+
+def test_cells_differing_only_in_the_model_are_two_cells(tmp_path):
+    rec = p1_record(cells=[cell(), cell(model_name="m-large")])
+    cp = _read_back(rec, tmp_path)
+    assert [c.model for c in cp.cells] == ["m-small", "m-large"]
+    assert cp.cell("m-large", CP, "xattn", 0.5, 4, 1).model == "m-large"
+    with pytest.raises(KeyError):
+        cp.cell("m-other", CP, "xattn", 0.5, 4, 1)
+
+
+def test_cells_differing_only_in_the_code_path_are_two_cells(tmp_path):
+    rec = p1_record(cells=[cell(), cell(code_path=CP2)],
+                    code_paths={CP: CP_DEF, CP2: CP2_DEF})
+    cp = _read_back(rec, tmp_path)
+    assert {c.code_path for c in cp.cells} == {CP, CP2}
+    assert set(cp.code_paths) == {CP, CP2}
+    assert cp.cell(MODEL, CP2, "xattn", 0.5, 4, 1).code_path == CP2
+
+
+def test_the_same_full_key_twice_is_still_refused():
+    with pytest.raises(PredictionCommitError, match="appears twice"):
+        p1_record(cells=[cell(), cell(ops=OPS_HOST)])
+
+
+def test_a_cell_names_its_model_and_code_path_in_the_file():
+    x, _ = p1_record()["cells"]
+    assert (x["model"], x["code_path"]) == (MODEL, CP)
+
+
+@pytest.mark.parametrize("bad", ["", "  ", None, 3])
+def test_a_model_or_code_path_label_must_be_a_non_empty_string(bad):
+    with pytest.raises(PredictionCommitError, match="non-empty label"):
+        C.cell_key(bad, CP, "xattn", 0.5, 4, 1)
+    with pytest.raises(PredictionCommitError, match="non-empty label"):
+        C.cell_key(MODEL, bad, "xattn", 0.5, 4, 1)
+
+
+def test_the_code_path_label_changes_with_a_library_version():
+    newer = {**CP_DEF, "libraries": [["torch", "2.9.0"]]}
+    assert C.code_path_label(newer) != CP
+    assert C.code_path_label({**CP_DEF, "python_optimize": 1}) != CP
+    assert C.code_path_label({**CP_DEF, "gpu": "A100"}) != CP
+    # Library order does not matter; the definition is canonicalised.
+    two = {**CP_DEF, "libraries": [["b", "1"], ["a", "2"]]}
+    swapped = {**CP_DEF, "libraries": [["a", "2"], ["b", "1"]]}
+    assert C.code_path_label(two) == C.code_path_label(swapped)
+
+
+def test_code_path_definition_reads_an_op_sequence_code_path():
+    from attnbench.components.op_sequence import CodePath
+    cp = CodePath(arm="xattn", gpu="L4", implementation="xattn:torch",
+                  libraries=(("torch", "2.8.0"),), python_optimize=0)
+    assert C.code_path_definition(cp) == CP_DEF
+    # The arm is not part of the code path the key carries.
+    assert C.code_path_label(C.code_path_definition(
+        CodePath(arm="dense", gpu="L4", implementation="xattn:torch",
+                 libraries=(("torch", "2.8.0"),)))) == CP
+
+
+@pytest.mark.parametrize("code_paths, message", [
+    ({}, "does not define"),
+    ({CP: CP_DEF, CP2: CP2_DEF}, "which no cell uses"),
+    ({CP: CP2_DEF}, "a label says one thing"),
+    ({CP: {**CP_DEF, "gpu": ""}}, "non-empty strings"),
+    ({CP: {"gpu": "L4"}}, "is defined by"),
+    ({CP: {**CP_DEF, "python_optimize": 7}}, "python_optimize"),
+])
+def test_the_code_path_definitions_are_checked_against_the_cells(code_paths,
+                                                                 message):
+    with pytest.raises(PredictionCommitError, match=message):
+        p1_record(code_paths=code_paths)
+
+
+def test_a_tampered_label_or_missing_field_is_refused_on_read(tmp_path):
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, p1_record(), store, T0)
+
+    def relabel(rec):
+        rec["cells"][0]["code_path"] = CP2
+    _tamper(store, r, relabel)
+    with pytest.raises(PredictionCommitError, match="does not define"):
+        load(store, r, T0 + timedelta(seconds=1))
+
+    (tmp_path / "b").mkdir()
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path / "b", p1_record(), store, T0)
+    _tamper(store, r, lambda rec: rec["cells"][0].pop("model"))
+    with pytest.raises(PredictionCommitError, match="lacks"):
+        load(store, r, T0 + timedelta(seconds=1))
+
+
+def test_a_cell_moved_onto_another_models_key_is_refused_as_a_duplicate(tmp_path):
+    store = MemoryStore(Clock(T0))
+    rec = p1_record(cells=[cell(), cell(model_name="m-large")])
+    _, r = committed(tmp_path, rec, store, T0)
+
+    def collide(rec):
+        rec["cells"][1]["model"] = "m-small"
+    _tamper(store, r, collide)
+    with pytest.raises(PredictionCommitError, match="appears twice"):
+        load(store, r, T0 + timedelta(seconds=1))
+
+
+def test_a_schema_1_file_is_refused(tmp_path):
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, p1_record(), store, T0)
+    _tamper(store, r, lambda rec: rec.update(schema="attnbench.prediction/1"))
+    with pytest.raises(PredictionCommitError, match="schema"):
+        load(store, r, T0 + timedelta(seconds=1))
+
+
+# --------------------------------------------------------------------------
+# The dispatcher's choice is in the hashed file (T2.22; plan Section 5.9, K9)
+# --------------------------------------------------------------------------
+# P1's two cells: xattn (recursion 16) and dense (8). The dispatcher reads the
+# recursion, so sparse is slower and it picks dense. The kernel times make the
+# sparse kernel twice as fast as the dense one, so the kernel-speedup rule and
+# the fixed best-kernel configuration pick xattn: the loss the dispatcher is
+# meant to avoid, committed before anything is timed.
+
+from attnbench.predict import dispatcher as DSP
+
+XCFG = DSP.Config("xattn", 0.5)
+
+
+def dspec(**kw):
+    args = dict(predictor="recursion", floor_s=1.0, dense_arms=("dense",),
+                admissible={"uncorrected": (XCFG,), "holm": ()},
+                kernel_times={XKEY: 2.0, DKEY: 4.0}, use_code_path={})
+    args.update(kw)
+    return DSP.DispatchSpec(**args)
+
+
+def choice(cp, policy, label="uncorrected", L=4):
+    (c,) = [c for c in cp.dispatch_choices if (c["set"], c["policy"],
+                                               c["context_length"]) == (label, policy, L)]
+    return c["choice"]["arm"] if c["choice"] else None
+
+
+def test_the_choices_are_written_and_read_back(tmp_path):
+    cp = _read_back(p1_record(dispatch=dspec()), tmp_path)
+    assert cp.dispatch_spec.to_json() == dspec().to_json()
+    assert choice(cp, "dispatcher") == "dense"
+    assert choice(cp, "kernel_speedup_rule") == "xattn"
+    assert choice(cp, "best_kernel_config") == "xattn"
+    assert choice(cp, "always_dense") == "dense"
+    # The Holm set admits nothing: the policies that can choose are dense, and
+    # the fixed best-kernel configuration has nothing to fix on.
+    assert {choice(cp, p, "holm") for p in DSP.FILE_POLICIES
+            if p != "best_kernel_config"} == {"dense"}
+    assert choice(cp, "best_kernel_config", "holm") is None
+
+
+def test_a_file_with_no_dispatcher_says_so(tmp_path):
+    cp = _read_back(p1_record(), tmp_path)
+    assert cp.dispatch_spec is None and cp.dispatch_choices == ()
+    assert p1_record()["dispatch"] is None
+
+
+def test_the_dispatch_section_is_in_the_hash(tmp_path):
+    a = write_prediction(p1_record(dispatch=dspec()), tmp_path)
+    (tmp_path / "b").mkdir()
+    b = write_prediction(p1_record(), tmp_path / "b")
+    assert a.sha256 != b.sha256
+
+
+def _dispatch_tamper(tmp_path, edit):
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, p1_record(dispatch=dspec()), store, T0)
+    _tamper(store, r, edit)
+    return lambda: load(store, r, T0 + timedelta(seconds=1))
+
+
+@pytest.mark.parametrize("name, edit", [
+    ("a choice flipped",
+     lambda rec: rec["dispatch"]["choices"][0].update(choice=None)),
+    ("a choice's arm changed",
+     lambda rec: next(c for c in rec["dispatch"]["choices"]
+                      if c["policy"] == "dispatcher")["choice"].update(arm="xattn")),
+    ("a choice removed",
+     lambda rec: rec["dispatch"]["choices"].pop()),
+    ("the admissible set changed after the fact",
+     lambda rec: rec["dispatch"]["spec"]["admissible"].update(uncorrected=[])),
+    ("the dense kernel made faster than the sparse one",
+     lambda rec: next(e for e in rec["dispatch"]["spec"]["kernel_times"]
+                      if e["key"][2] == "dense").update(seconds=0.5)),
+])
+def test_a_choice_that_does_not_follow_from_the_committed_numbers_is_refused(
+        tmp_path, name, edit):
+    # Each edit is re-hashed, so only the recomputation can catch it.
+    load_ = _dispatch_tamper(tmp_path, edit)
+    with pytest.raises(PredictionCommitError, match="do not follow"):
+        load_()
+
+
+def test_raising_the_floor_after_the_fact_is_refused_when_it_changes_the_choice(
+        tmp_path):
+    # Here sparse is the faster cell (8 against 16): the dispatcher picks it at
+    # floor 1 and would pick dense at floor 100.
+    cells = [cell(ops=OPS_HOST, arm="xattn"), cell(ops=OPS, arm="dense", density=1.0)]
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, p1_record(cells=cells, dispatch=dspec()), store, T0)
+    assert load(store, r, T0 + timedelta(seconds=1)).dispatch_spec.floor_s == 1.0
+    _tamper(store, r, lambda rec: rec["dispatch"]["spec"].update(floor_s=100.0))
+    with pytest.raises(PredictionCommitError, match="do not follow"):
+        load(store, r, T0 + timedelta(seconds=1))
+
+
+def test_a_missing_dispatch_key_is_refused(tmp_path):
+    load_ = _dispatch_tamper(tmp_path, lambda rec: rec.pop("dispatch"))
+    with pytest.raises(PredictionCommitError, match="no dispatch section"):
+        load_()
+
+
+def test_a_dispatch_section_that_cannot_be_read_is_refused(tmp_path):
+    load_ = _dispatch_tamper(tmp_path, lambda rec: rec["dispatch"].pop("spec"))
+    with pytest.raises(PredictionCommitError, match="unreadable dispatch"):
+        load_()
+    (tmp_path / "x").mkdir()
+    load_ = _dispatch_tamper(
+        tmp_path / "x", lambda rec: rec["dispatch"]["spec"].update(predictor="learned"))
+    with pytest.raises(PredictionCommitError, match="lack"):
+        load_()
+
+
+def test_the_dispatcher_cannot_be_committed_on_a_prediction_the_cells_lack():
+    with pytest.raises(PredictionCommitError, match="does not have|not have"):
+        p1_record(dispatch=dspec(predictor="learned"))
+
+
+def test_a_spec_the_dispatcher_cannot_run_is_not_committed():
+    with pytest.raises(PredictionCommitError, match="dispatch: .*dense"):
+        p1_record(dispatch=dspec(dense_arms=("base",)))
+    with pytest.raises(PredictionCommitError, match="dispatch: .*kernel time"):
+        p1_record(dispatch=dspec(kernel_times={DKEY: 4.0}))
+
+
+def test_the_dispatcher_reads_the_predictor_the_spec_names(tmp_path):
+    # xattn is the faster cell. Faster than dense by: recursion 16 - 8 = 8, Sum
+    # 13 - 8 = 5, step form 14 - 7 = 7. At floor 6 the recursion and the step
+    # form dispatch to xattn, the Sum to dense.
+    cells = [cell(ops=OPS_HOST, arm="xattn"), cell(ops=OPS, arm="dense", density=1.0)]
+    picked = {}
+    for name in ("recursion", "sum", "step_form"):
+        d = tmp_path / name
+        d.mkdir()
+        cp = _read_back(p1_record(cells=cells, dispatch=dspec(predictor=name,
+                                                              floor_s=6.0)), d)
+        picked[name] = choice(cp, "dispatcher")
+    assert picked == {"recursion": "xattn", "sum": "dense", "step_form": "xattn"}

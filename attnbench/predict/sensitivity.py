@@ -27,6 +27,7 @@ from .ablations import sensitivity_depths
 from .commit import CommittedPrediction, PredictionCommitError
 from .naive import with_constant_host_cost
 from .recursion import recurse
+from .training import partner_of
 
 QUEUE_PREDICTORS = ("recursion", "constant_host_cost")
 NO_QUEUE = None   # the multiple reported for "no queue term"
@@ -91,6 +92,27 @@ def queue_sensitivity(cp: CommittedPrediction,
     return out
 
 
+def dense_partners(keys, dense_arm: str) -> dict:
+    """{partner_of(key): the dense cell's key} over `keys`. Two dense cells at
+    one model, length and batch (two dense code paths) have no rule for
+    which is meant, so that is refused; no dense cell at all is refused too.
+    """
+    dense: dict = {}
+    for k in keys:
+        if k.arm != dense_arm:
+            continue
+        w = partner_of(k)
+        if w in dense:
+            raise PredictionCommitError(
+                f"two {dense_arm!r} cells at {w} (code paths "
+                f"{dense[w].code_path!r} and {k.code_path!r}); the comparison "
+                f"needs one dense cell")
+        dense[w] = k
+    if not dense:
+        raise PredictionCommitError(f"no {dense_arm!r} cells to compare against")
+    return dense
+
+
 @dataclass(frozen=True)
 class DecisionSensitivity:
     sparse_key: tuple
@@ -103,19 +125,17 @@ def decision_sensitivity(results: list[CellQueueSensitivity], *,
                          dense_arm: str) -> list[DecisionSensitivity]:
     """For each non-dense cell, the multiples at which "sparse is predicted
     faster than dense" (at the same length and batch) is not what the
-    committed prediction said. A cell with no dense cell at its length and
-    batch has nothing to be compared with and is left out."""
+    committed prediction said. A cell with no dense cell at its model,
+    length and batch has nothing to be compared with and is left out."""
     by_key = {r.key: r for r in results}
     if len({r.predictor for r in results}) > 1:
         raise PredictionCommitError("mix of predictors; pass one at a time")
-    dense = {(k[1], k[3]): r for k, r in by_key.items() if k[0] == dense_arm}
-    if not dense:
-        raise PredictionCommitError(f"no {dense_arm!r} cells to compare against")
+    dense = {w: by_key[k] for w, k in dense_partners(by_key, dense_arm).items()}
     out = []
     for k, r in by_key.items():
-        if k[0] == dense_arm:
+        if k.arm == dense_arm:
             continue
-        d = dense.get((k[1], k[3]))
+        d = dense.get(partner_of(k))
         if d is None:
             continue
         base = r.committed < d.committed

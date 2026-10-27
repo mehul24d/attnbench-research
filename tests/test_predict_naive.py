@@ -19,7 +19,8 @@ from attnbench.predict.naive import (
     nearest_pairing, nearest_pairing_predictions, with_constant_host_cost)
 from attnbench.predict.recursion import (
     CostModelError, close_prefill, copy_op, kernel_op, price, recurse, sync_op)
-from attnbench.predict.training import Cell, GroundTruthRow, HardwareFeatures
+from attnbench.predict.training import (
+    Cell, CellKey, GroundTruthRow, HardwareFeatures)
 
 from test_predict_recursion import COSTS
 
@@ -114,18 +115,24 @@ def test_nearest_refuses_the_target_and_unknown_pairings():
         nearest_pairing("P2", ["P9"])
 
 
-def cell(pairing, arm="xattn", L=4096, density=0.5, batch=1):
-    return Cell(pairing=pairing, arm=arm, context_length=L, density=density,
-                batch=batch, priced=price(close_prefill([kernel_op(1, 1, layer=0)]),
-                                          COSTS), hardware=HW)
+def cell(pairing, arm="xattn", L=4096, density=0.5, batch=1, code_path="cp-a",
+         model_name="m-small"):
+    return Cell(pairing=pairing, model_name=model_name, code_path=code_path,
+                arm=arm, context_length=L, density=density, batch=batch,
+                priced=price(close_prefill([kernel_op(1, 1, layer=0)]), COSTS),
+                hardware=HW)
+
+
+def K(arm, L, density=0.5, batch=1, code_path="cp-a", model_name="m-small"):
+    return CellKey(model_name, code_path, arm, density, L, batch)
 
 
 def test_nearest_predictions_are_the_source_pairings_measured_times_unscaled():
     rows = [GroundTruthRow(cell("P1"), 0.25),
             GroundTruthRow(cell("P1", L=8192), 0.5),
             GroundTruthRow(cell("P4"), 9.0)]       # not the source for P2
-    keys = [("xattn", 4096, 0.5, 1), ("xattn", 8192, 0.5, 1),
-            ("xattn", 16384, 0.5, 1)]
+    keys = [K("xattn", 4096), K("xattn", 8192),
+            K("xattn", 16384)]
     near, values = nearest_pairing_predictions("P2", keys, rows, ["P1", "P4"])
     assert near == Nearest("P2", "P1", "same host platform")
     assert values == {keys[0]: 0.25, keys[1]: 0.5, keys[2]: None}
@@ -133,13 +140,13 @@ def test_nearest_predictions_are_the_source_pairings_measured_times_unscaled():
 
 def test_nearest_predictions_when_nothing_is_near():
     near, values = nearest_pairing_predictions(
-        "P4", [("xattn", 4096, 0.5, 1)], [GroundTruthRow(cell("P1"), 1.0)],
+        "P4", [K("xattn", 4096)], [GroundTruthRow(cell("P1"), 1.0)],
         ["P1", "P2"])
-    assert near.source is None and values == {("xattn", 4096, 0.5, 1): None}
+    assert near.source is None and values == {K("xattn", 4096): None}
 
 
 def test_nearest_predictions_refuse_bad_source_rows():
-    k = [("xattn", 4096, 0.5, 1)]
+    k = [K("xattn", 4096)]
     with pytest.raises(CostModelError, match="no ground-truth rows"):
         nearest_pairing_predictions("P2", k, [], ["P1"])
     with pytest.raises(CostModelError, match="two rows"):
@@ -209,3 +216,34 @@ def test_constant_host_cost_equals_the_recursion_when_every_h_is_the_constant(se
     p = price(close_prefill(ops), COSTS)
     Q = rng.choice([None, 1, 2, 4])
     assert constant_host_cost(p, c, Q).end_to_end == recurse(p, Q).end_to_end
+
+
+# --------------------------------------------------------------------------
+# The key's model and code path (Appendix A, 25 Oct 2026)
+# --------------------------------------------------------------------------
+
+def test_the_nearest_pairing_is_matched_across_code_paths():
+    # P2 is a different GPU from P1, so its code path label is not P1's, and
+    # an exact key match would find nothing. The model still has to match.
+    rows = [GroundTruthRow(cell("P1", code_path="cp-l4"), 0.25),
+            GroundTruthRow(cell("P1", model_name="m-large"), 7.0)]
+    k = K("xattn", 4096, code_path="cp-a100")
+    _, values = nearest_pairing_predictions("P2", [k], rows, ["P1"])
+    assert values == {k: 0.25}
+    other = K("xattn", 4096, model_name="m-large", code_path="cp-a100")
+    _, values = nearest_pairing_predictions("P2", [other], rows, ["P1"])
+    assert values == {other: 7.0}
+
+
+def test_two_source_code_paths_for_one_cell_are_refused_not_averaged():
+    rows = [GroundTruthRow(cell("P1", code_path="cp-torch"), 1.0),
+            GroundTruthRow(cell("P1", code_path="cp-triton"), 3.0)]
+    k = [K("xattn", 4096, code_path="cp-a100")]
+    with pytest.raises(CostModelError, match="source_code_path"):
+        nearest_pairing_predictions("P2", k, rows, ["P1"])
+    _, values = nearest_pairing_predictions("P2", k, rows, ["P1"],
+                                            source_code_path="cp-triton")
+    assert values == {k[0]: 3.0}
+    with pytest.raises(CostModelError, match="no ground-truth rows on code path"):
+        nearest_pairing_predictions("P2", k, rows, ["P1"],
+                                    source_code_path="cp-missing")
