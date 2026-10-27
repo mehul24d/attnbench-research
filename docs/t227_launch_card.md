@@ -22,7 +22,7 @@ GCS as it ends (`run_phase.sh`, phase `t227_<NN>_<step>`):
 | 4 | `launch_queue` | T2.6 Q, null kernel and one-element add | 1 |
 | 5 | `nsys` | T2.7: Kineto checks per arm; nsys present?; control `um_fault_control.py` and each arm under the same nsys options; `nsys-faults` per export | 12 (+10 if nsys must be installed) |
 | 6 | `replay` | T2.4 on meanpool at 8192: record, CUDA graph, mask agreement, timing, match, replay-vs-trace, isolated replay, cache effect | 5 |
-| 7 | `probe` | T2.18, each of the five arms: 2048 and 4096, extended to 8192, checked against 8192 | 12 |
+| 7 | `probe` | T2.18, each of the five arms: 2048 and 4096 (the two XAttention arms, chunked: 20480, 28672 and 34816, checked at the third), extended to the 8192 recording, checked against it | 12 (more for the XAttention arms' longer probes; not re-estimated) |
 | 8 | `assert_gate` | T2.17: x-attention checkout is `e379887` and clean; session check; bitwise gate on 5 real `qa_1` prompts at 8192 | 3 |
 | 9 | `graph_breaks` | T2.21 report, 5 arms × 2 settings, each in its own process, all 28 layers | 25 (the least certain figure) |
 | 10 | `null_kernel` | 64 null kernels under the profiler, one launch and one kernel each | 1 |
@@ -32,7 +32,9 @@ The arms: dense (`sdpa_flash`), oracle (block-sparse, reference builder on
 the host, scores before the prefill), meanpool (block-sparse, inline
 estimator, device builder), xattention (calibrated `authors` table, stride
 8), xattention_noassert. Sparsity 0.75. Prompts are real RULER `qa_1`
-examples sized by the Qwen tokenizer.
+examples sized by the Qwen tokenizer to at most each length (a budget: 2048
+gives 1951 tokens, 8192 gives 8075, 16384 gives 16370), and each step records
+the prompt's own length beside the budget.
 
 ## The instance
 
@@ -85,10 +87,14 @@ bash scripts/gcp_bootstrap_instance.sh "$NAME" "$ZONE"
 On the instance, from `~/attnbench_scaffold`:
 
 ```bash
-python3 scripts/t227_shakedown.py
+python3 scripts/t227_shakedown.py --keep-going
 # after a failure and its fix:
-python3 scripts/t227_shakedown.py --from STEP --session results/t227_shakedown_<UTC>
+python3 scripts/t227_shakedown.py --from STEP --session results/t227_shakedown_<UTC> --keep-going
 ```
+
+`--keep-going` records a failed step and goes on, so the steps that do not
+depend on it still run; without it the runner stops at the first failure and
+`--from` refuses while an earlier step has not passed.
 
 A fix made on the instance dirties the tree, and the runner then refuses
 (every row must be banked with `git_dirty = False`). So a code fix is
@@ -106,18 +112,21 @@ bash scripts/gcp_cleanup_check.sh
 
 ## Known before launch
 
-- **nsys on v6 is not on record.** If step 5 finds none it stops, by design.
-  Install Nsight Systems on the instance, note the command and version in
-  the step's log, and resume `--from nsys`. The plan asks for exactly this.
+- **nsys is on v6** (seen 28 Oct 2026): Nsight Systems 2025.1.3 at
+  `/usr/local/cuda/bin/nsys`, not on `PATH`; `trace_checks.nsys_available`
+  finds it there. No install is needed.
 - **XAttention runs its torch path on the L4.** Upstream uses Triton only on
   a device whose name contains "100", so the T2.17 gate here checks the
   torch path, and every XAttention sequence is recorded as `xattn:torch`.
 - **T2.4 is a dry run.** Positions that the tape substitutes (`nonzero` to
-  `nonzero_static`) get no device cost, so an incomplete match is recorded,
-  not failed; the masks must still agree bitwise. The check of record is
-  P1's, in T3.1.
-- **T2.18 at 8192 is extendable for XAttention** (one chunk at 2048, 4096
-  and 8192); 32768 is not, and is not attempted.
+  `nonzero_static`) are priced from an isolated replay of the original
+  operators, each flagged with its cost source; a pricing the replay refuses
+  is recorded, not failed. The masks must still agree bitwise. The check of
+  record is P1's, in T3.1.
+- **XAttention is probed at three lengths** (Appendix A, 27 Oct 2026): at
+  its official chunk size it first has two chunks above 16384 tokens, so its
+  probe lengths are 20480, 28672 and 34816 (3, 4 and 9 chunks), not 2048 and
+  4096.
 - The plan's checklist also lists T2.13 and T2.16 dry runs and the T2.2
   profiler. This session runs the list as asked for on 27 Oct 2026:
   T2.2 is not built, so step 10 profiles the null kernel and step 11 profiles

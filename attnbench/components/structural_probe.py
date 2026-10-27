@@ -21,6 +21,18 @@ agreement check. Where it does not exist, the arm's sequence is
 **different** (plan Section 9: a disagreement means the arm is taken as
 "different" for H0 and H2), and the probe says why.
 
+**Chunked arms: three probe lengths** (plan T2.18, Appendix A, 27 Oct
+2026). An arm whose rule chunks is probed at three lengths, each with at
+least two chunks and no two with the same count (`chunked_probe_lengths`).
+`extend_checked` extends from the two shorter to the longest, which must be
+the same sequence as the one recorded there (payloads included, so the
+growth law inferred from two points is checked by the third), and only then
+extends to the target. XAttention at its official chunk size first reaches
+two chunks above 16384 tokens, so its probe lengths are 20480, 28672 and
+34816 (3, 4 and 9 chunks), not short contexts. The lengths sit mid-band
+because a real prompt lands at or below its budget: the probe keys each
+sequence by its recorded context length and checks the counts there.
+
 **What two short contexts cannot check, and is refused:**
 
   - a target whose chunk count differs from the probe's when both short
@@ -58,15 +70,20 @@ from .op_sequence import (DIFFERENT, SAME, Comparison, OpSequence, SeqOp, _segme
                           compare, op_key)
 
 PROBE_LENGTHS = (2048, 4096)
+CHUNKED_PROBES = 3                 # probe lengths for a chunked arm
+MIN_PROBE_CHUNKS = 2               # chunks at each of them
+LENGTH_STEP = 128                  # probe lengths are whole kernel blocks
+MAX_PROBE_LENGTH = 131072
 
 
 @dataclass(frozen=True)
 class ChunkingRule:
     name: str
     chunks: Callable[[int], int]
+    chunked: bool = True
 
 
-NO_CHUNKING = ChunkingRule("no chunking", lambda L: 1)
+NO_CHUNKING = ChunkingRule("no chunking", lambda L: 1, chunked=False)
 
 
 def xattention_rule() -> ChunkingRule:
@@ -79,6 +96,34 @@ def xattention_rule() -> ChunkingRule:
                         lambda L: math.ceil(L / official_chunk_size(L)))
 
 
+def chunked_probe_lengths(rule: ChunkingRule, *, start: int = PROBE_LENGTHS[0],
+                          n: int = CHUNKED_PROBES, min_chunks: int = MIN_PROBE_CHUNKS,
+                          step: int = LENGTH_STEP, limit: int = MAX_PROBE_LENGTH
+                          ) -> tuple[int, ...]:
+    """The probe lengths of a chunked arm: one per chunk count, for the first
+    `n` counts of at least `min_chunks` from `start`, each the multiple of
+    `step` nearest below the middle of the lengths with that count, so a
+    prompt that lands below its budget keeps the count."""
+    if not rule.chunked:
+        raise op_sequence.SequenceError(f"{rule.name}: not a chunked rule; probe at {PROBE_LENGTHS}")
+    bands: dict[int, list[int]] = {}
+    L = -(-start // step) * step
+    while L <= limit and len(bands) <= n:
+        c = rule.chunks(L)
+        if c >= min_chunks:
+            bands.setdefault(c, []).append(L)
+        L += step
+    counts = sorted(bands)[:n]
+    if len(counts) < n:
+        raise op_sequence.SequenceError(
+            f"{rule.name}: fewer than {n} chunk counts of at least {min_chunks} up to {limit}")
+    out = []
+    for c in counts:
+        lo, hi = bands[c][0], bands[c][-1]
+        out.append(max(lo, (lo + hi) // 2 // step * step))
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Extension:
     verdict: str                          # SAME (extended) or DIFFERENT
@@ -86,6 +131,7 @@ class Extension:
     sequence: Optional[OpSequence]        # at the target, when SAME
     chunks: dict                          # length -> chunks
     payload_exponents: tuple              # (layer, offset in segment, exponent), inferred
+    checked_at: Optional[int] = None      # the third probe length, for a chunked arm
 
     @property
     def extended(self) -> bool:
@@ -204,6 +250,35 @@ def extend(seqs: Mapping[int, OpSequence], rule: ChunkingRule, target: int) -> E
                      f"to {target} ({ct})", seq, chunks, tuple(exps))
 
 
+def extend_checked(seqs: Mapping[int, OpSequence], rule: ChunkingRule,
+                   target: int) -> Extension:
+    """A chunked arm's extension from three probe lengths (module docstring)."""
+    if len(seqs) != CHUNKED_PROBES:
+        raise op_sequence.SequenceError(
+            f"a chunked arm is probed at {CHUNKED_PROBES} lengths, not {len(seqs)}")
+    (l1, s1), (l2, s2), (l3, s3) = sorted(seqs.items())
+    counts = {L: rule.chunks(L) for L in (l1, l2, l3)}
+    counts[target] = rule.chunks(target)
+    if min(counts[L] for L in (l1, l2, l3)) < MIN_PROBE_CHUNKS or \
+            len({counts[L] for L in (l1, l2, l3)}) != CHUNKED_PROBES:
+        return Extension(DIFFERENT, f"{rule.name}: the probe lengths {l1}, {l2}, {l3} have "
+                         f"{counts[l1]}, {counts[l2]}, {counts[l3]} chunks; each needs at "
+                         f"least {MIN_PROBE_CHUNKS}, and no two the same", None, counts, ())
+    pair = {l1: s1, l2: s2}
+    third = extend(pair, rule, l3)
+    if not third.extended:
+        return replace(third, chunks=counts)
+    c = compare(third.sequence, s3, payload=True)
+    if c.verdict != SAME:
+        return Extension(DIFFERENT, f"{rule.name}: extended from {l1} and {l2}, the sequence "
+                         f"at {l3} differs from the one recorded there ({c.reason})",
+                         None, counts, third.payload_exponents)
+    ext = extend(pair, rule, target)
+    return replace(ext, chunks=counts, checked_at=l3,
+                   reason=f"{ext.reason}; checked at {l3} ({counts[l3]})" if ext.extended
+                   else ext.reason)
+
+
 def check_against_full(ext: Extension, full: OpSequence) -> Comparison:
     """The L4 test of record: the extension against a sequence recorded at
     the target length (T2.18's "Done when")."""
@@ -217,7 +292,8 @@ def probe(record: Callable[[int, Path], OpSequence], out_dir, *,
     """Record the arm at each probe length and keep only the sequences.
 
     `record(length, directory)` records one prefill there (for an arm,
-    `recorder.record_arm_prefill` at that length) and returns its sequence.
+    `recorder.record_arm_prefill` at that length) and returns its sequence;
+    the result is keyed by each sequence's `context_length`.
     The trace is deleted afterwards unless `keep_traces`: the probe's
     durations are discarded (Section 5.1), and only the duration-free
     `sequence.json` and the banked masks remain.
@@ -226,7 +302,13 @@ def probe(record: Callable[[int, Path], OpSequence], out_dir, *,
     seqs = {}
     for L in lengths:
         d = out / f"probe_{L}"
-        seqs[int(L)] = record(int(L), d)
+        seq = record(int(L), d)
+        # Keyed by the recorded length: a real prompt lands at or below its
+        # budget, and the chunking rule is read where the arm ran.
+        if seq.context_length in seqs:
+            raise op_sequence.SequenceError(
+                f"two probe lengths recorded at {seq.context_length} tokens")
+        seqs[int(seq.context_length)] = seq
         trace = d / "trace.json"
         if trace.exists() and not keep_traces:
             trace.unlink()
