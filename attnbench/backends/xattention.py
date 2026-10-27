@@ -275,6 +275,15 @@ class XAttentionBackend(AttentionBackend):
         qf = q.transpose(1, 2).reshape(s, h, d)
         kf = k_rep.transpose(1, 2).reshape(s, h, d)
         vf = v_rep.transpose(1, 2).reshape(s, h, d)
+        # Built per layer, as upstream builds it: at e379887 `Xattention_prefill`
+        # makes its cumulative lengths and its head-mask type on every call, each
+        # as a device tensor from a Python list, so a wait here is the method's
+        # own, not this harness's. Upstream makes three such tensors (query and
+        # key lengths separately, and the head-mask type); this makes one, shared
+        # because the query and key lengths are equal, and a `torch.ones` fill.
+        # The values are identical; the host-to-device copies are not (three
+        # against one). Read 25 Oct 2026; whether a list-built device tensor
+        # waits is step 9 of the T2.3 mechanism zoo.
         cu = torch.tensor([0, s], dtype=torch.int32, device=q.device)
         head_mask_type = torch.ones(h, dtype=torch.int32, device=q.device)
         out = block_sparse_attn_func(
