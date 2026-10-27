@@ -20,7 +20,9 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
-import torch
+# torch is imported inside `capture`, the only function that reads it, so the
+# pure modules that import this one (the time model, the commit records) run
+# without torch.
 
 
 def _sh(cmd: list[str]) -> Optional[str]:
@@ -344,6 +346,8 @@ class Provenance:
 
 
 def capture(clocks_locked: bool = False) -> Provenance:
+    import torch
+
     cc = mem = name = None
     if torch.cuda.is_available():
         major, minor = torch.cuda.get_device_capability()
