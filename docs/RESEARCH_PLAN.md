@@ -463,7 +463,7 @@ Owner: **Code** = Claude Code, **Chat** = Claude chat with the researcher, **R**
 | ID | Task | Owner | Depends | Status |
 |---|---|---|---|---|
 | T6.1 | P2 (Cascade Lake + A100): H0, H1, H2; GCP, launch by 9 Dec 2026 | Code prepares; R runs | Gate B | Not started |
-| T6.4 | P4 (Sapphire Rapids + H100): H1, H3; GCP, launch by 9 Dec 2026 | Code; R | Gate B | Not started |
+| T6.4 | P4 (Sapphire Rapids + H100): H1, H3; GCP, launch by 9 Dec 2026 | Code; R | Gate B | Partly built (27 Oct 2026): the H100 launch path submits the flex-start request with `--async`, polls it in bounded calls, cancels it at a client deadline (6900 s, inside the 2 h server window) with the cancel confirmed before any other zone, and checks the date before each submit (`scripts/gcp_launch_h100.sh`, `scripts/_flex_request.sh`, `tests/test_flex_request.py`); not run on GCP, so the status words it relies on are Google's documentation, not yet observed here. The FA3 backend and wheel build are planned in `docs/t64_fa3_plan.md` and not built; three decisions are the researcher's (commit pin, machine, whether a prebuilt wheel is acceptable). No session is approved or priced |
 | T6.2 | P3 (AMD + L4): H0, H1, H2 | Code; R | Gates B, C | Not started |
 | T6.3 | P5 (AMD + L40S): H0, H1, H2, H5; chunked extension | Code; R | Gates B, C | Not started |
 | T6.5 | P6 (AMD + H100): H0, H1, full transfer, H5 | Code; R | T6.2 to T6.4 | Not started |
