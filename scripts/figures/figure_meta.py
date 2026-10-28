@@ -39,6 +39,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--clock-skew-s", type=float, required=True)
     ap.add_argument("--banked-at", action="append", metavar="PAIRING=ISO")
     ap.add_argument("--input", action="append", default=[], metavar="ROLE=PATH")
+    ap.add_argument("--layer", type=int,
+                    help="the figure's layer: records the recursion's predicted end of it")
     ap.add_argument("--out", required=True)
     return ap
 
@@ -59,7 +61,7 @@ def main(argv=None, store=None) -> int:
         meta = M.figure_meta(figure=args.figure, prediction=cp, prediction_path=args.local,
                              cell=(m, a, arm, float(d), int(length), int(b)),
                              result=result, result_path=args.result, inputs=inputs,
-                             code=C.current_code_stamp())
+                             code=C.current_code_stamp(), layer=args.layer)
         path = M.write_meta(meta, args.out)
     except (M.MetaError, C.PredictionCommitError, FileExistsError, OSError, KeyError,
             ValueError) as e:

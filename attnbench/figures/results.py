@@ -10,7 +10,7 @@
     which committed cell each arm's row measures, and the arm must be the
     cell's arm.
   - Ground truth is in milliseconds and predictions in seconds;
-    `ms_to_seconds` is the one conversion.
+    `ms_to_seconds` and `seconds_to_ms` are the only conversions.
 """
 
 from __future__ import annotations
@@ -39,6 +39,10 @@ def sha256_file(path: Union[str, Path]) -> str:
 
 def ms_to_seconds(ms: float) -> float:
     return ms / MS_PER_S
+
+
+def seconds_to_ms(s: float) -> float:
+    return s * MS_PER_S
 
 
 def check_loaded(cp: CommittedPrediction) -> CommittedPrediction:

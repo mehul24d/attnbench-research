@@ -17,6 +17,19 @@ can check that the figure follows from banked inputs (rule 3, rule 6).
     length or batch (audit C3, finding 2), so the row is matched to the
     cell by arm and the rest of the key is the caller's statement, recorded
     as such.
+  - `predicted_layer` (when the figure is of one layer): the recursion's
+    predicted end of that layer, for the figure's predicted-end marker.
+    It is derived from the recursion's own per-operation completion times
+    (`Timeline.device_done`) over the committed cell's priced components,
+    so it is the committed prediction's, not a new one: the end is the
+    latest completion among the layer's operations, and the layer starts
+    where the host reaches its first operation, H of the operation before
+    it (0 for the first), which is where the trace's layer annotation
+    starts. `predicted_end_ms` is end minus start, in milliseconds, and the
+    whole-prefill D_N is recorded beside it. The layer's operations must
+    be contiguous. `predicted_end_ms` is what the figure reads, and it
+    refuses a value that is the whole prefill's (researcher's decision,
+    28 Oct 2026).
   - `inputs`: every other file the figure read (traces, sequence records,
     events tables), by role, name and sha256.
   - `generated_by`: the commit the metadata was made at, which must be
@@ -30,13 +43,15 @@ overwritten.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Sequence, Union
+from typing import Mapping, Optional, Sequence, Union
 
 from ..predict.commit import CodeStamp, CommittedPrediction
+from ..predict.recursion import PricedSequence, recurse
 from .results import (ResultsError, check_loaded, check_result, measured_seconds,
-                      sha256_file)
+                      seconds_to_ms, sha256_file)
 
 META_SCHEMA = "attnbench.figure_meta/1"
 ROLES = ("trace", "sequence", "events", "other")
@@ -57,13 +72,30 @@ def _entry(role: str, path: Union[str, Path]) -> dict:
     return {"role": role, "name": p.name, "sha256": sha256_file(p), "bytes": p.stat().st_size}
 
 
+def layer_window(priced: PricedSequence, queue_depth: Optional[int], layer: int) -> dict:
+    """The recursion's predicted window for one layer, in seconds of
+    prefill time (module docstring)."""
+    if isinstance(layer, bool) or not isinstance(layer, int):
+        raise MetaError(f"a layer is an int, got {layer!r}")
+    idx = [k for k, l in enumerate(priced.layers) if l == layer]
+    if not idx:
+        raise MetaError(f"the committed sequence has no operation in layer {layer}")
+    if idx != list(range(idx[0], idx[-1] + 1)):
+        raise MetaError(f"layer {layer}'s operations are not contiguous in the sequence")
+    tl = recurse(priced, queue_depth)
+    start = tl.host_issued[idx[0] - 1] if idx[0] > 0 else 0.0
+    return {"layer": layer, "first_op": idx[0], "last_op": idx[-1], "start_s": start,
+            "end_s": max(tl.device_done[k] for k in idx), "whole_prefill_s": tl.end_to_end}
+
+
 def figure_meta(*, figure: str, prediction: CommittedPrediction,
                 prediction_path: Union[str, Path], cell: Sequence,
                 result: Mapping, result_path: Union[str, Path],
                 inputs: Sequence[tuple[str, Union[str, Path]]],
-                code: CodeStamp) -> dict:
+                code: CodeStamp, layer: Optional[int]) -> dict:
     """The metadata (module docstring). `cell` is (model, code path, arm,
-    density, context length, batch); `inputs` is (role, path) pairs."""
+    density, context length, batch); `inputs` is (role, path) pairs;
+    `layer` is the figure's layer, or None for a figure of no one layer."""
     if not isinstance(figure, str) or not figure.strip():
         raise MetaError("name the figure")
     if not isinstance(code, CodeStamp) or code.git_dirty is not False \
@@ -101,6 +133,21 @@ def figure_meta(*, figure: str, prediction: CommittedPrediction,
     if dup:
         raise MetaError(f"two inputs named {dup}; names identify inputs here")
 
+    predicted_layer = None
+    if layer is not None:
+        w = layer_window(c.priced, cp.queue_depth, layer)
+        committed = c.predictions["recursion"]
+        if not math.isclose(w["whole_prefill_s"], committed, rel_tol=1e-12, abs_tol=0.0):
+            raise MetaError(f"the recursion over the committed components gives "
+                            f"{w['whole_prefill_s']}, not the committed {committed}")
+        predicted_layer = {
+            "layer": layer, "predictor": "recursion", "scope": "layer",
+            "first_op": w["first_op"], "last_op": w["last_op"],
+            "layer_start_ms": seconds_to_ms(w["start_s"]),
+            "predicted_end_ms": seconds_to_ms(w["end_s"] - w["start_s"]),
+            "whole_prefill_ms": seconds_to_ms(w["whole_prefill_s"]),
+            "relative_to": "the host reaching the layer's first operation"}
+
     return {
         "schema": META_SCHEMA,
         "figure": figure,
@@ -119,8 +166,35 @@ def figure_meta(*, figure: str, prediction: CommittedPrediction,
             "first_timed_block_started_at": result.get("first_timed_block_started_at"),
             "matched_by": "arm; density, context length and batch as stated by the "
                           "caller (ground-truth rows do not carry them)"},
+        "predicted_layer": predicted_layer,
         "inputs": entries,
     }
+
+
+def predicted_end_ms(meta: Mapping, layer: int) -> float:
+    """The predicted end of `layer` in ms from the layer's start, as the
+    figure reads it. Refuses metadata with no per-layer value, for another
+    layer, or whose value is the whole prefill's (D_N), which would put the
+    marker at the end of the prefill rather than the layer."""
+    if meta.get("schema") != META_SCHEMA:
+        raise MetaError("not a figure metadata record")
+    pl = meta.get("predicted_layer")
+    if not isinstance(pl, Mapping):
+        raise MetaError("the metadata holds no per-layer prediction; make it with the "
+                        "figure's layer")
+    if pl.get("scope") != "layer" or pl.get("layer") != layer:
+        raise MetaError(f"the per-layer prediction is for layer {pl.get('layer')!r} "
+                        f"(scope {pl.get('scope')!r}), not layer {layer}")
+    v = pl.get("predicted_end_ms")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+        raise MetaError(f"predicted_end_ms is {v!r}")
+    whole = [pl.get("whole_prefill_ms"),
+             seconds_to_ms(meta.get("cell", {}).get("predictions_s", {}).get("recursion", 0.0))]
+    if any(isinstance(w, (int, float)) and w > 0 and (v >= w or math.isclose(v, w))
+           for w in whole):
+        raise MetaError(f"predicted_end_ms {v} is the whole prefill's ({whole}), not "
+                        f"layer {layer}'s")
+    return float(v)
 
 
 def write_meta(meta: Mapping, path: Union[str, Path]) -> Path:

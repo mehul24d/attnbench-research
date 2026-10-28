@@ -38,7 +38,7 @@ def setup(tmp_path):
 def _meta(s, **over):
     kw = dict(figure="fig1", prediction=s["cp"], prediction_path=s["pred"], cell=FX.XATTN,
               result=json.loads(s["res"].read_text()), result_path=s["res"],
-              inputs=[("trace", s["trace"]), ("sequence", s["seq"])], code=CLEAN)
+              inputs=[("trace", s["trace"]), ("sequence", s["seq"])], code=CLEAN, layer=0)
     kw.update(over)
     return M.figure_meta(**kw)
 
@@ -142,7 +142,8 @@ def _script():
 def _argv(s, out):
     return ["--figure", "fig1", "--remote", s["remote"], "--local", str(s["pred"]),
             "--result", str(s["res"]), "--cell", FX.MODEL, FX.CP, "xattn", "0.5", "4", "1",
-            "--clock-skew-s", "0", "--input", f"trace={s['trace']}", "--out", str(out)]
+            "--clock-skew-s", "0", "--input", f"trace={s['trace']}", "--layer", "0",
+            "--out", str(out)]
 
 
 def test_the_script_reads_the_prediction_from_the_store(setup, monkeypatch):
@@ -151,7 +152,9 @@ def test_the_script_reads_the_prediction_from_the_store(setup, monkeypatch):
     monkeypatch.setattr(C, "current_code_stamp", lambda: CLEAN)
     out = s["tmp"] / "meta.json"
     assert script.main(_argv(s, out), store=s["store"]) == 0
-    assert json.loads(out.read_text())["measured"]["seconds"] == 20.0
+    m = json.loads(out.read_text())
+    assert m["measured"]["seconds"] == 20.0
+    assert M.predicted_end_ms(m, 0) == 15000.0
 
 
 def test_the_script_refuses_a_prediction_synced_after_the_workload_started(setup, monkeypatch,
@@ -164,3 +167,91 @@ def test_the_script_refuses_a_prediction_synced_after_the_workload_started(setup
     s["res"].write_text(json.dumps(early))
     assert script.main(_argv(s, s["tmp"] / "meta.json"), store=s["store"]) == 2
     assert "K9" in capsys.readouterr().err
+
+
+# --- the per-layer predicted end (researcher's decision, 28 Oct 2026) ------------------
+
+def test_the_layers_predicted_end_comes_from_the_recursions_completion_times(setup):
+    # The xattn cell: K(h1,d10) S(item) K(h1,d1) in layer 0, then the closing
+    # sync. H = 1, 13, 14; D = 11, 13, 15; D_N = 16 s. Layer 0 starts at 0
+    # and its last operation completes at 15 s.
+    pl = _meta(setup)["predicted_layer"]
+    assert pl == {"layer": 0, "predictor": "recursion", "scope": "layer",
+                  "first_op": 0, "last_op": 2, "layer_start_ms": 0.0,
+                  "predicted_end_ms": 15000.0, "whole_prefill_ms": 16000.0,
+                  "relative_to": "the host reaching the layer's first operation"}
+    assert _meta(setup, layer=None)["predicted_layer"] is None
+
+
+def test_a_later_layer_is_measured_from_where_the_host_reaches_it():
+    from attnbench.predict.recursion import close_prefill, kernel_op, price, sync_op
+    from test_predict_recursion import COSTS
+    # L0: K(h1,d10): H 1, D 11. L1: K(h2,d3): H 3, D 14; S(item, 4 B, s0 2):
+    # H 16, D 16; K(h1,d1): H 17, D 18. Closing sync: H = D = 19.
+    priced = price(close_prefill([kernel_op(1, 10, layer=0), kernel_op(2, 3, layer=1),
+                                  sync_op("item", payload_bytes=4, layer=1),
+                                  kernel_op(1, 1, layer=1)]), COSTS)
+    w = M.layer_window(priced, 8, 1)
+    assert (w["first_op"], w["last_op"]) == (1, 3)
+    assert (w["start_s"], w["end_s"], w["whole_prefill_s"]) == (1.0, 18.0, 19.0)
+    assert M.layer_window(priced, 8, 0)["end_s"] == 11.0
+    with pytest.raises(M.MetaError, match="no operation in layer 2"):
+        M.layer_window(priced, 8, 2)
+    split = price(close_prefill([kernel_op(1, 1, layer=0), kernel_op(1, 1, layer=1),
+                                 kernel_op(1, 1, layer=0)]), COSTS)
+    with pytest.raises(M.MetaError, match="not contiguous"):
+        M.layer_window(split, 8, 0)
+
+
+def test_the_figure_reads_the_layers_value(setup):
+    m = _meta(setup)
+    assert M.predicted_end_ms(m, 0) == 15000.0
+    with pytest.raises(M.MetaError, match="not layer 3"):
+        M.predicted_end_ms(m, 3)
+    with pytest.raises(M.MetaError, match="no per-layer prediction"):
+        M.predicted_end_ms(_meta(setup, layer=None), 0)
+
+
+def test_a_whole_prefill_value_is_rejected(setup):
+    m = _meta(setup)
+    whole = json.loads(json.dumps(m))
+    whole["predicted_layer"]["predicted_end_ms"] = whole["predicted_layer"]["whole_prefill_ms"]
+    with pytest.raises(M.MetaError, match="whole prefill"):
+        M.predicted_end_ms(whole, 0)
+    # Caught by the committed D_N too, if whole_prefill_ms was also changed.
+    hidden = json.loads(json.dumps(whole))
+    hidden["predicted_layer"]["whole_prefill_ms"] = 1e9
+    with pytest.raises(M.MetaError, match="whole prefill"):
+        M.predicted_end_ms(hidden, 0)
+    # And a value past the prefill's end.
+    past = json.loads(json.dumps(m))
+    past["predicted_layer"]["predicted_end_ms"] = 17000.0
+    with pytest.raises(M.MetaError, match="whole prefill"):
+        M.predicted_end_ms(past, 0)
+
+
+def test_components_that_do_not_give_the_committed_prediction_are_refused(setup):
+    cp = setup["cp"]
+    cells = tuple(dataclasses.replace(c, predictions={**c.predictions, "recursion": 99.0})
+                  for c in cp.cells)
+    with pytest.raises(M.MetaError, match="not the committed"):
+        _meta(setup, prediction=dataclasses.replace(cp, cells=cells))
+
+
+def test_the_metadatas_layer_value_is_measured_from_the_layers_start(tmp_path):
+    from attnbench.predict.recursion import close_prefill, kernel_op, sync_op
+    # As in the test above: layer 1 runs from H = 1 s to D = 18 s, so the
+    # figure's value is 17 s, not 18 s; D_N is 19 s.
+    two = close_prefill([kernel_op(1, 10, layer=0), kernel_op(2, 3, layer=1),
+                         sync_op("item", payload_bytes=4, layer=1), kernel_op(1, 1, layer=1)])
+    cp, pred, _, _ = FX.loaded_p1(tmp_path, xattn_ops=two)
+    res = tmp_path / "ground_truth.json"
+    res.write_text(json.dumps(FX.ground_truth()))
+    m = M.figure_meta(figure="fig1", prediction=cp, prediction_path=pred, cell=FX.XATTN,
+                      result=FX.ground_truth(), result_path=res, inputs=[], code=CLEAN,
+                      layer=1)
+    pl = m["predicted_layer"]
+    assert (pl["layer_start_ms"], pl["predicted_end_ms"], pl["whole_prefill_ms"]) == (
+        1000.0, 17000.0, 19000.0)
+    assert (pl["first_op"], pl["last_op"]) == (1, 3)
+    assert M.predicted_end_ms(m, 1) == 17000.0
