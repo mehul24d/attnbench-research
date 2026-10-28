@@ -5,11 +5,7 @@
 #     aws_launch_policy_check "$REGION" "$AZ"
 #
 # It refuses, before anything is created or billed:
-#   - every launch while the last AWS launch date is UNDECIDED. The plan
-#     (Section 6, rule 13; Gate C) allows no AWS session until T5.1 is done,
-#     quotas are granted and each pairing is costed, and it sets no AWS
-#     launch date yet. The researcher decides it; it is then written here and
-#     in the plan in the same commit, as LAST_GCP_LAUNCH_DATE was;
+#   - every launch while LAST_AWS_LAUNCH_DATE is UNDECIDED;
 #   - any launch after that date (India time, the researcher's time zone;
 #     the date itself is inclusive);
 #   - any region or zone in Australia: ap-southeast-2 (Sydney, with its
@@ -24,7 +20,13 @@
 # in _launch_policy.sh: no environment variable changes it, and the tests pin
 # it with a fake `date` first on PATH.
 
-LAST_AWS_LAUNCH_DATE="UNDECIDED"
+# PROVISIONAL (28 Oct 2026): 20 Dec 2026 is proposed and NOT yet confirmed
+# by the researcher. This line is the only place the date is set; when it is
+# confirmed or changed, edit it here and in the plan in the same commit, as
+# for LAST_GCP_LAUNCH_DATE. The plan (Section 6, rule 13; Gate C) still
+# allows no AWS session before T5.1 is done, quotas are granted and each
+# pairing is costed: this date is a last day, not a go-ahead.
+LAST_AWS_LAUNCH_DATE="2026-12-20"
 
 aws_launch_policy_check() {
   local places="$*"

@@ -19,11 +19,11 @@
 #   - a cost cap (AWS_COST_CAP_INR), required: the launch is refused unless
 #     rate x hard-delete limit fits under it, so the worst case is bounded
 #     before anything bills;
+#   - on-demand only. Spot is refused (researcher's decision, 28 Oct 2026):
+#     an interruption would ruin a timed run;
 #   - an in-guest halt (AWS_HALT_MINUTES, default 60 minutes before the hard
 #     delete) with shutdown behaviour "stop", so GPU billing stops while the
-#     root volume survives for recovery. On Spot the behaviour must be
-#     "terminate" (one-time Spot instances cannot stop), so there the halt is
-#     the delete and there is no recovery window; the summary says so;
+#     root volume survives for recovery;
 #   - the hard delete is enforced by AWS, not by the guest: a one-time
 #     EventBridge Scheduler schedule calls ec2:TerminateInstances at launch +
 #     AWS_MAX_RUN_MINUTES and then deletes itself. GCP's
@@ -35,14 +35,31 @@
 #   - IMDSv2 only, with instance tags readable from instance metadata so a
 #     later provenance reader can see the provisioning-model tag;
 #   - tags on the instance and its volume: attnbench-session, -pairing,
-#     -provisioning-model (STANDARD or SPOT, the vocabulary of
+#     -provisioning-model (STANDARD, the vocabulary of
 #     attnbench/provenance.py), -hard-delete-at. The teardown refuses an
 #     instance without attnbench-session;
 #   - typed confirmation ("launch") after the summary.
 #
-# The machine types below are PROPOSED (plan Section 5.2 names the
-# families; the sizes are not yet decided), and nothing has a default
-# region, AMI, key pair or security group: each is a researcher decision.
+# The machine types below were accepted by the researcher on 28 Oct 2026.
+# Nothing has a default region, AMI, key pair, security group, rate or cap:
+# each is the researcher's to set, and the launch is refused without it.
+#
+# PROPOSED planning rates, NOT confirmed (the researcher confirms them; until
+# then AWS_RATE_INR_HR has no default). Source: the AWS Price List bulk API,
+# AmazonEC2 offer for us-east-1, publication 2026-10-28T15:03:53Z, terms
+# effective 2026-10-01, on-demand Linux shared tenancy. us-east-1 is only a
+# reference: the regions are not decided, and prices differ by region.
+#   instance       USD/h    SKU               host
+#   g6.2xlarge     0.9776   XCA3J9EEM739PU6M  AMD EPYC 7R13   (P3)
+#   g6e.2xlarge    2.24208  HK3A8PU2TSC6EKP6  AMD EPYC 7R13   (P5)
+#   p5.4xlarge     6.88     K9VKFEBARNNMVRXV  AMD EPYC 7R13   (P6)
+#   g5.2xlarge     1.212    FX9TUYTJKEENVBSR  AMD EPYC 7R32   (P7)
+#   gp3 storage    0.08 per GB-month, SKU JG3KUJMBRGHV3N8G: 200 GB is
+#                  0.021918/h at 730 h per month
+# Planning rate, all-in = (instance + 200 GB gp3) x 1.15, at Rs 95.99 per
+# USD (the rate the plan's GCP table used; an assumption here, as are the
+# 730 hours). Taxes and data transfer are not included.
+#   P3 Rs 110.34/h   P5 Rs 249.92/h   P6 Rs 761.89/h   P7 Rs 136.21/h
 #
 # Required environment:
 #   AWS_SESSION_REGION     e.g. us-east-1 (no default)
@@ -56,7 +73,7 @@
 #   AWS_SESSION_AZ         availability zone inside the region
 #   AWS_SUBNET_ID          subnet-... (fixes the zone; then AZ is not passed)
 #   AWS_HALT_MINUTES       in-guest halt (default AWS_MAX_RUN_MINUTES - 60)
-#   AWS_PROVISIONING       on-demand (default) or spot
+#   AWS_PROVISIONING       on-demand (the default and the only value accepted)
 #   AWS_HARD_DELETE_ROLE   IAM role the scheduler assumes (default
 #                          attnbench-hard-delete); it needs only
 #                          ec2:TerminateInstances
@@ -65,8 +82,8 @@ set -euo pipefail
 HERE="$(dirname "${BASH_SOURCE[0]}")"
 PAIRING="${1:?usage: aws_launch_session.sh PAIRING [NAME]   (PAIRING: P3, P5, P6 or P7)}"
 
-# PROPOSED sizes: one GPU each, 8 vCPUs where the family allows, to match
-# P1's g2-standard-8; p5.4xlarge is the plan's own pin.
+# One GPU each, 8 vCPUs where the family allows, to match P1's
+# g2-standard-8; p5.4xlarge is the plan's own pin. Accepted 28 Oct 2026.
 case "$PAIRING" in
   P3) INSTANCE_TYPE="g6.2xlarge";  GPU="1x L4 24GB" ;;
   P5) INSTANCE_TYPE="g6e.2xlarge"; GPU="1x L40S 48GB" ;;
@@ -131,11 +148,15 @@ if ! awk -v w="$WORST_INR" -v c="$COST_CAP_INR" 'BEGIN{exit !(w<=c)}'; then
   exit 1
 fi
 
-case "${AWS_PROVISIONING:-on-demand}" in
-  on-demand) MODEL="STANDARD"; SHUTDOWN_BEHAVIOR="stop" ;;
-  spot)      MODEL="SPOT";     SHUTDOWN_BEHAVIOR="terminate" ;;
-  *) echo "REFUSING TO LAUNCH -- AWS_PROVISIONING must be on-demand or spot." >&2; exit 1 ;;
-esac
+# On-demand only: a Spot interruption would ruin a timed run (researcher's
+# decision, 28 Oct 2026).
+if [[ "${AWS_PROVISIONING-on-demand}" != "on-demand" ]]; then
+  echo "REFUSING TO LAUNCH -- AWS_PROVISIONING='${AWS_PROVISIONING}': measurement sessions" >&2
+  echo "are on-demand only (a Spot interruption would ruin a timed run)." >&2
+  exit 1
+fi
+MODEL="STANDARD"
+SHUTDOWN_BEHAVIOR="stop"
 
 AMI="${AWS_AMI_ID:-}"
 KEY_NAME="${AWS_KEY_NAME:-}"
@@ -180,7 +201,7 @@ trap 'rm -f "$STARTUP_SCRIPT"' EXIT
 cat > "$STARTUP_SCRIPT" <<EOF
 #!/bin/bash
 # Hard cap inside the guest, scheduled from boot. The shutdown behaviour is
-# "$SHUTDOWN_BEHAVIOR", so this ${SHUTDOWN_BEHAVIOR}s the instance.
+# "$SHUTDOWN_BEHAVIOR", so this stops the instance; the disk survives.
 logger "attnbench-aws: scheduling in-guest halt in ${HALT_MINUTES} minutes"
 shutdown -h +${HALT_MINUTES}
 EOF
@@ -195,11 +216,7 @@ echo "  image        : $AMI (root $ROOT_DEVICE)"
 echo "  root volume  : 200 GB gp3, encrypted, deleted with the instance"
 echo "  provisioning : $MODEL"
 echo "  rate         : Rs ${RATE_INR_HR}/h (AWS_RATE_INR_HR, planning rate, all-in)"
-if [[ "$SHUTDOWN_BEHAVIOR" == "stop" ]]; then
-  echo "  in-guest halt: +${HALT_MINUTES} min, STOPS the instance (GPU billing stops, disk survives)"
-else
-  echo "  in-guest halt: +${HALT_MINUTES} min, TERMINATES the instance (Spot: no recovery window)"
-fi
+echo "  in-guest halt: +${HALT_MINUTES} min, STOPS the instance (GPU billing stops, disk survives)"
 echo "  hard delete  : +${MAX_RUN_MINUTES} min, ec2:TerminateInstances by EventBridge Scheduler"
 echo "  worst case   : Rs ${WORST_INR}, cost cap Rs ${COST_CAP_INR}"
 echo
@@ -218,11 +235,6 @@ if [[ -n "$SUBNET" ]]; then
 elif [[ -n "$AZ" ]]; then
   PLACEMENT=(--placement "AvailabilityZone=$AZ")
 fi
-MARKET=()
-if [[ "$MODEL" == "SPOT" ]]; then
-  MARKET=(--instance-market-options
-          'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
-fi
 # One hard-delete time, fixed before the request: the tag and the schedule
 # carry the same value, and the instance runs at most AWS_MAX_RUN_MINUTES.
 DELETE_AT="$(iso_utc $(( $(command date -u +%s) + MAX_RUN_MINUTES * 60 )))"
@@ -236,7 +248,6 @@ INSTANCE_ID="$(aws ec2 run-instances "${P[@]}" \
   --key-name "$KEY_NAME" \
   --security-group-ids "$SG" \
   ${PLACEMENT[@]+"${PLACEMENT[@]}"} \
-  ${MARKET[@]+"${MARKET[@]}"} \
   --instance-initiated-shutdown-behavior "$SHUTDOWN_BEHAVIOR" \
   --metadata-options 'HttpTokens=required,HttpEndpoint=enabled,InstanceMetadataTags=enabled' \
   --block-device-mappings "DeviceName=$ROOT_DEVICE,Ebs={VolumeSize=200,VolumeType=gp3,DeleteOnTermination=true,Encrypted=true}" \

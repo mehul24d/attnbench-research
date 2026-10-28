@@ -10,6 +10,7 @@ UNHANDLED and fails, so a new call site cannot pass by accident.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -127,6 +128,16 @@ AWS_FILES = ("_aws_account.sh", "_aws_launch_policy.sh", "aws_launch_session.sh"
              "aws_cleanup_check.sh", "aws_teardown_session.sh")
 
 
+LAST_DATE_RE = re.compile(r'^LAST_AWS_LAUNCH_DATE="([^"]*)"$', re.M)
+
+
+def committed_last_date() -> str:
+    """The value set in scripts/_aws_launch_policy.sh, whatever it is."""
+    m = LAST_DATE_RE.findall((SCRIPTS / "_aws_launch_policy.sh").read_text())
+    assert len(m) == 1, "the last AWS launch date must be set in exactly one line"
+    return m[0]
+
+
 def scripts_copy(tmp_path: Path, last_date: str | None) -> Path:
     """The AWS scripts in a scratch directory, with the last AWS launch date
     set to `last_date` (None keeps the committed value)."""
@@ -136,10 +147,9 @@ def scripts_copy(tmp_path: Path, last_date: str | None) -> Path:
         shutil.copy(SCRIPTS / name, d / name)
     if last_date is not None:
         pol = d / "_aws_launch_policy.sh"
-        text = pol.read_text()
-        assert 'LAST_AWS_LAUNCH_DATE="UNDECIDED"' in text
-        pol.write_text(text.replace('LAST_AWS_LAUNCH_DATE="UNDECIDED"',
-                                    f'LAST_AWS_LAUNCH_DATE="{last_date}"'))
+        text, n = LAST_DATE_RE.subn(f'LAST_AWS_LAUNCH_DATE="{last_date}"', pol.read_text())
+        assert n == 1
+        pol.write_text(text)
     return d
 
 

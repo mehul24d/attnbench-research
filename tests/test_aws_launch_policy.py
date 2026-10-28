@@ -2,17 +2,20 @@
 is undecided or past (India time, the date itself allowed), never an
 Australia region, and the date checked again before the create request.
 
-The committed date is UNDECIDED, so the committed scripts refuse every
-launch. The date logic is exercised on a copy with a date written in.
+The committed date is PROVISIONAL (20 Dec 2026 proposed, not confirmed), so
+the date tests read whatever value the policy file holds and test against
+it. The UNDECIDED state is exercised on a copy.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 
 import pytest
 
-from _aws_fakes import SCRIPTS, aws_calls, launch_env, run, scripts_copy
+from _aws_fakes import (SCRIPTS, committed_last_date, launch_env, run,
+                        scripts_copy)
 
 POLICY = SCRIPTS / "_aws_launch_policy.sh"
 
@@ -26,28 +29,48 @@ def _check(tmp_path, places, *, last, today):
     return p
 
 
-def test_the_committed_date_is_undecided_and_refuses_every_launch(tmp_path):
-    assert re.search(r'^LAST_AWS_LAUNCH_DATE="UNDECIDED"$', POLICY.read_text(), re.M)
-    p = _check(tmp_path, "us-east-1", last=None, today="2026-10-28")
-    assert p.returncode == 1 and "PASSED" not in p.stdout
-    assert "no last AWS launch date has been decided" in p.stderr
+def _shift(day: str, days: int) -> str:
+    return (dt.date.fromisoformat(day) + dt.timedelta(days=days)).isoformat()
 
 
-def test_the_committed_launcher_refuses_before_any_aws_call(tmp_path):
+def test_the_committed_date_is_one_valid_date_marked_provisional():
+    last = committed_last_date()
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", last), last
+    dt.date.fromisoformat(last)
+    text = POLICY.read_text()
+    assert "PROVISIONAL" in text[:text.index("LAST_AWS_LAUNCH_DATE=")]
+
+
+@pytest.mark.parametrize("offset,ok", [(-1, True), (0, True), (1, False), (40, False)])
+def test_the_committed_date_is_inclusive_in_india_time(tmp_path, offset, ok):
+    today = _shift(committed_last_date(), offset)
+    p = _check(tmp_path, "us-east-1", last=None, today=today)
+    assert (p.returncode == 0 and "PASSED" in p.stdout) == ok, p.stderr
+    if not ok:
+        assert "after the last AWS" in p.stderr
+
+
+def test_the_committed_launcher_refuses_the_day_after_before_any_aws_call(tmp_path):
     p, calls = run(SCRIPTS / "aws_launch_session.sh", ["P3", "s"], tmp_path,
+                   extra=launch_env(), today=_shift(committed_last_date(), 1))
+    assert p.returncode == 1 and "after the last AWS" in p.stderr
+    assert calls == []
+
+
+def test_the_committed_launcher_launches_on_the_last_day(tmp_path):
+    p, calls = run(SCRIPTS / "aws_launch_session.sh", ["P3", "s"], tmp_path,
+                   extra=launch_env(), today=committed_last_date())
+    assert p.returncode == 0, p.stderr
+    assert sum("run-instances" in c for c in calls) == 1
+
+
+def test_undecided_refuses_every_launch_before_any_aws_call(tmp_path):
+    d = scripts_copy(tmp_path, "UNDECIDED")
+    p, calls = run(d / "aws_launch_session.sh", ["P3", "s"], tmp_path,
                    extra=launch_env())
     assert p.returncode == 1
     assert "no last AWS launch date has been decided" in p.stderr
     assert calls == []
-
-
-@pytest.mark.parametrize("today,ok", [("2026-12-30", True), ("2026-12-31", True),
-                                      ("2027-01-01", False)])
-def test_the_last_date_is_inclusive_in_india_time(tmp_path, today, ok):
-    p = _check(tmp_path, "us-east-1", last="2026-12-31", today=today)
-    assert (p.returncode == 0 and "PASSED" in p.stdout) == ok, p.stderr
-    if not ok:
-        assert "after the last AWS" in p.stderr
 
 
 def test_the_date_is_read_in_india_time():

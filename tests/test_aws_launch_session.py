@@ -119,14 +119,20 @@ def test_the_create_request_carries_every_guarantee(tmp_path, pairing, itype):
     assert f"INSTANCE_ID={INSTANCE}" in p.stdout
 
 
-def test_spot_terminates_on_halt_and_says_so(tmp_path):
-    p, calls = _launch(tmp_path, env={"AWS_PROVISIONING": "spot"})
+@pytest.mark.parametrize("model", ["spot", "SPOT", "on-demand,spot", "capacity-block", ""])
+def test_anything_but_on_demand_is_refused_before_any_aws_call(tmp_path, model):
+    """A Spot interruption would ruin a timed run (researcher, 28 Oct 2026).
+    An empty value is refused too: it is a setting typed wrong, not a default."""
+    p, calls = _launch(tmp_path, env={"AWS_PROVISIONING": model})
+    assert p.returncode == 1 and "on-demand only" in p.stderr
+    assert calls == []
+
+
+def test_on_demand_spelled_out_launches(tmp_path):
+    p, calls = _launch(tmp_path, env={"AWS_PROVISIONING": "on-demand"})
     assert p.returncode == 0, p.stderr
-    create = _one(aws_calls(calls), "ec2 run-instances")
-    assert "--instance-initiated-shutdown-behavior terminate" in create
-    assert "MarketType=spot" in create and "InstanceInterruptionBehavior=terminate" in create
-    assert "Key=attnbench-provisioning-model,Value=SPOT" in create
-    assert "no recovery window" in p.stdout
+    create = _one(aws_calls(calls), "run-instances")
+    assert "spot" not in create.lower()
 
 
 def test_the_hard_delete_is_a_schedule_at_launch_plus_the_limit(tmp_path):
