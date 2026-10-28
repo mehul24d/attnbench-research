@@ -216,3 +216,8 @@ The full design is in [`docs/RESEARCH_PLAN.md`](docs/RESEARCH_PLAN.md).
 ## Licence
 
 Apache 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+FlashAttention-3 ([Dao-AILab/flash-attention](https://github.com/Dao-AILab/flash-attention),
+`hopper/`, BSD 3-Clause; Shah et al., 2024) is built from source at release
+v2.8.3.post2 by `scripts/build_fa3_wheel.sh` and called by
+`attnbench/backends/fa3.py`. None of its source is copied into this repository.

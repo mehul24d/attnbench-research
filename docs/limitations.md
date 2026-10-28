@@ -1986,6 +1986,28 @@ claimed: FA3 exists, is designed for exactly that hardware, and was not
 measured. The supported form is the one already in the ledger — backend A
 against backend B on identical inputs, among the backends actually run.
 
+**Superseded, 27–28 Oct 2026.** The plan's control K2 now includes FA3 as an
+H100 candidate, and an H100 record without it says `complete: false`
+(Appendix A, 27 Oct 2026). The two sentences above that say no backend exists
+and that the image lacks the build are out of date; what holds now:
+
+- **A restricted wheel only.** `attnbench/backends/fa3.py` is built for head
+  dim 128, forward, bf16 and fp16, sm_90a (`fa3.BUILD_FLAGS`, researcher's
+  decision, 28 Oct 2026). It refuses other head dims, sliding windows,
+  backward and decode. Every study cell is head dim 128, causal prefill, so
+  nothing the study measures is lost; FA3 at other shapes is not measured.
+- **Split-KV is compiled out.** At the pin, upstream's heuristic
+  (`hopper/heuristics.h`) does not split a causal prefill when the m-block
+  tiles nearly fill the SMs, which they do at batch 1 from about 1,100 tokens
+  with two KV heads. So the study's 8,192 to 32,768-token cells run the
+  kernel they would have run anyway. This is read from the source, not
+  measured.
+- **No wheel yet.** The first build (28 Oct 2026, `docs/spend_ledger.md`)
+  was killed for memory before it finished. Until a wheel is built, installed
+  on the H100 (`scripts/fa3_import_check.sh`) and passes the float64 gate,
+  H100 records are `complete: false`, and any H100 speedup is an upper bound
+  against the best of the other dense kernels, with FA3's absence named.
+
 ## Stage 1 on sm90: `passed=False` means two different things
 
 The H100 Stage 1 table has 558 rows: 492 pass, 66 fail. Reading that as a 88%

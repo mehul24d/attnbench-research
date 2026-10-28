@@ -38,6 +38,7 @@ case "$*" in
   *"compute ssh"*"PKGS_OK"*) say PKGS_OK ;;
   *"compute ssh"*"RULER_OK"*) say RULER_OK ;;
   *"compute ssh"*"XATTN_OK"*) say XATTN_OK ;;
+  *"compute ssh"*"FA3_OK"*) say FA3_OK ;;
   *"compute ssh"*"TREE_CLEAN"*) say TREE_CLEAN ;;
 esac
 exit 0
@@ -65,7 +66,7 @@ def _run(tmp_path, *args, python="fake", **env_extra):
     real = [d for d in os.environ["PATH"].split(os.pathsep)
             if not any((Path(d) / c).exists() for c in ("gcloud", "gsutil", "bq"))]
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("GCP_", "ATTNBENCH_", "CLOUDSDK_", "FAKE_"))}
+           if not k.startswith(("GCP_", "ATTNBENCH_", "CLOUDSDK_", "FAKE_", "FA3_"))}
     env.update(PATH=os.pathsep.join([str(bin_dir), *real]), GCLOUD_LOG=str(log),
                FAKE_ACTIVE=PIN, ATTNBENCH_GCP_PROJECT=PIN,
                STATE_COPIED=str(tmp_path / "copied"), REAL_PYTHON=sys.executable,
@@ -162,3 +163,37 @@ def test_the_local_check_passes_on_the_real_data_when_it_is_present(tmp_path):
     assert p.returncode == 0, p.stderr[-1500:]
     assert f"{len(ruler_data.PINNED_SHA256)} pinned files verified locally" in p.stdout
     assert str(ruler_data.data_dir()) not in p.stdout  # the local path is not printed
+
+
+# --- the FA3 step (T6.4, 28 Oct 2026) ------------------------------------------------
+
+SHA = "ab" * 32
+
+
+def test_the_fa3_wheel_is_checked_after_xattention_and_before_the_tree_check(tmp_path):
+    p, calls = _run(tmp_path, FA3_WHEEL_SHA256=SHA)
+    assert p.returncode == 0, p.stdout[-1500:] + p.stderr[-1500:]
+    fa3 = _step(calls, "FA3_OK")
+    assert _step(calls, "XATTN_OK") < fa3 < _step(calls, "TREE_CLEAN")
+    assert f"bash scripts/fa3_import_check.sh {SHA} " in calls[fa3]
+
+
+def test_without_a_recorded_hash_the_fa3_step_is_skipped_and_says_so(tmp_path):
+    p, calls = _run(tmp_path)
+    assert p.returncode == 0, p.stderr[-1500:]
+    assert not any("fa3_import_check" in c for c in calls)
+    assert "FA3 skipped: FA3_WHEEL_SHA256 is not set" in p.stdout
+    assert 'dense_set_incomplete="fa3:no wheel"' in p.stdout
+
+
+@pytest.mark.parametrize("bad", ["abc", "AB" * 32, SHA + "0"])
+def test_a_malformed_hash_refuses_before_anything_runs(bad, tmp_path):
+    p, calls = _run(tmp_path, FA3_WHEEL_SHA256=bad)
+    assert p.returncode == 1 and "not a sha256" in p.stderr
+    assert calls == []
+
+
+def test_a_failed_fa3_check_stops_before_the_tree_check(tmp_path):
+    p, calls = _run(tmp_path, FA3_WHEEL_SHA256=SHA, FAKE_FAIL="FA3_OK")
+    assert p.returncode == 1 and "FA3 import check" in p.stderr
+    assert not any("TREE_CLEAN" in c for c in calls)

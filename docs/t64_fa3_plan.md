@@ -204,3 +204,23 @@ backend declares unsupported), `scripts/fa3_import_check.sh` (H100),
 `docs/t64_fa3_launch_card.md`. Not done: the bootstrap step of Section 5 item 4 (the
 import check is a separate script), the README credit line, and the
 `docs/limitations.md` FA3 entry.
+
+## 9. First build and the restricted build (28 Oct 2026)
+
+The first build (`attnbench-fa3-build-20261028`, 137 min, ₹176) was killed for memory
+12 minutes in, on `flash_fwd_hdimall_*_sm90` units at 8 jobs on 64 GB, and its VM sat idle
+for two hours because the Mac-side watcher called `timeout`, which macOS lacks.
+
+Researcher's decisions the same day: a **restricted build** (head dim 128, forward, bf16 and
+fp16; also off: paged KV, append KV, split KV, softcap, local attention, FP8, backward, and
+the sm_80 kernels), each flag checked against the pinned `setup.py` and recorded in the
+manifest and in `code_identity` (`fa3.BUILD_FLAGS`, `fa3.BUILT_HEAD_DIMS`); 15 GB per job,
+1 s memory samples, a 3 h cap, halt at 150 minutes, a 120-minute build deadline; the build
+halts its VM when it ends; a watcher with no `timeout` (`scripts/gcp_watch_fa3_build.sh`).
+The harness uses none of what is removed: every config is head dim 128, no config uses a
+sliding window, FP8, paged or appended KV, softcap or `num_splits`, and the backend declined
+backward already. Split KV would not engage on the study's causal prefill cells (Section on
+FA3 in `docs/limitations.md`). With a restricted wheel a head dim of 64 runs the padded
+hdim-128 kernel instead of failing (`flash_api.cpp`), so the backend refuses it itself.
+**MAX_JOBS is 3, not 4:** at 15 GB per job, 4 jobs need 60 GB and about 58 are usable on
+`n2-standard-16`, so the guard refuses 4. Launch card: `docs/t64_fa3_launch_card.md`.

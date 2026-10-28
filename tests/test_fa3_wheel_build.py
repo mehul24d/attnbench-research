@@ -24,6 +24,7 @@ import pytest
 import torch
 
 from attnbench import fa3_wheel as fw
+from attnbench.backends.fa3 import BUILD_FLAGS
 
 REPO = Path(__file__).resolve().parent.parent
 BUILD = REPO / "scripts" / "build_fa3_wheel.sh"
@@ -55,7 +56,7 @@ printf 'git %s\n' "$*" >> "$CALLS"
 dir="."; if [[ "$1" == "-C" ]]; then dir="$2"; shift 2; fi
 case "$1" in
   init|remote|fetch) exit 0 ;;
-  checkout) mkdir -p "$dir/hopper"; exit 0 ;;
+  checkout) mkdir -p "$dir/hopper"; cp "$FAKE_SETUP_PY" "$dir/hopper/setup.py"; exit 0 ;;
   submodule) mkdir -p "$dir/csrc/cutlass"; exit 0 ;;
   rev-parse) if [[ "$dir" == */cutlass ]]; then echo cafef00d; else echo "${FAKE_HEAD:-$PINNED}"; fi ;;
   ls-remote) printf '%s\trefs/tags/v2.8.3.post2^{}\n' "${FAKE_TAG_COMMIT:-$PINNED}" ;;
@@ -86,6 +87,14 @@ echo "Cuda compilation tools, release ${FAKE_NVCC_VERSION:-12.9}, V12.9.86"
 """
 
 
+def _setup_stub(tmp_path, omit=None) -> Path:
+    """The pinned setup.py's flag reads, as `os.getenv("NAME", "FALSE")` lines."""
+    names = [f.split("=")[0] for f in BUILD_FLAGS if f.split("=")[0] != omit]
+    p = tmp_path / "setup_stub.py"
+    p.write_text("".join(f'X = os.getenv("{n}", "FALSE") == "TRUE"\n' for n in names))
+    return p
+
+
 def _env(tmp_path, **extra):
     bin_dir = tmp_path / "bin"
     cuda = tmp_path / "cuda" / "bin"
@@ -95,6 +104,7 @@ def _env(tmp_path, **extra):
                bin_dir / "python3": FAKE_PYTHON, cuda / "nvcc": FAKE_NVCC,
                bin_dir / "ninja": "#!/bin/bash\nexit 0\n",
                bin_dir / "timeout": '#!/bin/bash\nshift\nexec "$@"\n',
+               bin_dir / "sudo": '#!/bin/bash\nprintf "sudo %s\\n" "$*" >> "$CALLS"\nexit ${FAKE_SUDO_RC:-0}\n',
                bin_dir / "curl": "#!/bin/bash\nexit 22\n"}
     for p, body in scripts.items():
         p.write_text(body)
@@ -108,6 +118,7 @@ def _env(tmp_path, **extra):
         PATH=os.pathsep.join([str(bin_dir), *real]), HOME=str(tmp_path),
         CALLS=str(tmp_path / "calls.log"), FAKE_GCS=str(tmp_path / "gcs"),
         SETUP_ENV=str(tmp_path / "setup_env.txt"), REAL_PY=sys.executable,
+        FAKE_SETUP_PY=str(_setup_stub(tmp_path, extra.pop("OMIT_FLAG", None))),
         PINNED=COMMIT, WHEEL=WHEEL, CUDA_HOME=str(tmp_path / "cuda"),
         ATTNBENCH_BUCKET=BUCKET, FA_FREE_GB_OVERRIDE="64",
         FA3_EXPECT_PYTHON="%d.%d" % sys.version_info[:2], FA3_EXPECT_TORCH=torch.__version__,
@@ -159,12 +170,65 @@ def test_a_build_stores_the_wheel_its_hash_and_manifest_and_reads_it_back(tmp_pa
     assert calls.index(f"storage cp {BUCKET}/fa3/{COMMIT}/{WHEEL}") > up
 
 
-def test_the_build_never_downloads_a_prebuilt_wheel_and_drops_only_unused_kernels(tmp_path):
+def test_the_build_gets_exactly_the_backends_flags_and_the_manifest_records_them(tmp_path):
     r, _ = _run(BUILD, tmp_path)
     assert r.returncode == 0, r.stderr
-    assert (tmp_path / "setup_env.txt").read_text().split() == [
-        "FLASH_ATTENTION_DISABLE_BACKWARD=TRUE", "FLASH_ATTENTION_DISABLE_FP8=TRUE",
-        "FLASH_ATTENTION_DISABLE_SM80=TRUE", "FLASH_ATTENTION_FORCE_BUILD=TRUE"]
+    assert (tmp_path / "setup_env.txt").read_text().split() == sorted(BUILD_FLAGS)
+    m = json.loads((_stored(tmp_path) / "manifest.json").read_text())
+    assert m["build_flags"] == list(BUILD_FLAGS) and m["built_head_dims"] == [128]
+    assert (m["max_jobs"], m["gb_per_job"], m["memory_sample_s"]) == (3, 15, 1)
+
+
+def test_a_flag_the_pinned_setup_py_does_not_read_refuses_before_the_build(tmp_path):
+    r, calls = _run(BUILD, tmp_path, OMIT_FLAG="FLASH_ATTENTION_DISABLE_SPLIT")
+    assert r.returncode == 1
+    assert "FLASH_ATTENTION_DISABLE_SPLIT=TRUE is not read by the pinned" in r.stderr
+    assert "setup.py bdist_wheel" not in calls and "sudo" not in calls
+
+
+@pytest.mark.parametrize("jobs,ok", [("3", True), ("4", False)])
+def test_the_memory_guard_uses_15_gb_per_job(tmp_path, jobs, ok):
+    """About 58 GB is usable on n2-standard-16 (61 GB available minus the
+    3 GB reserve): 3 jobs x 15 GB fit, 4 do not."""
+    r, calls = _run(BUILD, tmp_path, MAX_JOBS=jobs, FA_FREE_GB_OVERRIDE="61")
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr
+    if not ok:
+        assert "MAX_JOBS=4 x NVCC_THREADS=1 = 4 concurrent cicc processes needing ~60 GB" in r.stdout
+        assert calls == ""
+
+
+# --- the VM halts itself when the build ends -------------------------------------------
+
+
+def _halt_index(calls):
+    lines = calls.splitlines()
+    halts = [i for i, l in enumerate(lines) if l.startswith("sudo ")]
+    assert len(halts) == 1, calls
+    assert lines[halts[0]] == 'sudo -n shutdown -h +1 attnbench: FA3 build ended'
+    return halts[0], lines
+
+
+@pytest.mark.parametrize("extra,rc", [({}, 0), ({"FAKE_BUILD_RC": "1"}, 2),
+                                      ({"FAKE_CORRUPT_READ": "1"}, 3)])
+def test_the_vm_halts_after_the_logs_are_stored_on_success_and_failure(tmp_path, extra, rc):
+    r, calls = _run(BUILD, tmp_path, **extra)
+    assert r.returncode == rc, r.stderr
+    i, lines = _halt_index(calls)
+    uploads = [j for j, l in enumerate(lines) if l.startswith("gcloud storage cp ") and
+               l.split()[3].startswith("/") and "/build.log" in l]
+    assert uploads and max(uploads) < i, "build.log must be stored before the halt"
+    assert i == len(lines) - 1 or all(not l.startswith("gcloud") for l in lines[i:])
+
+
+def test_a_refusal_before_the_build_does_not_halt(tmp_path):
+    r, calls = _run(BUILD, tmp_path, FAKE_HEAD="0" * 40)
+    assert r.returncode == 1 and "sudo" not in calls
+
+
+def test_a_halt_that_fails_is_reported(tmp_path):
+    r, _ = _run(BUILD, tmp_path, FAKE_SUDO_RC="1")
+    assert r.returncode == 0
+    assert "the VM did NOT halt itself" in r.stderr
 
 
 def test_a_download_attempt_in_the_log_fails_the_build(tmp_path):
@@ -212,9 +276,15 @@ def test_a_failed_build_stores_its_logs_and_no_wheel(tmp_path):
     assert not (d / WHEEL).exists() and not (d / "manifest.json").exists()
 
 
-def test_a_wheel_that_reads_back_differently_fails(tmp_path):
+def test_a_wheel_that_reads_back_differently_fails_with_no_manifest(tmp_path):
+    """The manifest means "a verified wheel is here" to the H100 check and the
+    watcher, so a wheel that does not read back gets none, and its logs go to
+    failed-<UTC>/ like any failure."""
     r, _ = _run(BUILD, tmp_path, FAKE_CORRUPT_READ="1")
     assert r.returncode == 3 and "reads back as" in r.stderr
+    d = _stored(tmp_path)
+    assert not (d / "manifest.json").exists()
+    assert [p.name for p in d.iterdir() if p.name.startswith("failed-")]
 
 
 # --- the H100 import check ------------------------------------------------------------
@@ -365,12 +435,12 @@ def test_the_launcher_creates_the_chosen_cpu_machine_with_the_cap(tmp_path):
     assert r.returncode == 0, r.stderr
     (c,) = creates
     for arg in ("--machine-type=n2-standard-16", "--zone=us-central1-a",
-                "--provisioning-model=STANDARD", "--max-run-duration=5h",
+                "--provisioning-model=STANDARD", "--max-run-duration=3h",
                 "--instance-termination-action=DELETE", "--image=attnbench-env-v5-20260905",
                 "--scopes=https://www.googleapis.com/auth/cloud-platform"):
         assert arg in c, arg
     assert "--accelerator" not in c and "SPOT" not in c
-    assert "at most Rs 386" in r.stdout and "+270 min" in r.stdout
+    assert "at most Rs 232" in r.stdout and "+150 min" in r.stdout
 
 
 @pytest.mark.parametrize("rate,answer,match", [

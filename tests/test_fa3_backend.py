@@ -1,20 +1,27 @@
 """The FA3 backend, tested on CPU with a stand-in for `flash_attn_interface`.
 
 No test here needs an H100. The stand-in computes real attention in FA3's
-(B, S, H, D) layout with the pinned source's mask semantics (`causal`, and a
-`window_size=(left, right)` band), so a backend that forgets a transpose,
-flips the causal flag, swaps the window or unpacks the wrong element returns
-the wrong numbers, not just the wrong shape. The expected output is computed
-independently in (B, H, S, D) with an explicit mask.
+(B, S, H, D) layout with the pinned source's causal semantics, so a backend
+that forgets a transpose, flips the causal flag or unpacks the wrong element
+returns the wrong numbers, not just the wrong shape. The expected output is
+computed independently in (B, H, S, D) with an explicit mask.
 
-Each defect named above was introduced into `fa3.py` once and watched to fail
-here (28 Oct 2026); see the docstrings of the tests that catch them.
+The wheel is the restricted build (researcher's decision, 28 Oct 2026): head
+dim 128, forward, bf16 and fp16. A restricted wheel given head dim 64 does not
+fail; it runs its padded hdim-128 kernel (`hopper/flash_api.cpp` at the pin),
+so the backend refuses first, and the tests feed it the dims it must refuse.
+
+Each defect named in a test's docstring was introduced into `fa3.py` and
+watched to fail here (28 Oct 2026).
 """
 
 from __future__ import annotations
 
+import dataclasses
+import re
 import sys
 import types
+from pathlib import Path
 
 import pytest
 import torch
@@ -22,28 +29,21 @@ import torch
 from attnbench import dense_selection as ds
 from attnbench.backends import all_backends, get
 from attnbench.backends.base import UnsupportedConfig
-from attnbench.backends.fa3 import FlashAttention3
+from attnbench.backends.fa3 import BUILD_FLAGS, BUILT_HEAD_DIMS, FlashAttention3
 from attnbench.config import AttnConfig
 
+REPO = Path(__file__).resolve().parent.parent
 
-def _attend_bshd(q, k, v, causal, window_size):
-    """Reference FA3 semantics in (B, S, H, D), for equal Q and K lengths:
-    query i sees keys in [i - left, i + right], -1 meaning unbounded; causal
-    sets right to 0. GQA by head grouping."""
+
+def _attend_bshd(q, k, v, causal):
+    """Reference FA3 semantics in (B, S, H, D), equal Q and K lengths, GQA by
+    head grouping."""
     B, S, Hq, D = q.shape
     g = Hq // k.shape[2]
     k = k.repeat_interleave(g, dim=2)
     v = v.repeat_interleave(g, dim=2)
-    left, right = window_size
-    if causal:
-        right = 0
-    i = torch.arange(S)[:, None]
-    j = torch.arange(S)[None, :]
-    keep = torch.ones(S, S, dtype=torch.bool)
-    if left >= 0:
-        keep &= j >= i - left
-    if right >= 0:
-        keep &= j <= i + right
+    i, j = torch.arange(S)[:, None], torch.arange(S)[None, :]
+    keep = (j <= i) if causal else torch.ones(S, S, dtype=torch.bool)
     s = torch.einsum("bqhd,bkhd->bhqk", q.float(), k.float()) / D ** 0.5
     s = s.masked_fill(~keep, float("-inf"))
     return torch.einsum("bhqk,bkhd->bqhd", s.softmax(-1), v.float()).to(q.dtype)
@@ -61,10 +61,9 @@ class _StandIn:
                         window_size=(-1, -1), **kw):
         self.calls.append(dict(shapes=(q.shape, k.shape, v.shape), causal=causal,
                                window_size=window_size, extra=kw))
-        out = _attend_bshd(q, k, v, causal, window_size)
+        out = _attend_bshd(q, k, v, causal)
         if self.returns_tuple:
-            lse = torch.zeros(q.shape[0], q.shape[2], q.shape[1])
-            return out, lse
+            return out, torch.zeros(q.shape[0], q.shape[2], q.shape[1])
         return out
 
 
@@ -79,7 +78,7 @@ def standin(monkeypatch):
     return install
 
 
-def _cfg(mask="causal", window=None, hq=4, hkv=2, seq=16, d=64, **kw):
+def _cfg(mask="causal", window=None, hq=4, hkv=2, seq=16, d=128, **kw):
     return AttnConfig(seq_len=seq, batch=2, n_heads_q=hq, n_heads_kv=hkv,
                       head_dim=d, dtype="float32", mask=mask, window=window, **kw)
 
@@ -96,45 +95,56 @@ def _expected_bhsd(q, k, v, cfg):
     k, v = k.repeat_interleave(g, 1), v.repeat_interleave(g, 1)
     S = cfg.seq_len
     i, j = torch.arange(S)[:, None], torch.arange(S)[None, :]
-    keep = {"full": torch.ones(S, S, dtype=torch.bool), "causal": j <= i,
-            "sliding": (j <= i) & (j >= i - (cfg.window or 0))}[cfg.mask]
+    keep = {"full": torch.ones(S, S, dtype=torch.bool), "causal": j <= i}[cfg.mask]
     s = (q @ k.transpose(-1, -2)) / cfg.head_dim ** 0.5
     return s.masked_fill(~keep, float("-inf")).softmax(-1) @ v
 
 
-# --- registration and declarations ------------------------------------------------
+# --- registration, declarations and the build flags --------------------------------
 
 
-def test_fa3_is_registered_as_a_dense_exact_hopper_kernel():
+def test_fa3_is_registered_as_the_restricted_hopper_kernel():
     assert all_backends()["fa3"] is FlashAttention3
     c = get("fa3").capability
     assert (c.family, c.min_compute_capability) == ("dense_exact", (9, 0))
-    assert c.supports_gqa and c.supports_sliding and not c.supports_backward
-    assert c.head_dims == (64, 96, 128, 192, 256)
+    assert c.supports_gqa and not c.supports_sliding and not c.supports_backward
+    assert c.head_dims == BUILT_HEAD_DIMS == (128,)
     assert c.dtypes == ("bfloat16", "float16")
 
 
-def test_the_declared_head_dims_are_the_pinned_builds_instantiations():
-    """The capability names the head dims the build compiles. The build script
-    disables no head dim; if it ever does, the capability must follow."""
-    from pathlib import Path
-    script = (Path(__file__).resolve().parent.parent / "scripts" / "build_fa3_wheel.sh").read_text()
-    assert "DISABLE_HDIM" not in script
-    for flag in ("FLASH_ATTENTION_DISABLE_BACKWARD=TRUE", "FLASH_ATTENTION_DISABLE_FP8=TRUE",
-                 "FLASH_ATTENTION_DISABLE_SM80=TRUE"):
-        assert flag in script, flag
+def test_the_flags_remove_exactly_what_the_researcher_named():
+    """Head dim 128, forward, bf16 and fp16: every other head dim, paged KV,
+    append KV, split KV, softcap, local attention, FP8 and backward are off,
+    plus the sm_80 kernels, and a source build is forced. fp16, PackGQA,
+    varlen and clusters are not touched."""
+    names = {f.split("=")[0].replace("FLASH_ATTENTION_", "") for f in BUILD_FLAGS}
+    assert all(f.endswith("=TRUE") for f in BUILD_FLAGS)
+    assert names == {"FORCE_BUILD", "DISABLE_BACKWARD", "DISABLE_FP8", "DISABLE_SM80",
+                     "DISABLE_HDIM64", "DISABLE_HDIM96", "DISABLE_HDIM192",
+                     "DISABLE_HDIM256", "DISABLE_PAGEDKV", "DISABLE_APPENDKV",
+                     "DISABLE_SPLIT", "DISABLE_SOFTCAP", "DISABLE_LOCAL"}
+    kept = {f"DISABLE_HDIM{d}" for d in BUILT_HEAD_DIMS}
+    assert not names & kept
+
+
+def test_the_build_script_takes_its_flags_from_the_backend():
+    script = (REPO / "scripts" / "build_fa3_wheel.sh").read_text()
+    assert "fa3_module fa3_wheel flags" in script
+    assert not re.search(r"FLASH_ATTENTION_DISABLE_\w+=TRUE", script)
 
 
 @pytest.mark.parametrize("cfg,reason", [
     (_cfg(pass_kind="fwd_bwd"), "no backward pass"),
-    (_cfg(d=32), "head dim 32 unsupported"),
-    (_cfg(), "dtype float32 unsupported"),
+    (_cfg(d=64), "head dim 64 unsupported"),
+    (_cfg(d=256), "head dim 256 unsupported"),
+    (_cfg(mask="sliding", window=4), "no sliding window"),
 ])
 def test_the_capability_declines_what_the_wheel_does_not_have(cfg, reason):
+    cfg = dataclasses.replace(cfg, dtype="bfloat16")
     assert FlashAttention3.claims_support(cfg) == (False, reason)
 
 
-def test_bfloat16_forward_is_claimed():
+def test_bfloat16_forward_at_head_dim_128_is_claimed():
     cfg = AttnConfig(seq_len=8192, batch=1, n_heads_q=32, n_heads_kv=8, head_dim=128)
     assert FlashAttention3.claims_support(cfg) == (True, "")
 
@@ -177,13 +187,11 @@ def test_the_dense_selection_supplies_fa3_on_an_h100_once_it_is_available(standi
 
 
 @pytest.mark.parametrize("returns_tuple", [False, True])
-@pytest.mark.parametrize("cfg", [
-    _cfg("causal"), _cfg("full"), _cfg("sliding", window=3), _cfg("causal", hq=4, hkv=4),
-], ids=["causal_gqa", "full_gqa", "sliding_gqa", "causal_mha"])
+@pytest.mark.parametrize("cfg", [_cfg("causal"), _cfg("full"), _cfg("causal", hq=4, hkv=4)],
+                         ids=["causal_gqa", "full_gqa", "causal_mha"])
 def test_forward_matches_an_independent_reference(cfg, returns_tuple, standin):
-    """Kills: a missing transpose in or out (wrong numbers with H != S), the
-    causal flag flipped or always False, the window passed as (0, w), and
-    `_unpack` taking element -1 (returns the lse under the old shape)."""
+    """Kills: a missing transpose in or out, the causal flag flipped or always
+    False, and `_unpack` taking element -1 (the lse under the old shape)."""
     standin(returns_tuple)
     q, k, v = _inputs(cfg)
     out = FlashAttention3().forward(q, k, v, cfg)
@@ -191,30 +199,36 @@ def test_forward_matches_an_independent_reference(cfg, returns_tuple, standin):
     torch.testing.assert_close(out, _expected_bhsd(q, k, v, cfg), rtol=1e-5, atol=1e-5)
 
 
-def test_the_kernel_receives_bshd_tensors_and_the_flags(standin):
+def test_the_kernel_receives_bshd_tensors_and_no_window(standin):
     rec = standin()
-    cfg = _cfg("sliding", window=5, seq=12)
+    cfg = _cfg("causal", seq=12)
     FlashAttention3().forward(*_inputs(cfg), cfg)
     (call,) = rec.calls
     B, S, D = cfg.batch, cfg.seq_len, cfg.head_dim
     assert call["shapes"] == ((B, S, 4, D), (B, S, 2, D), (B, S, 2, D))
-    assert call["causal"] is False and call["window_size"] == (5, 0)
+    assert call["causal"] is True and call["window_size"] == (-1, -1)
     assert call["extra"] == {}
 
 
-def test_causal_and_full_pass_no_window(standin):
+@pytest.mark.parametrize("d", [32, 64, 96, 192, 256])
+def test_a_head_dim_the_wheel_lacks_is_refused_before_the_kernel(d, standin):
+    """Kills: dropping the head-dim check (the restricted kernel would run a
+    padded hdim-128 instance and the stand-in would accept it)."""
     rec = standin()
-    for mask in ("causal", "full"):
-        FlashAttention3().forward(*_inputs(_cfg(mask)), _cfg(mask))
-    assert [(c["causal"], c["window_size"]) for c in rec.calls] == [(True, (-1, -1)),
-                                                                     (False, (-1, -1))]
+    cfg = _cfg(d=d)
+    with pytest.raises(UnsupportedConfig,
+                       match=rf"fa3: head dim {d} is not in this wheel, which is built "
+                             r"for head dim 128 only"):
+        FlashAttention3().forward(*_inputs(cfg), cfg)
+    assert rec.calls == []
 
 
 @pytest.mark.parametrize("cfg,match", [
-    (_cfg("sliding"), "needs cfg.window"),
-    (_cfg("block_sparse", sparsity=0.5, block_size=64), "not wired"),
+    (_cfg("sliding", window=3), "built with FLASH_ATTENTION_DISABLE_LOCAL"),
+    (_cfg("block_sparse", sparsity=0.5, block_size=64), "mask block_sparse is not supported"),
 ])
-def test_unsupported_configs_raise_with_the_reason(cfg, match, standin):
+def test_unsupported_masks_raise_with_the_reason(cfg, match, standin):
+    """Kills: dropping the mask check (sliding would reach the kernel as full)."""
     rec = standin()
     with pytest.raises(UnsupportedConfig, match=match):
         FlashAttention3().forward(*_inputs(cfg), cfg)
