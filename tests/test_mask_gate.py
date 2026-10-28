@@ -197,6 +197,32 @@ def test_density_deltas_by_arm_and_by_length():
         G.density_deltas(cmp, by_length=True)
 
 
+def test_the_shift_report_carries_the_max_and_the_mean_beside_the_deltas():
+    # Researcher's decision, 28 Oct 2026: max for the pre-registered
+    # sensitivity, mean alongside. Shifts -1/3, +1/3, -1/3 for one arm.
+    ref = [rec(L4_TORCH, FULL, prompt="p0"), rec(L4_TORCH, DROP, prompt="p1"),
+           rec(L4_TORCH, FULL, prompt="p2", length=512)]
+    cand = [rec(A100_TRITON, DROP, prompt="p0"), rec(A100_TRITON, FULL, prompt="p1"),
+            rec(A100_TRITON, DROP, prompt="p2", length=512)]
+    cmp = G.compare_banks(ref, cand)
+    r = G.density_shift_report(cmp, statistic="max", by_length=False)
+    assert r.statistic == "max"
+    assert r.deltas == r.max_shift == {"xattention": pytest.approx(1 / 3)}
+    assert r.mean_shift == {"xattention": pytest.approx(1 / 9)}
+    assert G.density_shift_report(cmp, statistic="mean", by_length=False).deltas == \
+        {"xattention": pytest.approx(1 / 9)}
+    for d in r.deltas.values():
+        _check_delta(d, "mask gate")
+    # Still no default, here or in density_deltas, and no module constant.
+    with pytest.raises(TypeError):
+        G.density_shift_report(cmp, by_length=False)
+    with pytest.raises(G.MaskGateError, match="statistic"):
+        G.density_shift_report(cmp, statistic="median", by_length=False)
+    import inspect
+    for f in (G.density_deltas, G.density_shift_report):
+        assert inspect.signature(f).parameters["statistic"].default is inspect.Parameter.empty
+
+
 # --- T2.23 and T2.24 -------------------------------------------------------------------
 
 def test_the_p2_gate_needs_both_paths_within_the_bound():

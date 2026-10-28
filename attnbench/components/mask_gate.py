@@ -41,8 +41,13 @@ difference `predict.density_sensitivity` reads: an absolute change in mask
 density by arm or by (arm, context length). A record's mask density is the
 mean over its layers, so the shift for one prompt is the candidate's mean
 minus the reference's; `statistic` says how the prompts are summarised
-("mean": the absolute mean shift; "max": the largest absolute shift). The
-choice is the researcher's, so it has no default.
+("mean": the absolute mean shift; "max": the largest absolute shift).
+
+Researcher's decision (28 Oct 2026, to be dated in Appendix A by the
+integration session): the pre-registered sensitivity uses "max", the worst
+case, and the mean is reported alongside it (`density_shift_report`). The
+argument stays required, with no default and no module constant, so the
+choice is written at each call.
 
 Everything here is numpy on the host; nothing imports torch, so the gates
 run wherever the banks can be read.
@@ -294,6 +299,28 @@ def density_deltas(comparisons: Sequence[RecordComparison], *, statistic: str,
     if statistic == "mean":
         return {k: abs(sum(v) / len(v)) for k, v in groups.items()}
     return {k: max(abs(x) for x in v) for k, v in groups.items()}
+
+
+@dataclass(frozen=True)
+class DensityShiftReport:
+    """The deltas T2.28 reads (`deltas`, by `statistic`), with both
+    summaries reported beside them."""
+
+    statistic: str
+    deltas: dict        # what predict.density_sensitivity reads
+    max_shift: dict     # largest absolute shift, the pre-registered worst case
+    mean_shift: dict    # absolute mean shift, reported alongside
+
+
+def density_shift_report(comparisons: Sequence[RecordComparison], *, statistic: str,
+                         by_length: bool) -> DensityShiftReport:
+    """`density_deltas` by `statistic`, with the max and the mean shift
+    beside it (module docstring)."""
+    deltas = density_deltas(comparisons, statistic=statistic, by_length=by_length)
+    return DensityShiftReport(
+        statistic=statistic, deltas=deltas,
+        max_shift=density_deltas(comparisons, statistic="max", by_length=by_length),
+        mean_shift=density_deltas(comparisons, statistic="mean", by_length=by_length))
 
 
 # --------------------------------------------------------------------------
