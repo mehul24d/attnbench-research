@@ -45,7 +45,7 @@ LOG="$OUT/build.log"
 echo "fa3 build: tag $FA3_TAG commit $FA3_COMMIT -> $FA3_PREFIX" | fa3_redact
 
 # 2. Memory guard, as in build_flash_attn.sh: it refuses, it does not warn.
-python3 -m attnbench.build_guards --max-jobs "$MAX_JOBS" --nvcc-threads "$NVCC_THREADS" \
+fa3_module build_guards --max-jobs "$MAX_JOBS" --nvcc-threads "$NVCC_THREADS" \
   ${FA_FREE_GB_OVERRIDE:+--free-gb "$FA_FREE_GB_OVERRIDE"} || exit 1
 
 # 3. ninja on PATH, or torch compiles serially with no warning.
@@ -61,7 +61,7 @@ if [[ -z "${CUDA_HOME:-}" ]]; then
 fi
 export CUDA_HOME
 NVCC_VERSION="$("$CUDA_HOME/bin/nvcc" --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9.]*\),.*/\1/p' || true)"
-python3 -m attnbench.fa3_wheel stack --nvcc "$NVCC_VERSION" --expect-python "$EXPECT_PYTHON" \
+fa3_module fa3_wheel stack --nvcc "$NVCC_VERSION" --expect-python "$EXPECT_PYTHON" \
   --expect-torch "$EXPECT_TORCH" --min-nvcc "$MIN_NVCC" --out "$OUT/stack.json" || exit 1
 
 # 5. A write to the bucket now, not after the build (the 2026-09-15 loss was
@@ -161,7 +161,7 @@ print(json.dumps({
 }))
 EOF
 )"
-SHA="$(python3 -m attnbench.fa3_wheel manifest --wheel "$WHEEL" --out "$OUT/manifest.json" --fields "$FIELDS")"
+SHA="$(fa3_module fa3_wheel manifest --wheel "$WHEEL" --out "$OUT/manifest.json" --fields "$FIELDS")"
 printf '%s  %s\n' "$SHA" "$(basename "$WHEEL")" > "$OUT/SHA256SUMS"
 
 # 9. Store, then read the wheel back and hash it again.

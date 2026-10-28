@@ -31,9 +31,9 @@ if [[ ! "$WHEEL_NAME" =~ ^[A-Za-z0-9_.+-]+\.whl$ ]]; then
 fi
 gcloud storage cp "$FA3_PREFIX/$WHEEL_NAME" "$WORK/$WHEEL_NAME" 2>&1 | fa3_redact
 
-python3 -m attnbench.fa3_wheel check --wheel "$WORK/$WHEEL_NAME" \
+fa3_module fa3_wheel check --wheel "$WORK/$WHEEL_NAME" \
   --manifest "$WORK/manifest.json" --sha256 "$EXPECTED"
 # --no-deps: the wheel lists torch, and pip must not touch the pinned torch.
 python3 -m pip install -q --no-deps --force-reinstall "$WORK/$WHEEL_NAME"
-python3 -m attnbench.fa3_wheel import
+fa3_module fa3_wheel import
 echo "fa3 $FA3_TAG ($FA3_COMMIT) wheel $EXPECTED: installed and available."

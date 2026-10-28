@@ -34,3 +34,11 @@ fa3_bucket() {
 fa3_redact() {
   if [[ -n "${FA3_PROJECT_ID:-}" ]]; then sed -e "s/${FA3_PROJECT_ID}/<project>/g"; else cat; fi
 }
+
+# python3 -m attnbench.<module> with the repo root, derived from this file's
+# own location, on PYTHONPATH: `-m` resolves the package from the caller's
+# working directory otherwise (tests/test_import_resolution.py).
+fa3_module() {
+  local mod="$1"; shift
+  PYTHONPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)${PYTHONPATH:+:$PYTHONPATH}" python3 -m attnbench."$mod" "$@"
+}
