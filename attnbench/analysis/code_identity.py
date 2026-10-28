@@ -91,6 +91,17 @@ TIMED_REGION_METHODS = ("forward", "timed_call", "make_inputs", "estimate")
 # it inside the timed region. Classes without one are unaffected: methods are
 # matched by name and absent ones are skipped, so no existing fingerprint moves.
 
+# Module-level constants that say how a backend's kernel was BUILT, where this
+# repository builds it: row-name -> ((file, constant name), ...). The flags a
+# wheel is compiled with change the kernel without changing a line of the
+# timed region, so they are fingerprinted with it (fa3, 28 Oct 2026: a
+# restricted wheel must not be joined with an unrestricted one as the same
+# code). A listed constant that is missing at a commit refuses.
+BUILD_CONSTANTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "fa3": (("attnbench/backends/fa3.py", "BUILD_FLAGS"),
+            ("attnbench/backends/fa3.py", "BUILT_HEAD_DIMS")),
+}
+
 # The measurement loop itself, shared by every backend.
 SHARED_FUNCTIONS: tuple[tuple[str, str], ...] = (("attnbench/timing.py", "_do_bench"),)
 
@@ -181,6 +192,17 @@ def fingerprint(repo: Path | str, commit: str, backend: str) -> BackendFingerpri
             if name not in defined:
                 parts[f"{cls}.{name}"] = _ast_digest(node)
                 defined.add(name)
+
+    for const_path, const_name in BUILD_CONSTANTS.get(backend, ()):
+        const_src = src if const_path == path else _git_show(repo, commit, const_path)
+        nodes = [n for n in ast.parse(const_src or "").body
+                 if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == const_name for t in n.targets)]
+        if len(nodes) != 1:
+            raise CodeIdentityError(
+                f"build constant {const_name} not found once in {const_path} at "
+                f"{commit[:12]}: {backend}'s build is not identified at that commit")
+        parts[f"{const_path}:{const_name}"] = _ast_digest(nodes[0].value)
 
     for shared_path, func_name in SHARED_FUNCTIONS:
         shared_src = _git_show(repo, commit, shared_path)

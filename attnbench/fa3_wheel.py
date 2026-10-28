@@ -137,6 +137,7 @@ def main(argv=None) -> int:
     c.add_argument("--manifest", required=True)
     c.add_argument("--sha256", required=True)
     sub.add_parser("import")
+    sub.add_parser("flags", help="the build flags, one per line (backends/fa3.py)")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "stack":
@@ -151,6 +152,9 @@ def main(argv=None) -> int:
             manifest = json.loads(Path(a.manifest).read_text())
             check_wheel(Path(a.wheel), manifest, a.sha256, stack(""))
             print("wheel check ok: " + Path(a.wheel).name, flush=True)
+        elif a.cmd == "flags":
+            from attnbench.backends.fa3 import BUILD_FLAGS
+            print("\n".join(BUILD_FLAGS))
         elif a.cmd == "import":
             print("import check ok: " + json.dumps(import_check(), sort_keys=True), flush=True)
     except WheelCheckError as e:

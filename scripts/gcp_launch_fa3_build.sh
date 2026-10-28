@@ -13,10 +13,11 @@
 #   - Planning rate Rs 77.21/h all-in, us-central1, 20 Oct 2026 catalogue at
 #     Rs 95.99/$: N2 core $0.031611 x 16 + N2 RAM $0.004237 x 64 GiB
 #     (Rs 74.58) + 200 GB pd-balanced at $0.10/GiB-month over 730 h (Rs 2.63).
-#   - Hard cap: --max-run-duration=5h, action DELETE, so at most Rs 386 at the
-#     planning rate. The in-guest halt at +270 min stops compute billing first;
-#     build_fa3_wheel.sh stops its own build at 225 min so the logs (and a
-#     wheel, if any) are stored before the halt.
+#   - Hard cap: --max-run-duration=3h, action DELETE, so at most Rs 232 at the
+#     planning rate (researcher's settings for the restricted build, 28 Oct
+#     2026). The in-guest halt at +150 min stops compute billing first;
+#     build_fa3_wheel.sh stops its own build at 120 min, stores the logs (and
+#     a wheel, if any) and halts the VM itself as soon as the build ends.
 #   - The same disk image as the H100 (a plain disk image boots any family,
 #     docs/machine_image_family_lock.md), so the wheel's Python and torch are
 #     the H100's.
@@ -40,9 +41,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/_gcp_project.sh"
 gcp_project_pin
 MACHINE_TYPE="n2-standard-16"
 IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
-MAX_RUN_HOURS=5
+MAX_RUN_HOURS=3
 MAX_RUN="${MAX_RUN_HOURS}h"
-HALT_MINUTES=270
+HALT_MINUTES=150
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
 INSTANCE_NAME="${1:-attnbench-fa3-build-$(date +%Y%m%d-%H%M)}"
