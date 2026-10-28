@@ -1,12 +1,7 @@
 """Audit C1: `predict/recursion.py` and `predict/ablations.py` against plan
 Sections 5.1 and 5.4. Each test failed on main at 275faac and demonstrates
-one finding.
-
-Findings 2 and 3 are fixed on this branch, and their tests now run as
-regression tests. Finding 1 is not fixed here: its tests are the acceptance
-tests for the fix the Mac session makes, and stay marked as expected
-failures. The mark is strict, so once the fix lands they fail as unexpected
-passes until the mark is removed. None of this file needs torch.
+one finding. All three findings are fixed on this branch, and these tests
+run as regression tests. None of this file needs torch.
 """
 
 from __future__ import annotations
@@ -15,6 +10,8 @@ import pytest
 
 from attnbench.components.link import SYNC_MECHANISMS as LINK_MECHANISMS
 from attnbench.components.link import mechanism_costs
+from attnbench.components.op_sequence import (CodePath, OpSequence, SeqKind,
+                                              SeqOp, to_operations)
 from attnbench.predict.ablations import no_sync_cost, no_sync_wait
 from attnbench.predict.recursion import (
     MechanismCost, close_prefill, kernel_op, price, recurse, sync_op,
@@ -24,33 +21,46 @@ from attnbench.predict.recursion import (
 # ---------------------------------------------------------------------------
 # Finding 1 (high). Section 5.1: "For `.item()` and `bool()` of a tensor the
 # payload is zero by definition, so their s_0 is s_fixed (Appendix A, 25 Oct
-# 2026)." The recursion refuses a payload only for "synchronize" (on main,
-# recursion.py:306) and otherwise prices payload / B (recursion.py:193-203).
-# The trace parser records item with the scalar's bytes and bool with one
-# byte (tests/test_components_op_sequence.py:181 and :191), and the T2.5 row
-# gives these mechanisms no bandwidth (link.py:473-481). So a real sequence
-# with an item or bool wait is refused, and with a bandwidth supplied it is
-# charged payload / B.
+# 2026)." On main the trace parser recorded item with the scalar's bytes and
+# bool with one byte, `to_operations` passed them on, and the recursion
+# priced them as payload / B (recursion.py:193-203); the T2.5 row gives these
+# mechanisms no bandwidth (link.py:473-481), so a real sequence with an item
+# or bool wait was refused, and with a bandwidth supplied it was charged
+# payload / B. Fixed on this branch where the sequence meets the recursion:
+# `to_operations` hands these waits over with payload zero, and the sequence
+# keeps the recorded bytes for the "same sequence" comparison.
 
-FINDING_1_OPEN = pytest.mark.xfail(
-    strict=True,
-    reason="C1 finding 1, not fixed yet: acceptance test for the Mac fix "
-           "(item and bool s_0 is s_fixed whatever the recorded payload)")
+def _sequence(mechanism: str, payload: int) -> OpSequence:
+    ops = (SeqOp(SeqKind.KERNEL, api="cudaLaunchKernel", kernels=("k1",)),
+           SeqOp(SeqKind.SYNC, api="cudaStreamSynchronize", mechanism=mechanism,
+                 payload_bytes=payload),
+           SeqOp(SeqKind.KERNEL, api="cudaLaunchKernel", kernels=("k2",)))
+    return OpSequence(code_path=CodePath(arm="audit", gpu="none",
+                                         implementation="audit"),
+                      context_length=2048, batch=1, ops=ops, streams=(7,))
 
 
-@FINDING_1_OPEN
+def _operations(mechanism: str, payload: int, host: float, device: float):
+    seq = _sequence(mechanism, payload)
+    ops = to_operations(seq, host={0: host, 2: host},
+                        device={0: device, 2: device}, link={})
+    # The recorded payload stays in the sequence; the recursion gets none.
+    assert seq.ops[1].payload_bytes == payload
+    assert ops[1].mechanism == mechanism and ops[1].payload_bytes == 0
+    return ops
+
+
 @pytest.mark.parametrize("mechanism, payload", [("item", 4), ("bool", 1)])
 def test_item_and_bool_s0_is_s_fixed_whatever_the_recorded_payload(mechanism, payload):
-    ops = [kernel_op(1.0, 10.0), sync_op(mechanism, payload_bytes=payload)]
+    ops = _operations(mechanism, payload, 1.0, 10.0)
     priced = price(ops, {mechanism: MechanismCost(7.0, bandwidth=4.0)})
     assert priced.sync_cost[1] == 7.0
 
 
-@FINDING_1_OPEN
 @pytest.mark.parametrize("mechanism, payload", [("item", 4), ("bool", 1)])
 def test_item_and_bool_price_from_a_table_shaped_like_the_t25_row(mechanism, payload):
     # link.mechanism_costs gives every non-copy mechanism bandwidth=None.
-    ops = [kernel_op(1.0, 10.0), sync_op(mechanism, payload_bytes=payload)]
+    ops = _operations(mechanism, payload, 1.0, 10.0)
     priced = price(ops, {mechanism: MechanismCost(7e-6)})
     assert priced.sync_cost[1] == 7e-6
 
@@ -64,11 +74,19 @@ def _t25_row() -> dict:
     return row
 
 
-@FINDING_1_OPEN
+@pytest.mark.parametrize("mechanism", ["copy_to_host_pinned", "copy_to_host_pageable"])
+def test_a_copy_to_the_host_keeps_its_payload(mechanism):
+    # Only item and bool lose their payload; a copy's bytes are its transfer.
+    ops = to_operations(_sequence(mechanism, 1024), host={0: 1.0, 2: 1.0},
+                        device={0: 10.0, 2: 10.0}, link={})
+    assert ops[1].payload_bytes == 1024
+    priced = price(ops, {mechanism: MechanismCost(7.0, bandwidth=256.0)})
+    assert priced.sync_cost[1] == 7.0 + 1024 / 256.0
+
+
 @pytest.mark.parametrize("mechanism, payload", [("item", 4), ("bool", 1)])
 def test_a_prefill_with_an_item_or_bool_wait_prices_from_the_real_cost_table(mechanism, payload):
-    ops = close_prefill([kernel_op(1e-6, 1e-3), sync_op(mechanism, payload_bytes=payload),
-                         kernel_op(1e-6, 1e-3)])
+    ops = close_prefill(_operations(mechanism, payload, 1e-6, 1e-3))
     t = recurse(price(ops, mechanism_costs(_t25_row())), None)
     # D: 1.001e-3, then the wait and s_fixed, then the second kernel, then
     # the closing synchronise.

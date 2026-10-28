@@ -135,6 +135,12 @@ DEVICE_KINDS = frozenset({SeqKind.KERNEL, SeqKind.MEMSET, SeqKind.DEVICE_COPY,
 UNPRICED_MECHANISMS = ("copy_from_host_pinned", "copy_from_host_pageable",
                        "event_synchronize", "implicit")
 
+# Section 5.1: for `.item()` and `bool()` of a tensor the payload is zero by
+# definition, so their s_0 is s_fixed (Appendix A, 25 Oct 2026). The trace
+# still records the bytes read back, and the sequence keeps them for the
+# "same sequence" comparison; `to_operations` prices these with none.
+ZERO_PAYLOAD_MECHANISMS = ("item", "bool")
+
 # Aten operators that are the mechanism itself, so a synchronisation under
 # them alone is not a composite.
 MECHANISM_OPS = frozenset({
@@ -916,8 +922,10 @@ def to_operations(seq: OpSequence, *, host: Mapping[int, float],
     A host-compute marker is not an operation: its cost is added to the host
     cost of the next operation that is not a synchronisation (the recursion
     refuses host cost at one). Kernels, memsets, device-to-device copies and
-    graph launches all become recursion kernels. The closing synchronise is
-    not added here; `recursion.close_prefill` does that.
+    graph launches all become recursion kernels. An `.item()` or `bool()`
+    wait goes to the recursion with payload zero (ZERO_PAYLOAD_MECHANISMS);
+    the sequence keeps the recorded bytes. The closing synchronise is not
+    added here; `recursion.close_prefill` does that.
     """
     want_host = {i for i, op in enumerate(seq.ops) if op.kind is not SeqKind.SYNC}
     want_dev = {i for i, op in enumerate(seq.ops) if op.is_device}
@@ -940,7 +948,8 @@ def to_operations(seq: OpSequence, *, host: Mapping[int, float],
                 raise SequenceError(
                     f"operation {i} is a {op.mechanism!r} wait, which Section "
                     f"5.1 does not price; a researcher decides its cost")
-            out.append(recursion.sync_op(op.mechanism, payload_bytes=op.payload_bytes,
+            payload = 0 if op.mechanism in ZERO_PAYLOAD_MECHANISMS else op.payload_bytes
+            out.append(recursion.sync_op(op.mechanism, payload_bytes=payload,
                                          loaded=op.loaded, **common))
         elif op.kind is SeqKind.COPY:
             out.append(recursion.copy_op(host[i] + carried, link[i],

@@ -819,13 +819,19 @@ def test_to_operations_hand_computed_prefill():
         (R.OpKind.SYNC, 0.0, 0.0, 0.0),
         (R.OpKind.KERNEL, 6.0, 20.0, 0.0),   # 1 + host compute 5, past the sync
     ]
-    assert ops[1].payload_bytes == 64 and ops[2].payload_bytes == 4
+    # Section 5.1: an .item() wait has payload zero by definition, so it
+    # reaches the recursion with none; the sequence keeps the 4 bytes the
+    # trace recorded, for the "same sequence" comparison.
+    assert ops[1].payload_bytes == 64 and ops[2].payload_bytes == 0
+    assert seq.ops[4].mechanism == "item" and seq.ops[4].payload_bytes == 4
     assert ops[2].mechanism == "item" and ops[0].label == "aten::mm"
+    # A bandwidth for item would charge 4/4 if the payload went through; it
+    # does not, so s0 = s_fixed = 7.
     costs = {"item": R.MechanismCost(7.0, bandwidth=4.0),
              "synchronize": R.MechanismCost(2.0)}
-    # H1 = 4, D1 = 14; H2 = 6, D2 = 18; sync: H3 = max(6, 18) + 7 + 4/4 = 26;
-    # H4 = 32, D4 = 52; closing sync: max(32, 52) + 2 = 54.
-    assert R.predict_prefill(R.close_prefill(ops), costs, None) == 54.0
+    # H1 = 4, D1 = 14; H2 = 6, D2 = 18; sync: H3 = max(6, 18) + 7 = 25;
+    # H4 = 31, D4 = max(31, 25) + 20 = 51; closing sync: max(31, 51) + 2 = 53.
+    assert R.predict_prefill(R.close_prefill(ops), costs, None) == 53.0
 
 
 def test_to_operations_maps_every_device_kind_to_a_kernel():
