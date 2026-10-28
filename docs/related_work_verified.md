@@ -42,7 +42,7 @@ This file checks ten key references against their full text and against the way 
 3. Section 2.3 (Minimum Threshold Prediction), PDF p. 3: "We propose a dynamic programming approach to determine the optimal threshold for each attention head." The same section ends: "Note that this dynamic threshold prediction method can further optimize XAttention's sparsity but is not a mandatory component."
 
 **Flags.**
-1. *Venue not shown in the paper.* The arXiv v1 PDF carries no venue line, and the arXiv record has no journal reference. The only ICML evidence found is the citation block in the code repository's README (`mit-han-lab/x-attention`), which gives `booktitle = {Proceedings of the 42nd International Conference on Machine Learning (ICML)}`. The PMLR proceedings host was unreachable here. The plan's "ICML 2025" is plausible but rests on the authors' README, not the paper.
+1. *Venue not shown in the paper.* The arXiv v1 PDF carries no venue line, and the arXiv record has no journal reference. The only ICML evidence found is the citation block in the code repository's README (`mit-han-lab/x-attention`), which gives `booktitle = {Proceedings of the 42nd International Conference on Machine Learning (ICML)}`. A second attempt on 28 Oct 2026 to confirm it from the proceedings (`proceedings.mlr.press/v267/` and `icml.cc`) failed: both hosts are blocked from this container. The venue is therefore **unconfirmed** here. The plan's "ICML 2025" is plausible but rests on the authors' README, not the paper or the proceedings.
 2. *Per-(layer, head).* The paper says "for each attention head", over H heads. That is consistent with the plan if H counts heads across all layers; the paper does not say "layer" in this section. Not a mismatch, but the plan's "(layer, head)" is the repository's granularity, not a phrase from the paper.
 3. *Optional component.* The paper calls the threshold search "not a mandatory component". The plan's "Calibrated XAttention" arm uses it. No conflict, but worth stating when the arm is described.
 4. *Code claims are not paper claims.* Plan line 33 ("XAttention runs two `assert` checks on GPU tensors per query chunk") and line 224 (`find_blocks_chunked`) describe upstream code at `e379887`. The paper says nothing about them; they are not checked here.
@@ -101,7 +101,8 @@ This file checks ten key references against their full text and against the way 
 3. Section 4.3, PDF p. 7, with Table 3 on PDF p. 8: "Table 3 compares the overhead of dynamic sparse block prediction in SpargeAttn compared with attention execution latency. The results indicate that the prediction overhead is minimal". Table 3 lists overhead from "8k 0.251 6.649 3.78%" down to "128k 8.764 1696.2 0.516%".
 
 **Flags.**
-1. *Not cited.* If the plan should cite it, it fits Section 3 as another training-free estimator. Its overhead is reported against the attention kernel alone (Table 3 compares prediction time with "Full Attention (ms)"), not end to end, which matches the plan's premise that kernel-level figures are what papers report. Section 3.6 (PDF p. 5) states that the "method incorporates three hyper-parameters" set per attention layer, so it is training-free but calibrated, like XAttention's threshold search. Adding it is a scope decision for the researcher.
+1. *Researcher's decision (relayed 28 Oct 2026):* SpargeAttn joins T7.2 at integration, as "claims verified against full text (machine-checked quotes)". No plan or brief text describes it, so there is nothing to mismatch. The one bibliographic wrinkle: the arXiv v8 title ("SpargeAttention: Accurate and Training-free Sparse Attention Accelerating Any Model Inference") differs from the title in the authors' BibTeX ("Spargeattn: Accurate sparse attention accelerating any model inference"); cite the PMLR title once it can be checked against the proceedings, which are blocked here.
+2. *Placement.* If the plan should cite it, it fits Section 3 as another training-free estimator. Its overhead is reported against the attention kernel alone (Table 3 compares prediction time with "Full Attention (ms)"), not end to end, which matches the plan's premise that kernel-level figures are what papers report. Section 3.6 (PDF p. 5) states that the "method incorporates three hyper-parameters" set per attention layer, so it is training-free but calibrated, like XAttention's threshold search. Adding it is a scope decision for the researcher.
 
 ## 5. TaxBreak
 
@@ -150,7 +151,7 @@ Supporting the 4.7 us figure: Section IV.A, PDF p. 5: "H100 platform: Intel Xeon
 
 **Quotes.** None; no text available here.
 
-**Flags.** None of these claims could be checked: the 20 training systems, the preprocessing host side, the 17.6% error (brief), and whether CTFusion uses LightGBM specifically or gradient-boosted trees in general (the brief says "gradient-boosted trees"; the plan says "LightGBM"). The researcher would need to supply the PDF. Cite with the full title, since "CTFusion" alone collides with arXiv:2605.11504.
+**Flags.** None of these claims could be checked: the 20 training systems, the preprocessing host side, the 17.6% error (brief), and whether CTFusion uses LightGBM specifically or gradient-boosted trees in general (the brief says "gradient-boosted trees"; the plan says "LightGBM"). It stays unreadable until the researcher supplies the PDF through their institutional IEEE access (researcher's decision, relayed 28 Oct 2026). Cite with the full title, since "CTFusion" alone collides with arXiv:2605.11504.
 
 ## 8. CompactAttention
 
@@ -211,15 +212,73 @@ Supporting the 4.7 us figure: Section IV.A, PDF p. 5: "H100 platform: Intel Xeon
 
 ---
 
-## Decisions for the researcher
+## Edits for integration
 
-1. KernelSight-LM, line 89: add the ℓ term to the Eq. 4 paraphrase (Section 6, flag 1).
-2. KernelSight-LM, line 88: cite Section 5.7 for "not on the GPU" and note Section 5.5's contrary wording (Section 6, flag 2).
-3. KernelSight-LM, line 518: "transfers poorly" in place of "does not transfer" (Section 6, flag 3).
-4. Sparse Frontier, line 90: narrow the "lists it as unknown" wording (Section 10, flag 1).
-5. Line 262: state each null-kernel floor's instrument and definition (Section 9, flag 3).
-6. CTFusion: supply the PDF; cite by full title (Section 7).
-7. SpargeAttn: cite or not (Section 4).
-8. Brief: venues for CompactAttention (NeurIPS 2026) and Vellaisamy et al. 2025 (ISPASS 2025); MInference's "5% to 30%" condition; "Sapphire Rapids" attribution (Sections 2, 8, 9).
-9. XAttention venue: confirm ICML 2025 from the proceedings (Section 1, flag 1).
-10. T7.2 (line 478): whether these checks move MInference, XAttention and FlexPrefill out of "known from abstracts only".
+Researcher's decisions relayed on 28 Oct 2026. These edits are made at integration, not on this branch: this branch does not edit the plan or the brief. Each entry quotes the current text (plan at `9d2d8b1`) and gives the replacement. "us" follows the plan's spelling of microseconds.
+
+### Plan
+
+**P1. Line 89 (G2), KernelSight-LM's Eq. 4.**
+Current: "KernelSight-LM (read in full) composes within a step by one formula, GPU time plus dispatch, plus any excess of the host overlap floor over GPU time, plus a serial tail (its Section 5.7, Eq. 4);"
+Replacement: "KernelSight-LM (read in full) composes within a step by one formula: the larger of GPU time plus dispatch and a term ℓ that the paper does not define, plus any excess of the host overlap floor over GPU time, plus a serial tail (its Section 5.7, Eq. 4);"
+
+**P2. Line 197, the KernelSight-style step form.**
+Current: "- **KernelSight-style step form:** max(sum h, sum l + sum d) per layer, plus every synchronisation cost as a serial tail."
+Replacement: "- **KernelSight-style step form:** our construction from KernelSight-LM's Eq. 4, without the term ℓ the authors leave undefined: max(sum h, sum l + sum d) per layer, plus every synchronisation cost as a serial tail."
+
+**P3. Line 88 (G1), KernelSight-LM's host constants.**
+Current: "KernelSight-LM measures host constants per host and assumes they do not depend on the GPU, without testing it."
+Replacement: "KernelSight-LM measures host constants per host and states that they \"depend on the host CPU and serving engine, not on the GPU\" (its Section 5.7), without testing it; its Section 5.5 calls them properties of the host, GPU and engine together, yet re-measures them only when the host or serving engine changes."
+
+**P4. Line 518, declined directions.**
+Current: "KernelSight-LM finds attention-kernel efficiency does not transfer; device costs are measured"
+Replacement: "KernelSight-LM finds attention-kernel efficiency transfers poorly across GPU generations (\"limited cross-generation transfer\", its Section 8); device costs are measured"
+
+**P5. Line 262, null-kernel floor plausibility.**
+Current: "compared only with a published figure measured the same way (TaxBreak about 4.7 us on Xeon 8480C with H100; SKIP 2.37 us on Xeon 8468V with H100 PCIe)"
+Replacement: "compared only with a published figure measured the same way, named with its tool: TaxBreak, 4.7 us, the mean null-kernel launch floor from an `nsys` null-kernel run on a Xeon 8480C with an H100 in a DGX H100 (its Table III); SKIP, the PyTorch-Profiler-based profiler of Vellaisamy et al. (ISPASS 2025), 2.37 us, null-kernel CUDA launch-API overhead on a Xeon Platinum 8468V with an H100 PCIe (its Table V)"
+
+**P6. Line 90 (G3), The Sparse Frontier.**
+Current: "Whether recall is a sufficient accuracy proxy across estimators is untested. The Sparse Frontier lists it as unknown."
+Replacement: "Whether recall is a sufficient accuracy proxy across estimators is untested. The Sparse Frontier lists a narrower question as unknown: \"How close a recall-maximising mask is to a task-loss-optimal one\" (its Limitations)."
+
+**P7. Line 478 (T7.2), status.**
+Current (status cell): "In progress (finished: DFSAttn and HiSparse, read in full 5 Oct 2026; remaining: Janus and MOMO, and the brief entries known from abstracts only: nn-Meter, HELP, Vidur, the cross-generation GPU prediction paper (TCAD 2019), The Framework Tax, MInference, XAttention, DuoAttention, FlexPrefill, Twilight, the CUDA Graphs study (LANMAN 2026), PILOT, iMLBench, Mytkowicz et al. and Token Sparse Attention)"
+Replacement: "In progress (finished: DFSAttn and HiSparse, read in full 5 Oct 2026; claims verified against full text (machine-checked quotes, `docs/related_work_verified.md`, 28 Oct 2026): MInference, FlexPrefill, SpargeAttn; to be read in full by the researcher: XAttention, KernelSight-LM, TaxBreak, CTFusion (PDF via IEEE access); remaining: Janus and MOMO, and the brief entries known from abstracts only: nn-Meter, HELP, Vidur, the cross-generation GPU prediction paper (TCAD 2019), The Framework Tax, DuoAttention, Twilight, the CUDA Graphs study (LANMAN 2026), PILOT, iMLBench, Mytkowicz et al. and Token Sparse Attention)"
+A dated Appendix A line records the decision.
+
+### Brief (`docs/brief/brief.html`; rebuild `docs/research_brief.pdf` afterwards)
+
+**B1. Section 4, gap table (G1 cell).**
+Current: "KernelSight-LM assumes its host costs do not depend on the GPU but does not test this."
+Replacement: "KernelSight-LM states that its host costs depend on the host and serving engine, not on the GPU, but does not test this."
+
+**B2. Section 4, gap table (G2 cell), Eq. 4.**
+Current: "combines host and GPU time inside a step with one formula: GPU time, plus any excess of host time over it, plus a fixed tail (its Section 5.7, Eq. 4)."
+Replacement: "combines host and GPU time inside a step with one formula: the larger of GPU time plus dispatch and a term the paper does not define, plus any excess of host time over GPU time, plus a fixed tail (its Section 5.7, Eq. 4)."
+
+**B3. Reference 3 (KernelSight-LM).**
+Current: "and the host constants are assumed not to depend on the GPU. Our KernelSight-style step form, one of the baselines, is built from its step formula; it is our construction, not their simulator."
+Replacement: "and the host constants are said to depend on the host and engine, not the GPU (its Section 5.7). Our KernelSight-style step form, one of the baselines, is built from its step formula without the term the authors leave undefined; it is our construction, not their simulator."
+
+**B4. Reference 11 (CompactAttention), venue and setting.**
+Current venue cell: "arXiv preprint (2605.16839)". Replacement: "NeurIPS (arXiv:2605.16839)".
+Current: "Under chunked prefill on two GPUs, XAttention's end-to-end time is 0.68x to 0.84x of dense speed". Replacement: "Under chunked prefill on two GPU types (RTX PRO 6000 and H200, two of each), XAttention's end-to-end time is 0.68x to 0.84x of dense speed".
+
+**B5. Reference 12 (Vellaisamy et al., SKIP), venue and host.**
+Current venue cell: "arXiv preprint (2504.11750)". Replacement: "IEEE ISPASS (arXiv:2504.11750; DOI 10.1109/ISPASS64960.2025.00015)".
+Current: "Its Sapphire Rapids plus H100 launch figure (2.37 microseconds) is a second reference for our P4 check." Replacement: "Its launch figure for a Xeon Platinum 8468V with an H100 PCIe (2.37 microseconds, measured with its own profiler, SKIP) is a second reference for our P4 check."
+
+**B6. Reference 17 (MInference).**
+Current: "reports 5% to 30% of time spent building indices on one A100." Replacement: "reports index building rising from 5% to 30% of time as the context falls to 10k tokens, on one A100."
+
+**B7. "How each entry was checked" note.**
+Current: "The others are described from their abstracts only."
+Replacement: "Entries 17 and 20 had their claims verified against the full text, with machine-checked quotes, on 28 October 2026 (`docs/related_work_verified.md`); this is not a personal reading. The others are described from their abstracts only."
+
+Unchanged after checking: reference 16 (The Sparse Frontier) already uses the paper's narrower wording; reference 18 (XAttention) keeps "ICML", which stays unconfirmed from the proceedings (Section 1, flag 1).
+
+## Open questions for the researcher
+
+1. The brief's note lists entries 11 (CompactAttention), 12 (Vellaisamy et al.) and 16 (The Sparse Frontier) as "read in full". The relayed decision keeps "read in full" for papers the researcher reads personally and names XAttention, KernelSight-LM, TaxBreak and CTFusion. If entries 11, 12 and 16 were not read personally, they should move to "claims verified against full text" as well. Not changed in B7 until confirmed.
+2. SpargeAttn joins T7.2, but neither the plan's Section 3 nor the brief's reference list cites it. Whether it gets a reference entry is not covered by the decision.
