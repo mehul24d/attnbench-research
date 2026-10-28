@@ -50,7 +50,7 @@ class HdbiRow:
     pairing: str
     cell: tuple                  # the cell key, for the record
     hdbi: float                  # of the sparse cell's components
-    measured_difference: float   # sparse minus dense, same unit as the floor
+    measured_difference: float   # sparse minus dense, in seconds, as the floor
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,8 @@ def _finite(x, name: str, lo=-math.inf, hi=math.inf) -> float:
 def fit_threshold(rows: Iterable[HdbiRow], *, training_pairings: Sequence[str],
                   floor: float) -> HdbiFit:
     """The threshold with the most sign agreements on the training pairings'
-    rows; ties to the lower value (module docstring)."""
+    rows; ties to the lower value (module docstring). `floor` is the
+    resolution floor in seconds: pass `lock.floors.ResolutionFloor.floor_s`."""
     training = tuple(sorted(set(training_pairings)))
     if not training:
         raise HdbiFitError("name the training pairings")

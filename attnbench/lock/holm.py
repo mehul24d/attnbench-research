@@ -19,10 +19,17 @@ The decision at each step is the bound itself at the adjusted level, not the
 bisected p, so with a family of one this is exactly the uncorrected rule.
 p is used only to order the family.
 
-**The family** is declared at lock and passed in whole: every configuration
-that feeds the dispatcher, with its discordant counts. A configuration with
-no counts, or counts for one outside the family, is refused. Dense is always
-admissible and is not a member.
+**The family** is the admissible set declared at lock (researcher's
+decision, 28 Oct 2026): every configuration that feeds the dispatcher. It is
+passed twice, as `declared` (the lock value) and as the keys of `family`
+(the counts measured for it), and the two must be the same set: a declared
+configuration with no counts, or counts for one outside the declaration, is
+refused, so the family cannot grow or shrink after the lock. Dense is
+always admissible and is not a member.
+
+**Monotonicity.** The bisection, and so the p-value, rests on the bound
+rising with alpha. `tests/test_lock_holm.py` checks it over a grid of counts
+and levels.
 """
 
 from __future__ import annotations
@@ -89,10 +96,22 @@ class HolmResult:
     order: tuple                   # (Config, p, adjusted alpha, admitted), Holm's order
 
 
-def holm_admissible(family: Mapping[Config, Counts], *, margin_pts: float,
+def holm_admissible(family: Mapping[Config, Counts], *, declared, margin_pts: float,
                     alpha: float = PRIMARY_ALPHA) -> HolmResult:
+    """`declared`: the admissible set declared at lock (a collection of
+    Configs); `family`: {Config: Counts} for exactly those configurations."""
     if not family:
         raise HolmError("the Holm family is empty; it is declared at lock")
+    if isinstance(declared, (str, bytes, Mapping)) or not hasattr(declared, "__iter__"):
+        raise HolmError(f"`declared` is the set of Configs declared at lock, got {declared!r}")
+    declared = list(declared)
+    if len(set(declared)) != len(declared):
+        raise HolmError("a configuration is declared twice")
+    unmeasured = sorted(map(str, set(declared) - set(family)))
+    undeclared = sorted(map(str, set(family) - set(declared)))
+    if unmeasured or undeclared:
+        raise HolmError("the family must be the set declared at lock: "
+                        f"declared with no counts {unmeasured}, counts not declared {undeclared}")
     if isinstance(margin_pts, bool) or not isinstance(margin_pts, (int, float)) \
             or not math.isfinite(margin_pts) or margin_pts <= 0:
         raise HolmError(f"a margin is a positive number of points, got {margin_pts!r}")

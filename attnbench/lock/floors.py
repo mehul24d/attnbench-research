@@ -26,6 +26,21 @@ function takes its quantile with no default):
     within-session relative spread (each series' (max - min) / median) is
     reported beside it, since Section 5.6 asks for both as numbers.
 
+**Researcher's decisions (28 Oct 2026)**, to be dated in Appendix A by the
+integration session:
+
+  - *Source.* The floors come from P1 sessions only (the dense controls and
+    the repeated runs), never from a held-out pairing. Each function takes
+    `pairing` with no default and refuses any pairing but `FLOOR_PAIRING`;
+    the result records it.
+  - *Units.* Ground truth is in milliseconds; `predict.scoring` and
+    `lock.hdbi_fit` take the resolution floor in seconds, the unit of the
+    times they score. `ResolutionFloor.floor_s` is the one conversion, and
+    callers use it, not `floor_ms / 1000` of their own.
+  - *Quantile.* A lock value. `SHAKEDOWN_QUANTILE` (0.95) is provisional,
+    for the shakedowns only; the final value is fixed at lock, before any
+    held-out prediction is scored. No function defaults to it.
+
 Quantiles are numpy's linear method. Every result records the procedure, the
 quantile, the counts, and the sha256 of its inputs in canonical form, so a
 lock value can be traced to the data it was computed from.
@@ -43,8 +58,20 @@ from typing import Mapping, Sequence
 import numpy as np
 
 
+FLOOR_PAIRING = "P1"            # the only pairing the floors are computed from
+SHAKEDOWN_QUANTILE = 0.95       # provisional, shakedowns only; the final value is a lock value
+MS_PER_S = 1000.0
+
+
 class FloorsError(ValueError):
     """Banked data the floors cannot be computed from."""
+
+
+def _pairing(p) -> str:
+    if p != FLOOR_PAIRING:
+        raise FloorsError(f"the floors come from {FLOOR_PAIRING} sessions only, "
+                          f"never a held-out pairing; got {p!r}")
+    return p
 
 
 def _quantile(q) -> float:
@@ -78,12 +105,21 @@ class ResolutionFloor:
     n_series: int
     n_repeats: int
     inputs_sha256: str
+    pairing: str = FLOOR_PAIRING
     procedure: str = ("q-quantile of |repeat - series median|, pooled over every "
                       "session's clean repeats of every cell")
 
+    @property
+    def floor_s(self) -> float:
+        """The floor in seconds, the unit `predict.scoring` and
+        `lock.hdbi_fit` take. The only ms-to-seconds conversion."""
+        return self.floor_ms / MS_PER_S
 
-def resolution_floor(series: Mapping, *, quantile: float) -> ResolutionFloor:
-    """`series`: {(session, cell): [ms, ...]}, clean repeats only."""
+
+def resolution_floor(series: Mapping, *, quantile: float, pairing: str) -> ResolutionFloor:
+    """`series`: {(session, cell): [ms, ...]}, clean repeats of `pairing`'s
+    sessions only, which must be P1."""
+    pairing = _pairing(pairing)
     q = _quantile(quantile)
     pool = []
     for k, xs in series.items():
@@ -96,7 +132,7 @@ def resolution_floor(series: Mapping, *, quantile: float) -> ResolutionFloor:
         raise FloorsError("no series")
     return ResolutionFloor(floor_ms=float(np.quantile(pool, q)), quantile=q,
                            n_series=len(series), n_repeats=len(pool),
-                           inputs_sha256=inputs_sha256(series))
+                           inputs_sha256=inputs_sha256(series), pairing=pairing)
 
 
 @dataclass(frozen=True)
@@ -108,14 +144,17 @@ class NoiseFloor:
     between_session_spread: dict      # cell -> (max - min) / median of medians
     within_session_spread: dict       # (session, cell) -> (max - min) / median
     inputs_sha256: str
+    pairing: str = FLOOR_PAIRING
     procedure: str = ("q-quantile over cells of (max - min) / median of the cell's "
                       "per-session medians across the repeat sessions")
 
 
-def noise_floor(sessions: Mapping, *, quantile: float) -> NoiseFloor:
+def noise_floor(sessions: Mapping, *, quantile: float, pairing: str) -> NoiseFloor:
     """`sessions`: {session: {cell: [ms, ...]}}, the P1 repeat sessions'
     clean repeats. Only cells timed in at least two sessions count; a floor
-    from fewer than two sessions is refused."""
+    from fewer than two sessions is refused. The result is a fraction, with
+    no unit to convert."""
+    pairing = _pairing(pairing)
     q = _quantile(quantile)
     if len(sessions) < 2:
         raise FloorsError(f"a between-session spread needs two sessions, got {len(sessions)}")
@@ -138,7 +177,7 @@ def noise_floor(sessions: Mapping, *, quantile: float) -> NoiseFloor:
     return NoiseFloor(floor_relative=float(np.quantile(list(between.values()), q)),
                       quantile=q, n_cells=len(between), n_sessions=len(sessions),
                       between_session_spread=between, within_session_spread=within,
-                      inputs_sha256=inputs_sha256(sessions))
+                      inputs_sha256=inputs_sha256(sessions), pairing=pairing)
 
 
 def clean_series(result: Mapping) -> dict[str, list[float]]:

@@ -15,12 +15,13 @@ plan the file was written against; a lock file checked against another plan
 is reported, because the list it answers may not be the list the plan now
 holds.
 
-**What T4.1 does not list.** Other sentences of the plan also fix a value
-"at lock" (the learned predictor's features and hyperparameters, K2's
-tolerance, the host-speed probe's bounds, among others). `lock_mentions`
-lists every such sentence outside T4.1 with its line, so a reader can see
-which are covered by a T4.1 item and which are not. The checker does not
-decide that mapping: it reports the sentences.
+**Every "at lock" phrase.** Other sentences of the plan also fix a value
+"at lock". `lock_mentions` lists every sentence outside T4.1 that says "at
+lock" or carries **[lock]**, with its line. `tests/test_lock_checklist.py`
+maps each one to the T4.1 item that covers it, and fails on a sentence the
+map does not cover, so a value added to the plan cannot escape the list.
+The researcher's decision (28 Oct 2026) is that T4.1 names every such value;
+the plan edit that adds the ones it lacks is the integration session's.
 """
 
 from __future__ import annotations
@@ -89,10 +90,9 @@ def lock_items(plan_text: str) -> dict[str, str]:
 
 
 def lock_mentions(plan_text: str) -> list[tuple[int, str]]:
-    """(line, sentence) for every sentence outside the T4.1 row that fixes a
-    value at lock."""
-    pat = re.compile(r"\b(?:fixed|set|recorded|declared|justified|checked) at lock\b|\[lock\]",
-                     re.I)
+    """(line, sentence) for every sentence outside the T4.1 row that says
+    "at lock" or carries **[lock]**."""
+    pat = re.compile(r"\bat lock\b|\[lock\]", re.I)
     out = []
     for n, line in enumerate(plan_text.splitlines(), 1):
         if line.startswith(ROW_PREFIX):
