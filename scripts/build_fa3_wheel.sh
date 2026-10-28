@@ -100,7 +100,9 @@ CUTLASS_COMMIT="$(git -C "$SRC/csrc/cutlass" rev-parse HEAD)"
 BUILD_FLAGS=(FLASH_ATTENTION_FORCE_BUILD=TRUE FLASH_ATTENTION_DISABLE_BACKWARD=TRUE
              FLASH_ATTENTION_DISABLE_FP8=TRUE FLASH_ATTENTION_DISABLE_SM80=TRUE)
 MEMLOG="$OUT/memory.tsv"
-( while :; do
+# set +e: the subshell inherits errexit and pipefail, and `ps -C cicc` exits 1
+# while no cicc runs, which killed the sampler on the first build (28 Oct 2026).
+( set +e +o pipefail; while :; do
     if [[ -r /proc/meminfo ]]; then
       avail="$(awk '/MemAvailable/ {print $2}' /proc/meminfo)"
       cicc="$(ps -C cicc -o rss= 2>/dev/null | sort -n | tail -1 | tr -d ' ')"
