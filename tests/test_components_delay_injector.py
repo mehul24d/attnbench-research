@@ -350,3 +350,62 @@ def test_the_injector_imports_without_torch():
          "    raise SystemExit('cuda_mechanism ran with torch blocked')\n"],
         cwd=REPO, capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr + r.stdout
+
+
+# --- the observer: host costs under it, and its own effect ---------------------------
+
+def test_the_null_pass_wrapper_runs_under_the_observer_and_checks_its_calls():
+    arm = FakeArm()
+    di.observed(arm.run_prefill, arm.observer)()
+    assert arm.log == [(c.name, c.layer) for c in CALLS] and "fire" not in arm.log
+    di.observed(arm.run_prefill, arm.observer, CALLS)()          # matches: no error
+    other = FakeArm(CALLS[:2] + (Call("aten::addmm", 0),) + CALLS[3:])
+    with pytest.raises(InjectionError, match="first differs .* at call 2"):
+        di.observed(other.run_prefill, other.observer, CALLS)()
+    short = FakeArm(CALLS[:-1])
+    with pytest.raises(InjectionError, match="made 5 launching calls .* at call 5"):
+        di.observed(short.run_prefill, short.observer, CALLS)()
+
+
+def test_the_observer_pair_is_the_c0_variant_and_the_bare_prefill():
+    arm = FakeArm()
+    observed_runs = []
+
+    def observer(run_prefill, on_call):
+        observed_runs.append(1)
+        arm.observer(run_prefill, on_call)
+    s0 = di.schedule_for(_variant(()), BASE, SEQ, CALLS)
+    with_obs, bare = di.observer_pair(arm.run_prefill, s0, arm.fire, observer)
+    assert with_obs() == 0 and observed_runs == [1]
+    assert bare == arm.run_prefill
+    with pytest.raises(InjectionError, match="read at c = 0"):
+        di.observer_pair(arm.run_prefill, di.schedule_for(_variant((0,)), BASE, SEQ, CALLS),
+                         arm.fire, observer)
+
+
+def test_the_observer_effect_is_the_difference_of_the_medians():
+    e = di.observer_effect([3.0, 1.2, 1.1], [1.0, 0.9, 5.0, 1.0])
+    assert (e.observed_s, e.unobserved_s, e.repeats) == (1.2, 1.0, (3, 4))
+    assert e.effect_s == pytest.approx(0.2) and e.ratio == pytest.approx(1.2)
+    assert di.observer_effect([2.0], [1.0], statistic=max).effect_s == 1.0
+    for bad in ([], [0.0], [-1.0], [float("nan")], [float("inf")]):
+        with pytest.raises(InjectionError, match="observed repeats"):
+            di.observer_effect(bad, [1.0])
+        with pytest.raises(InjectionError, match="unobserved repeats"):
+            di.observer_effect([1.0], bad)
+
+
+# --- the plan lists only sites the injector accepts (at integration) ------------------
+
+@pytest.mark.xfail(
+    strict=True, raises=InjectionError,
+    reason="plan_variants may pick a site the injector refuses (one inside a "
+           "multi-operation call); the filter in delay_injection.py is added at "
+           "integration (researcher's decision, relayed 28 Oct 2026)")
+def test_every_site_plan_variants_returns_is_accepted_by_the_injector():
+    n_busy = 7          # recursion 0 to 5 and 7
+    cases = [(BUSY, "synchronize", tuple(range(n_busy + 1))),
+             (IDLE, "item", (0, 1, 4))]
+    for placement, mechanism, counts in cases:
+        for v in plan_variants(BASE, mechanism, placement, counts, COSTS, None):
+            di.schedule_for(v, BASE, SEQ, CALLS)

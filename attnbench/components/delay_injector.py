@@ -56,8 +56,15 @@ A's dense arm has neither.
 dispatch mode is active through the whole prefill, at c = 0 too, and it
 adds host time at every aten call. The slopes are read from differences
 over c, but the mode can also turn a device-bound stretch host-bound, which
-moves the measured wait at a busy site. Whether the prediction's host costs
-should come from a null pass under the same observer is for the researcher.
+moves the measured wait at a busy site. So (researcher's decision, relayed
+28 Oct 2026) the prediction's host costs come from T2.2's null pass run
+under the same observer: `observed` wraps the prefill for
+`host_profile.profile` and checks the calls it sees against the
+calibration. The observer's own effect is reported from an observed and an
+unobserved c = 0 pass (`observer_pair`, `observer_effect`).
+
+Sites the injector refuses are still refused. That `plan_variants` lists only
+sites the injector accepts is added in `delay_injection.py` at integration.
 
 The torch parts (`dispatch_observer`, `cuda_mechanism`) import torch when
 called, so the planning and checking here run without it.
@@ -65,6 +72,8 @@ called, so the planning and checking here run without it.
 
 from __future__ import annotations
 
+import math
+import statistics
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
@@ -398,6 +407,65 @@ def injected_prefill(run_prefill: Callable[[], None], schedule: Schedule,
         cur.finish()
         return cur.fired
     return run
+
+
+def observed(run_prefill: Callable[[], None], observer: Observer,
+             calls: Optional[Sequence[Call]] = None) -> Callable[[], None]:
+    """`run_prefill` under the observer with nothing injected, for T2.2's
+    null pass (`host_profile.profile(observed(...), ...)`), so the host costs
+    the prediction reads carry the observer's overhead like every measured
+    variant. With `calls` (the calibration), each pass must make exactly
+    those calls."""
+    expected = None if calls is None else tuple(calls)
+
+    def run() -> None:
+        seen: list[Call] = []
+        observer(run_prefill, lambda name, layer: seen.append(Call(name, layer)))
+        if expected is not None and tuple(seen) != expected:
+            n = next((i for i, (a, b) in enumerate(zip(seen, expected)) if a != b),
+                     min(len(seen), len(expected)))
+            raise InjectionError(
+                f"the observed pass made {len(seen)} launching calls and first "
+                f"differs from the calibration's {len(expected)} at call {n}")
+    return run
+
+
+def observer_pair(run_prefill: Callable[[], None], schedule: Schedule,
+                  fire: Callable[[], object],
+                  observer: Observer) -> tuple[Callable[[], int], Callable[[], None]]:
+    """(observed, unobserved) c = 0 prefills, for the timer to interleave.
+    The observed one is the c = 0 variant exactly as measured; the unobserved
+    one is the arm's own prefill with no observer."""
+    if schedule.count != 0:
+        raise InjectionError(
+            f"the observer's effect is read at c = 0; this schedule has count "
+            f"{schedule.count}")
+    return injected_prefill(run_prefill, schedule, fire, observer), run_prefill
+
+
+@dataclass(frozen=True)
+class ObserverEffect:
+    observed_s: float          # the statistic of the observed c = 0 repeats
+    unobserved_s: float
+    effect_s: float            # observed minus unobserved
+    ratio: float               # observed over unobserved
+    repeats: tuple[int, int]
+
+
+def observer_effect(observed_s: Sequence[float], unobserved_s: Sequence[float], *,
+                    statistic=statistics.median) -> ObserverEffect:
+    """The observer's own effect on the c = 0 prefill, from timed repeats in
+    seconds. Reported, never subtracted from anything."""
+    def stat(xs, which):
+        xs = [float(x) for x in xs]
+        if not xs or any(not math.isfinite(x) or x <= 0 for x in xs):
+            raise InjectionError(
+                f"{which} repeats must be positive, finite and non-empty")
+        return float(statistic(xs)), len(xs)
+    o, no = stat(observed_s, "observed")
+    u, nu = stat(unobserved_s, "unobserved")
+    return ObserverEffect(observed_s=o, unobserved_s=u, effect_s=o - u, ratio=o / u,
+                          repeats=(no, nu))
 
 
 # --- the torch side ----------------------------------------------------------------

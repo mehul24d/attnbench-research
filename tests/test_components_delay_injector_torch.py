@@ -185,3 +185,23 @@ def test_end_to_end_on_a_recorded_toy_prefill(tmp_path):
             run = di.injected_prefill(run_prefill, s, fire, observe)
             assert run() == s.count
             torch.cuda.synchronize()
+
+
+def test_the_observer_sees_the_same_calls_inside_the_null_pass():
+    """Host costs come from T2.2's null pass under the observer: stacked with
+    `NullDeviceMode`, the observer must see the calls a plain observed pass
+    sees. On CPU, with `device_type="cpu"` and a null launch that does
+    nothing."""
+    toy = _Toy()
+    launching = frozenset({"aten::add", "aten::mm"})
+    observe = di.dispatch_observer(launching, device_type="cpu", layers=toy.layers)
+    plain = []
+    with torch.no_grad():
+        observe(lambda: toy(), lambda n, l: plain.append(di.Call(n, l)))
+    log = host_profile.PassLog()
+    state = host_profile._State(time.perf_counter, time.perf_counter())
+    device = host_profile.NullDevice(launch=lambda: None, device_type="cpu")
+    mode = host_profile.NullDeviceMode(device, launching, log, state, time.perf_counter)
+    with torch.no_grad(), mode:
+        di.observed(lambda: toy(), observe, plain)()      # raises on a mismatch
+    assert len(log.issues) == len(plain) == 3
