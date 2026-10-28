@@ -12,13 +12,11 @@ from pathlib import Path
 from attnbench.components import op_sequence as ops
 from attnbench.predict.commit import load_committed
 
-from test_predict_commit import CP, MODEL, NO_SKEW, T0, Clock, MemoryStore, committed, \
-    p1_record
+from test_predict_commit import CP, MODEL, NO_SKEW, OPS_HOST, T0, Clock, MemoryStore, cell, \
+    committed, p1_record
 
 PID, TID, DEV, STREAM = 11, 12, 0, 7
 GPU = "NVIDIA L4"
-CODE_PATH = ops.CodePath(arm="oracle", gpu=GPU, implementation="oracle:torch",
-                         libraries=(("torch", "2.8.0"),))
 
 
 def _x(cat, name, ts, dur, pid=PID, tid=TID, **args):
@@ -35,7 +33,12 @@ def _call(name, ts, dur, corr):
     return _x("cuda_runtime", name, ts, dur, correlation=corr, cbid=0)
 
 
-def trace() -> dict:
+def code_path(gpu: str = GPU) -> ops.CodePath:
+    return ops.CodePath(arm="oracle", gpu=gpu, implementation="oracle:torch",
+                        libraries=(("torch", "2.8.0"),))
+
+
+def trace(gpu: str = GPU) -> dict:
     """Layer 0: one kernel. Layer 1 (annotation at 200 us, 300 us long):
     the mask build in host_compute (210-250), a GEMM launch, an `.item()`
     (copy and wait, folded into one sync), and a softmax launch whose kernel
@@ -62,7 +65,7 @@ def trace() -> dict:
         _call("cudaDeviceSynchronize", 600, 10, 15),
     ]
     return {"schemaVersion": 1,
-            "deviceProperties": [{"id": DEV, "name": GPU, "computeMajor": 8,
+            "deviceProperties": [{"id": DEV, "name": gpu, "computeMajor": 8,
                                   "computeMinor": 9}],
             "traceEvents": ev}
 
@@ -74,7 +77,8 @@ def with_event(doc: dict, event: dict) -> dict:
 
 
 def parse(doc: dict) -> ops.OpSequence:
-    return ops.parse_trace(doc, CODE_PATH, context_length=16384, batch=1)
+    gpu = doc["deviceProperties"][0]["name"]
+    return ops.parse_trace(doc, code_path(gpu), context_length=16384, batch=1)
 
 
 def write_pair(tmp_path: Path, doc: dict, name: str = "a", seq=None) -> tuple[Path, Path]:
@@ -95,10 +99,13 @@ XATTN = (MODEL, CP, "xattn", 0.5, 4, 1)      # recursion 16, sum 13, sum+s0 16, 
 DENSE = (MODEL, CP, "dense", 1.0, 4, 1)      # recursion 8, sum 8, sum+s0 9, step 7
 
 
-def loaded_p1(tmp_path: Path):
-    """(CommittedPrediction from load_committed, local file, store, remote)."""
+def loaded_p1(tmp_path: Path, xattn_ops=None):
+    """(CommittedPrediction from load_committed, local file, store, remote).
+    `xattn_ops` replaces the xattn cell's operations."""
     store = MemoryStore(Clock(T0))
-    f, receipt = committed(tmp_path, p1_record(), store, SYNC_AT)
+    record = p1_record() if xattn_ops is None else p1_record(
+        cells=[cell(ops=xattn_ops), cell(ops=OPS_HOST, arm="dense", density=1.0)])
+    f, receipt = committed(tmp_path, record, store, SYNC_AT)
     cp = load_committed(store, receipt.remote, ground_truth_started_at=STARTED_AT,
                         clock_skew=NO_SKEW, local=f.path)
     return cp, f.path, store, receipt.remote

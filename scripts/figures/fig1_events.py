@@ -1,13 +1,13 @@
 """Figure 1's events.csv from recorded trace pairs (C5).
 
-Each --panel names a panel, a trace and the sequence record banked beside it
+Each --gpu names a panel's GPU label, a trace and the sequence record banked beside it
 by T2.27's step 11 (`fig1_<k>_trace.json`, `fig1_<k>_sequence.json`). The
 trace is parsed again with the record's code path and must give the banked
 sequence; one layer's operations become the rows
 (`attnbench/figures/fig1_events.py`). Writes one CSV and never overwrites.
 
     python scripts/figures/fig1_events.py --layer 14 --out events.csv \\
-        --panel L4 fig1_a_trace.json fig1_a_sequence.json
+        --gpu L4 fig1_a_trace.json fig1_a_sequence.json
 """
 
 from __future__ import annotations
@@ -23,8 +23,9 @@ from attnbench.figures import fig1_events as F  # noqa: E402
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--panel", nargs=3, action="append", required=True,
-                    metavar=("NAME", "TRACE", "SEQUENCE"))
+    ap.add_argument("--gpu", nargs=3, action="append", required=True,
+                    metavar=("LABEL", "TRACE", "SEQUENCE"),
+                    help="the label must name the trace's device (L4, A100)")
     ap.add_argument("--layer", type=int, required=True)
     ap.add_argument("--out", required=True)
     return ap
@@ -33,8 +34,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
-        panels = [F.events_from_files(trace, seq, args.layer, panel=name)
-                  for name, trace, seq in args.panel]
+        panels = [F.events_from_files(trace, seq, args.layer, gpu=label)
+                  for label, trace, seq in args.gpu]
         path = F.write_events(panels, args.out)
     except (F.Fig1Error, FileExistsError, OSError, ValueError) as e:
         print(f"fig1_events: {e}", file=sys.stderr)
