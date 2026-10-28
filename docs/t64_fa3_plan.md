@@ -1,6 +1,7 @@
-# T6.4: the FA3 backend and wheel build (plan, not built)
+# T6.4: the FA3 backend and wheel build
 
-Written 27 Oct 2026. Nothing here is built, launched or priced for a launch.
+Written 27 Oct 2026 as a plan. The three decisions were taken on 28 Oct 2026 and the
+backend, build script, import check and launcher are built (Section 8); nothing is launched.
 The H100 launch path is built (`scripts/gcp_launch_h100.sh`, `scripts/_flex_request.sh`,
 `tests/test_flex_request.py`). This note plans the other half of the H100 work:
 FlashAttention-3 (FA3), which the plan names as a dense-baseline candidate on the
@@ -176,3 +177,30 @@ and its spend counts toward the Rs 14,000 through 30 Nov 2026.
 2. **Which machine**: option A (recommended), or B or C if 32 vCPUs are not wanted.
 3. **Whether a prebuilt third-party FA3 wheel is acceptable** if one is found, in place of a
    build. This note assumes not.
+
+## 8. Decisions taken and what was built (28 Oct 2026)
+
+1. **Pin:** `e9515d5d` only with a documented successful build on this stack, else the
+   latest tagged release, never `main`. No build of `e9515d5d` is documented (it is only
+   named, as `main` that day, in the archived pre-registration). The latest release is
+   `v2.8.3.post2`, commit `49774b31c8d1172a5b28f72e9aed0f322bf4ccba` (GitHub's latest
+   release; the `fa4-*` tags are pre-releases of another package). `hopper/` there is
+   `flash_attn_3` 3.0.0.b1: it installs `flash_attn_interface`, whose `flash_attn_func`
+   returns `out` alone and takes `window_size=(left, right)`; head dims 64, 96, 128, 192, 256.
+   Recorded in `scripts/_fa3_pin.sh`.
+2. **Machine:** option B, `n2-standard-16`, on-demand, `us-central1-a`. Planning rate
+   ₹77.21/h all-in; hard cap 5 h (₹386); in-guest halt at 270 min; the build stops itself
+   at 225 min.
+3. **No third-party wheel.** The build sets `FLASH_ATTENTION_FORCE_BUILD=TRUE`, without
+   which upstream's `bdist_wheel` first tries to download a prebuilt wheel, and fails if
+   its log shows the attempt. Upstream's own download of NVIDIA's nvcc/ptxas is kept.
+
+Built: `attnbench/backends/fa3.py` (forward only, bf16/fp16, sm_90; tests with a
+stand-in that computes attention, six mutants watched to fail), `attnbench/fa3_wheel.py`,
+`scripts/build_fa3_wheel.sh` (drops backward, FP8 and the sm_80 kernels, which the
+backend declares unsupported), `scripts/fa3_import_check.sh` (H100),
+`scripts/gcp_launch_fa3_build.sh`, all wired against a fake `gcloud`
+(`tests/test_fa3_backend.py`, `tests/test_fa3_wheel_build.py`). Launch card:
+`docs/t64_fa3_launch_card.md`. Not done: the bootstrap step of Section 5 item 4 (the
+import check is a separate script), the README credit line, and the
+`docs/limitations.md` FA3 entry.

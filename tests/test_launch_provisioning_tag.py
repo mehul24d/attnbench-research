@@ -43,6 +43,7 @@ if [[ "$*" == "+%F" ]]; then echo {today}; else exec /bin/date "$@"; fi
 # (script, extra environment, the models its create calls must ask for, in order)
 CASES = [
     ("gcp_launch_l4.sh", {}, ["STANDARD"]),
+    ("gcp_launch_fa3_build.sh", {}, ["STANDARD"]),
     ("gcp_launch_h100.sh", {}, ["FLEX_START"]),
     ("gcp_launch_a100.sh", {}, ["FLEX_START", "SPOT"]),
 ]

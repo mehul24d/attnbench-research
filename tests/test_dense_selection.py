@@ -244,7 +244,7 @@ def test_the_registry_candidates_name_every_planned_kernel_and_the_cudnn_fault()
         seq_len=16384, batch=1, n_heads_q=12, n_heads_kv=2, head_dim=128, dtype="bfloat16"))
     assert not ok and why.startswith(FAULT_REASON_PREFIX)
     assert list(ds.registry_candidates("H100")) == list(ds.planned_candidates("H100"))
-    assert ds.registry_candidates("H100")[ds.FA3] is None     # no FA3 backend exists yet
+    assert ds.registry_candidates("H100")[ds.FA3] is None     # registered, not available without CUDA
 
 
 # --- the record ------------------------------------------------------------------------

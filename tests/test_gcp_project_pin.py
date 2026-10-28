@@ -27,7 +27,8 @@ SCRIPTS = REPO / "scripts"
 HELPER = SCRIPTS / "_gcp_project.sh"
 
 LAUNCHERS = ("gcp_launch_l4.sh", "gcp_launch_a100.sh", "gcp_launch_h100.sh",
-             "gcp_launch_compile_session.sh", "gcp_boot_test_image.sh")
+             "gcp_launch_compile_session.sh", "gcp_boot_test_image.sh",
+             "gcp_launch_fa3_build.sh")
 # The six session scripts and the bootstrap were pinned on 25 Oct 2026, after
 # the first seven (PR #14).
 SESSION = ("gcp_deploy_source.sh", "gcp_preflight_instance.sh",
@@ -67,6 +68,7 @@ ARGS = {
     "gcp_launch_a100.sh": ["inst"],
     "gcp_launch_h100.sh": ["inst"],
     "gcp_launch_compile_session.sh": ["inst"],
+    "gcp_launch_fa3_build.sh": ["inst"],
     "gcp_boot_test_image.sh": ["some-image", "asia-southeast1-c"],
     "gcp_cleanup_check.sh": [],
     "gcp_teardown_session.sh": ["inst", "asia-northeast1-a"],
@@ -302,7 +304,7 @@ def test_a_matching_project_reaches_gcloud_with_the_flag_and_is_never_printed(na
 QUIET = {"gcp_session_elapsed.sh", "gcp_capture_image.sh"}
 
 
-ON_INSTANCE = ("run_phase.sh",)
+ON_INSTANCE = ("run_phase.sh", "build_fa3_wheel.sh", "fa3_import_check.sh", "_fa3_pin.sh")
 
 
 @pytest.mark.parametrize("name", PINNED + ON_INSTANCE)
