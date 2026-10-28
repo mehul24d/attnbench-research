@@ -102,6 +102,7 @@ authority is the billing console.
 | 2026-10-21 | `attnbench-a100-t11a-20261022`, asia-southeast1-c, **Flex Start**, ₹297.47/h (planning rate, all-in); T1.1 Session A, the three calibrations; date from the boot clock in UTC (01:02 IST on 22 Oct) | **55** | **273** | `session_cost.txt` (`results/t11a_session_20261022/`) |
 | 2026-10-25 | `attnbench-l4-t11b-20261025`, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); T1.1 Session B, the dense reference and the three calibrated XAttention runs; image `attnbench-env-v7-20261025` captured before teardown (its storage is not in this row) | **210** | **380** | `session_cost.txt` (`results/t11b_session_20261025/`) |
 | 2026-10-27 | `attnbench-l4-t227-20261028-0015`, T2.27 Shakedown 1, asia-northeast1-a, ₹108.64/h; 4 of 11 steps passed, 7 stopped by one prompt-length defect | **23** | **42** | `session_cost.txt` (`results/t227_shakedown1_l4_20261028/`) |
+| 2026-10-28 | `attnbench-fa3-build-20261028`, T6.4 FA3 wheel build, us-central1-a, `n2-standard-16` on-demand, ₹77.21/h (planning rate, all-in); **no wheel.** The build was OOM-killed 12 minutes in (exit 137 on three `flash_fwd_hdimall_*_sm90` units, 8 jobs on 64 GB), and the VM then sat idle for about two hours: the Mac-side watcher called `timeout`, which macOS lacks, so every check failed and none was reported. About ₹150 of this row bought nothing. Fixes: the build now halts the VM itself when it ends, and `scripts/gcp_watch_fa3_build.sh` has no `timeout` (T6.4, 28 Oct 2026). The ₹175 reported at the time was `gcp_session_elapsed.sh` at 136 minutes, before the teardown | **137** | **176** | `session_cost.txt` (`results/fa3_build_20261028/`) |
 
 **Notes on the table (18 Oct 2026).**
 
@@ -576,3 +577,11 @@ teardown: 2026-10-27T19:07:44Z
 minutes: 23
 rate_inr_hr: 108.64
 est_inr: 42
+
+instance: attnbench-fa3-build-20261028
+zone: us-central1-a
+boot: 2026-10-28 13:51:38
+teardown: 2026-10-28T16:08:16Z
+minutes: 137
+rate_inr_hr: 77.21
+est_inr: 176
