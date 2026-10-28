@@ -54,7 +54,8 @@ def main(argv=None, store=None) -> int:
         cp = _load.load(args.remote, args.local,
                         started_at=[r["first_timed_block_started_at"] for _, _, r, _ in gt],
                         clock_skew_s=args.clock_skew_s, banked_at=args.banked_at, store=store)
-        inp = PI.build_inputs(spec, spec_path.parent, cp)
+        inp = PI.build_inputs(spec, spec_path.parent, cp,
+                              committed_bytes=Path(args.local).read_bytes())
         manifest = PA.build(inp, args.out_dir, code_stamp())
     except (PI.PaperInputError, RS.ResultsError, C.PredictionCommitError, CostModelError,
             FileExistsError, OSError, KeyError, TypeError, ValueError) as e:

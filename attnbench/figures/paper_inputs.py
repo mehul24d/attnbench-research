@@ -18,13 +18,24 @@ name, and every named file carries the sha256 it was written for:
     and figure panel names it, and no figure panel holds two classes. A
     class is checked against the row's own `arm_kind` and `deployable`
     where they decide it (`_check_class`).
+  - `builder_kinds`: where an arm's mask is built, "cpu" or "gpu".
+    Ground-truth rows do not carry it yet (it joins density, length and
+    batch on the T2.13 row schema at integration), so the caller states it,
+    as with the cell. A row's own `builder_kind` is read when it has one,
+    and a stated kind that disagrees is refused. An arm whose rows have
+    different kinds is refused, never pooled; every summary groups by the
+    kind as well as the class; the CPU-builder and GPU-builder classes
+    must have a kind, and the matching one.
   - `admissible`: per sparse cell, whether it is admissible (an accuracy
     input, measured elsewhere; no default). Read for decision error only.
   - `crossover` (optional): the bootstrap protocol for the measured
-    difference, and a hashed file of the predicted difference intervals
-    (T2.19's joint bootstrap of the component repeats, which the committed
-    file does not carry). Without it no crossover is computed, and the
-    outputs say so.
+    difference. The predicted difference intervals (T2.19's joint bootstrap
+    of the component repeats) are taken from the committed prediction
+    whenever it holds them (a `crossover_intervals` section; the schema is
+    settled at integration); until it does, from a hashed file the spec
+    names. Naming a file when the committed prediction holds them is
+    refused. Without either, no crossover is computed, and the outputs say
+    so.
   - `relative_floor` (the noise floor, a relative error), whether it is
     provisional, and `resolution_floor_s` (seconds): lock values with no
     default (Section 5.6).
@@ -35,6 +46,7 @@ across code paths (rule 3).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import statistics
@@ -100,6 +112,25 @@ def _check_class(arm: str, cls: str, row: Mapping, name: str) -> None:
         raise PaperInputError(f"{name}: arm {arm!r} is stated deployable; its row says not")
 
 
+BUILDER_KINDS = ("cpu", "gpu")
+
+
+def _row_builder(arm: str, row: Mapping, stated: Mapping, name: str):
+    """(kind, where it came from) for one row: its own field when it has one,
+    else the caller's statement, else None."""
+    if "builder_kind" in row:
+        b = row["builder_kind"]
+        if b not in BUILDER_KINDS:
+            raise PaperInputError(f"{name}: arm {arm!r} has builder_kind {b!r}")
+        if arm in stated and stated[arm] != b:
+            raise PaperInputError(f"{name}: arm {arm!r}'s row says builder {b!r}, the spec "
+                                  f"states {stated[arm]!r}")
+        return b, "row"
+    if arm in stated:
+        return stated[arm], "stated"
+    return None, None
+
+
 def _finite(x, what: str, *, lo: float = 0.0, strict: bool = False) -> float:
     if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) \
             or x < lo or (strict and x <= lo):
@@ -138,6 +169,11 @@ class Inputs:
     resolution_floor_s: float
     crossover: Optional[Mapping]                 # protocol and predicted intervals
     files: tuple[dict, ...]                      # every input by role, name, sha256
+    builder_kinds: Mapping[str, Optional[str]] = None   # arm -> "cpu", "gpu" or None
+    builder_sources: Mapping[str, tuple] = None         # arm -> ("row", "stated", ...)
+
+    def builder(self, arm: str) -> Optional[str]:
+        return (self.builder_kinds or {}).get(arm)
 
     def cls(self, key) -> str:
         return self.classes[key.arm]
@@ -182,8 +218,11 @@ def _samples(result: Mapping, arm: str, name: str, statistic: str, seconds: floa
     return s
 
 
-def build_inputs(spec: Mapping, base: Union[str, Path], cp: CommittedPrediction) -> Inputs:
-    """Every check of the module docstring. `cp` comes from `load_committed`."""
+def build_inputs(spec: Mapping, base: Union[str, Path], cp: CommittedPrediction,
+                 committed_bytes: Optional[bytes] = None) -> Inputs:
+    """Every check of the module docstring. `cp` comes from `load_committed`;
+    `committed_bytes` are its bytes, read for the crossover intervals it
+    may hold."""
     RS.check_loaded(cp)
     base = Path(base)
     if spec.get("prediction_sha256") != cp.sha256:
@@ -213,6 +252,15 @@ def build_inputs(spec: Mapping, base: Union[str, Path], cp: CommittedPrediction)
     if [a for a, c in classes.items() if c == DENSE and a in committed_arms] != [dense_arm]:
         raise PaperInputError("exactly one committed arm is the dense arm")
 
+    stated = dict(spec.get("builder_kinds") or {})
+    for arm, b in stated.items():
+        if arm not in committed_arms:
+            raise PaperInputError(f"builder kind stated for {arm!r}, not a committed arm")
+        if b not in BUILDER_KINDS:
+            raise PaperInputError(f"builder kind for {arm!r} is {b!r}, not one of "
+                                  f"{BUILDER_KINDS}")
+    seen_kinds: dict = {}
+
     gt = ground_truth(spec, base)
     try:
         measured = RS.measured_cells([(n, r, a) for n, _, r, a in gt], statistic=cp.statistic)
@@ -225,8 +273,24 @@ def build_inputs(spec: Mapping, base: Union[str, Path], cp: CommittedPrediction)
                 raise PaperInputError(f"{name}: arm {arm!r} has no result class")
             row = [r for r in result["rows"] if r.get("arm") == arm][0]
             _check_class(arm, classes[arm], row, name)
+            seen_kinds.setdefault(arm, set()).add(_row_builder(arm, row, stated, name))
             k = cell_key(*cell)
             samples[k] = _samples(result, arm, name, cp.statistic, measured[k])
+
+    builders, sources = {}, {}
+    for arm in sorted(committed_arms):
+        got = seen_kinds.get(arm, {(stated.get(arm), "stated" if arm in stated else None)})
+        kinds = {k for k, _ in got}
+        if len(kinds) > 1:
+            raise PaperInputError(f"arm {arm!r} has rows with builder kinds "
+                                  f"{sorted(map(str, kinds))}; they are never pooled")
+        kind = kinds.pop()
+        want = {CPU_BUILDER: "cpu", GPU_BUILDER: "gpu"}.get(classes[arm])
+        if want is not None and kind != want:
+            raise PaperInputError(f"arm {arm!r} is of class {classes[arm]!r}, but its builder "
+                                  f"kind is {kind!r}; state it while rows lack it")
+        builders[arm] = kind
+        sources[arm] = tuple(sorted({src for _, src in got if src}))
 
     admissible = {}
     for e in spec.get("admissible") or ():
@@ -239,16 +303,68 @@ def build_inputs(spec: Mapping, base: Union[str, Path], cp: CommittedPrediction)
 
     files = [{"role": "prediction", "name": None, "sha256": cp.sha256}]
     files += [{"role": "ground_truth", "name": n, "sha256": s} for n, s, _, _ in gt]
-    crossover = None
-    if spec.get("crossover") is not None:
-        crossover = _crossover_inputs(spec["crossover"], base, cp, files)
+    crossover = _crossover_inputs(spec.get("crossover"), base, cp, files,
+                                  committed_intervals(cp, committed_bytes))
     return Inputs(cp=cp, measured=measured, samples_s=samples, classes=classes,
                   admissible=admissible, dense_arm=dense_arm, predictors=predictors,
                   relative_floor=rel_floor, floor_provisional=prov,
-                  resolution_floor_s=res_floor, crossover=crossover, files=tuple(files))
+                  resolution_floor_s=res_floor, crossover=crossover, files=tuple(files),
+                  builder_kinds=builders, builder_sources=sources)
 
 
-def _crossover_inputs(x: Mapping, base: Path, cp: CommittedPrediction, files: list) -> dict:
+COMMITTED_INTERVALS = "crossover_intervals"
+
+
+def committed_intervals(cp: CommittedPrediction, committed_bytes: Optional[bytes]):
+    """The committed file's own crossover intervals, or None when it holds
+    none. `committed_bytes` must be the committed bytes (their sha256 is the
+    prediction's); the section's name is this module's proposal until the
+    prediction schema carries one (integration)."""
+    if committed_bytes is None:
+        return None
+    if hashlib.sha256(committed_bytes).hexdigest() != cp.sha256:
+        raise PaperInputError("the bytes given as the committed prediction are not it")
+    rec = json.loads(committed_bytes.decode("ascii"))
+    return rec.get(COMMITTED_INTERVALS)
+
+
+def _interval_entries(raw, cp: CommittedPrediction, level: float, where: str) -> dict:
+    entries = {}
+    for e in raw or ():
+        sk, dk = cell_key(*e["sparse_cell"]), cell_key(*e["dense_cell"])
+        pred = e["predictor"]
+        try:
+            want = cp.cell(*sk).predictions[pred] - cp.cell(*dk).predictions[pred]
+        except KeyError:
+            raise PaperInputError(f"{where}: no committed {pred!r} for {sk} or {dk}") from None
+        iv = IV.Interval(point=float(e["point"]), lo=float(e["lo"]), hi=float(e["hi"]),
+                         level=float(e["level"]), n_boot=int(e["n_boot"]), seed=int(e["seed"]))
+        if not math.isclose(iv.point, want, rel_tol=1e-9, abs_tol=1e-15):
+            raise PaperInputError(f"{where}: the {pred} interval at {sk} is centred on "
+                                  f"{iv.point}, not the committed difference {want}")
+        if iv.level != level:
+            raise PaperInputError(f"{where}: level {iv.level}, the measured side's is {level}")
+        if not iv.lo <= iv.point <= iv.hi:
+            raise PaperInputError(f"{where}: point outside its interval at {sk}")
+        if (pred, sk) in entries:
+            raise PaperInputError(f"{where}: {pred} at {sk} twice")
+        entries[(pred, sk)] = (dk, iv)
+    if not entries:
+        raise PaperInputError(f"{where} holds no intervals")
+    return entries
+
+
+def _crossover_inputs(x: Optional[Mapping], base: Path, cp: CommittedPrediction,
+                      files: list, committed) -> Optional[dict]:
+    """The predicted intervals come from the committed file whenever it has
+    them; the spec's file is read only when it does not, and naming one
+    then is refused (two sources for one interval)."""
+    if x is None:
+        if committed is not None:
+            raise PaperInputError("the committed prediction holds crossover intervals; "
+                                  "the spec must state the measured side's level, n_boot "
+                                  "and seed")
+        return None
     level = x.get("level")
     if isinstance(level, bool) or not isinstance(level, float) or not 0 < level < 1:
         raise PaperInputError(f"crossover level is {level!r}")
@@ -256,34 +372,26 @@ def _crossover_inputs(x: Mapping, base: Path, cp: CommittedPrediction, files: li
     for v, n in ((n_boot, "n_boot"), (seed, "seed")):
         if isinstance(v, bool) or not isinstance(v, int) or v < (1 if n == "n_boot" else 0):
             raise PaperInputError(f"crossover {n} is {v!r}")
-    p, sha = _sha_file(base, x.get("predicted_intervals") or {}, "predicted crossover intervals")
-    doc = json.loads(p.read_text(encoding="utf-8"))
-    if doc.get("schema") != INTERVALS_SCHEMA:
-        raise PaperInputError(f"{p.name} is not a {INTERVALS_SCHEMA} file")
-    if doc.get("prediction_sha256") != cp.sha256:
-        raise PaperInputError(f"{p.name} was made for another prediction; refusing stale input")
-    entries = {}
-    for e in doc.get("entries") or ():
-        sk, dk = cell_key(*e["sparse_cell"]), cell_key(*e["dense_cell"])
-        pred = e["predictor"]
-        try:
-            want = cp.cell(*sk).predictions[pred] - cp.cell(*dk).predictions[pred]
-        except KeyError:
-            raise PaperInputError(f"{p.name}: no committed {pred!r} for {sk} or {dk}") from None
-        iv = IV.Interval(point=float(e["point"]), lo=float(e["lo"]), hi=float(e["hi"]),
-                         level=float(e["level"]), n_boot=int(e["n_boot"]), seed=int(e["seed"]))
-        if not math.isclose(iv.point, want, rel_tol=1e-9, abs_tol=1e-15):
-            raise PaperInputError(f"{p.name}: the {pred} interval at {sk} is centred on "
-                                  f"{iv.point}, not the committed difference {want}")
-        if iv.level != level:
-            raise PaperInputError(f"{p.name}: level {iv.level}, the measured side's is {level}")
-        if not iv.lo <= iv.point <= iv.hi:
-            raise PaperInputError(f"{p.name}: point outside its interval at {sk}")
-        if (pred, sk) in entries:
-            raise PaperInputError(f"{p.name}: {pred} at {sk} twice")
-        entries[(pred, sk)] = (dk, iv)
-    files.append({"role": "crossover_intervals", "name": p.name, "sha256": sha})
-    return {"level": level, "n_boot": n_boot, "seed": seed, "predicted": entries}
+    if committed is not None:
+        if x.get("predicted_intervals") is not None:
+            raise PaperInputError("the committed prediction holds crossover intervals; the "
+                                  "spec names another file for them")
+        entries = _interval_entries(committed, cp, level, "the committed prediction")
+        source = "committed prediction"
+    else:
+        p, sha = _sha_file(base, x.get("predicted_intervals") or {},
+                           "predicted crossover intervals")
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        if doc.get("schema") != INTERVALS_SCHEMA:
+            raise PaperInputError(f"{p.name} is not a {INTERVALS_SCHEMA} file")
+        if doc.get("prediction_sha256") != cp.sha256:
+            raise PaperInputError(f"{p.name} was made for another prediction; refusing "
+                                  f"stale input")
+        entries = _interval_entries(doc.get("entries"), cp, level, p.name)
+        files.append({"role": "crossover_intervals", "name": p.name, "sha256": sha})
+        source = "spec file " + p.name
+    return {"level": level, "n_boot": n_boot, "seed": seed, "predicted": entries,
+            "source": source}
 
 
 def measured_difference(inp: Inputs, sparse: CellKey, dense: CellKey) -> IV.Interval:

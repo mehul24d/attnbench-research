@@ -52,9 +52,10 @@ def _style(i: int) -> dict:
     return {"color": SERIES[i], "marker": MARKERS[i], "markersize": 4}
 
 
-def _title(series: tuple, cls: str) -> str:
+def _title(series: tuple, cls: str, builder=None) -> str:
     model, cpath, arm, density, batch = series
-    return (f"{class_label(cls)}\n{model}, {PT.code_path_short(cpath)}\n"
+    b = "" if builder is None else f", {PT.builder_label(builder)} builder"
+    return (f"{class_label(cls)}{b}\n{model}, {PT.code_path_short(cpath)}\n"
             f"{arm}, density {density:g}, batch {batch}")
 
 
@@ -105,7 +106,7 @@ def error_vs_length(inp: Inputs, path) -> Path:
             ax.set_xticks(L, [str(x) for x in L])
             ax.set_xlabel("context length (tokens)")
             ax.set_ylabel("relative error (%)")
-            ax.set_title(_title(s, inp.classes[s[2]]), fontsize=7)
+            ax.set_title(_title(s, inp.classes[s[2]], inp.builder(s[2])), fontsize=7)
         _legend(fig, axes[0])
         return _save(fig, path)
 
@@ -113,10 +114,11 @@ def error_vs_length(inp: Inputs, path) -> Path:
 def decision_error(inp: Inputs, groups: Sequence[PT.DecisionGroup], path) -> Path:
     panels: dict = {}
     for g in groups:
-        panels.setdefault((g.model, g.code_path, g.result_class), []).append(g)
+        panels.setdefault((g.model, g.code_path, g.result_class, g.builder_kind or ""),
+                          []).append(g)
     with plt.rc_context(RC):
         fig, axes = _grid(len(panels))
-        for ax, ((model, cpath, cls), gs) in zip(axes, sorted(panels.items())):
+        for ax, ((model, cpath, cls, bk), gs) in zip(axes, sorted(panels.items())):
             x = range(len(gs))
             w = 0.8 / len(OUTCOMES)
             for j, (key, label, colour, hatch) in enumerate(OUTCOMES):
@@ -128,7 +130,8 @@ def decision_error(inp: Inputs, groups: Sequence[PT.DecisionGroup], path) -> Pat
             ax.set_xticks(list(x), [g.predictor for g in gs], rotation=30, ha="right")
             ax.set_ylabel("cells")
             ax.yaxis.get_major_locator().set_params(integer=True)
-            ax.set_title(f"{class_label(cls)}\n{model}, {PT.code_path_short(cpath)}",
+            b = f", {PT.builder_label(bk)} builder" if bk else ""
+            ax.set_title(f"{class_label(cls)}{b}\n{model}, {PT.code_path_short(cpath)}",
                          fontsize=7)
         _legend(fig, axes[0])
         return _save(fig, path)
@@ -162,7 +165,7 @@ def crossover(inp: Inputs, series: Sequence[PT.CrossoverSeries], path) -> Path:
             ax.set_xticks(L, [str(x) for x in L])
             ax.set_xlabel("context length (tokens)")
             ax.set_ylabel("sparse minus dense (s)")
-            ax.set_title(_title(s.series, s.result_class)
+            ax.set_title(_title(s.series, s.result_class, s.builder_kind)
                          + f"\nerror: {s.error.status}", fontsize=7)
         _legend(fig, axes[0])
         return _save(fig, path)

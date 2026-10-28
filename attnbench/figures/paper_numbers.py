@@ -66,17 +66,20 @@ class Numbers:
 
     def add(self, quantity: str, value, unit: str, *, predictor: Optional[str] = None,
             model: Optional[str] = None, code_path: Optional[str] = None,
-            result_class: Optional[str] = None, extra: Sequence = ()) -> str:
+            result_class: Optional[str] = None, builder_kind: Optional[str] = None,
+            extra: Sequence = ()) -> str:
         if result_class is not None and result_class not in CLASSES:
             raise PaperInputError(f"result class {result_class!r}")
         parts = [quantity, predictor, model,
                  None if code_path is None else self.code_paths[code_path],
-                 result_class, *extra]
+                 result_class, None if builder_kind is None else builder_kind + " builder",
+                 *extra]
         name = "ab" + "".join(camel(p) for p in parts if p is not None)
         if name in self.entries:
             raise PaperInputError(f"two numbers named \\{name}")
         of = {k: v for k, v in (("predictor", predictor), ("model", model),
-                                ("code_path", code_path), ("result_class", result_class))
+                                ("code_path", code_path), ("result_class", result_class),
+                                ("builder_kind", builder_kind))
               if v is not None}
         if extra:
             of["extra"] = list(extra)
@@ -102,7 +105,7 @@ def collect(inp: Inputs, decision: Sequence[PT.DecisionGroup],
 
     for r in PT.predictor_rows(inp):
         kw = dict(predictor=r["predictor"], model=r["model"], code_path=r["code_path"],
-                  result_class=r["result_class"])
+                  result_class=r["result_class"], builder_kind=r["builder_kind"])
         N.add("cells", r["n"], "count", **kw)
         N.add("cells inside floor", r["n_inside_floor"], "count", **kw)
         N.add("median abs error", r["median_abs_relative"], "fraction", **kw)
@@ -112,14 +115,15 @@ def collect(inp: Inputs, decision: Sequence[PT.DecisionGroup],
     for r in PT.sync_rows(inp):
         N.add("median abs error", r["median_abs_relative"], "fraction",
               predictor=r["predictor"], model=r["model"], code_path=r["code_path"],
-              result_class=r["result_class"],
+              result_class=r["result_class"], builder_kind=r["builder_kind"],
               extra=("syncs", r["n_synchronisations"]))
 
     abl: dict = {}
     for r in PT.ablation_rows(inp):
-        abl.setdefault((r["key"].model, r["key"].code_path, r["result_class"]), []).append(r)
-    for (model, cpath, cls), rs in sorted(abl.items()):
-        kw = dict(model=model, code_path=cpath, result_class=cls)
+        abl.setdefault((r["key"].model, r["key"].code_path, r["result_class"],
+                        r["builder_kind"] or ""), []).append(r)
+    for (model, cpath, cls, bk), rs in sorted(abl.items()):
+        kw = dict(model=model, code_path=cpath, result_class=cls, builder_kind=bk or None)
         for a in PT.ABLATIONS:
             N.add("median abs error", statistics.median(abs(r[f"{a}_relative"]) for r in rs),
                   "fraction", predictor=a, **kw)
@@ -128,9 +132,11 @@ def collect(inp: Inputs, decision: Sequence[PT.DecisionGroup],
 
     q: dict = {}
     for r in PT.queue_rows(inp):
-        q.setdefault((r["key"].model, r["key"].code_path, r["result_class"]), []).append(r)
-    for (model, cpath, cls), rs in sorted(q.items()):
-        kw = dict(predictor="recursion", model=model, code_path=cpath, result_class=cls)
+        q.setdefault((r["key"].model, r["key"].code_path, r["result_class"],
+                      r["builder_kind"] or ""), []).append(r)
+    for (model, cpath, cls, bk), rs in sorted(q.items()):
+        kw = dict(predictor="recursion", model=model, code_path=cpath, result_class=cls,
+                  builder_kind=bk or None)
         for i, (m, _, _) in enumerate(rs[0]["points"]):
             tag = "no queue" if m is None else f"{m:g}x"
             N.add("max abs queue change", max(abs(r["points"][i][2]) for r in rs), "fraction",
@@ -142,7 +148,7 @@ def collect(inp: Inputs, decision: Sequence[PT.DecisionGroup],
 
     for g in decision:
         kw = dict(predictor=g.predictor, model=g.model, code_path=g.code_path,
-                  result_class=g.result_class)
+                  result_class=g.result_class, builder_kind=g.builder_kind)
         d = g.scored.decision
         N.add("decision scored", g.scored.n_scored, "count", **kw)
         N.add("decision correct", d[SC.CORRECT], "count", **kw)
@@ -155,9 +161,11 @@ def collect(inp: Inputs, decision: Sequence[PT.DecisionGroup],
     if crossover:
         cx: dict = {}
         for s in crossover:
-            cx.setdefault((s.predictor, s.series[0], s.series[1], s.result_class), []).append(s)
-        for (pred, model, cpath, cls), ss in sorted(cx.items()):
-            kw = dict(predictor=pred, model=model, code_path=cpath, result_class=cls)
+            cx.setdefault((s.predictor, s.series[0], s.series[1], s.result_class,
+                           s.builder_kind or ""), []).append(s)
+        for (pred, model, cpath, cls, bk), ss in sorted(cx.items()):
+            kw = dict(predictor=pred, model=model, code_path=cpath, result_class=cls,
+                      builder_kind=bk or None)
             N.add("crossover series", len(ss), "count", **kw)
             comps = [c for s in ss for c in s.error.comparisons]
             N.add("crossover brackets compared", len(comps), "count", **kw)

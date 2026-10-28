@@ -69,6 +69,11 @@ def build(inp: Inputs, out_dir: Union[str, Path], code: CodeStamp) -> dict:
         "floors": {"relative": inp.relative_floor, "resolution_s": inp.resolution_floor_s,
                    "provisional": inp.floor_provisional},
         "predictors": list(inp.predictors),
+        "builder_kinds": {a: {"kind": inp.builder(a),
+                              "from": list((inp.builder_sources or {}).get(a, ()))}
+                          for a in sorted(inp.classes) if a in {c.arm for c in cp.cells}},
+        "crossover_intervals_from": None if inp.crossover is None
+        else inp.crossover["source"],
         "crossover": ("computed" if crossover else
                       "not computed: the spec supplies no predicted difference intervals"
                       if inp.crossover is None else "no series with two or more lengths"),

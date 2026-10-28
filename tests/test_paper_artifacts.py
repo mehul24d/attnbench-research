@@ -221,18 +221,19 @@ def test_every_class_has_its_own_label():
 
 
 @pytest.mark.parametrize("arm,cls,kinds,match", [
-    ("oracle", "deployable_estimator", None, "oracle"),
-    ("oracle", "cpu_builder", None, "oracle"),
-    ("xattn", "oracle", None, "in_backend"),
+    ("oracle", "deployable_estimator", None, "is a 'oracle' arm, stated as"),
+    ("oracle", "cpu_builder", None, "is a 'oracle' arm, stated as"),
+    ("xattn", "oracle", None, "is a 'in_backend' arm, stated as"),
     ("xattn", "dense", None, "dense"),
     ("xattn", "deployable_estimator",
-     {**F.KINDS, "xattn": ("in_backend", False)}, "deployable"),
+     {**F.KINDS, "xattn": ("in_backend", False)}, "its row says not"),
 ])
 def test_a_stated_class_must_agree_with_the_row(setup, arm, cls, kinds, match):
     cp, _, _, _, tmp = setup
     results = {L: F.result(L, kinds=kinds) for L in F.LENGTHS} if kinds else None
     spec = F.write_spec(tmp / "in", cp, results=results,
-                        result_classes={**F.CLASSES, arm: cls})
+                        result_classes={**F.CLASSES, arm: cls},
+                        builder_kinds={arm: "cpu"} if cls == "cpu_builder" else {})
     with pytest.raises(PI.PaperInputError, match=match):
         PI.build_inputs(PI.read_spec(spec), spec.parent, cp)
 
@@ -507,7 +508,7 @@ def test_errors_inside_the_noise_floor_carry_a_dagger(setup):
     rec = {}
     for line in body:
         c = line.split(" & ")
-        rec[(c[2], int(c[4]))] = c[10]                # the recursion's error column
+        rec[(c[2], int(c[4]))] = c[11]                # the recursion's error column
     assert rec[("xattn", 4)] == "-4.76\\dag"          # inside 5%
     assert rec[("xattn", 8)] == "+5.26"               # outside
     assert rec[("dense", 8)] == "-9.68"
@@ -522,3 +523,165 @@ def test_decision_counts_in_numbers(setup):
     assert nums[f"abDecisionCorrectRecursionMMinusSmall{b}Oracle"]["tex"] == "2"
     assert nums[f"abSignDisagreesRecursionMMinusSmall{b}Oracle"]["tex"] == "1"
     assert nums[f"abDecisionFalseProfitableRecursionMMinusSmall{b}Oracle"]["tex"] == "0"
+
+
+# --- builder kind (researcher's decision, 28 Oct 2026, relayed) ---------------------------
+
+def _with_builder_rows(kinds_by_length):
+    """Ground truth whose xattn rows carry `builder_kind`, per length."""
+    out = {}
+    for L in F.LENGTHS:
+        r = F.result(L)
+        if kinds_by_length.get(L) is not None:
+            r["rows"][0]["builder_kind"] = kinds_by_length[L]
+        out[L] = r
+    return out
+
+
+def test_a_builder_class_needs_its_kind_stated_while_rows_lack_it(setup):
+    cp, _, _, _, tmp = setup
+    classes = {**F.CLASSES, "xattn": "gpu_builder"}
+    with pytest.raises(PI.PaperInputError, match="builder kind"):
+        _inputs(setup, result_classes=classes)
+    inp = _inputs(setup, result_classes=classes, builder_kinds={"xattn": "gpu"})
+    assert inp.builder("xattn") == "gpu" and inp.builder_sources["xattn"] == ("stated",)
+    with pytest.raises(PI.PaperInputError, match="builder kind"):
+        _inputs(setup, result_classes=classes, builder_kinds={"xattn": "cpu"})
+
+
+def test_a_row_s_own_builder_kind_is_read_and_must_agree(setup):
+    cp, _, _, _, tmp = setup
+    results = _with_builder_rows({4: "cpu", 8: "cpu", 16: "cpu"})
+    inp = _inputs(setup, results=results,
+                  result_classes={**F.CLASSES, "xattn": "cpu_builder"})
+    assert inp.builder("xattn") == "cpu" and inp.builder_sources["xattn"] == ("row",)
+    with pytest.raises(PI.PaperInputError, match="spec states"):
+        _inputs(setup, results=results, builder_kinds={"xattn": "gpu"})
+
+
+def test_rows_of_one_arm_with_different_builder_kinds_are_never_pooled(setup):
+    with pytest.raises(PI.PaperInputError, match="never pooled"):
+        _inputs(setup, results=_with_builder_rows({4: "cpu", 8: "gpu", 16: "cpu"}))
+    # A row with a kind and a row with none, nothing stated: refused too.
+    with pytest.raises(PI.PaperInputError, match="never pooled"):
+        _inputs(setup, results=_with_builder_rows({4: "gpu"}))
+
+
+@pytest.mark.parametrize("bad", [{"nosuch": "cpu"}, {"xattn": "tpu"}])
+def test_a_stated_builder_kind_must_be_a_kind_of_a_committed_arm(setup, bad):
+    with pytest.raises(PI.PaperInputError, match="builder kind"):
+        _inputs(setup, builder_kinds=bad)
+
+
+def test_two_builder_kinds_in_one_class_and_code_path_are_kept_apart(tmp_path, monkeypatch):
+    # The oracle arm moved onto xattn's code path and made a deployable
+    # estimator: the two arms then differ only in where they build masks.
+    monkeypatch.setattr(F, "CP2", F.CP)
+    (tmp_path / "pred").mkdir()
+    cp, *_ = F.loaded(tmp_path / "pred")
+    kinds = {**F.KINDS, "oracle": ("inline", True)}
+    spec = F.write_spec(tmp_path / "in", cp, crossover=False,
+                        results={L: F.result(L, kinds=kinds) for L in F.LENGTHS},
+                        result_classes={**F.CLASSES, "oracle": "deployable_estimator"},
+                        builder_kinds={"xattn": "gpu", "oracle": "cpu"})
+    inp = PI.build_inputs(PI.read_spec(spec), spec.parent, cp)
+    for rows in (PT.predictor_rows(inp), PT.sync_rows(inp)):
+        dep = [r for r in rows if r["predictor"] == "recursion"
+               and r["result_class"] == "deployable_estimator"]
+        assert sorted(r["builder_kind"] for r in dep) == ["cpu", "gpu"]
+        assert {r["code_path"] for r in dep} == {F.CP}
+    gs = [g for g in PT.decision(inp) if g.predictor == "recursion"
+          and g.result_class == "deployable_estimator"]
+    assert sorted(g.builder_kind for g in gs) == ["cpu", "gpu"]
+    nums = PN.collect(inp, PT.decision(inp), None).entries
+    a = PN.Numbers(inp).code_paths[F.CP]
+    assert nums[f"abMedianAbsErrorRecursionMMinusSmall{a}DeployableEstimatorGpuBuilder"][
+        "value"] == pytest.approx(0.8 / 16.8)
+    assert nums[f"abMedianAbsErrorRecursionMMinusSmall{a}DeployableEstimatorCpuBuilder"][
+        "value"] == pytest.approx(0.4 / 8.4)
+    m = PA.build(inp, tmp_path / "out", CLEAN_RUN)
+    assert m["builder_kinds"]["oracle"] == {"kind": "cpu", "from": ["stated"]}
+    t = (tmp_path / "out" / "tables" / "predictors.tex").read_text()
+    assert " & CPU & " in t and " & GPU & " in t
+
+
+# --- crossover intervals from the committed file -----------------------------------------
+
+@pytest.fixture
+def with_committed_intervals(tmp_path):
+    (tmp_path / "plain").mkdir()
+    plain, *_ = F.loaded(tmp_path / "plain")
+    entries = F.intervals_doc(plain)["entries"]
+    (tmp_path / "pred").mkdir()
+    cp, local, store, remote = F.loaded(tmp_path / "pred", crossover_intervals=entries)
+    return cp, local, store, remote, tmp_path
+
+
+def test_intervals_are_taken_from_the_committed_file_when_it_has_them(with_committed_intervals):
+    cp, local, _, _, tmp = with_committed_intervals
+    spec = F.write_spec(tmp / "in", cp)
+    doc = json.loads(spec.read_text())
+    del doc["crossover"]["predicted_intervals"]
+    spec.write_text(json.dumps(doc))
+    inp = PI.build_inputs(PI.read_spec(spec), spec.parent, cp,
+                          committed_bytes=local.read_bytes())
+    assert inp.crossover["source"] == "committed prediction"
+    assert "crossover_intervals" not in [f["role"] for f in inp.files]
+    s = {x.series[2]: x for x in PT.crossover(inp)}
+    assert [(b.lower, b.upper) for b in s["xattn"].predicted.brackets] == [(8, 16)]
+
+
+def test_a_spec_file_beside_committed_intervals_is_refused(with_committed_intervals):
+    cp, local, _, _, tmp = with_committed_intervals
+    spec = F.write_spec(tmp / "in", cp)
+    with pytest.raises(PI.PaperInputError, match="names another file"):
+        PI.build_inputs(PI.read_spec(spec), spec.parent, cp,
+                        committed_bytes=local.read_bytes())
+
+
+def test_committed_intervals_need_the_measured_protocol(with_committed_intervals):
+    cp, local, _, _, tmp = with_committed_intervals
+    spec = F.write_spec(tmp / "in", cp, crossover=False)
+    with pytest.raises(PI.PaperInputError, match="measured side"):
+        PI.build_inputs(PI.read_spec(spec), spec.parent, cp,
+                        committed_bytes=local.read_bytes())
+
+
+def test_committed_intervals_are_checked_like_the_spec_s(tmp_path):
+    (tmp_path / "plain").mkdir()
+    plain, *_ = F.loaded(tmp_path / "plain")
+    entries = F.intervals_doc(plain)["entries"]
+    entries[1]["point"] += 1.0
+    (tmp_path / "pred").mkdir()
+    cp, local, *_ = F.loaded(tmp_path / "pred", crossover_intervals=entries)
+    spec = F.write_spec(tmp_path / "in", cp)
+    doc = json.loads(spec.read_text())
+    del doc["crossover"]["predicted_intervals"]
+    spec.write_text(json.dumps(doc))
+    with pytest.raises(PI.PaperInputError, match="not the committed difference"):
+        PI.build_inputs(PI.read_spec(spec), spec.parent, cp,
+                        committed_bytes=local.read_bytes())
+
+
+def test_bytes_that_are_not_the_committed_file_are_refused(setup):
+    cp, local, _, _, tmp = setup
+    spec = F.write_spec(tmp / "in", cp)
+    with pytest.raises(PI.PaperInputError, match="are not it"):
+        PI.build_inputs(PI.read_spec(spec), spec.parent, cp,
+                        committed_bytes=local.read_bytes() + b" ")
+
+
+def test_the_command_reads_committed_intervals(with_committed_intervals, monkeypatch):
+    cp, local, store, remote, tmp = with_committed_intervals
+    spec = F.write_spec(tmp / "in", cp)
+    doc = json.loads(spec.read_text())
+    del doc["crossover"]["predicted_intervals"]
+    spec.write_text(json.dumps(doc))
+    mod = _script()
+    monkeypatch.setattr(mod, "code_stamp", lambda: CLEAN_RUN)
+    out = tmp / "out"
+    assert mod.main(["--remote", remote, "--local", str(local), "--spec", str(spec),
+                     "--clock-skew-s", "0", "--out-dir", str(out)], store=store) == 0
+    m = json.loads((out / "manifest.json").read_text())
+    assert m["crossover_intervals_from"] == "committed prediction"
+    assert "figures/crossover.pdf" in m["outputs"]

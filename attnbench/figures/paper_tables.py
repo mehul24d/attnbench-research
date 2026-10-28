@@ -57,7 +57,8 @@ def cell_rows(inp: Inputs) -> tuple[tuple[str, ...], list[dict]]:
                               relative_floor=inp.relative_floor, predictors=inp.predictors)
     for r in rows:
         r["result_class"] = inp.classes[r["arm"]]
-    return cols + ("result_class",), rows
+        r["builder_kind"] = inp.builder(r["arm"])
+    return cols + ("result_class", "builder_kind"), rows
 
 
 def _grouped(inp: Inputs, by: Sequence[str]) -> list[dict]:
@@ -66,15 +67,18 @@ def _grouped(inp: Inputs, by: Sequence[str]) -> list[dict]:
         raise PaperInputError("no committed cell was measured")
     order = {p: i for i, p in enumerate(inp.predictors)}
     out = []
-    for cls in sorted({inp.classes[r.arm] for r in rs}):
-        sub = [r for r in rs if inp.classes[r.arm] == cls]
+    kind = lambda r: (inp.classes[r.arm], inp.builder(r.arm) or "")
+    for cls, bk in sorted({kind(r) for r in rs}):
+        sub = [r for r in rs if kind(r) == (cls, bk)]
         for g in R.summarise(sub, by):
             row = dict(zip(by, g.group))
             row["result_class"] = cls
+            row["builder_kind"] = bk or None
             row.update({f: getattr(g, f) for f in T.SUMMARY_FIELDS})
             out.append(row)
     out.sort(key=lambda r: (order[r["predictor"]], r["model"], r["code_path"],
-                            r["result_class"]) + tuple(r[f] for f in by[3:]))
+                            r["result_class"], r["builder_kind"] or "")
+             + tuple(r[f] for f in by[3:]))
     return out
 
 
@@ -98,7 +102,8 @@ def ablation_rows(inp: Inputs) -> list[dict]:
                 "no_sync_wait": A.no_sync_wait(c.priced, Q).end_to_end,
                 "host_only_bound": A.host_only_bound(c.priced),
                 "device_only_bound": A.device_only_bound(c.priced)}
-        row = {"key": c.key, "result_class": inp.classes[c.arm], "measured_s": m,
+        row = {"key": c.key, "result_class": inp.classes[c.arm],
+               "builder_kind": inp.builder(c.arm), "measured_s": m,
                "n_synchronisations": R.synchronisations_in_step(c)}
         for n, v in vals.items():
             row[f"{n}_s"] = v
@@ -117,6 +122,7 @@ def queue_rows(inp: Inputs) -> list[dict]:
     for r in sorted(qs, key=lambda r: r.key):
         f = flips.get(r.key)
         out.append({"key": r.key, "result_class": inp.classes[r.key.arm],
+                    "builder_kind": inp.builder(r.key.arm),
                     "measured_q": r.measured_q, "committed_s": r.committed,
                     "points": [(p.multiple, p.queue_depth, p.relative_change)
                                for p in r.points],
@@ -137,6 +143,7 @@ class DecisionGroup:
     model: str
     code_path: str
     result_class: str
+    builder_kind: Optional[str]
     scored: SC.ScoredCells
 
 
@@ -154,15 +161,16 @@ def decision(inp: Inputs) -> list[DecisionGroup]:
     for pred in inp.predictors:
         groups: dict = {}
         for k, d in pairs:
-            groups.setdefault((k.model, k.code_path, inp.classes[k.arm]), []).append((k, d))
-        for (model, cpath, cls), ps in sorted(groups.items()):
+            groups.setdefault((k.model, k.code_path, inp.classes[k.arm],
+                               inp.builder(k.arm) or ""), []).append((k, d))
+        for (model, cpath, cls, bk), ps in sorted(groups.items()):
             cells = []
             for k, d in ps:
                 p_s = inp.cp.cell(*k).predictions[pred]
                 p_d = inp.cp.cell(*d).predictions[pred]
                 m_s, m_d = inp.measured[k], inp.measured[d]
                 cells.append((k, p_s, p_d, m_s, m_d, inp.admissible[k]))
-            out.append(DecisionGroup(pred, model, cpath, cls,
+            out.append(DecisionGroup(pred, model, cpath, cls, bk or None,
                                      SC.score_cells(cells, floor=inp.resolution_floor_s)))
     return out
 
@@ -172,6 +180,7 @@ class CrossoverSeries:
     predictor: str
     series: tuple              # (model, code path, arm, density, batch)
     result_class: str
+    builder_kind: Optional[str]
     lengths: tuple
     predicted: X.CrossoverResult
     measured: X.CrossoverResult
@@ -213,7 +222,8 @@ def crossover(inp: Inputs) -> Optional[list[CrossoverSeries]]:
                 md.append(X.GridDifference(k.context_length, m.point, m.lo, m.hi))
             p = X.crossover_brackets(pd, floor=inp.resolution_floor_s)
             m = X.crossover_brackets(md, floor=inp.resolution_floor_s)
-            out.append(CrossoverSeries(pred, s, inp.classes[s[2]], p.lengths, p, m,
+            out.append(CrossoverSeries(pred, s, inp.classes[s[2]], inp.builder(s[2]),
+                                       p.lengths, p, m,
                                        tuple(pd), tuple(md), X.crossover_error(p, m)))
     return out
 
@@ -236,6 +246,10 @@ def code_path_short(label: str) -> str:
     """gpu, implementation, optimise flag and the label's hash, from a
     `commit.code_path_label`."""
     return " / ".join(label.split("|"))
+
+
+def builder_label(b: Optional[str]) -> str:
+    return {"cpu": "CPU", "gpu": "GPU", None: "--"}[b]
 
 
 def fmt_s(v: float) -> str:
@@ -285,7 +299,7 @@ KEY_HEADER = ["model", "code path", "arm", "density", "length", "batch"]
 
 def tex_cells(inp: Inputs) -> str:
     _, rows = cell_rows(inp)
-    head = KEY_HEADER + ["class", "syncs", "measured (s)"]
+    head = KEY_HEADER + ["class", "builder", "syncs", "measured (s)"]
     for p in inp.predictors:
         head += [f"{p} (s)", f"{p} err (%)"]
     body = []
@@ -293,12 +307,13 @@ def tex_cells(inp: Inputs) -> str:
         cells = [tex_escape(r["model"]), tex_escape(code_path_short(r["code_path"])),
                  tex_escape(r["arm"]), f"{r['density']:g}", str(r["context_length"]),
                  str(r["batch"]), tex_escape(class_label(r["result_class"])),
+                 builder_label(r["builder_kind"]),
                  str(r["n_synchronisations"]), fmt_s(r["measured_s"])]
         for p in inp.predictors:
             mark = r"\dag" if r[f"{p}_inside_floor"] else ""
             cells += [fmt_s(r[f"{p}_s"]), fmt_pct(r[f"{p}_relative"]) + mark]
         body.append(cells)
-    return booktabs(head, "lllrrrlrr" + "rr" * len(inp.predictors), body,
+    return booktabs(head, "lllrrrllrr" + "rr" * len(inp.predictors), body,
                     caption=_caption(inp, "Committed prediction against measured time per "
                                           "cell; a dagger marks an error inside the noise "
                                           "floor, not interpreted"),
@@ -307,18 +322,19 @@ def tex_cells(inp: Inputs) -> str:
 
 def _summary_tex(inp: Inputs, rows: list[dict], extra: Sequence[str], what: str,
                  label: str) -> str:
-    head = ["predictor", "model", "code path", "class"] + list(extra) + [
+    head = ["predictor", "model", "code path", "class", "builder"] + list(extra) + [
         "n", "inside floor", "median |err| (%)", "mean err (%)", "max |err| (%)"]
     body = []
     for r in rows:
         body.append([tex_escape(r["predictor"]), tex_escape(r["model"]),
                      tex_escape(code_path_short(r["code_path"])),
-                     tex_escape(class_label(r["result_class"]))]
+                     tex_escape(class_label(r["result_class"])),
+                     builder_label(r["builder_kind"])]
                     + [str(r[e]) for e in extra]
                     + [str(r["n"]), str(r["n_inside_floor"]),
                        fmt_pct(r["median_abs_relative"], False), fmt_pct(r["mean_relative"]),
                        fmt_pct(r["max_abs_relative"], False)])
-    return booktabs(head, "llll" + "r" * len(extra) + "rrrrr", body,
+    return booktabs(head, "lllll" + "r" * len(extra) + "rrrrr", body,
                     caption=_caption(inp, what), label=label)
 
 
@@ -381,7 +397,7 @@ def tex_queue(inp: Inputs) -> str:
 
 
 def tex_decision(inp: Inputs, groups: list[DecisionGroup]) -> str:
-    head = ["predictor", "model", "code path", "class", "scored", "correct",
+    head = ["predictor", "model", "code path", "class", "builder", "scored", "correct",
             "false profitable", "missed profitable", "sign agrees", "sign disagrees",
             "inside floor"]
     body = []
@@ -389,11 +405,12 @@ def tex_decision(inp: Inputs, groups: list[DecisionGroup]) -> str:
         d = g.scored.decision
         body.append([tex_escape(g.predictor), tex_escape(g.model),
                      tex_escape(code_path_short(g.code_path)),
-                     tex_escape(class_label(g.result_class)), str(g.scored.n_scored),
+                     tex_escape(class_label(g.result_class)), builder_label(g.builder_kind),
+                     str(g.scored.n_scored),
                      str(d[SC.CORRECT]), str(d[SC.FALSE_PROFITABLE]),
                      str(d[SC.MISSED_PROFITABLE]), str(g.scored.sign_agree),
                      str(g.scored.sign_disagree), str(len(g.scored.inside_floor))])
-    return booktabs(head, "llll" + "r" * 7, body,
+    return booktabs(head, "lllll" + "r" * 7, body,
                     caption=_caption(inp, "Decision error; a predicted tie is dense, and "
                                           "cells inside the resolution floor are not scored"),
                     label="tab:decision")

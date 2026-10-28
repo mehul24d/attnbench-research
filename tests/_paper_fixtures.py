@@ -47,22 +47,25 @@ def key(arm: str, L: int) -> list:
             "dense": [MODEL, CP, "dense", 1.0, L, 1]}[arm]
 
 
-def record():
+def record(**extra):
+    """The committed record; `extra` adds top-level sections."""
     cells = []
     for L in LENGTHS:
         cells.append(cell(ops=OPS, arm="xattn", L=L))
         cells.append(cell(ops=OPS_HOST, arm="oracle", L=L, code_path=CP2))
         cells.append(cell(ops=close_prefill([kernel_op(1, DENSE_D[L], layer=0)]),
                           arm="dense", density=1.0, L=L))
-    return build_record(pairing="P1", cells=cells, queue_depth=8, banked=[],
+    rec = build_record(pairing="P1", cells=cells, queue_depth=8, banked=[],
                         fitted_sum=None, learned=None, code=CLEAN, written_at=T0,
-                        code_paths={**CODE_PATHS, CP2: CP2_DEF})
+                        code_paths={**CODE_PATHS, **({CP2: CP2_DEF} if CP2 != CP else {})})
+    rec.update(extra)
+    return rec
 
 
-def loaded(tmp_path: Path):
+def loaded(tmp_path: Path, **extra):
     """(CommittedPrediction from load_committed, local file, store, remote)."""
     store = MemoryStore(Clock(T0))
-    f, receipt = committed(tmp_path, record(), store, SYNC_AT)
+    f, receipt = committed(tmp_path, record(**extra), store, SYNC_AT)
     cp = load_committed(store, receipt.remote, ground_truth_started_at=STARTED_AT,
                         clock_skew=NO_SKEW, local=f.path)
     return cp, f.path, store, receipt.remote
