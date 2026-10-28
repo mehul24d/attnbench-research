@@ -220,6 +220,7 @@ CPU_BACKENDS = {
 # tests/test_timed_region_setup.py uses.
 NOT_EXERCISED_ON_CPU = {
     "fa2": "needs CUDA + flash-attn",
+    "fa3": "needs an H100 + the FA3 wheel",
     "flex": "needs CUDA for inductor lowering",
     "gla": "needs CUDA + fla",
     "block_sparse": "needs CUDA + block-sparse-attn",
