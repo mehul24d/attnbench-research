@@ -43,8 +43,9 @@ SCRIPTS = REPO / "scripts"
 POLICY = SCRIPTS / "_launch_policy.sh"
 HAS_FRONTIER_GATE = (SCRIPTS / "frontier_gate.sh").exists()
 
-# Scripts with more than one create attempt, and what drives the second one.
-RETRYING = ("gcp_launch_a100.sh", "gcp_launch_compile_session.sh")
+# Scripts with more than one create attempt, and what drives the second one:
+# the A100's Spot fallback, the compile session's and the H100's zone walks.
+RETRYING = ("gcp_launch_a100.sh", "gcp_launch_compile_session.sh", "gcp_launch_h100.sh")
 
 FAKE_DATE = """#!/bin/bash
 if [[ "$*" == "+%F" ]]; then

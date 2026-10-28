@@ -62,6 +62,7 @@ BACKEND_SOURCES: dict[str, tuple[str, str]] = {
     "naive":        ("attnbench/backends/impls.py", "NaiveAttention"),
     "sdpa":         ("attnbench/backends/impls.py", "SDPABackend"),
     "fa2":          ("attnbench/backends/impls.py", "FlashAttention2"),
+    "fa3":          ("attnbench/backends/fa3.py", "FlashAttention3"),
     "flex":         ("attnbench/backends/impls.py", "FlexAttentionBackend"),
     "block_sparse": ("attnbench/backends/block_sparse.py", "BlockSparseAttention"),
     "gla":          ("attnbench/backends/linear.py", "GatedLinearAttention"),

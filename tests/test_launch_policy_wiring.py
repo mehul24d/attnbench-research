@@ -63,6 +63,7 @@ FAKE_GCLOUD = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GCLOUD_LOG"
 case "$*" in
   *"config get-value project"*) echo "test-project"; exit 0 ;;
+  *"instances describe"*)       echo "ERROR: (gcloud.compute.instances.describe) The resource 'x' was not found" >&2; exit 1 ;;
   *"instances create"*)         echo "fake gcloud: create refused" >&2; exit 1 ;;
 esac
 exit 1
