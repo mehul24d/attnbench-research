@@ -299,6 +299,19 @@ unexplained. The rerun also shows the dense arm's time climbing 1602 → 1648 ms
 across ten reps with clocks locked — the drift a builder-major loop folds into
 the comparison and interleaving cancels.
 
+*Update 27 Oct 2026: a narrower range, quotable only with its qualifier.
+**In the eight cells where the A100's in-model cost exceeds the first L4
+run's 44 ms dense-control drift, the A100's forward pays 34–88% of the
+standalone cost** (33.7% at 16384/0.90 to 88.2% at 32768/0.50: A100 in model
+over A100 standalone, from the table above). The one cell left out is
+8192/0.90, at 15.1 of 113.1 ms (13.4%). This range does not replace
+"13–88%". The 44 ms threshold is a property of the L4 run, not of the A100,
+and the A100's 13.4% is an interleaved measurement that is not in doubt. So
+"34–88%" without "in the cells above the L4 run's 44 ms drift" misstates the
+A100 result. Using the L4 host's standalone cost as the denominator moves no
+share by more than 1.3%. `tests/test_overlap_paired.py` re-derives the range
+from the banked files.*
+
 **One new A100 measurement.** These sessions are the first to run 32768 on the
 A100 with the vectorised builder: block-sparse beats flash by **1.250× /
 1.481× / 1.666×** at 0.50 / 0.75 / 0.90, against 0.28× / 0.48× / 0.84× with
@@ -384,6 +397,7 @@ interpreter-bound", not "block-sparse attention is inherently CPU-bound".
 *(~91%: restated 19 Oct 2026; see plan Appendix A. The figures above give
 (0.212 − 0.013) / 0.212 = 93.9%, about 94% of the builder's loop time. This
 profile ran on a laptop, not on the A100 host, and was not banked.)*
+*(Note, 28 Oct 2026: the ~94% is what `cProfile` reports. `cProfile` does not count a tensor `__setitem__` or `__getitem__` as a call, so the builder's ~100,000 tensor operations per build at 32768 are charged to the function's own time. `torch.profiler` counts them as operators and gives a Python share of about 0.53, with a lower bound of 0.28 (one minus its operator time over the unprofiled wall time). Both come from a development run on a laptop, not the target host, and neither is banked. Name the instrument whenever this figure is repeated. T2.2 banks both on the target host; Shakedown 2 step `t22` is where they are first measured there.)*
 
 **The counterfactual, measured rather than predicted.** A minimal
 vectorisation of `importance_block_mask` — one masked `argsort`, one
@@ -645,6 +659,27 @@ Two substitutions, both forced by dependencies deliberately not added
 
 Both raise `NotImplementedError` rather than silently substituting, and
 `AccuracyResult.haystack_mode` records which was used on every row.
+
+*Update 26 Oct 2026: this section is stale for tasks added on 2026-10-01
+(audit T4), and is annotated rather than rewritten. Running every generator
+on 26 Oct 2026 (`ruler.generate_examples`, 2048 tokens, with the pinned data
+fetched by `scripts/fetch_ruler_data.py`) gives eight tasks:
+`niah_single` (noise haystack, uuid keys), `niah_multikey` (needle-shaped
+decoys, uuid keys, 4 keys where RULER's preset has 1), `niah_multikey_1`,
+`niah_multivalue` and `niah_multiquery` (RULER's essay haystack and word
+keys, as in its presets), `vt` (noise haystack), and `qa_1` and `qa_2`
+(SQuAD 2.0 and HotpotQA documents). The two substitutions above therefore
+hold for `niah_single`, `niah_multikey` and `vt` only. Essay haystacks and
+word needles exist, with the corpus and word lists injected by the caller
+(`attnbench/accuracy/ruler_data.py`); the vendored generators still raise
+`NotImplementedError` when called without them. QA's generator is adapted,
+not vendored as shipped: data passed in, a local RNG, and the question
+chosen by index so every band asks the same questions
+(`attnbench/_vendor/ruler/VENDORED.md`). CWE and FWE are still not
+implemented, and an unknown task name is refused. Session B and the T4
+pilots ran `qa_1` on documents and `niah_multivalue` and `niah_multiquery`
+on essays; the T4 dense probe (`results/t4_dense_probe_20261001/`) also ran
+`niah_multikey_1` (essay) and `qa_2` (documents), 10 rows each.*
 
 ## Common-words-extraction (CWE) is not implemented
 
@@ -2864,6 +2899,19 @@ collapsed to 0 of 50. A threshold that keeps a different fraction on each
 haystack is exactly what per-layer calibration exists to correct. So the
 phase's negative result is bounded by this deviation, not independent of
 it.
+
+*Update 27 Oct 2026 (researcher's decision; plan Appendix A): the
+`niah_multivalue` collapse above is confounded and is not a finding. Every
+NIAH row at 32768 decodes past the model's 32,768 positions: 50 of 50 per
+task in the scalar phase at every tau (`results/positions_over_limit/`, not
+tracked) and in each of Session B's four files, where about a fifth of the
+`qa_1` rows at 32768 do too (19 to 21 of 100;
+`docs/t4_xattention_calibrated.md`, checked by
+`tests/test_t4_session_b_positions.py`). Dense answers 17 of 50 in that cell
+with every row past the limit, so the collapse cannot be separated from the
+overrun. It is not evidence about the threshold's prompt dependence either.
+Future accuracy runs keep prompt plus generation cap within 32,768 (plan
+Section 5.3 step 7).*
 
 *Update 2026-10-03: a calibrated phase that removes the first deviation is
 pre-registered in `docs/t4_xattention_calibrated.md`. It profiles

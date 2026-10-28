@@ -12,6 +12,10 @@ late or altered one (T2.11, K9). `intervals`, `crossover` and `scoring` give
 the bootstrap prediction intervals, the crossover bracket rule with the
 quadratic fit and crossover error, and the decision error (T2.19).
 `sensitivity` and `residuals` read a committed file for the queue
-sensitivity and the residual analysis (T2.15). `delay_injection` plans and
-scores Gate A's delay-injection slope check (T2.25).
+sensitivity and the residual analysis (T2.15). `density_sensitivity`
+recomputes a committed file at plus and minus the cross-path density
+difference (T2.28). `dispatcher` is the profitability dispatcher, its
+comparators, their scoring on the measured grid and the margin frontier
+(T2.22); `commit` carries its choices. `delay_injection` plans and scores Gate A's
+delay-injection slope check (T2.25).
 """

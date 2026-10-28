@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Literal, Optional
+from typing import Iterable, Literal, NamedTuple, Optional
 
 from .intensity import ModelShape
 from .recursion import CostModelError, PricedSequence
@@ -45,6 +45,46 @@ class HardwareFeatures:
     pageable_bandwidth: float
 
 
+class CellKey(NamedTuple):
+    """What identifies a committed prediction inside one pairing's file
+    (plan Section 5.3 step 6; Appendix A, 25 Oct 2026): the model, the code
+    path, the arm, the density, the context length and the batch.
+
+    A named tuple, in the plan's order, so no consumer reads a field by
+    position. `model` and `code_path` are labels: two cells that differ only
+    in either are different cells and are never pooled (rule 3).
+    """
+
+    model: str
+    code_path: str
+    arm: str
+    density: float
+    context_length: int
+    batch: int
+
+
+def make_cell_key(model: str, code_path: str, arm: str, density: float,
+                  context_length: int, batch: int) -> CellKey:
+    """A `CellKey` with its fields normalised, so equal cells hash equal
+    (`0.5` and `1/2`, `4` and `np.int64(4)`). Labels must be non-empty
+    strings."""
+    for name, v in (("model", model), ("code_path", code_path), ("arm", arm)):
+        if not isinstance(v, str) or not v.strip():
+            raise CostModelError(
+                f"a cell's {name} is a non-empty label, got {v!r}")
+    return CellKey(model, code_path, arm, float(density), int(context_length),
+                   int(batch))
+
+
+def partner_of(key: CellKey) -> tuple:
+    """What a sparse cell is compared with its dense cell on: model, context
+    length and batch. The code path is not matched: it names the
+    implementation, which differs between the dense arm and a sparse one by
+    construction (a sparse arm on two code paths has one dense partner). The
+    dispatcher decides per this triple too (plan Section 5.9)."""
+    return (key.model, key.context_length, key.batch)
+
+
 @dataclass(frozen=True)
 class Cell:
     """One arm at one grid cell on one pairing, with its components.
@@ -53,9 +93,17 @@ class Cell:
     priced operation sequence for this cell (components measured on the
     target, or transferred under H2), the pairing's link figures, and the
     model's shape for the analytic arithmetic intensities (T2.10).
+
+    `model_name` and `code_path` are part of the cell's key (`key`) and are
+    required: a cell with no model or code path would be pooled with every
+    other. They are labels and never features of a fitted baseline. The
+    shape in `model` is a different thing: numbers for the arithmetic
+    intensities, no identifier.
     """
 
     pairing: str
+    model_name: str
+    code_path: str
     arm: str
     context_length: int
     density: float
@@ -63,6 +111,11 @@ class Cell:
     priced: PricedSequence
     hardware: HardwareFeatures
     model: Optional[ModelShape] = None
+
+    @property
+    def key(self) -> CellKey:
+        return make_cell_key(self.model_name, self.code_path, self.arm,
+                             self.density, self.context_length, self.batch)
 
 
 @dataclass(frozen=True)

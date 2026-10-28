@@ -65,7 +65,7 @@ class NaiveAttention(AttentionBackend):
     )
 
     def _blocked_for(self, cfg, mask, device):
-        """Positions to fill with -inf, built ONCE per (config, device).
+        """Positions to fill with -inf, built ONCE per (config, device, mask).
 
         True where a query may NOT attend. Both branches produce the same kind
         of thing, so they share one cache entry and one `masked_fill` below.
@@ -95,8 +95,27 @@ class NaiveAttention(AttentionBackend):
         # is to serve the repeated calls WITHIN one cell (1 warmup + 40 reps of
         # a single cfg), not to carry masks between cells. Cross-cell reuse was
         # never a benefit, only an accumulation.
-        ck = (cfg.key(), str(device))
-        if self.__dict__.get("_blocked_key") == ck:
+        #
+        # Keyed on the active mask contents as well as the config, as flex's
+        # is. Until 27 Oct 2026 the key was the config alone, so one instance
+        # given a second mask at the same config (another layer's, in a
+        # replay or a per-layer test) returned the first mask's output: 0.51
+        # max difference against a fresh instance. `gates.check_correctness`
+        # builds a fresh instance per call, which is why nothing banked used
+        # the wrong mask.
+        cacheable = True
+        mask_key = None
+        if cfg.mask == "block_sparse" and mask is not None:
+            active = getattr(mask, "active", None)
+            if isinstance(active, torch.Tensor):
+                payload = active.detach().to("cpu").contiguous().numpy().tobytes()
+                mask_key = hashlib.sha1(payload).hexdigest()
+            else:
+                # No content to key on: refuse to cache, for the reason
+                # flex's `_block_mask_for` gives against `id(mask)`.
+                cacheable = False
+        ck = (cfg.key(), str(device), mask_key)
+        if cacheable and self.__dict__.get("_blocked_key") == ck:
             return self.__dict__["_blocked_value"]
 
         if cfg.mask == "causal":
@@ -120,8 +139,9 @@ class NaiveAttention(AttentionBackend):
             blocked = None
 
         # Assign before dropping the old one so a failure leaves no stale key.
-        self.__dict__["_blocked_key"] = ck
-        self.__dict__["_blocked_value"] = blocked
+        if cacheable:
+            self.__dict__["_blocked_key"] = ck
+            self.__dict__["_blocked_value"] = blocked
         return blocked
 
     def forward(self, q, k, v, cfg, mask=None):
