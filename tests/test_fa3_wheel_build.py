@@ -276,9 +276,15 @@ def test_a_failed_build_stores_its_logs_and_no_wheel(tmp_path):
     assert not (d / WHEEL).exists() and not (d / "manifest.json").exists()
 
 
-def test_a_wheel_that_reads_back_differently_fails(tmp_path):
+def test_a_wheel_that_reads_back_differently_fails_with_no_manifest(tmp_path):
+    """The manifest means "a verified wheel is here" to the H100 check and the
+    watcher, so a wheel that does not read back gets none, and its logs go to
+    failed-<UTC>/ like any failure."""
     r, _ = _run(BUILD, tmp_path, FAKE_CORRUPT_READ="1")
     assert r.returncode == 3 and "reads back as" in r.stderr
+    d = _stored(tmp_path)
+    assert not (d / "manifest.json").exists()
+    assert [p.name for p in d.iterdir() if p.name.startswith("failed-")]
 
 
 # --- the H100 import check ------------------------------------------------------------

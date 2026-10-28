@@ -131,7 +131,7 @@ SAMPLER=$!
 LOGS_STORED=""
 store_logs() {   # $1: destination prefix
   local f
-  for f in build.log memory.tsv ninja_log.txt stack.json manifest.json; do
+  for f in build.log memory.tsv ninja_log.txt stack.json; do
     if [[ -f "$OUT/$f" ]]; then gcloud storage cp "$OUT/$f" "$1/$f" 2>&1 | fa3_redact; fi
   done
   LOGS_STORED="$1"
@@ -202,7 +202,9 @@ EOF
 SHA="$(fa3_module fa3_wheel manifest --wheel "$WHEEL" --out "$OUT/manifest.json" --fields "$FIELDS")"
 printf '%s  %s\n' "$SHA" "$(basename "$WHEEL")" > "$OUT/SHA256SUMS"
 
-# 9. Store, then read the wheel back and hash it again.
+# 9. Store, then read the wheel back and hash it again. The manifest goes up
+# last, only for a wheel that read back: the H100's import check and the
+# Mac-side watcher both take a manifest to mean "a verified wheel is here".
 DEST="$FA3_PREFIX"
 gcloud storage cp "$WHEEL" "$DEST/$(basename "$WHEEL")" 2>&1 | fa3_redact
 gcloud storage cp "$OUT/SHA256SUMS" "$DEST/SHA256SUMS" 2>&1 | fa3_redact
@@ -212,8 +214,11 @@ gcloud storage cp "$DEST/$(basename "$WHEEL")" "$OUT/readback/" 2>&1 | fa3_redac
 BACK="$(python3 -c 'import sys; from attnbench.fa3_wheel import sha256; print(sha256(sys.argv[1]))' \
         "$OUT/readback/$(basename "$WHEEL")" 2>/dev/null || true)"
 if [[ "$BACK" != "$SHA" ]]; then
-  echo "FATAL: the stored wheel reads back as '${BACK}', not $SHA" >&2; exit 3
+  echo "FATAL: the stored wheel reads back as '${BACK}', not $SHA" >&2
+  LOGS_STORED=""   # on_exit stores the logs again under failed-<UTC>/: this is a failure
+  exit 3
 fi
+gcloud storage cp "$OUT/manifest.json" "$DEST/manifest.json" 2>&1 | fa3_redact
 echo
 echo "FA3 wheel stored and read back."
 echo "  wheel  : $(basename "$WHEEL")"

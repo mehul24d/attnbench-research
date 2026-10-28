@@ -39,15 +39,20 @@ case "$*" in
     n=$(grep -c "compute ssh" "$GCLOUD_LOG")
     [[ ",${FAKE_SSH_FAIL_ON:-}," == *",$n,"* ]] && { echo "ssh: connect failed" >&2; exit 255; }
     echo "[3/10]"; echo "START 14:00:00Z jobs=3"; echo WATCH_OK; exit 0 ;;
-  *"storage ls"*)
-    n=$(grep -c "storage ls" "$GCLOUD_LOG")
-    if [[ "$n" == 1 ]]; then cat "$LS_BEFORE"; else cat "$LS_AFTER"; fi; exit 0 ;;
+  *"storage ls"*) cat "$LS"; exit 0 ;;
+  *"storage cat"*"started.json"*)
+    [[ -s "$STARTED_JSON" ]] || { echo "ERROR: No URLs matched" >&2; exit 1; }; cat "$STARTED_JSON"; exit 0 ;;
+  *"storage cat"*"manifest.json"*) cat "$MANIFEST"; exit 0 ;;
 esac
 exit 0
 """
 
 
-def _run(tmp_path, statuses="RUNNING TERMINATED", before="", after="", limit_s="2", **env_extra):
+START = "2026-10-29T10:00:00Z"
+
+
+def _run(tmp_path, statuses="RUNNING TERMINATED", listing="", started=START, manifest_start=None,
+         limit_s="2", **env_extra):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     (bin_dir / "gcloud").write_text(FAKE_GCLOUD)
@@ -55,8 +60,11 @@ def _run(tmp_path, statuses="RUNNING TERMINATED", before="", after="", limit_s="
         '#!/bin/bash\necho "timeout: command not found (macOS)" >&2\nexit 127\n')
     for f in bin_dir.iterdir():
         f.chmod(0o755)
-    (tmp_path / "before.txt").write_text(before)
-    (tmp_path / "after.txt").write_text(after)
+    (tmp_path / "ls.txt").write_text(listing)
+    (tmp_path / "started.json").write_text(
+        f'{{"started": "{started}", "commit": "{COMMIT}", "tag": "v2.8.3.post2"}}\n' if started else "")
+    (tmp_path / "manifest.json").write_text(
+        f'{{\n  "commit": "{COMMIT}",\n  "started_utc": "{manifest_start}"\n}}\n' if manifest_start else "")
     log = tmp_path / "gcloud.log"
     log.write_text("")
     real = [d for d in os.environ["PATH"].split(os.pathsep)
@@ -65,7 +73,8 @@ def _run(tmp_path, statuses="RUNNING TERMINATED", before="", after="", limit_s="
            if not k.startswith(("GCP_", "ATTNBENCH_", "CLOUDSDK_", "FAKE_", "FA3_"))}
     env.update(PATH=os.pathsep.join([str(bin_dir), *real]), GCLOUD_LOG=str(log),
                FAKE_ACTIVE=PIN, ATTNBENCH_GCP_PROJECT=PIN, FAKE_STATUSES=statuses,
-               LS_BEFORE=str(tmp_path / "before.txt"), LS_AFTER=str(tmp_path / "after.txt"),
+               LS=str(tmp_path / "ls.txt"), STARTED_JSON=str(tmp_path / "started.json"),
+               MANIFEST=str(tmp_path / "manifest.json"),
                FA3_WATCH_INTERVAL_S="0", FA3_WATCH_CALL_LIMIT_S=limit_s)
     env.update(env_extra)
     t0 = time.monotonic()
@@ -76,27 +85,45 @@ def _run(tmp_path, statuses="RUNNING TERMINATED", before="", after="", limit_s="
 
 
 OLD_FAILED = f"{PREFIX}failed-20261028T140651Z/\n{PREFIX}started.json\n"
+NEW_FAILED = f"{PREFIX}failed-20261029T101500Z/\n"
+WHEEL = f"{PREFIX}manifest.json\n{PREFIX}flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl\n"
 
 
-def test_a_stored_wheel_is_the_verdict_once_the_vm_has_halted(tmp_path):
-    p, calls, _ = _run(tmp_path, "PROVISIONING RUNNING RUNNING TERMINATED", before=OLD_FAILED,
-                       after=OLD_FAILED + f"{PREFIX}manifest.json\n{PREFIX}x.whl\n")
+def test_this_builds_manifest_is_the_success_verdict_once_the_vm_has_halted(tmp_path):
+    p, calls, _ = _run(tmp_path, "PROVISIONING RUNNING RUNNING TERMINATED",
+                       listing=OLD_FAILED + WHEEL, manifest_start=START)
     assert p.returncode == 0, p.stdout + p.stderr
-    assert "VERDICT: wheel stored" in p.stdout
+    assert f"VERDICT: wheel stored and read back (manifest.json for the build started {START})" in p.stdout
     assert p.stdout.count("RUNNING: [3/10]") == 2
     assert PIN not in p.stdout + p.stderr
 
 
 def test_a_new_failed_directory_is_the_failure_verdict_and_an_old_one_is_not(tmp_path):
-    new = f"{PREFIX}failed-20261029T101500Z/\n"
-    p, _, _ = _run(tmp_path, before=OLD_FAILED, after=OLD_FAILED + new)
+    p, _, _ = _run(tmp_path, listing=OLD_FAILED + NEW_FAILED)
+    assert p.returncode == 2, p.stdout + p.stderr
+    verdict = p.stdout.split("VERDICT")[1]
+    assert "failed-20261029T101500Z" in verdict and "failed-20261028T140651Z" not in verdict
+
+
+def test_an_earlier_builds_manifest_is_not_this_builds_success(tmp_path):
+    p, _, _ = _run(tmp_path, listing=OLD_FAILED + WHEEL + NEW_FAILED,
+                   manifest_start="2026-10-20T08:00:00Z")
     assert p.returncode == 2 and "failed-20261029T101500Z" in p.stdout
-    assert "failed-20261028T140651Z" not in p.stdout.split("VERDICT")[1]
 
 
-def test_a_halted_vm_with_neither_outcome_in_the_bucket_is_unknown(tmp_path):
-    p, _, _ = _run(tmp_path, before=OLD_FAILED, after=OLD_FAILED)
-    assert p.returncode == 5 and "VERDICT: unknown" in p.stderr
+def test_a_build_that_failed_before_the_watch_began_is_still_its_verdict(tmp_path):
+    """The failure is dated against the build's own start, not the watch's."""
+    p, _, _ = _run(tmp_path, "TERMINATED", listing=OLD_FAILED + NEW_FAILED)
+    assert p.returncode == 2
+
+
+@pytest.mark.parametrize("listing,started,match", [
+    (OLD_FAILED, START, "neither a wheel nor logs from the build started"),
+    (OLD_FAILED, None, "never reached its build step"),
+])
+def test_a_halted_vm_with_no_outcome_of_this_build_is_unknown(tmp_path, listing, started, match):
+    p, _, _ = _run(tmp_path, listing=listing, started=started)
+    assert p.returncode == 5 and match in p.stderr
 
 
 def test_a_hanging_ssh_is_cut_off_without_timeout_and_counted(tmp_path):

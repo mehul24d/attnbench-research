@@ -70,9 +70,38 @@ failed_check() {   # $1: what failed, $2: its status, $3: what it printed (redac
   fi
 }
 
-# failed-<UTC>/ directories already in the bucket (an earlier build's) are
-# not this build's verdict.
-BEFORE="$(limited command gcloud storage ls "$PREFIX" --project="$PROJECT" || true)"
+# The verdict belongs to this build: the build writes started.json (its UTC
+# start) before compiling, a failure's logs go to failed-<UTC>/ and a
+# verified wheel's manifest.json carries the same start. So an earlier
+# build's failed-<UTC>/ (older than the start) or manifest (another start)
+# is not this build's outcome, whenever this watch was begun.
+verdict() {
+  local rc=0 listing started manifest stamp new
+  listing="$(limited command gcloud storage ls "$PREFIX" --project="$PROJECT")" || rc=$?
+  (( rc == 0 )) || { failed_check "storage ls" "$rc" "$listing"; return 1; }
+  started="$(limited command gcloud storage cat "${PREFIX}started.json" --project="$PROJECT" \
+             | sed -n 's/.*"started": *"\([0-9TZ:-]*\)".*/\1/p')" || rc=$?
+  if (( rc != 0 )) || [[ -z "$started" ]]; then
+    echo "VERDICT: unknown; this build's started.json could not be read, so it never reached its build step." >&2
+    exit 5
+  fi
+  if grep -q '/manifest\.json$' <<<"$listing"; then
+    manifest="$(limited command gcloud storage cat "${PREFIX}manifest.json" --project="$PROJECT" || true)"
+    if grep -q "\"started_utc\": \"$started\"" <<<"$manifest"; then
+      echo "VERDICT: wheel stored and read back (manifest.json for the build started $started)."
+      exit 0
+    fi
+  fi
+  stamp="$(tr -d ':-' <<<"$started")"          # 2026-10-28T13:54:23Z -> 20261028T135423Z
+  new="$(grep -o 'failed-[0-9]\{8\}T[0-9]\{6\}Z/$' <<<"$listing" \
+         | awk -v s="failed-$stamp" '$0 >= s' || true)"
+  if [[ -n "$new" ]]; then
+    echo "VERDICT: the build started $started failed; its logs: ${PREFIX}$(tail -n 1 <<<"$new")"
+    exit 2
+  fi
+  echo "VERDICT: unknown; the VM stopped and the bucket shows neither a wheel nor logs from the build started $started." >&2
+  exit 5
+}
 
 poll=0
 while (( poll < MAX_POLLS )); do
@@ -97,20 +126,7 @@ while (( poll < MAX_POLLS )); do
       fi ;;
     TERMINATED|STOPPED|STOPPING|SUSPENDED|SUSPENDING)
       echo "$(now) the VM is $STATUS: the build has ended."
-      rc=0
-      AFTER="$(limited command gcloud storage ls "$PREFIX" --project="$PROJECT")" || rc=$?
-      if (( rc != 0 )); then failed_check "storage ls" "$rc" "$AFTER"; sleep "$INTERVAL_S"; continue; fi
-      if grep -q '/manifest\.json$' <<<"$AFTER" && grep -q '\.whl$' <<<"$AFTER"; then
-        echo "VERDICT: wheel stored (manifest.json and the wheel are in the bucket)."
-        exit 0
-      fi
-      NEW="$(grep '/failed-[0-9TZ]*/$' <<<"$AFTER" | grep -vxF -f <(printf '%s\n' "$BEFORE") || true)"
-      if [[ -n "$NEW" ]]; then
-        echo "VERDICT: the build failed; its logs: $NEW"
-        exit 2
-      fi
-      echo "VERDICT: unknown; the VM stopped and the bucket shows neither a wheel nor new logs." >&2
-      exit 5 ;;
+      verdict || { sleep "$INTERVAL_S"; continue; } ;;
     *)
       failures=0
       echo "$(now) $STATUS" ;;
