@@ -231,7 +231,8 @@ def test_the_arm_is_timed_with_no_estimator_cost_and_is_labelled_an_ablation():
     dense = gt.Arm("dense", gt.DENSE, NaiveAttention(), _causal_cfg())
     clock = FakeClock()
     controls = gt.Controls(1e9, 0, cs.BlockSampler(ScriptedReader(clock),
-                                                   flag_bits=cs.SW_THERMAL_SLOWDOWN))
+                                                   flag_bits=cs.RESEARCHER_FLAG_BITS,
+                                                   interval_s=0.001))
     out = gt.time_arms(wrapped, ids, [arm, dense], reps=2, controls=controls)
     row = out["rows"][0]
     assert not row["deployable"] and row["arm_label"] == gt.PRECOMPUTED_LABEL
@@ -256,7 +257,8 @@ def test_an_arm_that_secretly_builds_a_mask_is_refused():
     dense = gt.Arm("dense", gt.DENSE, NaiveAttention(), _causal_cfg())
     clock = FakeClock()
     controls = gt.Controls(1e9, 0, cs.BlockSampler(ScriptedReader(clock),
-                                                   flag_bits=cs.SW_THERMAL_SLOWDOWN))
+                                                   flag_bits=cs.RESEARCHER_FLAG_BITS,
+                                                   interval_s=0.001))
     with pytest.raises(gt.TimedRegionError, match="computed offline"):
         gt.time_arms(wrapped, ids, [arm, dense], reps=2, controls=controls)
 
@@ -272,7 +274,8 @@ def test_masks_from_another_prompt_are_refused_by_the_arm_and_by_the_harness():
     dense = gt.Arm("dense", gt.DENSE, NaiveAttention(), _causal_cfg())
     clock = FakeClock()
     controls = gt.Controls(1e9, 0, cs.BlockSampler(ScriptedReader(clock),
-                                                   flag_bits=cs.SW_THERMAL_SLOWDOWN))
+                                                   flag_bits=cs.RESEARCHER_FLAG_BITS,
+                                                   interval_s=0.001))
     with pytest.raises(gt.TimedRegionError, match="another prompt"):
         gt.time_arms(wrapped, _ids(seed=9), [arm, dense], reps=2, controls=controls)
 

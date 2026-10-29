@@ -28,7 +28,7 @@ from attnbench import ground_truth as gt  # noqa: E402
 from attnbench.accuracy.model import SwappableAttentionModel  # noqa: E402
 from attnbench.backends.impls import NaiveAttention  # noqa: E402
 from attnbench.backends.xattention import XAttentionBackend  # noqa: E402
-from attnbench.clock_sampling import BlockSampler, ClockSample, SW_THERMAL_SLOWDOWN  # noqa: E402
+from attnbench.clock_sampling import RESEARCHER_FLAG_BITS, BlockSampler, ClockSample  # noqa: E402
 from attnbench.config import AttnConfig  # noqa: E402
 
 SEQ, BLOCK, LAYERS, REPS = 64, 8, 3, 3
@@ -83,7 +83,8 @@ class _QuietCard:
 
 def _controls():
     return gt.Controls(resolution_floor_ms=1e9, max_rerun_rounds=0,
-                       sampler=BlockSampler(_QuietCard(), flag_bits=SW_THERMAL_SLOWDOWN))
+                       sampler=BlockSampler(_QuietCard(), flag_bits=RESEARCHER_FLAG_BITS,
+                                            interval_s=0.001))
 
 
 class _Syncs:

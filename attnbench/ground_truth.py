@@ -89,7 +89,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .clock_sampling import BlockClock, BlockSampler, ProcessSampler, reason_names
+from .clock_sampling import (RESEARCHER_FLAG_BITS, BlockClock, BlockSampler, ProcessSampler,
+                             counters_only_misses, reason_names)
 from .precomputed_masks import prompt_digest
 
 DENSE = "dense"
@@ -338,6 +339,20 @@ class Controls:
             raise ValueError("resolution_floor_ms must be a positive number")
         if self.max_rerun_rounds < 0:
             raise ValueError("max_rerun_rounds must be >= 0")
+        s = self.sampler
+        # Audit C3, finding 1: a counters-only sampler reads the bits only at
+        # the block's edges, where the GPU is idle, and no counter can show
+        # hardware slowdown or tell the brake from the software cap.
+        if isinstance(s, BlockSampler) and not s.sees_in_block:
+            raise ValueError(
+                f"a counters-only sampler cannot see "
+                f"{reason_names(counters_only_misses(RESEARCHER_FLAG_BITS))} inside a "
+                f"block: use the session's ProcessSampler (or an in-block interval)")
+        missing = RESEARCHER_FLAG_BITS & ~getattr(s, "flag_bits", 0)
+        if missing:
+            raise ValueError(
+                f"the sampler's flag set leaves out {reason_names(missing)}, which the "
+                f"researcher's set flags (Appendix A, 27 Oct 2026)")
 
 
 _PROCESS_COMPILE_SETTING: Optional[str] = None

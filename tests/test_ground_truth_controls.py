@@ -66,7 +66,9 @@ def _ids():
 class Rig:
     """A fake clock, arms whose per-forward cost is scripted, and a reader."""
 
-    def __init__(self, costs=None, *, windows=(), flag_bits=SLOWDOWNS, interval_s=None,
+    # interval_s: Controls refuse a counters-only sampler (audit C3, finding 1),
+    # so the rig's sampler reads inside every block too.
+    def __init__(self, costs=None, *, windows=(), flag_bits=SLOWDOWNS, interval_s=0.001,
                  reader=None, max_rerun=2, settings=None, tracing=None,
                  traced_extra_ms=0.0, read_cost_ms=0.0):
         self.clock = FakeClock()
@@ -203,20 +205,17 @@ def test_a_block_that_overlapped_a_thermal_window_is_flagged_and_rerun():
     assert _row(out, "dense")["clean_rounds"] == REPS
 
 
-def test_a_power_cap_is_recorded_and_flags_only_if_chosen():
+def test_a_power_cap_is_recorded_and_never_flags():
     start = _first_block_window()
     win = [(start, start + 1.0, "power")]
-    quiet = Rig(windows=win, flag_bits=THERMAL, reader=None).run(reps=1)
+    quiet = Rig(windows=win, reader=None).run(reps=1)
     assert not quiet["rounds"][0]["flagged"]
     assert quiet["rounds"][0]["blocks"]["dense"]["violation_delta_ns"]["power"] > 0
-    # The power counter integrates the cap and the brake together, so it flags
-    # only for a session that chose both (28 Oct 2026); the cap alone is the
-    # process sampler's to judge, from the bits.
-    loud = Rig(windows=win, flag_bits=THERMAL | cs.SW_POWER_CAP | cs.HW_POWER_BRAKE_SLOWDOWN,
-               max_rerun=0).run(reps=1)
-    assert loud["rounds"][0]["flagged"] and not loud["complete"]
-    cap_only = Rig(windows=win, flag_bits=THERMAL | cs.SW_POWER_CAP, max_rerun=0).run(reps=1)
-    assert not cap_only["rounds"][0]["flagged"]
+    # The power counter integrates the cap and the brake together, so it never
+    # flags; the brake is seen from the bits. No session may choose the cap
+    # (researcher's decision, 29 Oct 2026).
+    with pytest.raises(ValueError, match="software power cap"):
+        Rig(windows=win, flag_bits=SLOWDOWNS | cs.SW_POWER_CAP)
 
 
 def test_instantaneous_reasons_are_recorded_and_the_idle_bit_never_flags():
@@ -299,7 +298,7 @@ def test_sampler_refusals():
 def test_a_counter_that_goes_backwards_is_refused():
     clock = FakeClock()
     reader = ScriptedReader(clock, windows=[(0.0, 10.0, "power")])
-    s = cs.BlockSampler(reader, flag_bits=cs.SW_POWER_CAP)
+    s = cs.BlockSampler(reader, flag_bits=cs.HW_THERMAL_SLOWDOWN)
     clock.t = 5.0
     s.begin()
     reader.windows = []                  # the counter resets underneath us

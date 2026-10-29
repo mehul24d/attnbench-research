@@ -109,6 +109,9 @@ class ScriptedReader:
             bits |= self.thread_bits
             if self.thread_reads >= 2:
                 self.thread_seen.set()
-        self.clock.advance_ms(self.read_cost_ms)
+        if threading.current_thread() is self._main:
+            # the boundary reads, which must sit outside the clock; an in-block
+            # thread's reads cost the host, not the fake clock
+            self.clock.advance_ms(self.read_cost_ms)
         return ClockSample(sm_mhz=2040, mem_mhz=6250, throttle_bits=bits,
                            violation_ns=self._violation() if self.observes_transients else None)
