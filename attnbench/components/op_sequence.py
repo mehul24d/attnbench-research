@@ -49,13 +49,15 @@ synchronisation. It takes the mechanism of the aten operator that made it:
   - a synchronise under no aten operator (`torch.cuda.synchronize()`, or a
     stream's `synchronize()`): "synchronize".
 
-Three more kinds of wait are recognised and named, though Section 5.1
-prices none of them: a host-to-device copy completed by a stream synchronise
-("copy_from_host_pinned" or "copy_from_host_pageable"), an event
-synchronise ("event_synchronize"), and an implicit device synchronisation
-inside an allocator call such as `cudaFree` ("implicit"). They are kept in
-the sequence and the sync map, so they are visible, and `to_operations`
-refuses them until a researcher decides how they are costed.
+Three more kinds of wait are recognised and named: a host-to-device copy
+completed by a stream synchronise ("copy_from_host_pinned" or
+"copy_from_host_pageable") and an event synchronise ("event_synchronize")
+are priced mechanisms with their own s_fixed (Appendix A, 25 Oct 2026;
+`recursion.ADDED_MECHANISMS`). An implicit device synchronisation inside an
+allocator call such as `cudaFree` ("implicit") is not costed: it is a trace
+check, so the sequence keeps it, `trace_flags` flags it, the flag goes into
+the banked record and the arms table, and `to_operations` leaves it out of
+the recursion (Section 5.1; audit C4, finding 1).
 
 **Composites.** Section 5.1 splits an `assert` on a GPU tensor and sizing
 from `nonzero()` into a kernel followed by a synchronisation, with no
@@ -131,9 +133,12 @@ class SeqKind(str, Enum):
 DEVICE_KINDS = frozenset({SeqKind.KERNEL, SeqKind.MEMSET, SeqKind.DEVICE_COPY,
                           SeqKind.GRAPH})
 
-# Waits that Section 5.1 names but does not price. See the module docstring.
-UNPRICED_MECHANISMS = ("copy_from_host_pinned", "copy_from_host_pageable",
-                       "event_synchronize", "implicit")
+# Waits the parser names that the recursion has no price for: none now (the
+# three C1 added are priced, recursion.ADDED_MECHANISMS).
+UNPRICED_MECHANISMS: tuple = ()
+# Waits that are flagged in the trace and not costed (module docstring).
+FLAGGED_MECHANISMS = ("implicit",)
+IMPLICIT_WAIT = "implicit_wait"
 
 # Section 5.1: for `.item()` and `bool()` of a tensor the payload is zero by
 # definition, so their s_0 is s_fixed (Appendix A, 25 Oct 2026). The trace
@@ -268,7 +273,12 @@ class SeqOp:
     def priced(self) -> bool:
         """Whether the recursion has a cost for this synchronisation."""
         return self.kind is not SeqKind.SYNC or \
-            self.mechanism in recursion.SYNC_MECHANISMS
+            self.mechanism in recursion.PRICED_MECHANISMS
+
+    @property
+    def flagged(self) -> bool:
+        """A wait the trace check flags and the recursion does not cost."""
+        return self.kind is SeqKind.SYNC and self.mechanism in FLAGGED_MECHANISMS
 
 
 @dataclass(frozen=True)
@@ -307,6 +317,54 @@ def op_key(op: SeqOp, *, payload: bool = True, kernel_names: bool = False) -> tu
     return (op.kind.value, op.layer, op.aten_op, op.origin, op.mechanism,
             op.composite, op.direction, op.src_mem, op.dst_mem,
             op.payload_bytes if payload else None, kernels)
+
+
+# --- the strict "same sequence" definition (Appendix A, 29 Oct 2026) ------------------
+
+def payload_class(n: int) -> str:
+    """The payload's size class, for the strict definition: none, a scalar
+    (up to 8 bytes), up to 4 KiB, up to 1 MiB, or more."""
+    if n <= 0:
+        return "none"
+    if n <= 8:
+        return "<=8B"
+    if n <= 4096:
+        return "<=4KiB"
+    if n <= 2 ** 20:
+        return "<=1MiB"
+    return ">1MiB"
+
+
+def op_class(op: SeqOp) -> str:
+    """The operation's class: its kind, with a synchronisation's mechanism and
+    a copy's direction."""
+    if op.kind is SeqKind.SYNC:
+        return f"sync:{op.mechanism}"
+    if op.kind in (SeqKind.COPY, SeqKind.DEVICE_COPY) and op.direction:
+        return f"{op.kind.value}:{op.direction}"
+    return op.kind.value
+
+
+def strict_key(op: SeqOp, *, stream_index: Optional[int]) -> tuple:
+    """(operation class, stream, blocking or not, payload class): what the
+    strict definition compares (researcher's decision, 29 Oct 2026; audit C4,
+    finding 3). Kernel names, aten operators and layer labels are not in it,
+    so two cards whose libraries name their kernels differently can share a
+    sequence. The stream is its index in order of first use, not the
+    device's stream id."""
+    return (op_class(op), stream_index, op.kind is SeqKind.SYNC,
+            payload_class(op.payload_bytes))
+
+
+def _strict_keys(seq: OpSequence) -> list[tuple]:
+    first: dict = {}
+    out = []
+    for op in seq.ops:
+        idx = None
+        if op.stream is not None:
+            idx = first.setdefault(op.stream, len(first))
+        out.append(strict_key(op, stream_index=idx))
+    return out
 
 
 def operation_family(op: SeqOp) -> str:
@@ -762,6 +820,32 @@ def compare(a: OpSequence, b: OpSequence, *, payload: bool = True,
     return Comparison(SAME, None, f"{len(ka)} operations agree", lengths)
 
 
+def same_sequence(a: OpSequence, b: OpSequence, *, same_cell: bool = True) -> Comparison:
+    """"same sequence" or "different sequence" for one arm under the strict
+    definition, the primary one H0 and H2 are scored on (Section 5.1): the
+    ordered `strict_key`s must agree. `compare` keeps its own, fuller key
+    for the T2.4 and T2.18 checks."""
+    if a.code_path.arm != b.code_path.arm:
+        raise SequenceError(f"compare one arm with itself, got "
+                            f"{a.code_path.arm!r} and {b.code_path.arm!r}")
+    if same_cell and (a.context_length, a.batch) != (b.context_length, b.batch):
+        raise SequenceError(
+            f"different cells: ({a.context_length}, {a.batch}) and "
+            f"({b.context_length}, {b.batch}); pass same_cell=False to compare "
+            f"across lengths")
+    ka, kb = _strict_keys(a), _strict_keys(b)
+    lengths = (len(ka), len(kb))
+    for i, (x, y) in enumerate(zip(ka, kb)):
+        if x != y:
+            return Comparison(DIFFERENT, i, f"operation {i}: {x} against {y}", lengths)
+    if len(ka) != len(kb):
+        i = min(len(ka), len(kb))
+        longer = ka if len(ka) > len(kb) else kb
+        return Comparison(DIFFERENT, i, f"one sequence ends at operation {i}; the "
+                          f"other continues with {longer[i]}", lengths)
+    return Comparison(SAME, None, f"{len(ka)} operations agree (strict)", lengths)
+
+
 @dataclass(frozen=True)
 class SyncEntry:
     position: int
@@ -771,13 +855,21 @@ class SyncEntry:
     layer: Optional[int]
     aten_op: Optional[str]
     priced: bool
+    flagged: bool = False
 
 
 def sync_map(seq: OpSequence) -> tuple[SyncEntry, ...]:
     """Positions and mechanisms of the synchronisations (Section 5.1)."""
     return tuple(SyncEntry(i, op.mechanism, op.composite, op.payload_bytes,
-                           op.layer, op.aten_op, op.priced)
+                           op.layer, op.aten_op, op.priced, op.flagged)
                  for i, op in enumerate(seq.ops) if op.kind is SeqKind.SYNC)
+
+
+def trace_flags(seq: OpSequence) -> tuple[dict, ...]:
+    """The trace check's flags: one per implicit wait (Section 5.1, T2.3)."""
+    return tuple({"position": i, "flag": IMPLICIT_WAIT, "api": op.api, "layer": op.layer,
+                  "costed": False}
+                 for i, op in enumerate(seq.ops) if op.flagged)
 
 
 def _sync_label(e: SyncEntry) -> str:
@@ -818,9 +910,12 @@ def sync_column(seq: OpSequence) -> str:
                          f"{_counts_text(total)})")
     if outside:
         parts.append(f"{sum(outside.values())} outside the layers: {_counts_text(outside)}")
-    unpriced = sorted({e.mechanism for e in entries if not e.priced})
+    unpriced = sorted({e.mechanism for e in entries if not e.priced and not e.flagged})
     if unpriced:
         parts.append(f"unpriced: {', '.join(unpriced)}")
+    flags = trace_flags(seq)
+    if flags:
+        parts.append(f"flagged: {IMPLICIT_WAIT} (not costed) x{len(flags)}")
     return "; ".join(parts)
 
 
@@ -943,6 +1038,8 @@ def to_operations(seq: OpSequence, *, host: Mapping[int, float],
                       label=op.composite or op.aten_op or (op.kernels[0] if op.kernels else op.api))
         if op.kind is SeqKind.HOST_COMPUTE:
             carried += host[i]
+        elif op.flagged:
+            continue        # an implicit wait: flagged by the trace check, not costed
         elif op.kind is SeqKind.SYNC:
             if not op.priced:
                 raise SequenceError(
@@ -1009,7 +1106,8 @@ def to_record(seq: OpSequence) -> dict:
                           "python_optimize": cp.python_optimize},
             "context_length": seq.context_length, "batch": seq.batch,
             "streams": list(seq.streams),
-            "cross_stream_waits": seq.cross_stream_waits, "ops": ops}
+            "cross_stream_waits": seq.cross_stream_waits, "ops": ops,
+            "flags": [dict(f) for f in trace_flags(seq)]}
 
 
 def record_sha256(record: Mapping) -> str:
@@ -1030,7 +1128,10 @@ def from_record(record: Mapping) -> OpSequence:
             raise SequenceError(f"operation fields {sorted(d)}")
         ops.append(SeqOp(**{**d, "kind": SeqKind(d["kind"]),
                             "kernels": tuple(d["kernels"])}))
-    return OpSequence(code_path=cp, context_length=int(record["context_length"]),
-                      batch=int(record["batch"]), ops=tuple(ops),
-                      streams=tuple(record["streams"]),
-                      cross_stream_waits=int(record["cross_stream_waits"]))
+    seq = OpSequence(code_path=cp, context_length=int(record["context_length"]),
+                     batch=int(record["batch"]), ops=tuple(ops),
+                     streams=tuple(record["streams"]),
+                     cross_stream_waits=int(record["cross_stream_waits"]))
+    if "flags" in record and list(record["flags"]) != [dict(f) for f in trace_flags(seq)]:
+        raise SequenceError("the record's flags do not follow from its operations")
+    return seq

@@ -22,6 +22,13 @@ maps each one to the T4.1 item that covers it, and fails on a sentence the
 map does not cover, so a value added to the plan cannot escape the list.
 The researcher's decision (28 Oct 2026) is that T4.1 names every such value;
 the plan edit that adds the ones it lacks is the integration session's.
+
+**The pairings each hypothesis is scored on.** H0 and H2 compare components
+only within the same sequence under the strict definition
+(`op_sequence.same_sequence`), so which pairings they are scored on follows
+from that classification. The lock file states them, `{"scored_pairings":
+{"H0": ["P1", ...], "H2": [...], ...}}`, the report prints them, and a lock
+without them for H0 and H2 is not complete (audit C4, finding 3).
 """
 
 from __future__ import annotations
@@ -34,6 +41,10 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 PLAN = Path(__file__).resolve().parents[2] / "docs" / "RESEARCH_PLAN.md"
+# Hypotheses whose scored pairings the lock must state (module docstring).
+SCORED_REQUIRED = ("H0", "H2")
+_HYPOTHESIS = re.compile(r"H\d+")
+_PAIRING = re.compile(r"P\d+")
 ROW_PREFIX = "| T4.1 |"
 LEAD = "Fix every **[lock]** value:"
 
@@ -115,11 +126,13 @@ class LockCheck:
     unsourced: tuple       # keys whose entry names no source
     unknown: tuple         # entries for keys T4.1 does not list
     plan_matches: bool     # the file's plan_sha256 is this plan's
+    scored_pairings: tuple = ()    # (hypothesis, (pairing, ...)), as stated
+    scored_problems: tuple = ()    # why the statement is unusable
 
     @property
     def complete(self) -> bool:
-        return not (self.missing or self.unset or self.unsourced or self.unknown) \
-            and self.plan_matches
+        return not (self.missing or self.unset or self.unsourced or self.unknown
+                    or self.scored_problems) and self.plan_matches
 
     def report(self) -> str:
         lines = [f"{len(self.items)} values listed by T4.1; "
@@ -129,7 +142,34 @@ class LockCheck:
                 lines.append(f"  {name}: {k} ({self.items.get(k, 'not in T4.1')})")
         if not self.plan_matches:
             lines.append("  the lock file was written against another version of the plan")
+        for h, ps in self.scored_pairings:
+            lines.append(f"  scored pairings, {h}: {', '.join(ps)}")
+        for p in self.scored_problems:
+            lines.append(f"  scored pairings: {p}")
         return "\n".join(lines)
+
+
+def _scored(stated) -> tuple[tuple, tuple]:
+    """(the statement as sorted pairs, its problems)."""
+    if not isinstance(stated, Mapping) or not stated:
+        return (), (f"none stated; {list(SCORED_REQUIRED)} at least",)
+    problems, pairs = [], []
+    for h in SCORED_REQUIRED:
+        if h not in stated:
+            problems.append(f"{h} is not stated")
+    for h, ps in sorted(stated.items()):
+        if not (isinstance(h, str) and _HYPOTHESIS.fullmatch(h)):
+            problems.append(f"{h!r} is not a hypothesis (H0, H1, ...)")
+            continue
+        if not isinstance(ps, list) or not ps:
+            problems.append(f"{h} names no pairing")
+            continue
+        bad = [p for p in ps if not (isinstance(p, str) and _PAIRING.fullmatch(p))]
+        if bad or len(set(ps)) != len(ps):
+            problems.append(f"{h}: {ps!r} is not a list of distinct pairings (P1, P2, ...)")
+            continue
+        pairs.append((h, tuple(ps)))
+    return tuple(pairs), tuple(problems)
 
 
 def plan_sha256(plan_text: str) -> str:
@@ -155,16 +195,19 @@ def check(lock: Mapping, plan_text: str) -> LockCheck:
         if _unset(e.get("source")):
             unsourced.append(k)
     unknown = sorted(set(values) - set(items))
+    scored, scored_problems = _scored(lock.get("scored_pairings"))
     return LockCheck(items=items, missing=tuple(missing), unset=tuple(unset),
                      unsourced=tuple(unsourced), unknown=tuple(unknown),
-                     plan_matches=lock.get("plan_sha256") == plan_sha256(plan_text))
+                     plan_matches=lock.get("plan_sha256") == plan_sha256(plan_text),
+                     scored_pairings=scored, scored_problems=scored_problems)
 
 
 def skeleton(plan_text: str) -> dict:
     """A lock file with every T4.1 item present and nothing fixed."""
     return {"plan_sha256": plan_sha256(plan_text),
             "values": {k: {"item": text, "value": None, "source": None}
-                       for k, text in lock_items(plan_text).items()}}
+                       for k, text in lock_items(plan_text).items()},
+            "scored_pairings": {h: [] for h in SCORED_REQUIRED}}
 
 
 def check_file(path, plan: Optional[Path] = None) -> LockCheck:

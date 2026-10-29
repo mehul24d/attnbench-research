@@ -16,6 +16,7 @@ def _filled(plan_text=PLAN_TEXT) -> dict:
     for k, e in lock["values"].items():
         e["value"] = f"value of {k}"
         e["source"] = "Appendix A, test"
+    lock["scored_pairings"] = {"H0": ["P1", "P2"], "H2": ["P2", "P4"]}
     return lock
 
 
