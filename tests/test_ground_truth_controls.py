@@ -539,7 +539,7 @@ def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late
                                utc_from_epoch(epoch + sync_offset_s))
         return load_committed(store, receipt.remote,
                               ground_truth_started_at=utc_from_epoch(stamp),
-                              clock_skew=timedelta(0), local=f.path)
+                              clock_skew=timedelta(0), banked_at={}, local=f.path)
 
     assert load(0.0).pairing == "P1"                       # before any block was clocked
     # At the stamp, during the dense control's clocked warm-up, and after it

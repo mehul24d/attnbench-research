@@ -139,7 +139,7 @@ def test_the_dry_run_passes_every_step_in_its_own_process(tmp_path):
         assert f"t61_session.py step {s} " in log and "# exit" in log   # its own process
     gt = json.loads((session / "12_ground_truth" / "result.json").read_text())["findings"]
     late = json.loads((session / "13_late_check" / "result.json").read_text())["findings"]
-    assert gt["gap_s"] >= S.MIN_GAP_S + S.HOLD_MARGIN_S - 1e-6
+    assert gt["gap_s"] >= S.PLANNED_SYNC_WAIT_S - 1e-6
     assert late["gap_s"] == pytest.approx(gt["gap_s"])
     rec = json.loads((session / S.RECEIPT).read_text())
     assert rec["remote_path"].startswith("predictions/P2/") and "gs://" not in json.dumps(rec)
@@ -153,8 +153,8 @@ def test_a_dry_run_in_process_matches_and_holds_on_the_virtual_clock(tmp_path):
     assert calls == list(STEPS)
     synced = S.epoch(json.loads((session / S.RECEIPT).read_text())["synced_at"])
     opened = S.epoch(json.loads((session / S.OPENED).read_text())[0]["opened_at"])
-    assert opened - synced >= S.MIN_GAP_S + S.HOLD_MARGIN_S
-    assert json.loads((session / S.DRY_CLOCK).read_text())["offset_s"] >= 65
+    assert opened - synced >= S.PLANNED_SYNC_WAIT_S
+    assert json.loads((session / S.DRY_CLOCK).read_text())["offset_s"] >= 90
 
 
 # --- the hold ---------------------------------------------------------------------------
@@ -164,13 +164,13 @@ def _receipt(session, synced_at):
     S.write_json(session / S.RECEIPT, {"synced_at": S.iso(synced_at)})
 
 
-def test_the_hold_waits_out_60_s_plus_the_margin(tmp_path):
+def test_the_hold_waits_out_the_planned_wait(tmp_path):
     session = tmp_path / "s"
     t = S.now(session, True)
     _receipt(session, t)
     opened = S.hold_for_sync(session, True)
-    assert opened >= t + 65.0
-    assert opened < t + 65.0 + 5.1           # it steps in at most 5 s
+    assert opened >= t + 90.0
+    assert opened < t + 90.0 + 5.1           # it steps in at most 5 s
     assert len(json.loads((session / S.OPENED).read_text())) == 1
 
 

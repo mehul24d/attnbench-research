@@ -29,7 +29,7 @@ import statistics
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional, Sequence
 
-from .commit import CommittedPrediction, PredictionCommitError, cell_key
+from .commit import CommittedPrediction, PredictionCommitError, cell_key, require_loaded
 
 DENSE = "dense"
 SYNC_FREE = "synchronisation-free"
@@ -93,7 +93,9 @@ def residuals(cp: CommittedPrediction, measured: Mapping[tuple, float], *,
     """Residuals of every committed prediction (or of `predictors`) on the
     measured cells. `measured` maps a cell key (model, code path, arm,
     density, length, batch; `training.CellKey`) to the measured `statistic`,
-    which must be the one the file predicts."""
+    which must be the one the file predicts. `cp` must come from
+    `load_committed` (`require_loaded`): an unchecked sync time is never scored."""
+    cp = require_loaded(cp)
     if statistic != cp.statistic:
         raise PredictionCommitError(
             f"the file predicts the {cp.statistic}; these are {statistic}s")

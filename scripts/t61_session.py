@@ -26,9 +26,9 @@ that session, and the failed attempt's directory is kept beside the new one.
      reads them back). Its receipt holds the store's creation time.
   2. `ground_truth` comes immediately after `predict`; no step between them
      can clock anything. Before it starts, the runner holds until the
-     instance clock is at least 60 s plus a 5 s margin past the store's
-     sync time, then records when it opened the step. The step refuses to
-     start if less than 60 s have passed.
+     instance clock is the planned wait (`commit.PLANNED_SYNC_WAIT_S`, the
+     required 60 s gap plus 30 s) past the store's sync time, then records
+     when it opened the step. The step refuses to start inside the gap.
   3. The strict first-clocked-block rule: the harness must report
      `first_clocked_block_started_at` (the first block of any kind it
      clocks, warm-ups included). A result carrying only the 25 Oct key
@@ -90,11 +90,15 @@ if str(ROOT) not in sys.path:
 PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
 EXIT = {PASSED: 0, FAILED: 1, SKIPPED: 3}
 
-# Plan Section 5.1: the workload starts at least 60 s after the sync, and the
-# analysis allows 60 s of skew between the store's clock and the instance's.
-MIN_GAP_S = 60.0
-CLOCK_SKEW_S = 60.0
-HOLD_MARGIN_S = 5.0          # the runner's hold is 65 s, so the 60 s is met with room
+from attnbench.predict.commit import (PLANNED_SYNC_WAIT_S,  # noqa: E402
+                                      REQUIRED_SYNC_GAP_S)
+
+# Plan Section 5.1: the workload starts at least the required gap after the
+# sync, and the analysis allows the same gap as skew between the store's clock
+# and the instance's. Both come from predict/commit.py, the one source; the
+# runner holds for the planned wait, the gap plus 30 s (audit C2, finding 1).
+MIN_GAP_S = REQUIRED_SYNC_GAP_S
+CLOCK_SKEW_S = REQUIRED_SYNC_GAP_S
 STRICT_KEY = "first_clocked_block_started_at"   # Appendix A, 27 Oct 2026
 OLD_KEY = "first_timed_block_started_at"        # the 25 Oct 2026 rule; refused
 
@@ -633,12 +637,12 @@ def body_predict(cfg: SessionConfig, args, *, record_fn=None) -> dict:
 # --- the hold, the ground truth and the strict stamp ------------------------------------------
 
 def hold_for_sync(session: Path, dry_run: bool) -> float:
-    """Wait until the instance clock is MIN_GAP_S + HOLD_MARGIN_S past the
-    store's sync time; record and return when ground truth was opened."""
+    """Wait until the instance clock is PLANNED_SYNC_WAIT_S past the store's
+    sync time; record and return when ground truth was opened."""
     receipt = read_json(session / RECEIPT)
     if receipt is None:
         raise StepFailed(f"no {RECEIPT} in {session}: no prediction was synced")
-    target = epoch(receipt["synced_at"]) + MIN_GAP_S + HOLD_MARGIN_S
+    target = epoch(receipt["synced_at"]) + PLANNED_SYNC_WAIT_S
     t = now(session, dry_run)
     if t < target:
         print(f"holding {target - t:.1f} s: ground truth starts at least {MIN_GAP_S:.0f} s "

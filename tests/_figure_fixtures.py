@@ -107,7 +107,7 @@ def loaded_p1(tmp_path: Path, xattn_ops=None):
         cells=[cell(ops=xattn_ops), cell(ops=OPS_HOST, arm="dense", density=1.0)])
     f, receipt = committed(tmp_path, record, store, SYNC_AT)
     cp = load_committed(store, receipt.remote, ground_truth_started_at=STARTED_AT,
-                        clock_skew=NO_SKEW, local=f.path)
+                        clock_skew=NO_SKEW, banked_at={}, local=f.path)
     return cp, f.path, store, receipt.remote
 
 

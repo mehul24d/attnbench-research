@@ -67,7 +67,7 @@ def loaded(tmp_path: Path, **extra):
     store = MemoryStore(Clock(T0))
     f, receipt = committed(tmp_path, record(**extra), store, SYNC_AT)
     cp = load_committed(store, receipt.remote, ground_truth_started_at=STARTED_AT,
-                        clock_skew=NO_SKEW, local=f.path)
+                        clock_skew=NO_SKEW, banked_at={}, local=f.path)
     return cp, f.path, store, receipt.remote
 
 
