@@ -24,9 +24,14 @@ The arms (`ARMS`):
 The two block-sparse mask arms run at sparsity 0.75, the README's figures.
 
 **Prompts.** On the L4 every prompt is a real RULER example sized by the
-model's own tokenizer to exactly the cell's length (`grid_configs.
+model's own tokenizer to the cell's length as a budget (`grid_configs.
 build_examples_by_task_length`, seed 0, task `qa_1`), so the steps see the
-inputs the study runs. A CPU dry run has no tokenizer download and no RULER
+inputs the study runs. The sizer lands at or below the budget, not on it
+(`sizing.fit_units_to_budget`; `qa_1` fills with whole documents, so the
+2048 budget gives 1951 tokens), and a prompt is not padded or cut to reach
+it. `PreparedArm.length` is the prompt's own token count, which the
+configs and every recorded sequence use, as the accuracy runs do
+(`generation.generate_one`); `PreparedArm.budget` is the cell. A CPU dry run has no tokenizer download and no RULER
 data: it uses a two-layer random-weight Qwen2 model built from a config and
 seeded random token ids, and only the arms that run on a CPU (dense).
 
@@ -87,13 +92,14 @@ def runnable(name: str, cuda: bool) -> bool:
 @dataclass
 class PreparedArm:
     spec: ArmSpec
-    length: int
+    length: int                    # the prompt's token count
     prompt_id: str
     run_prefill: Callable[[], None]
     layers: Sequence[torch.nn.Module]
     backend: object
     code_path: Optional[CodePath] = None
     extra: dict = field(default_factory=dict)
+    budget: Optional[int] = None   # the cell's length, which `length` is at or below
 
     @property
     def name(self) -> str:
@@ -179,7 +185,8 @@ class Harness:
         return have[:n]
 
     def input_ids(self, length: int, *, index: int = 0, task: str = TASK):
-        """(input_ids, prompt_id) for one prompt at exactly `length` tokens."""
+        """(input_ids, prompt_id) for one prompt sized to `length` tokens, at
+        or below it (module docstring, "Prompts")."""
         if self.dry_run:
             g = torch.Generator().manual_seed(SEED + length + index)
             ids = torch.randint(0, self.model.config.vocab_size, (1, length), generator=g)
@@ -187,8 +194,9 @@ class Harness:
         from ..accuracy.prompting import encode_prompt
         ex = self.examples(length, index + 1, task=task)[index]
         ids = encode_prompt(self.tokenizer, ex.context, self.device)
-        if int(ids.shape[-1]) != length:
-            raise RuntimeError(f"{ex.example_id}: {int(ids.shape[-1])} tokens, not {length}")
+        if not 0 < int(ids.shape[-1]) <= length:
+            raise RuntimeError(f"{ex.example_id}: {int(ids.shape[-1])} tokens, over the "
+                               f"{length}-token budget")
         return ids, ex.example_id
 
     # --- arms ----------------------------------------------------------------
@@ -229,6 +237,8 @@ class Harness:
         if not runnable(name, self.cuda):
             raise RuntimeError(f"arm {name!r} needs a CUDA device")
         self.unwrap()
+        ids, prompt_id = self.input_ids(length, index=index)
+        budget, length = length, int(ids.shape[-1])
         cfg = self._cfg(spec, length)
         template = self.geometry.onto(replace(cfg, mask="causal", sparsity=None,
                                               block_size=None, mask_source=None),
@@ -237,7 +247,6 @@ class Harness:
                                           finest_block_size=self.grid.finest_block_size,
                                           score_source=spec.score_source)
         self._wrapped = wrapped
-        ids, prompt_id = self.input_ids(length, index=index)
         be = backend if backend is not None else self._backend(spec)
         scores = None
         if spec.scores_before:
@@ -252,7 +261,30 @@ class Harness:
                                  inline_estimator=spec.inline_estimator)
 
         return PreparedArm(spec, length, prompt_id, run_prefill, wrapped._layers, be,
-                           extra={"cfg": cfg, "input_ids": ids, "wrapped": wrapped})
+                           extra={"cfg": cfg, "input_ids": ids, "wrapped": wrapped},
+                           budget=budget)
+
+    def timing_arms(self, names: Sequence[str], length: int, *, index: int = 0):
+        """What `ground_truth.time_arms` takes, for these arms on one prompt:
+        (wrapped model, input_ids, prompt_id, [ground_truth.Arm], score_kwargs).
+        One model wrapper serves every arm, as `time_arms` needs; the dense
+        arm's preparation builds it and must come first in `names` (it is the
+        control). Every arm's config takes the prompt's own length
+        (`first.length`), which is `length` unless the sizer landed below the
+        budget. Call `unwrap()` when done."""
+        from .. import ground_truth as gt
+        if not names or names[0] != "dense":
+            raise ValueError("the dense control comes first")
+        first = self.prepare("dense", length, index=index)
+        arms = []
+        for n in names:
+            spec = ARMS[n]
+            kind = (gt.DENSE if n == "dense" else gt.ORACLE if spec.scores_before
+                    else gt.INLINE if spec.inline_estimator else gt.IN_BACKEND)
+            arms.append(gt.Arm(n, kind, first.backend if n == "dense" else self._backend(spec),
+                               self._cfg(spec, first.length), inline_estimator=spec.inline_estimator))
+        score_kwargs = dict(task=TASK, example_id=first.prompt_id, cache_dir=self.score_cache_dir)
+        return first.extra["wrapped"], first.extra["input_ids"], first.prompt_id, arms, score_kwargs
 
     def code_path(self, arm: PreparedArm) -> CodePath:
         """The arm's code path, read after one run of it, so the XAttention

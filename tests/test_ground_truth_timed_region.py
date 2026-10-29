@@ -107,7 +107,7 @@ def test_a_deployable_inline_arm_times_its_estimator():
     assert len(inline["prefill_ms_samples"]) == REPS
     # Both sides of every timed block, and of every clocked warm-up forward.
     assert syncs.n == 2 * 2 * REPS + 2 * 2 * 3
-    assert out["first_timed_block_started_at"] is not None
+    assert out["first_clocked_block_started_at"] is not None
 
 
 def test_the_oracle_may_cache_its_scores_and_is_labelled(tmp_path):

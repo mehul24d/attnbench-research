@@ -273,3 +273,51 @@ def test_every_registered_backend_has_a_source_mapping():
         path, class_name = BACKEND_SOURCES[name]
         assert cls.__name__ == class_name, f"{name} maps to the wrong class"
         assert (REPO / path).exists(), f"{name} maps to a missing file {path}"
+
+
+# --- build constants (fa3, 28 Oct 2026) ------------------------------------------
+
+FA3 = "attnbench/backends/fa3.py"
+
+
+def _fa3(flags: str = '("A=TRUE", "B=TRUE")', dims: str = "(128,)",
+         forward: str = "return q", with_flags: bool = True) -> str:
+    head = (f"BUILD_FLAGS = {flags}\n" if with_flags else "") + f"BUILT_HEAD_DIMS = {dims}\n"
+    return head + textwrap.dedent(f"""
+        class FlashAttention3:
+            def forward(self, q, k, v, cfg, mask=None):
+                {forward}
+    """)
+
+
+def test_the_build_flags_are_part_of_the_fa3_fingerprint(tmp_path):
+    """A wheel built with other flags is another kernel behind the same forward:
+    the rows must not be joined as the same code."""
+    repo, shas = _repo(tmp_path, [
+        {FA3: _fa3(), TIMING: _timing()},
+        {FA3: _fa3(flags='("A=TRUE",)'), TIMING: _timing()},        # flag dropped
+        {FA3: _fa3(flags='("A=TRUE",)', dims="(64, 128)"), TIMING: _timing()},
+        {FA3: "# a comment\n" + _fa3(flags='("A=TRUE",)', dims="(64, 128)"),
+         TIMING: _timing()},
+    ])
+    fp = fingerprint(repo, shas[0], "fa3")
+    assert set(fp.parts) == {"FlashAttention3.forward", f"{FA3}:BUILD_FLAGS",
+                             f"{FA3}:BUILT_HEAD_DIMS", f"{TIMING}:_do_bench"}
+    drifts = backends_with_drift(_frame([("fa3", s) for s in shas[:2]]), repo=repo)
+    assert [d.methods for d in drifts] == [(f"{FA3}:BUILD_FLAGS",)]
+    drifts = backends_with_drift(_frame([("fa3", s) for s in shas[1:3]]), repo=repo)
+    assert [d.methods for d in drifts] == [(f"{FA3}:BUILT_HEAD_DIMS",)]
+    assert fingerprint(repo, shas[2], "fa3").digest == fingerprint(repo, shas[3], "fa3").digest
+
+
+def test_a_missing_build_constant_refuses(tmp_path):
+    repo, shas = _repo(tmp_path, [{FA3: _fa3(with_flags=False), TIMING: _timing()}])
+    with pytest.raises(CodeIdentityError, match="BUILD_FLAGS not found"):
+        fingerprint(repo, shas[0], "fa3")
+
+
+def test_the_real_fa3_build_constants_are_fingerprinted():
+    from attnbench.analysis.code_identity import BUILD_CONSTANTS
+    from attnbench.backends import fa3
+    for path, name in BUILD_CONSTANTS["fa3"]:
+        assert path == "attnbench/backends/fa3.py" and hasattr(fa3, name)
