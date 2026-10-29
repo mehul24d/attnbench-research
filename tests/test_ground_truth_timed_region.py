@@ -30,6 +30,7 @@ from attnbench.backends.impls import NaiveAttention  # noqa: E402
 from attnbench.backends.xattention import XAttentionBackend  # noqa: E402
 from attnbench.clock_sampling import RESEARCHER_FLAG_BITS, BlockSampler, ClockSample  # noqa: E402
 from attnbench.config import AttnConfig  # noqa: E402
+from _gt_fakes import fake_densities  # noqa: E402
 
 SEQ, BLOCK, LAYERS, REPS = 64, 8, 3, 3
 PLAN = Path(__file__).resolve().parent.parent / "docs" / "RESEARCH_PLAN.md"
@@ -59,7 +60,7 @@ def _ids():
 
 def _inline():
     return gt.Arm("meanpool", gt.INLINE, NaiveAttention(), _cfg(),
-                  inline_estimator="minference_meanpool")
+                  inline_estimator="minference_meanpool", builder_kind="gpu")
 
 
 def _dense():
@@ -98,7 +99,7 @@ class _Syncs:
 def test_a_deployable_inline_arm_times_its_estimator():
     syncs = _Syncs()
     out = gt.time_arms(_wrapped(), _ids(), [_inline(), _dense()], reps=REPS,
-                       controls=_controls(), synchronize=syncs)
+                       density_of=fake_densities, controls=_controls(), synchronize=syncs)
     inline, dense = out["rows"]
     assert inline["deployable"] and inline["arm_label"] == gt.DEPLOYABLE_LABEL
     # One scoring call and one mask build per layer, in every timed block.
@@ -113,7 +114,7 @@ def test_a_deployable_inline_arm_times_its_estimator():
 
 def test_the_oracle_may_cache_its_scores_and_is_labelled(tmp_path):
     out = gt.time_arms(_wrapped(), _ids(), [_oracle(), _dense()], reps=REPS,
-                       controls=_controls(),
+                       density_of=fake_densities, controls=_controls(),
                        score_kwargs=dict(task="t", example_id="e", cache_dir=str(tmp_path)))
     row = out["rows"][0]
     assert not row["deployable"]
@@ -132,7 +133,7 @@ def test_scores_computed_before_the_timed_block_are_refused(monkeypatch, tmp_pat
     monkeypatch.setattr(gt, "untimed_setup", score_first)
     with pytest.raises(gt.TimedRegionError, match="outside the timed block"):
         gt.time_arms(_wrapped(), _ids(), [_inline(), _dense()], reps=REPS,
-                     controls=_controls())
+                     density_of=fake_densities, controls=_controls())
 
 
 def test_a_probe_that_sees_no_scorer_is_refused(monkeypatch):
@@ -140,7 +141,7 @@ def test_a_probe_that_sees_no_scorer_is_refused(monkeypatch):
     monkeypatch.setattr(gt, "SCORE_TARGETS", ())
     with pytest.raises(gt.TimedRegionError, match="computed no scores"):
         gt.time_arms(_wrapped(), _ids(), [_inline(), _dense()], reps=REPS,
-                     controls=_controls())
+                     density_of=fake_densities, controls=_controls())
 
 
 def test_an_estimator_inside_the_backend_is_seen(monkeypatch):
@@ -154,9 +155,9 @@ def test_an_estimator_inside_the_backend_is_seen(monkeypatch):
             return super().forward(q, k, v, replace(cfg, mask="causal"))
 
     arm = gt.Arm("xa", gt.IN_BACKEND, _XAStandIn(), _cfg(mask="causal", sparsity=None,
-                                                          block_size=None))
+                                                          block_size=None), builder_kind="gpu")
     row = gt.time_arms(_wrapped(), _ids(), [arm, _dense()], reps=REPS,
-                       controls=_controls())["rows"][0]
+                       density_of=fake_densities, controls=_controls())["rows"][0]
     assert row["deployable"] and row["score_calls_timed"] == REPS * LAYERS
 
 

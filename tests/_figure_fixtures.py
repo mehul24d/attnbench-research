@@ -114,9 +114,11 @@ def loaded_p1(tmp_path: Path, xattn_ops=None):
 def ground_truth(xattn_ms=20000.0, dense_ms=10000.0, **over) -> dict:
     """A `time_arms` result: 20 s for xattn and 10 s for dense (medians)."""
     rows = [{"arm": "xattn", "prefill_ms_median": xattn_ms, "prefill_ms_p90": xattn_ms,
-             "prefill_ms_p99": xattn_ms},
+             "prefill_ms_p99": xattn_ms, "arm_kind": "in_backend", "context_length": 4,
+             "batch": 1, "mask_density": 0.5, "executed_density": 0.55, "builder_kind": "gpu"},
             {"arm": "dense", "prefill_ms_median": dense_ms, "prefill_ms_p90": dense_ms,
-             "prefill_ms_p99": dense_ms}]
+             "prefill_ms_p99": dense_ms, "arm_kind": "dense", "context_length": 4,
+             "batch": 1, "mask_density": None, "executed_density": 1.0, "builder_kind": None}]
     r = {"traced": False, "complete": True,
          "first_timed_block_started_at": STARTED_AT.timestamp(), "rows": rows}
     r.update(over)

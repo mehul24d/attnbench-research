@@ -112,7 +112,7 @@ def _check_class(arm: str, cls: str, row: Mapping, name: str) -> None:
         raise PaperInputError(f"{name}: arm {arm!r} is stated deployable; its row says not")
 
 
-BUILDER_KINDS = ("cpu", "gpu")
+from ..gt_schema import BUILDER_KINDS  # noqa: E402  (one source: every ground-truth row carries it)
 
 
 def _row_builder(arm: str, row: Mapping, stated: Mapping, name: str):
@@ -120,7 +120,7 @@ def _row_builder(arm: str, row: Mapping, stated: Mapping, name: str):
     else the caller's statement, else None."""
     if "builder_kind" in row:
         b = row["builder_kind"]
-        if b not in BUILDER_KINDS:
+        if b is not None and b not in BUILDER_KINDS:
             raise PaperInputError(f"{name}: arm {arm!r} has builder_kind {b!r}")
         if arm in stated and stated[arm] != b:
             raise PaperInputError(f"{name}: arm {arm!r}'s row says builder {b!r}, the spec "

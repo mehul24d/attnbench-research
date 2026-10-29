@@ -71,17 +71,21 @@ class ArmSpec:
     scores_before: bool = False    # oracle: dense scoring pass outside the prefill
     xattention: bool = False
     needs_cuda: bool = True
+    builder_kind: Optional[str] = None   # where the mask is built (gt_schema.BUILDER_KINDS)
 
 
 ARMS: dict[str, ArmSpec] = {s.name: s for s in (
     ArmSpec("dense", "sdpa_flash", "causal", "dense_softmax_fp32", needs_cuda=False),
+    # The oracle's masks come from the reference builder on the host; the
+    # mean-pool and XAttention estimators build theirs on the device.
     ArmSpec("oracle", "block_sparse", "block_sparse", "dense_softmax_fp32",
-            sparsity=SPARSITY, scores_before=True),
+            sparsity=SPARSITY, scores_before=True, builder_kind="cpu"),
     ArmSpec("meanpool", "block_sparse", "block_sparse", "minference_meanpool_inline",
-            sparsity=SPARSITY, inline_estimator="minference_meanpool"),
-    ArmSpec("xattention", "xattention", "causal", "xattention_inline", xattention=True),
+            sparsity=SPARSITY, inline_estimator="minference_meanpool", builder_kind="gpu"),
+    ArmSpec("xattention", "xattention", "causal", "xattention_inline", xattention=True,
+            builder_kind="gpu"),
     ArmSpec("xattention_noassert", "xattention_noassert", "causal", "xattention_inline",
-            xattention=True),
+            xattention=True, builder_kind="gpu"),
 )}
 
 
@@ -282,7 +286,8 @@ class Harness:
             kind = (gt.DENSE if n == "dense" else gt.ORACLE if spec.scores_before
                     else gt.INLINE if spec.inline_estimator else gt.IN_BACKEND)
             arms.append(gt.Arm(n, kind, first.backend if n == "dense" else self._backend(spec),
-                               self._cfg(spec, first.length), inline_estimator=spec.inline_estimator))
+                               self._cfg(spec, first.length), inline_estimator=spec.inline_estimator,
+                               builder_kind=spec.builder_kind))
         score_kwargs = dict(task=TASK, example_id=first.prompt_id, cache_dir=self.score_cache_dir)
         return first.extra["wrapped"], first.extra["input_ids"], first.prompt_id, arms, score_kwargs
 

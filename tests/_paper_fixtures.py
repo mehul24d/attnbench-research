@@ -37,6 +37,9 @@ MEASURED = {"xattn": {4: 16.8, 8: 15.2, 16: 16.8},
 KINDS = {"xattn": ("in_backend", True), "oracle": ("oracle", False),
          "dense": ("dense", False)}
 CLASSES = {"xattn": "deployable_estimator", "oracle": "oracle", "dense": "dense"}
+# Every ground-truth row's builder kind (gt_schema); the oracle's is left None.
+BUILDERS = {"xattn": "gpu", "oracle": None, "dense": None}
+DENSITIES = {"xattn": (0.5, 0.55), "oracle": (0.5, 0.5), "dense": (None, 1.0)}
 ADMISSIBLE = {("xattn", 4): True, ("xattn", 8): True, ("xattn", 16): True,
               ("oracle", 4): True, ("oracle", 8): True, ("oracle", 16): False}
 
@@ -71,9 +74,10 @@ def loaded(tmp_path: Path, **extra):
     return cp, f.path, store, receipt.remote
 
 
-def result(L: int, measured=None, kinds=None, started=STARTED_AT) -> dict:
+def result(L: int, measured=None, kinds=None, started=STARTED_AT, builders=None) -> dict:
     measured = measured or MEASURED
     kinds = kinds or KINDS
+    builders = BUILDERS if builders is None else {**BUILDERS, **builders}
     rows = []
     for arm in ("xattn", "oracle", "dense"):
         v = measured[arm][L] * 1000.0
@@ -81,7 +85,10 @@ def result(L: int, measured=None, kinds=None, started=STARTED_AT) -> dict:
         rows.append({"arm": arm, "arm_kind": kind, "deployable": dep,
                      "prefill_ms_samples": [0.99 * v, v, 1.01 * v],
                      "prefill_ms_median": v, "prefill_ms_p90": 1.008 * v,
-                     "prefill_ms_p99": 1.0098 * v})
+                     "prefill_ms_p99": 1.0098 * v,
+                     "context_length": L, "batch": 1,
+                     "mask_density": DENSITIES[arm][0], "executed_density": DENSITIES[arm][1],
+                     "builder_kind": builders[arm]})
     return {"traced": False, "complete": True,
             "first_timed_block_started_at": started.timestamp(), "rows": rows}
 

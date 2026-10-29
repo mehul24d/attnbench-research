@@ -115,3 +115,13 @@ class ScriptedReader:
             self.clock.advance_ms(self.read_cost_ms)
         return ClockSample(sm_mhz=2040, mem_mhz=6250, throttle_bits=bits,
                            violation_ns=self._violation() if self.observes_transients else None)
+
+
+def fake_densities(arm, run):
+    """A `time_arms` density probe for the CPU rigs: they have no block-sparse
+    kernel to record at. Dense rows are what `densities.DENSE_FIELDS` says;
+    the others report a fixed pair. It does not call `run`, so the rigs'
+    forward counts and fake clocks are untouched."""
+    if arm.kind == "dense":
+        return {"mask_density": None, "executed_density": 1.0}
+    return {"mask_density": 0.25, "executed_density": 0.25}

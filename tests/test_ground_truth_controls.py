@@ -22,7 +22,7 @@ transformers = pytest.importorskip("transformers")
 from transformers import LlamaConfig, LlamaForCausalLM  # noqa: E402
 
 from _gt_fakes import (LAYERS, CostedBackend, FakeClock, ScriptedReader,  # noqa: E402
-                       Tracing)
+                       Tracing, fake_densities)
 from attnbench import clock_sampling as cs  # noqa: E402
 from attnbench import ground_truth as gt  # noqa: E402
 from attnbench.accuracy.model import SwappableAttentionModel  # noqa: E402
@@ -89,7 +89,7 @@ class Rig:
                    _cfg(mask="causal", sparsity=None, block_size=None),
                    compile_setting=settings.get("dense")),
             gt.Arm("meanpool", gt.INLINE, backend("meanpool", 18.0), _cfg(),
-                   inline_estimator="minference_meanpool",
+                   inline_estimator="minference_meanpool", builder_kind="gpu",
                    compile_setting=settings.get("meanpool")),
         ]
 
@@ -97,7 +97,7 @@ class Rig:
         kw.setdefault("reps", REPS)
         kw.setdefault("warmup", WARMUP)
         kw.setdefault("wall_clock", lambda: 1_000_000.0 + self.clock.t)
-        return gt.time_arms(_wrapped(), _ids(), self.arms, controls=self.controls,
+        return gt.time_arms(_wrapped(), _ids(), self.arms, density_of=fake_densities, controls=self.controls,
                             clock=self.clock, **kw)
 
 
@@ -157,11 +157,11 @@ def test_the_cold_first_warmup_forward_is_not_the_reference():
 def test_a_run_needs_exactly_one_dense_control():
     rig = Rig()
     with pytest.raises(gt.TimedRegionError, match="exactly one dense control"):
-        gt.time_arms(_wrapped(), _ids(), rig.arms[1:], reps=1, controls=rig.controls,
+        gt.time_arms(_wrapped(), _ids(), rig.arms[1:], reps=1, density_of=fake_densities, controls=rig.controls,
                      clock=rig.clock)
     twin = gt.Arm("dense2", gt.DENSE, rig.arms[0].backend, rig.arms[0].cfg)
     with pytest.raises(gt.TimedRegionError, match="exactly one dense control"):
-        gt.time_arms(_wrapped(), _ids(), rig.arms + [twin], reps=1, controls=rig.controls,
+        gt.time_arms(_wrapped(), _ids(), rig.arms + [twin], reps=1, density_of=fake_densities, controls=rig.controls,
                      clock=rig.clock)
 
 
@@ -251,7 +251,7 @@ def test_the_sampling_thread_sees_a_throttle_inside_the_block():
     controls = gt.Controls(FLOOR, 0, sampler)
     arms = [gt.Arm("dense", gt.DENSE, _WaitsForThread(clock, lambda i: 30.0, name="dense"),
                    _cfg(mask="causal", sparsity=None, block_size=None))]
-    out = gt.time_arms(_wrapped(), _ids(), arms, reps=1, controls=controls, clock=clock)
+    out = gt.time_arms(_wrapped(), _ids(), arms, reps=1, density_of=fake_densities, controls=controls, clock=clock)
     block = out["rounds"][0]["blocks"]["dense"]
     assert block["samples"] > 2 and "hw_slowdown" in block["throttle_reasons_seen"]
     assert out["rounds"][0]["flagged"]
@@ -376,7 +376,7 @@ def _traced_session(extra_ms):
     tracing = Tracing()
     rig = Rig(tracing=tracing, traced_extra_ms=extra_ms)
     out = gt.time_with_profiler_overhead(_wrapped(), _ids(), rig.arms, reps=REPS,
-                                         controls=rig.controls, tracer=tracing,
+                                         density_of=fake_densities, controls=rig.controls, tracer=tracing,
                                          clock=rig.clock, warmup=WARMUP)
     return rig, tracing, out
 
@@ -467,12 +467,13 @@ def test_eager_arms_may_share_a_process_with_one_compiled_setting():
 def test_a_declaration_the_backend_does_not_bear_out_is_refused():
     rig = Rig()
     rig.arms[1] = gt.Arm("meanpool", gt.INLINE, rig.arms[1].backend, _cfg(),
-                         inline_estimator="minference_meanpool", compile_setting="default")
+                         inline_estimator="minference_meanpool", compile_setting="default",
+                         builder_kind="gpu")
     with pytest.raises(gt.CompileSettingError, match="declares compile_setting='default'"):
         rig.run(reps=1)
     rig = Rig(settings={"meanpool": "default"})       # backend compiled, arm says eager
     rig.arms[1] = gt.Arm("meanpool", gt.INLINE, rig.arms[1].backend, _cfg(),
-                         inline_estimator="minference_meanpool")
+                         inline_estimator="minference_meanpool", builder_kind="gpu")
     with pytest.raises(gt.CompileSettingError, match="backend carries setting='default'"):
         rig.run(reps=1)
 

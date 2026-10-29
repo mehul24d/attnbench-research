@@ -406,7 +406,8 @@ def test_numbers_tex_matches_numbers_json(setup):
     assert nums["code_paths"] == {"CodePathA": F.CP, "CodePathB": F.CP2} or \
         nums["code_paths"] == {"CodePathA": F.CP2, "CodePathB": F.CP}
     letter = {v: k for k, v in nums["code_paths"].items()}
-    n = f"abMedianAbsErrorRecursionMMinusSmall{letter[F.CP]}DeployableEstimator"
+    # every row names its builder now (gt_schema), so xattn's numbers say GPU builder
+    n = f"abMedianAbsErrorRecursionMMinusSmall{letter[F.CP]}DeployableEstimatorGpuBuilder"
     assert nums["numbers"][n]["value"] == pytest.approx(0.8 / 16.8)
     assert macros[n] == "4.76"
     n = f"abDecisionMissedProfitableRecursionMMinusSmall{letter[F.CP2]}Oracle"
@@ -518,8 +519,9 @@ def test_decision_counts_in_numbers(setup):
     nums = PN.collect(_inputs(setup), PT.decision(_inputs(setup)), None).entries
     N = PN.Numbers(_inputs(setup))
     a, b = N.code_paths[F.CP], N.code_paths[F.CP2]
-    assert nums[f"abDecisionCorrectRecursionMMinusSmall{a}DeployableEstimator"]["tex"] == "2"
-    assert nums[f"abDecisionInsideFloorRecursionMMinusSmall{a}DeployableEstimator"]["tex"] == "1"
+    dep = "DeployableEstimatorGpuBuilder"
+    assert nums[f"abDecisionCorrectRecursionMMinusSmall{a}{dep}"]["tex"] == "2"
+    assert nums[f"abDecisionInsideFloorRecursionMMinusSmall{a}{dep}"]["tex"] == "1"
     assert nums[f"abDecisionCorrectRecursionMMinusSmall{b}Oracle"]["tex"] == "2"
     assert nums[f"abSignDisagreesRecursionMMinusSmall{b}Oracle"]["tex"] == "1"
     assert nums[f"abDecisionFalseProfitableRecursionMMinusSmall{b}Oracle"]["tex"] == "0"
@@ -538,15 +540,18 @@ def _with_builder_rows(kinds_by_length):
     return out
 
 
-def test_a_builder_class_needs_its_kind_stated_while_rows_lack_it(setup):
-    cp, _, _, _, tmp = setup
+def test_a_builder_class_must_match_its_rows_builder_kind(setup):
+    # Every ground-truth row carries its builder kind now (gt_schema), so the
+    # class is checked against the rows; a statement must agree with them.
     classes = {**F.CLASSES, "xattn": "gpu_builder"}
-    with pytest.raises(PI.PaperInputError, match="builder kind"):
-        _inputs(setup, result_classes=classes)
+    inp = _inputs(setup, result_classes=classes)
+    assert inp.builder("xattn") == "gpu" and inp.builder_sources["xattn"] == ("row",)
     inp = _inputs(setup, result_classes=classes, builder_kinds={"xattn": "gpu"})
-    assert inp.builder("xattn") == "gpu" and inp.builder_sources["xattn"] == ("stated",)
-    with pytest.raises(PI.PaperInputError, match="builder kind"):
+    assert inp.builder("xattn") == "gpu"
+    with pytest.raises(PI.PaperInputError, match="spec states"):
         _inputs(setup, result_classes=classes, builder_kinds={"xattn": "cpu"})
+    with pytest.raises(PI.PaperInputError, match="builder kind"):
+        _inputs(setup, result_classes={**F.CLASSES, "xattn": "cpu_builder"})
 
 
 def test_a_row_s_own_builder_kind_is_read_and_must_agree(setup):
@@ -562,9 +567,9 @@ def test_a_row_s_own_builder_kind_is_read_and_must_agree(setup):
 def test_rows_of_one_arm_with_different_builder_kinds_are_never_pooled(setup):
     with pytest.raises(PI.PaperInputError, match="never pooled"):
         _inputs(setup, results=_with_builder_rows({4: "cpu", 8: "gpu", 16: "cpu"}))
-    # A row with a kind and a row with none, nothing stated: refused too.
+    # One row's kind against the others' (every row names one now): refused too.
     with pytest.raises(PI.PaperInputError, match="never pooled"):
-        _inputs(setup, results=_with_builder_rows({4: "gpu"}))
+        _inputs(setup, results=_with_builder_rows({4: "cpu"}))
 
 
 @pytest.mark.parametrize("bad", [{"nosuch": "cpu"}, {"xattn": "tpu"}])
@@ -581,7 +586,8 @@ def test_two_builder_kinds_in_one_class_and_code_path_are_kept_apart(tmp_path, m
     cp, *_ = F.loaded(tmp_path / "pred")
     kinds = {**F.KINDS, "oracle": ("inline", True)}
     spec = F.write_spec(tmp_path / "in", cp, crossover=False,
-                        results={L: F.result(L, kinds=kinds) for L in F.LENGTHS},
+                        results={L: F.result(L, kinds=kinds, builders={"oracle": "cpu"})
+                                 for L in F.LENGTHS},
                         result_classes={**F.CLASSES, "oracle": "deployable_estimator"},
                         builder_kinds={"xattn": "gpu", "oracle": "cpu"})
     inp = PI.build_inputs(PI.read_spec(spec), spec.parent, cp)
@@ -600,7 +606,7 @@ def test_two_builder_kinds_in_one_class_and_code_path_are_kept_apart(tmp_path, m
     assert nums[f"abMedianAbsErrorRecursionMMinusSmall{a}DeployableEstimatorCpuBuilder"][
         "value"] == pytest.approx(0.4 / 8.4)
     m = PA.build(inp, tmp_path / "out", CLEAN_RUN)
-    assert m["builder_kinds"]["oracle"] == {"kind": "cpu", "from": ["stated"]}
+    assert m["builder_kinds"]["oracle"] == {"kind": "cpu", "from": ["row"]}
     t = (tmp_path / "out" / "tables" / "predictors.tex").read_text()
     assert " & CPU & " in t and " & GPU & " in t
 

@@ -20,6 +20,7 @@ import math
 from pathlib import Path
 from typing import Mapping, Sequence, Union
 
+from ..gt_schema import RowFieldError, check_row
 from ..predict.commit import CommittedPrediction, cell_key
 
 MS_PER_S = 1000.0
@@ -70,6 +71,10 @@ def measured_seconds(result: Mapping, arm: str, statistic: str,
     rows = [r for r in result.get("rows", ()) if r.get("arm") == arm]
     if len(rows) != 1:
         raise ResultsError(f"{name} has {len(rows)} rows for arm {arm!r}")
+    try:
+        check_row(rows[0], name)
+    except RowFieldError as e:
+        raise ResultsError(str(e)) from e
     v = rows[0].get(f"prefill_ms_{statistic}")
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
         raise ResultsError(f"{name}: arm {arm!r} has no positive {statistic} ({v!r})")
@@ -90,6 +95,13 @@ def measured_cells(results: Sequence[tuple[str, Mapping, Mapping[str, Sequence]]
             if k in out:
                 raise ResultsError(f"cell {k} is measured twice")
             out[k] = measured_seconds(result, arm, statistic, name)
+            r = [r for r in result["rows"] if r.get("arm") == arm][0]
+            if r["context_length"] != k.context_length:
+                raise ResultsError(f"{name}: arm {arm!r}'s row was measured at context length "
+                                   f"{r['context_length']}, not the stated {k.context_length}")
+            if r["batch"] != k.batch:
+                raise ResultsError(f"{name}: arm {arm!r}'s row was measured at batch "
+                                   f"{r['batch']}, not the stated {k.batch}")
     if not out:
         raise ResultsError("no measured cells")
     return out
