@@ -495,18 +495,18 @@ def test_the_real_record_needs_p1s_banking_time_first(tmp_path):
 
 
 GOOD_ROW = {"cloud_provider": "gcp", "instance_type": "a2-ultragpu-1g",
-            "instance_generation": "a2", "cpu_microcode": "0x1", "provisioning_model": "SPOT",
+            "instance_generation": "a2", "cpu_microcode": "0x1", "provisioning_model": "spot",
             "provisioning_model_problem": None, "python_optimize": 0, "git_dirty": False,
             "gpu_name": "NVIDIA A100-SXM4-80GB", "null_launch_s_median": 4e-6}
 
 
 def test_the_provenance_row_passes_on_a2_flex_or_spot():
     assert S.check_provenance_row(T61, GOOD_ROW, []) == []
-    assert S.check_provenance_row(T61, {**GOOD_ROW, "provisioning_model": "FLEX_START"}, []) == []
+    assert S.check_provenance_row(T61, {**GOOD_ROW, "provisioning_model": "dws-flex-start"}, []) == []
 
 
 @pytest.mark.parametrize("key, value", [
-    ("instance_type", "g2-standard-8"), ("provisioning_model", "STANDARD"),
+    ("instance_type", "g2-standard-8"), ("provisioning_model", "on-demand"), ("provisioning_model", "SPOT"),
     ("gpu_name", "NVIDIA L4"), ("git_dirty", True), ("python_optimize", 1),
     ("cpu_microcode", ""), ("provisioning_model_problem", "unreadable"),
     ("null_launch_s_median", None), ("cloud_provider", "aws")])

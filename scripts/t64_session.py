@@ -26,6 +26,7 @@ on P4:
 The launch card is `docs/launch_cards/t64_p4_h100.md`.
 
 Usage, on the H100 from the repo root:
+    python3 scripts/t64_session.py run --gate-only --fa3-sha256 HEX    # the FA3 gate alone
     python3 scripts/t64_session.py run --fa3-sha256 HEX --banked-at P1=ISO --banked-at P2=ISO
     python3 scripts/t64_session.py run --from STEP --session results/t64_p4_<UTC> ...
     python3 scripts/t64_session.py run --dry-run --fa3-sha256 HEX --session /tmp/t64_dry
@@ -123,7 +124,141 @@ def _t64() -> S.SessionConfig:
 T64 = _t64()
 
 
+# --- the FA3 correctness gate (`--gate-only`) ---------------------------------------
+#
+# Before P4, the H100 is used once for the FA3 correctness gate alone (plan
+# Section 8 calendar, 31 Oct 2026): bootstrap with the wheel's sha256, import
+# FA3, run the float64 correctness gate, time nothing, halt. The same runner
+# and flex-start path as the session, with its own four steps. Every other
+# step, timed or not, is refused in this mode: the step subcommand's choices
+# are these four, so `step ground_truth --gate-only` is an argparse error.
+
+GATE_FLAG = "--gate-only"
+GATE_MAX_SEQ = 4096        # the float64 oracle is allocated up to here (gates.py)
+GATE_PROBE = "probe"       # run_probe.py's output, under the gate step's directory
+
+
+def _gate_provenance(cfg, row: dict) -> list:
+    """The session's instance checks on the probe's stamp, less the null-kernel
+    burst: the gate times nothing, so it has none."""
+    return [p for p in S.check_provenance_row(cfg, row, [])
+            if not p.startswith("no null-kernel burst")]
+
+
+def read_gate(cfg, probe_dir: Path) -> dict:
+    """The verdict from `run_probe.py`'s files: FA3 was checked on at least one
+    configuration, every check was the float64 one ("exact"), every check
+    passed, and the stamp is this instance's. Raises StepFailed otherwise."""
+    import pandas as pd
+    corr = Path(probe_dir) / "correctness.parquet"
+    if not corr.exists():
+        raise S.StepFailed(f"run_probe.py wrote no {corr.name}")
+    df = pd.read_parquet(corr)
+    fa3 = df[df.backend == "fa3"]
+    findings = {
+        "configs_checked": int(len(fa3)),
+        "check_kinds": sorted(set(fa3.check_kind)) if len(fa3) else [],
+        "failed": sorted(fa3[~fa3.passed.astype(bool)].config_key) if len(fa3) else [],
+        "max_abs_err": None if fa3.empty or fa3.max_abs_err.isna().all()
+        else float(fa3.max_abs_err.max()),
+        "max_seq": GATE_MAX_SEQ}
+    stamp = S.read_json(Path(probe_dir) / "versions.json") or {}
+    findings["provenance_problems"] = _gate_provenance(cfg, stamp)
+    if fa3.empty:
+        raise S.StepFailed("FA3 was checked on no configuration: the probe found it "
+                           "unsupported everywhere up to the oracle's length", findings)
+    if findings["check_kinds"] != ["exact"]:
+        raise S.StepFailed(f"FA3's checks were {findings['check_kinds']}, not only the "
+                           f"float64 one ('exact')", findings)
+    if findings["failed"]:
+        raise S.StepFailed(f"FA3 failed the float64 gate on {len(findings['failed'])} "
+                           f"configuration(s)", findings)
+    if findings["provenance_problems"]:
+        raise S.StepFailed("the probe's stamp is not this session's instance: "
+                           + "; ".join(findings["provenance_problems"]), findings)
+    return findings
+
+
+def real_fa3_gate(cfg, args) -> dict:
+    """`run_probe.py` on FA3 alone, up to `GATE_MAX_SEQ`: its capability probe
+    and its correctness gate against the float64 naive reference. Neither is a
+    timing measurement (`run_probe.py`'s docstring)."""
+    out = Path(args.out) / GATE_PROBE
+    rc = S.run(S.py("run_probe.py", "--out", str(out), "--only-backends", "fa3",
+                    "--max-seq", str(GATE_MAX_SEQ), "--no-resume"))
+    if rc != 0:
+        raise S.StepFailed(f"run_probe.py exited {rc}", {"exit": rc})
+    return read_gate(cfg, out)
+
+
+def fake_fa3_gate(cfg, args) -> dict:
+    import pandas as pd
+    from attnbench.provenance import PROVISIONING_MODELS
+    out = Path(args.out) / GATE_PROBE
+    out.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"backend": "fa3", "config_key": f"dry{n}", "passed": True,
+                   "check_kind": "exact", "max_abs_err": 1e-3} for n in (1, 2)]
+                 ).to_parquet(out / "correctness.parquet")
+    S.write_json(out / "versions.json", {
+        "cloud_provider": "gcp", "instance_type": cfg.instance_type,
+        "instance_generation": "a3", "cpu_microcode": "0xdry",
+        "provisioning_model": PROVISIONING_MODELS[cfg.provisioning[0]],
+        "provisioning_model_problem": None, "python_optimize": 0, "git_dirty": False,
+        "gpu_name": f"fake {cfg.gpu}"})
+    return {**read_gate(cfg, out), "fake": True}
+
+
+def real_halt(cfg, args) -> dict:
+    """Self-halt one minute on, so `run_phase.sh` syncs this step first. The
+    teardown from the Mac deletes the stopped VM."""
+    rc = S.run(["sudo", "shutdown", "-h", "+1"])
+    if rc != 0:
+        raise S.StepFailed(f"shutdown exited {rc}: the VM is still billing; halt it by hand",
+                           {"exit": rc})
+    return {"halt_in_minutes": 1}
+
+
+def fake_halt(cfg, args) -> dict:
+    return {"halt_in_minutes": 1, "fake": True}
+
+
+def _t64_gate() -> S.SessionConfig:
+    reals = {"prereqs": S.body_prereqs, "fa3_import": real_fa3_import,
+             "fa3_gate": real_fa3_gate, "halt": real_halt}
+    fakes = {"prereqs": S.body_prereqs, "fa3_import": fake_fa3_import,
+             "fa3_gate": fake_fa3_gate, "halt": fake_halt}
+    cfg = S.SessionConfig(
+        task="T6.4-gate", pairing="P4", title="The H100 FA3 correctness gate (no timing)",
+        script="t64_session.py", phase_prefix="t64gate", session_prefix="t64_fa3_gate",
+        gpu="H100", instance_type=T64.instance_type, provisioning=T64.provisioning,
+        code_path=T64.code_path, banked=(),
+        steps=(S.Step("prereqs", "T2.16", "deployed files present"),
+               T64.step("fa3_import"),
+               S.Step("fa3_gate", "T2.16", "FA3 against the float64 naive reference, untimed"),
+               S.Step("halt", "T6.4", "self-halt; the teardown deletes the VM")),
+        requirements=(),
+        files=S.BUILT_FILES + (("scripts/fa3_import_check.sh", None),
+                               ("scripts/_fa3_pin.sh", None),
+                               ("scripts/run_probe.py", None),
+                               ("attnbench/backends/fa3.py", None),
+                               ("attnbench/fa3_wheel.py", None)),
+        fakes=fakes, reals=reals, step_args=(GATE_FLAG,))
+    if cfg.names[:1] != ("prereqs",) or cfg.names[-1] != "halt":
+        raise RuntimeError("the gate starts with prereqs and ends with halt")
+    timed = set(T64.names) - {"prereqs", "fa3_import"}
+    if timed & set(cfg.names):
+        raise RuntimeError(f"the gate holds session steps {sorted(timed & set(cfg.names))}")
+    return cfg
+
+
+T64_GATE = _t64_gate()
+
+
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if GATE_FLAG in argv:
+        argv.remove(GATE_FLAG)
+        return S.main(argv, cfg=T64_GATE)
     return S.main(argv, cfg=T64)
 
 

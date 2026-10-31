@@ -123,12 +123,12 @@ def test_the_fa3_step_refuses_a_bad_hash_before_running_anything(tmp_path, monke
 
 
 H100_ROW = {**GOOD_ROW, "instance_type": "a3-highgpu-1g", "instance_generation": "a3",
-            "provisioning_model": "FLEX_START", "gpu_name": "NVIDIA H100 80GB HBM3"}
+            "provisioning_model": "dws-flex-start", "gpu_name": "NVIDIA H100 80GB HBM3"}
 
 
 def test_the_h100_row_must_be_flex_start():
     assert S.check_provenance_row(T64, H100_ROW, []) == []
-    assert S.check_provenance_row(T64, {**H100_ROW, "provisioning_model": "SPOT"}, [])
+    assert S.check_provenance_row(T64, {**H100_ROW, "provisioning_model": "spot"}, [])
     assert S.check_provenance_row(T64, {**H100_ROW, "gpu_name": "NVIDIA A100"}, [])
 
 
@@ -171,3 +171,121 @@ def test_an_in_process_dry_run_matches(tmp_path):
 def test_the_steps_are_named_for_t64_in_run_phase(tmp_path):
     cmd = S.step_command(T64, "fa3_import", tmp_path, tmp_path, [], dry_run=False, sync=True)
     assert cmd[2] == "t64_09_fa3_import" and cmd[5].endswith("scripts/t64_session.py")
+
+
+# --- the FA3 correctness gate (`--gate-only`) ------------------------------------------
+
+GATE = P4.T64_GATE
+GATE_STEPS = ("prereqs", "fa3_import", "fa3_gate", "halt")
+
+
+def test_the_gate_is_four_untimed_steps_ending_in_a_halt():
+    assert GATE.names == GATE_STEPS
+    assert GATE.step_args == ("--gate-only",) and GATE.requirements == () and GATE.banked == ()
+    assert GATE.instance_type == T64.instance_type and GATE.provisioning == T64.provisioning
+    assert not set(GATE.names) & (set(T64.names) - {"prereqs", "fa3_import"})
+
+
+@pytest.mark.parametrize("step", [s for s in STEPS if s not in GATE_STEPS])
+def test_every_session_step_is_refused_in_gate_mode(tmp_path, step):
+    with pytest.raises(SystemExit) as e:
+        P4.main(["step", step, "--gate-only", "--session", str(tmp_path), "--out", str(tmp_path),
+                 "--fa3-sha256", SHA])
+    assert e.value.code == 2
+    assert not (tmp_path / "result.json").exists()
+
+
+def test_a_gate_run_cannot_start_from_a_session_step(tmp_path):
+    with pytest.raises(SystemExit):
+        P4.main(["run", "--gate-only", "--from", "ground_truth", "--session", str(tmp_path),
+                 "--fa3-sha256", SHA])
+
+
+def test_the_gate_needs_the_wheel_hash_and_no_banking_times(monkeypatch):
+    monkeypatch.setattr(S, "tree_clean", lambda: True)
+    a = Namespace(dry_run=False, fa3_sha256=None, banked_at=[])
+    assert "--fa3-sha256" in S.start_refusal(GATE, a)
+    a.fa3_sha256 = SHA
+    assert S.start_refusal(GATE, a) is None
+
+
+def test_the_gate_dry_run_passes_in_their_own_processes_with_the_flag(tmp_path):
+    session = tmp_path / "g"
+    p = subprocess.run([sys.executable, str(ROOT / "scripts" / "t64_session.py"), "run",
+                        "--gate-only", "--dry-run", "--fa3-sha256", SHA, "--session", str(session)],
+                       cwd=ROOT, capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0, p.stdout[-3000:] + p.stderr[-3000:]
+    m = json.loads((session / "manifest.json").read_text())
+    assert m["task"] == "T6.4-gate"
+    st = S.last_status(m)
+    assert [st[s] for s in GATE_STEPS] == ["passed"] * 4
+    for i, s in enumerate(GATE_STEPS, 1):
+        log = (session / f"{i:02d}_{s}" / "step.log").read_text()
+        assert f"t64_session.py step {s}" in log and "--gate-only" in log
+    gate = json.loads((session / "03_fa3_gate" / "result.json").read_text())["findings"]
+    assert gate["check_kinds"] == ["exact"] and gate["configs_checked"] == 2
+    # a gate session is not a P4 session, and the reverse
+    assert S.run_session(T64, session, start="prereqs", extra=[], dry_run=True, sync=False) == 2
+
+
+def _gate_files(d, rows, **stamp):
+    import pandas as pd
+    from attnbench.provenance import PROVISIONING_MODELS
+    d.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(d / "correctness.parquet")
+    S.write_json(d / "versions.json", {**H100_ROW, "provisioning_model": PROVISIONING_MODELS["FLEX_START"],
+                                       **stamp})
+
+
+EXACT = {"backend": "fa3", "config_key": "c1", "passed": True, "check_kind": "exact",
+         "max_abs_err": 2e-3}
+
+
+def test_the_gate_passes_on_exact_checks_that_all_passed(tmp_path):
+    _gate_files(tmp_path, [EXACT, {**EXACT, "config_key": "c2"},
+                           {**EXACT, "backend": "sdpa_flash", "passed": False}])
+    f = P4.read_gate(GATE, tmp_path)
+    assert f["configs_checked"] == 2 and f["failed"] == [] and f["max_abs_err"] == 2e-3
+
+
+@pytest.mark.parametrize("rows, stamp, why", [
+    ([{**EXACT, "backend": "sdpa_flash"}], {}, "no configuration"),
+    ([EXACT, {**EXACT, "config_key": "c2", "check_kind": "cross_backend"}], {}, "float64"),
+    ([EXACT, {**EXACT, "config_key": "c2", "passed": False}], {}, "failed the float64 gate"),
+    ([EXACT], {"gpu_name": "NVIDIA L4"}, "not this session's instance"),
+    ([EXACT], {"provisioning_model": "spot"}, "not this session's instance"),
+    ([EXACT], {"git_dirty": True}, "not this session's instance"),
+])
+def test_the_gate_fails(tmp_path, rows, stamp, why):
+    _gate_files(tmp_path, rows, **stamp)
+    with pytest.raises(S.StepFailed, match=why):
+        P4.read_gate(GATE, tmp_path)
+
+
+def test_the_real_gate_runs_the_probe_on_fa3_alone_below_the_oracles_length(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        _gate_files(Path(cmd[cmd.index("--out") + 1]), [EXACT])
+        return 0
+    monkeypatch.setattr(S, "run", fake_run)
+    f = P4.real_fa3_gate(GATE, args_for(tmp_path))
+    cmd = calls[0]
+    assert cmd[1].endswith("run_probe.py")
+    assert cmd[cmd.index("--only-backends") + 1] == "fa3"
+    assert cmd[cmd.index("--max-seq") + 1] == "4096"
+    assert "--skip-correctness" not in cmd and f["configs_checked"] == 1
+    monkeypatch.setattr(S, "run", lambda cmd, **kw: 1)
+    with pytest.raises(S.StepFailed, match="exited 1"):
+        P4.real_fa3_gate(GATE, args_for(tmp_path / "b"))
+
+
+def test_the_halt_schedules_a_shutdown_and_fails_loudly_if_it_cannot(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(S, "run", lambda cmd, **kw: calls.append(cmd) or 0)
+    assert P4.real_halt(GATE, args_for(tmp_path)) == {"halt_in_minutes": 1}
+    assert calls == [["sudo", "shutdown", "-h", "+1"]]
+    monkeypatch.setattr(S, "run", lambda cmd, **kw: 1)
+    with pytest.raises(S.StepFailed, match="still billing"):
+        P4.real_halt(GATE, args_for(tmp_path))

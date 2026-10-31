@@ -57,7 +57,10 @@ STEPS = ("t21_t220", "zoo", "link", "launch_queue", "nsys", "replay", "probe",
          "assert_gate", "graph_breaks", "null_kernel", "figure1")
 
 EXPECTED_INSTANCE_TYPE = "g2-standard-8"
-EXPECTED_PROVISIONING = "STANDARD"
+# In provenance's vocabulary (`provenance.PROVISIONING_MODELS["STANDARD"]`),
+# which is what a row carries. The GCP name "STANDARD" failed every real
+# t21_t220 (Shakedown 2, 31 Oct 2026).
+EXPECTED_PROVISIONING = "on-demand"
 EXPECTED_GPU = "L4"
 
 
