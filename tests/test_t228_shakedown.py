@@ -560,7 +560,7 @@ def test_the_queue_step_fails_only_on_the_null_kernel_in_shakedown_1s_setting(
     def fake_run(cmd, null_q=None):
         d = Path(cmd[cmd.index("--out") + 1])
         d.mkdir(parents=True)
-        cold = "--warm" not in cmd
+        cold = "--cold" in cmd
         pd.DataFrame([{"sleep0_q": null_q[0] if cold else 1022, "sleep0_q_trials": "x",
                        "sleep0_q_lower_bound": 1, "add_q": None, "add_q_trials": "1,1022",
                        "add_q_lower_bound": 1}]).to_parquet(d / "launch_queue.parquet")

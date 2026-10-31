@@ -159,7 +159,10 @@ def tree_clean() -> bool:
 
 def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, sync: bool,
                 runner=run_logged, keep_going: bool = False,
-                config: Shakedown = T227) -> int:
+                config: Shakedown = T227, only: tuple | None = None) -> int:
+    """`only` runs just those steps, in checklist order, in a new session: a
+    rerun of the steps an earlier session failed (Shakedown 3). The others
+    are not run and not reported."""
     STEPS, CHECKLIST = config.steps, config.checklist     # this session's, not T2.27's
     session.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(session)
@@ -168,15 +171,23 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         print(f"REFUSING: {session} is a {'dry' if manifest['dry_run'] else 'real'} session",
               file=sys.stderr)
         return 2
+    if only is not None:
+        if manifest["attempts"] or start != STEPS[0]:
+            print("REFUSING: --only starts a new session; it does not continue one",
+                  file=sys.stderr)
+            return 2
+        manifest["only"] = [s for s in STEPS if s in only]
+        save_manifest(session, manifest)
+    selected = tuple(manifest.get("only") or STEPS)
     done = last_status(manifest)
     first = STEPS.index(start)
-    unpassed = [s for s in STEPS[:first] if done.get(s) != "passed"]
+    unpassed = [s for s in STEPS[:first] if s in selected and done.get(s) != "passed"]
     if unpassed and not keep_going and \
             not (dry_run and all(done.get(s) == "skipped" for s in unpassed)):
         print(f"REFUSING --from {start}: earlier steps have not passed in {session}: "
               f"{unpassed}", file=sys.stderr)
         return 2
-    for step in STEPS[first:]:
+    for step in (s for s in STEPS[first:] if s in selected):
         d = step_dir(session, step, config)
         if d.exists():
             kept = d.with_name(f"{d.name}.{done.get(step, 'previous')}.{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
@@ -211,8 +222,8 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
                   f" --from {step} --session {session}", flush=True)
             return 1
     statuses = last_status(manifest)
-    print(f"\n{config.title}: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS))
-    return 1 if any(statuses.get(s) == "failed" for s in STEPS) else 0
+    print(f"\n{config.title}: " + ", ".join(f"{s} {statuses.get(s)}" for s in selected))
+    return 1 if any(statuses.get(s) == "failed" for s in selected) else 0
 
 
 def main(argv=None, config: Shakedown = T227) -> int:
@@ -227,7 +238,17 @@ def main(argv=None, config: Shakedown = T227) -> int:
     ap.add_argument("--list", action="store_true", help="print the checklist and exit")
     ap.add_argument("--keep-going", action="store_true",
                     help="record a failed step and go on; --from may then skip unpassed steps")
+    ap.add_argument("--only", default=None, metavar="STEP[,STEP...]",
+                    help="a new session of just these steps, in checklist order")
     args, extra = ap.parse_known_args(argv)
+    only = None
+    if args.only is not None:
+        only = tuple(s.strip() for s in args.only.split(",") if s.strip())
+        unknown = [s for s in only if s not in STEPS]
+        if not only or unknown:
+            print(f"REFUSING --only: unknown steps {unknown}; the steps are {list(STEPS)}",
+                  file=sys.stderr)
+            return 2
     if args.list:
         for i, s in enumerate(STEPS, 1):
             print(f"{i:2d} {s:13s} {CHECKLIST[s]}")
@@ -246,7 +267,7 @@ def main(argv=None, config: Shakedown = T227) -> int:
         return 2
     return run_session(Path(args.session), start=args.start, extra=extra,
                        dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync),
-                       keep_going=args.keep_going, config=config)
+                       keep_going=args.keep_going, config=config, only=only)
 
 
 if __name__ == "__main__":

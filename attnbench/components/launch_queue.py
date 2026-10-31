@@ -83,12 +83,14 @@ def cuda_queue_ops(calibration_cycles: int = 10_000_000) -> QueueOps:
 
 def trial(ops: QueueOps, kind: str, *, launches: int, blocker_s: float,
           clock: Callable[[], int] = time.perf_counter_ns,
-          warm: bool = False) -> list[float]:
+          warm: bool = True) -> list[float]:
     """Host seconds per short-kernel launch behind one blocker. With `warm`,
     one launch of the kind is made and completed before the blocker, so a
     first launch's one-off cost (loading the kernel) cannot pass for a full
-    queue. Shakedown 1's add gave `1,1022,1022,1022,1022`: its first trial's
-    first launch waited. Off by default: the T2.6 method is the cold one."""
+    queue. Shakedown 1's add gave `1,1022,1022,1022,1022` cold: its first
+    trial's first launch waited. Warm is the method of record (researcher,
+    31 Oct 2026, after Shakedown 2 gave the add 1022 warm in every setting);
+    cold is kept as a diagnostic."""
     launch = ops.launcher(kind)
     if warm:
         ops.sync()
@@ -124,7 +126,7 @@ def depth_from_trial(times: Sequence[float], blocker_s: float,
 def measure(ops: QueueOps, *, kinds: Sequence[str] = tuple(KINDS),
             trials: int = 5, launches: int = 16384, blocker_s: float = 2.0,
             blocked_fraction: float = 0.25, dry_run: bool = False,
-            clock=time.perf_counter_ns, warm: bool = False) -> dict:
+            clock=time.perf_counter_ns, warm: bool = True) -> dict:
     """One flat row: per kind, every trial's Q and the agreed Q if all
     trials agree."""
     row = {"dry_run": dry_run, "trials": trials, "launches": launches, "warm_launch": warm,

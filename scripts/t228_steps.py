@@ -610,8 +610,8 @@ def step_queue(args) -> dict:
         d = out / s["name"]
         cmd = _py("measure_launch_queue.py", "--out", str(d),
                   "--blocker-s", str(s["blocker_s"]), "--blocked-fraction", str(s["blocked_fraction"]))
-        if s["warm"]:
-            cmd.append("--warm")
+        if not s["warm"]:
+            cmd.append("--cold")
         if args.dry_run:          # a small simulated queue, so the dry run is quick
             cmd += ["--dry-run", "--dry-run-depth", "64", "--launches", "512", "--trials", "2"]
         if _run(cmd):
