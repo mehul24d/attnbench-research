@@ -22,10 +22,12 @@ def _filled(plan_text=PLAN_TEXT) -> dict:
 
 def test_the_list_is_read_from_the_plans_t41_row():
     items = L.lock_items(PLAN_TEXT)
-    assert len(items) == 28
+    assert len(items) == 31
     keys = list(items)
     assert keys[0] == "h0_to_h3_tolerances"
-    assert keys[-1] == "budget_cut_order"
+    # the three of the researcher's rulings of 31 Oct 2026 close the list
+    assert keys[-4:] == ["budget_cut_order", "compiled_versus_eager_density_flag_tolerance",
+                         "probe_length_rule", "flagged_memset_sensitivity_bound"]
     # Parentheticals are part of the item's text but not of its key, and a
     # comma inside one does not split the item.
     assert items["replay_versus_trace_bound_for_gate_a"].startswith(
@@ -38,7 +40,7 @@ def test_the_list_is_read_from_the_plans_t41_row():
 def test_a_complete_lock_file_passes_and_its_report_says_so():
     result = L.check(_filled(), PLAN_TEXT)
     assert result.complete
-    assert result.report().startswith("28 values listed by T4.1; complete")
+    assert result.report().startswith("31 values listed by T4.1; complete")
 
 
 def test_missing_unset_unsourced_and_unknown_entries_are_each_named():
