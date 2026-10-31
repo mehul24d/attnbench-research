@@ -1,6 +1,6 @@
 """T2.13's controls: the dense control's drift check and the rerun rule, clock
 and throttle sampling, traced against untraced, one compiled setting per
-process, and the first timed block's timestamp (plan Sections 5.3 steps 1, 7
+process, and the first clocked block's timestamp (plan Sections 5.3 steps 1, 7
 and 8, 5.5 and 5.6).
 
 Each check here is one a mutation has been watched to break (recorded in the
@@ -22,7 +22,7 @@ transformers = pytest.importorskip("transformers")
 from transformers import LlamaConfig, LlamaForCausalLM  # noqa: E402
 
 from _gt_fakes import (LAYERS, CostedBackend, FakeClock, ScriptedReader,  # noqa: E402
-                       Tracing)
+                       Tracing, fake_densities)
 from attnbench import clock_sampling as cs  # noqa: E402
 from attnbench import ground_truth as gt  # noqa: E402
 from attnbench.accuracy.model import SwappableAttentionModel  # noqa: E402
@@ -66,7 +66,9 @@ def _ids():
 class Rig:
     """A fake clock, arms whose per-forward cost is scripted, and a reader."""
 
-    def __init__(self, costs=None, *, windows=(), flag_bits=SLOWDOWNS, interval_s=None,
+    # interval_s: Controls refuse a counters-only sampler (audit C3, finding 1),
+    # so the rig's sampler reads inside every block too.
+    def __init__(self, costs=None, *, windows=(), flag_bits=SLOWDOWNS, interval_s=0.001,
                  reader=None, max_rerun=2, settings=None, tracing=None,
                  traced_extra_ms=0.0, read_cost_ms=0.0):
         self.clock = FakeClock()
@@ -87,7 +89,7 @@ class Rig:
                    _cfg(mask="causal", sparsity=None, block_size=None),
                    compile_setting=settings.get("dense")),
             gt.Arm("meanpool", gt.INLINE, backend("meanpool", 18.0), _cfg(),
-                   inline_estimator="minference_meanpool",
+                   inline_estimator="minference_meanpool", builder_kind="gpu",
                    compile_setting=settings.get("meanpool")),
         ]
 
@@ -95,7 +97,7 @@ class Rig:
         kw.setdefault("reps", REPS)
         kw.setdefault("warmup", WARMUP)
         kw.setdefault("wall_clock", lambda: 1_000_000.0 + self.clock.t)
-        return gt.time_arms(_wrapped(), _ids(), self.arms, controls=self.controls,
+        return gt.time_arms(_wrapped(), _ids(), self.arms, density_of=fake_densities, controls=self.controls,
                             clock=self.clock, **kw)
 
 
@@ -155,11 +157,11 @@ def test_the_cold_first_warmup_forward_is_not_the_reference():
 def test_a_run_needs_exactly_one_dense_control():
     rig = Rig()
     with pytest.raises(gt.TimedRegionError, match="exactly one dense control"):
-        gt.time_arms(_wrapped(), _ids(), rig.arms[1:], reps=1, controls=rig.controls,
+        gt.time_arms(_wrapped(), _ids(), rig.arms[1:], reps=1, density_of=fake_densities, controls=rig.controls,
                      clock=rig.clock)
     twin = gt.Arm("dense2", gt.DENSE, rig.arms[0].backend, rig.arms[0].cfg)
     with pytest.raises(gt.TimedRegionError, match="exactly one dense control"):
-        gt.time_arms(_wrapped(), _ids(), rig.arms + [twin], reps=1, controls=rig.controls,
+        gt.time_arms(_wrapped(), _ids(), rig.arms + [twin], reps=1, density_of=fake_densities, controls=rig.controls,
                      clock=rig.clock)
 
 
@@ -203,14 +205,17 @@ def test_a_block_that_overlapped_a_thermal_window_is_flagged_and_rerun():
     assert _row(out, "dense")["clean_rounds"] == REPS
 
 
-def test_a_power_cap_is_recorded_and_flags_only_if_chosen():
+def test_a_power_cap_is_recorded_and_never_flags():
     start = _first_block_window()
     win = [(start, start + 1.0, "power")]
-    quiet = Rig(windows=win, flag_bits=THERMAL, reader=None).run(reps=1)
+    quiet = Rig(windows=win, reader=None).run(reps=1)
     assert not quiet["rounds"][0]["flagged"]
     assert quiet["rounds"][0]["blocks"]["dense"]["violation_delta_ns"]["power"] > 0
-    loud = Rig(windows=win, flag_bits=THERMAL | cs.SW_POWER_CAP, max_rerun=0).run(reps=1)
-    assert loud["rounds"][0]["flagged"] and not loud["complete"]
+    # The power counter integrates the cap and the brake together, so it never
+    # flags; the brake is seen from the bits. No session may choose the cap
+    # (researcher's decision, 29 Oct 2026).
+    with pytest.raises(ValueError, match="software power cap"):
+        Rig(windows=win, flag_bits=SLOWDOWNS | cs.SW_POWER_CAP)
 
 
 def test_instantaneous_reasons_are_recorded_and_the_idle_bit_never_flags():
@@ -246,7 +251,7 @@ def test_the_sampling_thread_sees_a_throttle_inside_the_block():
     controls = gt.Controls(FLOOR, 0, sampler)
     arms = [gt.Arm("dense", gt.DENSE, _WaitsForThread(clock, lambda i: 30.0, name="dense"),
                    _cfg(mask="causal", sparsity=None, block_size=None))]
-    out = gt.time_arms(_wrapped(), _ids(), arms, reps=1, controls=controls, clock=clock)
+    out = gt.time_arms(_wrapped(), _ids(), arms, reps=1, density_of=fake_densities, controls=controls, clock=clock)
     block = out["rounds"][0]["blocks"]["dense"]
     assert block["samples"] > 2 and "hw_slowdown" in block["throttle_reasons_seen"]
     assert out["rounds"][0]["flagged"]
@@ -293,7 +298,7 @@ def test_sampler_refusals():
 def test_a_counter_that_goes_backwards_is_refused():
     clock = FakeClock()
     reader = ScriptedReader(clock, windows=[(0.0, 10.0, "power")])
-    s = cs.BlockSampler(reader, flag_bits=cs.SW_POWER_CAP)
+    s = cs.BlockSampler(reader, flag_bits=cs.HW_THERMAL_SLOWDOWN)
     clock.t = 5.0
     s.begin()
     reader.windows = []                  # the counter resets underneath us
@@ -371,7 +376,7 @@ def _traced_session(extra_ms):
     tracing = Tracing()
     rig = Rig(tracing=tracing, traced_extra_ms=extra_ms)
     out = gt.time_with_profiler_overhead(_wrapped(), _ids(), rig.arms, reps=REPS,
-                                         controls=rig.controls, tracer=tracing,
+                                         density_of=fake_densities, controls=rig.controls, tracer=tracing,
                                          clock=rig.clock, warmup=WARMUP)
     return rig, tracing, out
 
@@ -410,8 +415,8 @@ def test_an_overhead_inside_the_floor_is_labelled_so():
 
 def test_the_timestamp_handed_on_is_the_untraced_one():
     rig, tracing, out = _traced_session(9.0)
-    assert out["first_timed_block_started_at"] == out["untraced"]["first_timed_block_started_at"]
-    assert out["traced"]["first_timed_block_started_at"] > out["first_timed_block_started_at"]
+    assert out["first_clocked_block_started_at"] == out["untraced"]["first_clocked_block_started_at"]
+    assert out["traced"]["first_clocked_block_started_at"] > out["first_clocked_block_started_at"]
 
 
 def test_profiler_overhead_refuses_swapped_or_mismatched_results():
@@ -462,27 +467,30 @@ def test_eager_arms_may_share_a_process_with_one_compiled_setting():
 def test_a_declaration_the_backend_does_not_bear_out_is_refused():
     rig = Rig()
     rig.arms[1] = gt.Arm("meanpool", gt.INLINE, rig.arms[1].backend, _cfg(),
-                         inline_estimator="minference_meanpool", compile_setting="default")
+                         inline_estimator="minference_meanpool", compile_setting="default",
+                         builder_kind="gpu")
     with pytest.raises(gt.CompileSettingError, match="declares compile_setting='default'"):
         rig.run(reps=1)
     rig = Rig(settings={"meanpool": "default"})       # backend compiled, arm says eager
     rig.arms[1] = gt.Arm("meanpool", gt.INLINE, rig.arms[1].backend, _cfg(),
-                         inline_estimator="minference_meanpool")
+                         inline_estimator="minference_meanpool", builder_kind="gpu")
     with pytest.raises(gt.CompileSettingError, match="backend carries setting='default'"):
         rig.run(reps=1)
 
 
-# --- the first timed block's timestamp ---------------------------------------------
+# --- the first clocked block's timestamp ---------------------------------------------
 
-def test_the_timestamp_is_the_first_ground_truth_block_not_a_warmup():
+def test_the_timestamp_is_the_first_clocked_block_warmups_included():
+    """The strict rule (Appendix A, 27 Oct 2026): the stamp is the start of the
+    first block of any kind that is clocked, so it precedes every warm-up
+    forward and every timed one."""
     rig = Rig()
     out = rig.run()
-    stamp = out["first_timed_block_started_at"] - 1_000_000.0
-    first_timed = min(t for (n, i, t, _) in rig.log
-                      if i >= WARMUP)                     # a timed forward's start
-    last_warmup_end = max(t for (n, i, t, _) in rig.log if i == WARMUP - 1) + 18.0 / 1e3
-    assert stamp == pytest.approx(first_timed)
-    assert stamp > last_warmup_end - 1e-9               # after every warm-up
+    stamp = out["first_clocked_block_started_at"] - 1_000_000.0
+    first_clocked = min(t for (n, i, t, _) in rig.log)            # any forward, warm-up or timed
+    first_timed = min(t for (n, i, t, _) in rig.log if i >= WARMUP)
+    assert stamp == pytest.approx(first_clocked)
+    assert stamp < first_timed - 1e-9                           # not the first timed block's
 
 
 def test_a_rerun_round_does_not_move_the_timestamp():
@@ -490,7 +498,7 @@ def test_a_rerun_round_does_not_move_the_timestamp():
     plain = Rig()
     a, b = flagged_first.run(), plain.run()
     assert a["rounds"][0]["flagged"]
-    assert a["first_timed_block_started_at"] == pytest.approx(b["first_timed_block_started_at"])
+    assert a["first_clocked_block_started_at"] == pytest.approx(b["first_clocked_block_started_at"])
 
 
 def test_the_timestamp_is_taken_once_and_not_per_block():
@@ -503,15 +511,14 @@ def test_the_timestamp_is_taken_once_and_not_per_block():
 def test_the_timestamp_is_in_the_form_the_late_prediction_check_reads():
     from attnbench.predict.commit import ground_truth_start, utc_from_epoch
     out = Rig().run()
-    stamp = out["first_timed_block_started_at"]
+    stamp = out["first_clocked_block_started_at"]
     assert ground_truth_start([stamp]) == utc_from_epoch(stamp)
 
 
 def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late(tmp_path):
-    """The consumer, end to end: a prediction synced after the first
-    ground-truth block started is refused by `load_committed`, one synced
-    while only warm-up had run is accepted (`ground_truth_start` says a
-    warm-up is not the first timed block), and so is an earlier one."""
+    """The consumer, end to end: a prediction synced at or after the first
+    clocked block started, warm-up included, is refused by `load_committed`,
+    and one synced before it is accepted."""
     from datetime import datetime, timedelta, timezone
 
     from test_predict_commit import Clock, MemoryStore, committed, p1_record
@@ -519,10 +526,11 @@ def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late
 
     epoch = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc).timestamp()
     rig = Rig()
-    out = rig.run(wall_clock=lambda: epoch + rig.clock.t)
-    stamp = out["first_timed_block_started_at"]
+    start = 10.0                       # the instance starts its first clocked block 10 s after the file
+    out = rig.run(wall_clock=lambda: epoch + start + rig.clock.t)
+    stamp = out["first_clocked_block_started_at"]
     warmup_s = WARMUP * (30.0 + 18.0) / 1e3
-    assert stamp == pytest.approx(epoch + warmup_s)
+    assert stamp == pytest.approx(epoch + start)           # the first warm-up forward
 
     def load(sync_offset_s):
         store = MemoryStore(Clock(None))
@@ -531,10 +539,11 @@ def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late
                                utc_from_epoch(epoch + sync_offset_s))
         return load_committed(store, receipt.remote,
                               ground_truth_started_at=utc_from_epoch(stamp),
-                              clock_skew=timedelta(0), local=f.path)
+                              clock_skew=timedelta(0), banked_at={}, local=f.path)
 
-    assert load(0.0).pairing == "P1"                       # before any run
-    assert load(warmup_s / 2).pairing == "P1"              # during warm-up: not yet timed
-    for late in (warmup_s, warmup_s + 0.001):              # at, or after, the first block
+    assert load(0.0).pairing == "P1"                       # before any block was clocked
+    # At the stamp, during the dense control's clocked warm-up, and after it
+    # (the strict rule: a warm-up is a clocked block, so these are all late).
+    for late in (start, start + warmup_s / 2, start + warmup_s, start + warmup_s + 0.001):
         with pytest.raises(LatePredictionError):
             load(late)

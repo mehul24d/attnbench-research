@@ -397,6 +397,7 @@ interpreter-bound", not "block-sparse attention is inherently CPU-bound".
 *(~91%: restated 19 Oct 2026; see plan Appendix A. The figures above give
 (0.212 − 0.013) / 0.212 = 93.9%, about 94% of the builder's loop time. This
 profile ran on a laptop, not on the A100 host, and was not banked.)*
+*(Note, 28 Oct 2026: the ~94% is what `cProfile` reports. `cProfile` does not count a tensor `__setitem__` or `__getitem__` as a call, so the builder's ~100,000 tensor operations per build at 32768 are charged to the function's own time. `torch.profiler` counts them as operators and gives a Python share of about 0.53, with a lower bound of 0.28 (one minus its operator time over the unprofiled wall time). Both come from a development run on a laptop, not the target host, and neither is banked. Name the instrument whenever this figure is repeated. T2.2 banks both on the target host; Shakedown 2 step `t22` is where they are first measured there.)*
 
 **The counterfactual, measured rather than predicted.** A minimal
 vectorisation of `importance_block_mask` — one masked `argsort`, one
@@ -1984,6 +1985,28 @@ implementation on H100"* is **not supported** by this study and is not
 claimed: FA3 exists, is designed for exactly that hardware, and was not
 measured. The supported form is the one already in the ledger — backend A
 against backend B on identical inputs, among the backends actually run.
+
+**Superseded, 27–28 Oct 2026.** The plan's control K2 now includes FA3 as an
+H100 candidate, and an H100 record without it says `complete: false`
+(Appendix A, 27 Oct 2026). The two sentences above that say no backend exists
+and that the image lacks the build are out of date; what holds now:
+
+- **A restricted wheel only.** `attnbench/backends/fa3.py` is built for head
+  dim 128, forward, bf16 and fp16, sm_90a (`fa3.BUILD_FLAGS`, researcher's
+  decision, 28 Oct 2026). It refuses other head dims, sliding windows,
+  backward and decode. Every study cell is head dim 128, causal prefill, so
+  nothing the study measures is lost; FA3 at other shapes is not measured.
+- **Split-KV is compiled out.** At the pin, upstream's heuristic
+  (`hopper/heuristics.h`) does not split a causal prefill when the m-block
+  tiles nearly fill the SMs, which they do at batch 1 from about 1,100 tokens
+  with two KV heads. So the study's 8,192 to 32,768-token cells run the
+  kernel they would have run anyway. This is read from the source, not
+  measured.
+- **No wheel yet.** The first build (28 Oct 2026, `docs/spend_ledger.md`)
+  was killed for memory before it finished. Until a wheel is built, installed
+  on the H100 (`scripts/fa3_import_check.sh`) and passes the float64 gate,
+  H100 records are `complete: false`, and any H100 speedup is an upper bound
+  against the best of the other dense kernels, with FA3's absence named.
 
 ## Stage 1 on sm90: `passed=False` means two different things
 

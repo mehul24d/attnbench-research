@@ -101,6 +101,24 @@ authority is the billing console.
 | 2026-10-02 | `attnbench-l4-t4pilot-16384-20261002-0312`; row added 18 Oct 2026, date from the instance name | no cost file | no cost file | no cost file (`results/t4_sparse_pilot_session_16384_20261002/` has none) |
 | 2026-10-21 | `attnbench-a100-t11a-20261022`, asia-southeast1-c, **Flex Start**, ₹297.47/h (planning rate, all-in); T1.1 Session A, the three calibrations; date from the boot clock in UTC (01:02 IST on 22 Oct) | **55** | **273** | `session_cost.txt` (`results/t11a_session_20261022/`) |
 | 2026-10-25 | `attnbench-l4-t11b-20261025`, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); T1.1 Session B, the dense reference and the three calibrated XAttention runs; image `attnbench-env-v7-20261025` captured before teardown (its storage is not in this row) | **210** | **380** | `session_cost.txt` (`results/t11b_session_20261025/`) |
+| 2026-10-27 | `attnbench-l4-t227-20261028-0015`, T2.27 Shakedown 1, asia-northeast1-a, ₹108.64/h; 4 of 11 steps passed, 7 stopped by one prompt-length defect | **23** | **42** | `session_cost.txt` (`results/t227_shakedown1_l4_20261028/`) |
+| 2026-10-28 | `attnbench-fa3-build-20261028`, T6.4 FA3 wheel build, us-central1-a, `n2-standard-16` on-demand, ₹77.21/h (planning rate, all-in); **no wheel.** The build was OOM-killed 12 minutes in (exit 137 on three `flash_fwd_hdimall_*_sm90` units, 8 jobs on 64 GB), and the VM then sat idle for about two hours: the Mac-side watcher called `timeout`, which macOS lacks, so every check failed and none was reported. About ₹150 of this row bought nothing. Fixes: the build now halts the VM itself when it ends, and `scripts/gcp_watch_fa3_build.sh` has no `timeout` (T6.4, 28 Oct 2026). The ₹175 reported at the time was `gcp_session_elapsed.sh` at 136 minutes, before the teardown | **137** | **176** | `session_cost.txt` (`results/fa3_build_20261028/`) |
+| 2026-10-28 | `attnbench-fa3-build-restricted-20261028`, T6.4 FA3 wheel build, second (restricted) build, us-central1-a, `n2-standard-16` on-demand, ₹77.21/h (planning rate, all-in); **wheel built** (sha256 `1676ef0b…`); self-halting VM. **An estimate, not a cost file:** the researcher's figure of about ₹12, entered 31 Oct 2026; no `session_cost.txt` was banked, so the minutes are derived (₹12 at ₹77.21/h is about 9 minutes) | **~9** | **~12** | researcher's estimate; no cost file |
+
+### New-spend headroom against the ₹14,000 budget (31 Oct 2026)
+
+Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of ₹14,000 at the planning rates. Counted from the rows dated 21 Oct 2026 on:
+
+| row | est ₹ |
+|---|---|
+| T1.1 Session A (A100, Flex Start) | 273 |
+| T1.1 Session B (L4) | 380 |
+| T2.27 Shakedown 1 (L4) | 42 |
+| FA3 build, first (killed for memory; `session_cost.txt`) | 176 |
+| FA3 build, second (estimate, no cost file) | ~12 |
+| **Total** | **~883** |
+
+Headroom: ₹14,000 − ₹883 = **about ₹13,117**. This counts only the rows above. Machine-image storage (the v7 image), egress and any launch not yet in this table are not in it. The first FA3 build is ₹176 from its cost file; the ₹175 reported at the time was read before the teardown and is superseded. Nothing here is a go-ahead for a launch: caps are per session (rule 10).
 
 **Notes on the table (18 Oct 2026).**
 
@@ -567,3 +585,19 @@ teardown: 2026-10-02T18:51:25Z
 minutes: 201
 rate_inr_hr: 80
 est_inr: 268
+
+instance: attnbench-l4-t227-20261028-0015
+zone: asia-northeast1-a
+boot: 2026-10-27 18:44:51
+teardown: 2026-10-27T19:07:44Z
+minutes: 23
+rate_inr_hr: 108.64
+est_inr: 42
+
+instance: attnbench-fa3-build-20261028
+zone: us-central1-a
+boot: 2026-10-28 13:51:38
+teardown: 2026-10-28T16:08:16Z
+minutes: 137
+rate_inr_hr: 77.21
+est_inr: 176

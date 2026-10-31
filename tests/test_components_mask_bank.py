@@ -163,6 +163,7 @@ def test_a_manifest_naming_another_mask_is_refused(tmp_path):
     _, man = B.save(rec, tmp_path / "masks")
     meta = json.loads(man.read_text())
     meta["calls"][1]["sha256"] = "0" * 64
+    meta["calls_sha256"] = B.calls_sha256(meta["calls"])    # the per-call check still fires
     man.write_text(json.dumps(meta))
     with pytest.raises(MaskBankError, match="call 1 does not match"):
         B.load(tmp_path / "masks")

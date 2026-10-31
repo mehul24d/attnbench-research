@@ -25,8 +25,8 @@ and records the result in a file that can be checked against its own inputs.
   context and cannot be caught; the record names it as a fault.
 - `failed_repeats`: raised during the warm-up rounds.
 - `unavailable`: planned for this card and not supplied, because it is not
-  installed or no backend of that name exists (FA3 has none in this
-  repository yet). **This is a gap, not a result.** A record with any
+  installed or no backend of that name exists (FA3's backend exists; it is
+  unavailable until its wheel is installed on an H100). **This is a gap, not a result.** A record with any
   unavailable candidate says `complete: False`, and `check_control` refuses
   it: the fastest of the candidates that could run is not "the fastest
   correct dense kernel".
@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import statistics
 import time
 from dataclasses import asdict, dataclass, field
@@ -298,7 +299,9 @@ def _canonical(d: dict) -> bytes:
 
 
 def _filename(choice: Choice) -> str:
-    return f"dense_choice_{choice.cell.key}.json"
+    # A card is named as the driver names it ("NVIDIA L4"); a space in the file
+    # name breaks the sha256sum-format sidecar, which is split on whitespace.
+    return f"dense_choice_{re.sub(r'[^A-Za-z0-9._-]+', '_', choice.cell.key)}.json"
 
 
 def write_choice(choice: Choice, directory) -> Path:
@@ -365,11 +368,35 @@ def _check_follows(choice: Choice) -> None:
         raise SelectionRecordError(f"derived fields do not follow from the samples: {diff}")
 
 
+def cell_of_key(key) -> Cell:
+    """The K2 cell (card, context length, batch) of a prediction key
+    (`training.CellKey`: its code path label starts with the GPU, as
+    `commit.code_path_label` writes it), or `key` itself if it is a Cell."""
+    if isinstance(key, Cell):
+        return key
+    try:
+        card = str(key.code_path).split("|", 1)[0]
+        return Cell(card, int(key.context_length), int(key.batch))
+    except (AttributeError, TypeError, ValueError) as e:
+        raise SelectionError(f"not a prediction key or a K2 cell: {key!r}") from e
+
+
 def check_control(choice: Choice, control_backend_name: str,
-                  first_timed_block_started_at: float) -> None:
+                  first_clocked_block_started_at: float, *, key) -> None:
     """What the session runner asks before ground truth is accepted: the dense
-    control is the recorded choice, the record is complete, and it was made
-    before the first timed block started."""
+    control is the recorded choice for the cell being measured (`key`, the
+    prediction key, or its K2 `Cell`; audit C3, finding 3), the record is
+    complete, and it was made before the first clocked block of any kind
+    started (the strict rule, Appendix A, 27 Oct 2026: warm-ups count)."""
+    want = cell_of_key(key)
+    got = choice.cell
+    for what, a, b in (("card", got.card, want.card),
+                       ("context length", got.context_length, want.context_length),
+                       ("batch", got.batch, want.batch)):
+        if a != b:
+            raise SelectionError(
+                f"the dense choice was recorded for {got.key}, but this cell has {what} "
+                f"{b!r}, not {a!r}: a K2 choice is per card, context length and batch")
     if not choice.complete:
         raise SelectionError(
             f"the choice for {choice.cell.key} is incomplete (unavailable: "
@@ -381,10 +408,10 @@ def check_control(choice: Choice, control_backend_name: str,
         raise SelectionError(
             f"the dense control is {control_backend_name!r} but the recorded choice "
             f"for {choice.cell.key} is {choice.chosen!r}")
-    if not choice.recorded_at < first_timed_block_started_at:
+    if not choice.recorded_at < first_clocked_block_started_at:
         raise SelectionError(
             f"the choice was recorded at {choice.recorded_at}, not before the first "
-            f"timed block at {first_timed_block_started_at}")
+            f"clocked block at {first_clocked_block_started_at}")
 
 
 # --- restating banked figures ---------------------------------------------------

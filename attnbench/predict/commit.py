@@ -95,6 +95,17 @@ TRAINED_REQUIRED = ("fitted_sum", "learned")
 # Fitted, labelled separately (not in the plan), never required.
 TRAINED_OPTIONAL = ("fitted_sum_plus_s0",)
 
+# Plan Section 5.1 (Appendix A, 25 Oct 2026): the timed workload starts at
+# least this long after the prediction's sync, and the analysis allows this
+# much skew between the store's clock and the instance's. The one source of
+# the number: the session runners and the analysis both read it from here.
+REQUIRED_SYNC_GAP_S = 60.0
+# A session waits the required gap plus this margin after the sync, so the
+# store's whole-second round-up and the upload and read-back times never eat
+# the gap (audit C2, finding 1).
+SYNC_WAIT_MARGIN_S = 30.0
+PLANNED_SYNC_WAIT_S = REQUIRED_SYNC_GAP_S + SYNC_WAIT_MARGIN_S
+
 NOT_FITTED_REASON = ("no pairing was banked before this prediction, so no "
                      "fitted baseline exists; Gate A uses the sum and the "
                      "step form (Section 5.4)")
@@ -171,8 +182,9 @@ def utc_from_epoch(seconds: float) -> datetime:
 
 def ground_truth_start(timestamps: Iterable) -> datetime:
     """The earliest of the timed workload's stamps (epoch seconds or aware
-    datetimes). The caller passes the stamp of the first timed block, not
-    of a warm-up or of the structural probe."""
+    datetimes). The caller passes the stamp of the first clocked block of any
+    kind, warm-up included (strict rule, Appendix A, 27 Oct 2026), not the
+    structural probe's."""
     ts = [utc_from_epoch(t) if isinstance(t, (int, float)) and not
           isinstance(t, bool) else _check_aware(t, "a ground-truth stamp")
           for t in timestamps]
@@ -1019,18 +1031,39 @@ def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPredictio
         dispatch_spec=dispatch_spec, dispatch_choices=dispatch_choices)
 
 
+def require_loaded(cp) -> CommittedPrediction:
+    """`cp`, if it came through `load_committed`, which checked its sync
+    time against the timed workload (K9). A prediction read with
+    `verify_bytes` alone has no sync time and is refused: scoring it would
+    skip the late-sync check (audit C2, finding 3)."""
+    if not isinstance(cp, CommittedPrediction):
+        raise PredictionCommitError(
+            f"expected a CommittedPrediction, got {type(cp).__name__}")
+    if cp.synced_at is None:
+        raise PredictionCommitError(
+            f"the {cp.pairing} prediction has no checked sync time: read it with "
+            f"load_committed, "
+            f"which checks it was synced before the timed workload (K9), not with "
+            f"verify_bytes alone")
+    return cp
+
+
 def load_committed(store: Store, remote: str, *,
                    ground_truth_started_at: datetime,
                    clock_skew: timedelta,
-                   banked_at: Optional[Mapping[str, datetime]] = None,
+                   banked_at: Mapping[str, datetime],
                    local: Optional[Path | str] = None) -> CommittedPrediction:
     """The committed prediction the analysis may score, or a refusal.
 
-    `ground_truth_started_at` is when the pairing's first timed block began
+    `ground_truth_started_at` is when the pairing's first clocked block began
     (`ground_truth_start`). `clock_skew` is the largest difference allowed
     between the store's clock and the instance's; it only ever makes the
-    check stricter. `banked_at` gives, for every pairing a committed
-    baseline was trained on, when that pairing's ground truth was banked.
+    check stricter; pass `timedelta(seconds=REQUIRED_SYNC_GAP_S)`.
+    `banked_at` gives when each pairing's ground truth was banked, for every
+    pairing banked so far (`{}` when none is). The pairings the committed
+    baselines were trained on must be exactly those banked before the
+    prediction was written: none left out, none banked later (Section 5.4,
+    "Fitting the baselines"; audit C2, finding 2).
     `local`, if given, must hold the same bytes as the store.
     """
     start = _check_aware(ground_truth_started_at, "ground_truth_started_at")
@@ -1059,8 +1092,12 @@ def load_committed(store: Store, remote: str, *,
             f"the store created it ({_iso(synced_at)}); the clocks disagree "
             f"by more than the {clock_skew} allowed")
 
+    if not isinstance(banked_at, Mapping):
+        raise PredictionCommitError(
+            f"state banked_at, when every pairing banked so far was banked ({{}} "
+            f"when none is), got {banked_at!r}")
     trained = sorted({p for r in cp.training.values() for p in r["trained_on"]})
-    banked_at = dict(banked_at or {})
+    banked_at = dict(banked_at)
     for p in trained:
         if p not in banked_at:
             raise PredictionCommitError(
@@ -1072,4 +1109,27 @@ def load_committed(store: Store, remote: str, *,
                 f"{filename} was written at {_iso(cp.written_at)}, but {p}'s "
                 f"ground truth, which its baselines were trained on, was "
                 f"banked at {_iso(b)}: not before the prediction")
+
+    # The other direction: every pairing banked before the write is named.
+    named = set(cp.banked_before) | set(trained)
+    for p, t in sorted(banked_at.items()):
+        b = _check_aware(t, f"banked_at[{p!r}]")
+        if p == cp.pairing:
+            if b - clock_skew <= cp.written_at:
+                raise LatePredictionError(
+                    f"{p}'s own ground truth was banked at {_iso(b)}, not after its "
+                    f"prediction was written ({_iso(cp.written_at)})")
+            continue
+        if p in named:
+            continue
+        if b + clock_skew < cp.written_at:
+            raise PredictionCommitError(
+                f"{filename} was written at {_iso(cp.written_at)}, after {p}'s ground "
+                f"truth was banked ({_iso(b)}), but its training set leaves {p} out: "
+                f"the training set is every pairing banked before the prediction")
+        if b - clock_skew <= cp.written_at:
+            raise PredictionCommitError(
+                f"{p}'s ground truth was banked at {_iso(b)}, within the {clock_skew} "
+                f"of skew allowed of {filename}'s write ({_iso(cp.written_at)}): the "
+                f"two cannot be ordered, so the training set cannot be checked")
     return dataclasses.replace(cp, synced_at=synced_at)

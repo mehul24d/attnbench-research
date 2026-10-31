@@ -476,6 +476,7 @@ def test_sync_reports_the_later_creation_time(tmp_path):
 # --------------------------------------------------------------------------
 
 def load(store, receipt, start, skew=NO_SKEW, banked_at=None, **kw):
+    banked_at = {} if banked_at is None else banked_at
     return load_committed(store, receipt.remote, ground_truth_started_at=start,
                           clock_skew=skew, banked_at=banked_at, **kw)
 
@@ -662,7 +663,7 @@ def test_a_renamed_file_is_refused(tmp_path):
     store.times[new] = store.times[new + ".sha256"] = T0
     with pytest.raises(PredictionCommitError, match="does not match its own"):
         load_committed(store, new, ground_truth_started_at=T0 + timedelta(1),
-                       clock_skew=NO_SKEW)
+                       clock_skew=NO_SKEW, banked_at={})
 
 
 def test_a_sidecar_naming_another_file_is_refused(tmp_path):
@@ -775,7 +776,7 @@ def test_gsutil_store_round_trip(tmp_path, fake_gsutil):
     cp = load_committed(GsutilStore(), r.remote,
                         ground_truth_started_at=datetime(2026, 11, 2, 3, 0, 9,
                                                          tzinfo=UTC),
-                        clock_skew=NO_SKEW)
+                        clock_skew=NO_SKEW, banked_at={})
     assert cp.sha256 == f.sha256
     # Created at 03:00:07 and printed so; the workload starting at 03:00:08
     # could follow it by under a second, so it is refused.
@@ -783,7 +784,7 @@ def test_gsutil_store_round_trip(tmp_path, fake_gsutil):
         load_committed(GsutilStore(), r.remote,
                        ground_truth_started_at=datetime(2026, 11, 2, 3, 0, 8,
                                                         tzinfo=UTC),
-                       clock_skew=NO_SKEW)
+                       clock_skew=NO_SKEW, banked_at={})
 
 
 def test_gsutil_store_refuses_other_uris_and_reports_failures(tmp_path,

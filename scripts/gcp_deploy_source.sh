@@ -53,8 +53,12 @@ fi
 COMMIT="$(git rev-parse HEAD)"
 echo "deploying $COMMIT to $NAME:$REMOTE_DIR"
 
-BUNDLE="$(mktemp -t attnbench-deploy).bundle"
-trap 'rm -f "$BUNDLE"' EXIT
+# A directory from a template both mktemps accept: `-t PREFIX` is BSD-only
+# (GNU wants X's in it) and `-p`/`--tmpdir` are GNU-only. The trap removes
+# the directory, so nothing mktemp made is left behind on either.
+BUNDLE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/attnbench-deploy.XXXXXXXX")"
+BUNDLE="$BUNDLE_DIR/deploy.bundle"
+trap 'rm -rf "$BUNDLE_DIR"' EXIT
 # Full history reachable from HEAD, so the bundle is self-contained and does
 # not depend on what the instance's repo happens to already have.
 git bundle create "$BUNDLE" HEAD >/dev/null 2>&1

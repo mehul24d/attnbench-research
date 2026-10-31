@@ -48,7 +48,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence
+from typing import Collection, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -153,14 +153,28 @@ def plan_variants(base: Sequence[Operation], mechanism: str, placement: str,
                   counts: Sequence[int], sync_costs: SyncCosts,
                   queue_depth: Optional[int], *, payload_bytes: int = 0,
                   loaded: bool = False,
-                  idle_site: int = START) -> tuple[Variant, ...]:
-    """Every variant for one mechanism and placement, predicted."""
+                  idle_site: int = START,
+                  sites_allowed: Optional[Collection[int]] = None) -> tuple[Variant, ...]:
+    """Every variant for one mechanism and placement, predicted.
+
+    `sites_allowed` is the sites the injector can take, from
+    `components.delay_injector.injectable_sites` (an injection goes after a
+    launching call, never between the operations one call issues). Without
+    it every busy site is a candidate, and a variant may name a site the
+    injector refuses; with it the busy candidates are filtered to it, and an
+    idle site other than START must be in it."""
     if placement not in PLACEMENTS:
         raise CostModelError(f"placement is one of {PLACEMENTS}, got {placement!r}")
     counts = _check_counts(counts)
     base = _check_base(base)
+    allowed = None if sites_allowed is None else frozenset(sites_allowed)
     if placement == BUSY:
         candidates = busy_sites(base, sync_costs, queue_depth)
+        if allowed is not None:
+            candidates = tuple(k for k in candidates if k in allowed)
+    elif allowed is not None and idle_site != START and idle_site not in allowed:
+        raise CostModelError(
+            f"idle site {idle_site} is not one the injector can take")
     out = []
     for c in counts:
         sites = spread(candidates, c) if placement == BUSY else (idle_site,) * c

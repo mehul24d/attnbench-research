@@ -47,6 +47,10 @@ class MemoryPlan:
     max_jobs: int
     nvcc_threads: int
     free_gb: float
+    # Per frontend. FA2's measured 5 GB is the default; FA3's hdimall units
+    # were OOM-killed at 8 jobs on 64 GB (28 Oct 2026), so its build passes
+    # its own figure (researcher's 15 GB) until a build measures one.
+    gb_per_job: float = CICC_GB_PER_PROCESS
 
     @property
     def concurrent_frontends(self) -> int:
@@ -55,7 +59,7 @@ class MemoryPlan:
 
     @property
     def required_gb(self) -> float:
-        return self.concurrent_frontends * CICC_GB_PER_PROCESS
+        return self.concurrent_frontends * self.gb_per_job
 
     @property
     def usable_gb(self) -> float:
@@ -69,26 +73,31 @@ class MemoryPlan:
         """Largest max_jobs that fits at this nvcc_threads. May be 0, which
         means even a single job does not fit and the machine is too small --
         reported honestly rather than clamped up to 1 to look survivable."""
-        per_job_gb = self.nvcc_threads * CICC_GB_PER_PROCESS
+        per_job_gb = self.nvcc_threads * self.gb_per_job
         return int(self.usable_gb // per_job_gb)
 
 
-def plan_build_memory(max_jobs: int, nvcc_threads: int, free_gb: float) -> MemoryPlan:
+def plan_build_memory(max_jobs: int, nvcc_threads: int, free_gb: float,
+                      gb_per_job: float = CICC_GB_PER_PROCESS) -> MemoryPlan:
     if max_jobs < 1:
         raise ValueError(f"max_jobs must be >= 1, got {max_jobs}")
     if nvcc_threads < 1:
         raise ValueError(f"nvcc_threads must be >= 1, got {nvcc_threads}")
     if free_gb < 0:
         raise ValueError(f"free_gb must be >= 0, got {free_gb}")
-    return MemoryPlan(max_jobs=max_jobs, nvcc_threads=nvcc_threads, free_gb=free_gb)
+    if gb_per_job <= 0:
+        raise ValueError(f"gb_per_job must be > 0, got {gb_per_job}")
+    return MemoryPlan(max_jobs=max_jobs, nvcc_threads=nvcc_threads, free_gb=free_gb,
+                      gb_per_job=gb_per_job)
 
 
-def check_build_memory(max_jobs: int, nvcc_threads: int, free_gb: float) -> MemoryPlan:
+def check_build_memory(max_jobs: int, nvcc_threads: int, free_gb: float,
+                       gb_per_job: float = CICC_GB_PER_PROCESS) -> MemoryPlan:
     """Return the plan if it fits; raise BuildResourceError if it does not.
 
     Raising rather than warning is the whole point -- see module docstring.
     """
-    plan = plan_build_memory(max_jobs, nvcc_threads, free_gb)
+    plan = plan_build_memory(max_jobs, nvcc_threads, free_gb, gb_per_job)
     if not plan.fits:
         fitting = plan.max_jobs_that_fit()
         suggestion = (f"lower MAX_JOBS to {fitting}"
@@ -111,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--max-jobs", type=int, required=True)
     ap.add_argument("--nvcc-threads", type=int, required=True)
+    ap.add_argument("--gb-per-job", type=float, default=CICC_GB_PER_PROCESS,
+                    help="memory per concurrent frontend (default: FA2's measured figure)")
     ap.add_argument("--free-gb", type=float, default=None,
                     help="override measured free memory (for testing the guard)")
     args = ap.parse_args(argv)
@@ -122,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         free_gb = psutil.virtual_memory().available / 2**30
 
     try:
-        plan = check_build_memory(args.max_jobs, args.nvcc_threads, free_gb)
+        plan = check_build_memory(args.max_jobs, args.nvcc_threads, free_gb, args.gb_per_job)
     except (BuildResourceError, ValueError) as e:
         print(f"FATAL: {e}", flush=True)
         return 1

@@ -27,12 +27,14 @@ SCRIPTS = REPO / "scripts"
 HELPER = SCRIPTS / "_gcp_project.sh"
 
 LAUNCHERS = ("gcp_launch_l4.sh", "gcp_launch_a100.sh", "gcp_launch_h100.sh",
-             "gcp_launch_compile_session.sh", "gcp_boot_test_image.sh")
+             "gcp_launch_compile_session.sh", "gcp_boot_test_image.sh",
+             "gcp_launch_fa3_build.sh")
 # The six session scripts and the bootstrap were pinned on 25 Oct 2026, after
 # the first seven (PR #14).
 SESSION = ("gcp_deploy_source.sh", "gcp_preflight_instance.sh",
            "gcp_verify_gcs_writable.sh", "gcp_capture_image.sh", "gcp_status.sh",
-           "gcp_session_elapsed.sh", "gcp_bootstrap_instance.sh")
+           "gcp_session_elapsed.sh", "gcp_bootstrap_instance.sh",
+           "gcp_watch_fa3_build.sh")
 PINNED = LAUNCHERS + ("gcp_cleanup_check.sh", "gcp_teardown_session.sh") + SESSION
 
 PIN = "pinned-proj-123"
@@ -48,6 +50,7 @@ case "$*" in
   *"sourceInstanceProperties"*) printf 'g2-standard-8\tnvidia-l4\n'; exit 0 ;;
   *"machine-images describe"*) echo READY; exit 0 ;;
   *"instances list"*) exit 0 ;;
+  *"instances describe"*"value(status)"*) echo RUNNING; exit 0 ;;
   *"instances describe"*) echo inst; exit 0 ;;
   *"compute ssh"*"uptime -s"*) echo "2026-10-25 06:35:47|1792910147"; exit 0 ;;
 esac
@@ -66,6 +69,7 @@ ARGS = {
     "gcp_launch_a100.sh": ["inst"],
     "gcp_launch_h100.sh": ["inst"],
     "gcp_launch_compile_session.sh": ["inst"],
+    "gcp_launch_fa3_build.sh": ["inst"],
     "gcp_boot_test_image.sh": ["some-image", "asia-southeast1-c"],
     "gcp_cleanup_check.sh": [],
     "gcp_teardown_session.sh": ["inst", "asia-northeast1-a"],
@@ -76,6 +80,7 @@ ARGS = {
     "gcp_status.sh": [],
     "gcp_session_elapsed.sh": ["inst", "zone", "100"],
     "gcp_bootstrap_instance.sh": ["inst", "zone"],
+    "gcp_watch_fa3_build.sh": ["inst", "zone"],
 }
 
 # The bootstrap's local steps run Python; this stands in for it so the
@@ -128,6 +133,9 @@ def _run(name, tmp_path, *, pin=PIN, active=PIN, rate="297.47", script=None, ext
     cwd = tmp_path
     if name == "gcp_deploy_source.sh":
         cwd = _fixture_repo(tmp_path)
+    if name == "gcp_watch_fa3_build.sh":   # two quick polls, then it stops (exit 4)
+        env.setdefault("FA3_WATCH_INTERVAL_S", "0")
+        env.setdefault("FA3_WATCH_MAX_POLLS", "2")
     if name == "gcp_bootstrap_instance.sh":
         cwd = REPO
         fake_py = bin_dir / "fake_python"
@@ -301,7 +309,7 @@ def test_a_matching_project_reaches_gcloud_with_the_flag_and_is_never_printed(na
 QUIET = {"gcp_session_elapsed.sh", "gcp_capture_image.sh"}
 
 
-ON_INSTANCE = ("run_phase.sh",)
+ON_INSTANCE = ("run_phase.sh", "build_fa3_wheel.sh", "fa3_import_check.sh", "_fa3_pin.sh")
 
 
 @pytest.mark.parametrize("name", PINNED + ON_INSTANCE)

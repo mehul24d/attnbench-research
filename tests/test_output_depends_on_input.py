@@ -38,6 +38,7 @@ CPU_BACKENDS = {
 
 NOT_EXERCISED_ON_CPU = {
     "fa2": "needs CUDA + flash-attn",
+    "fa3": "needs an H100 + the FA3 wheel (tests/test_fa3_backend.py runs it on CPU against a stand-in)",
     "flex": "needs CUDA for inductor lowering",
     "gla": "needs CUDA + fla -- and is covered by the gate_source guard below",
     "block_sparse": "needs CUDA + block-sparse-attn",

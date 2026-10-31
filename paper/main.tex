@@ -1,0 +1,101 @@
+% Paper skeleton (cloud task C11). Structure follows docs/RESEARCH_PLAN.md,
+% which wins over anything written here.
+%
+% Rules that bind this file and everything it inputs (plan Section 6):
+%  - No numbers are typed into the text. Every number comes from a macro in
+%    the generated numbers file (scripts/paper_artifacts.py, task C10).
+%  - No claims until the analysis that supports them is banked (T7.1).
+%  - Cite only papers read in full (rule 5); refs.bib stays empty until then.
+%  - No model identifiers and no assistant attribution (rule 9).
+%  - Plain language, short sentences, no em dashes.
+%
+% Build: see Makefile and README.md in this directory.
+\documentclass[journal]{IEEEtran}
+
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xspace}
+\usepackage{url}
+
+\graphicspath{{figures/}}
+
+% ---------------------------------------------------------------------------
+% Generated numbers. The Makefile passes the path; the default below is a
+% placeholder until task C10 fixes where scripts/paper_artifacts.py writes.
+% A missing file stops the build with an error. There is no fallback value.
+% ---------------------------------------------------------------------------
+\providecommand{\NumbersFile}{generated/numbers.tex}
+\IfFileExists{\NumbersFile}{%
+  \input{\NumbersFile}%
+}{%
+  \errmessage{Generated numbers file '\NumbersFile' is missing. Run
+    scripts/paper_artifacts.py (task C10) or pass NUMBERS=... to make.
+    The paper never builds without it}%
+  \csname @@end\endcsname
+}
+
+% ---------------------------------------------------------------------------
+% Skeleton mode (make skeleton only): figures are drawn as labelled boxes so
+% the layout can be checked before any figure exists. In a normal build a
+% missing figure is a LaTeX error, as it should be.
+% ---------------------------------------------------------------------------
+\newif\ifskeleton
+\providecommand{\SkeletonBuild}{0}
+\ifnum\SkeletonBuild=1 \skeletontrue \fi
+
+\newcommand{\paperfigure}[2][\columnwidth]{%
+  \ifskeleton
+    \fbox{\parbox[c][0.5\columnwidth][c]{0.95#1}{\centering
+      \texttt{\detokenize{#2}}\\(skeleton placeholder)}}%
+  \else
+    \includegraphics[width=#1]{#2}%
+  \fi}
+
+% A visible marker for text not yet written. make check refuses a
+% submission build that still contains one (see check_skeleton.py).
+\newcommand{\stub}[1]{\textbf{[Stub: #1]}}
+
+% Method name (plan Section 1).
+\newcommand{\bunga}{BUNGA\xspace}
+
+\begin{document}
+
+% The title depends on the outcome (plan Section 1, "If sparse prefill never
+% pays"): it names prediction, not profitability, if the profitable set is
+% empty. Decided by the researcher after T7.1.
+\title{\stub{title, decided after T7.1}}
+
+\author{\stub{authors and affiliations}}
+
+\maketitle
+
+\begin{abstract}
+\stub{abstract, written last. Must state the scope limits of plan Section 1:
+one GPU, one CUDA stream per forward pass, batch sizes as in Section 5.4,
+eager and compiled PyTorch.}
+\end{abstract}
+
+\begin{IEEEkeywords}
+\stub{keywords}
+\end{IEEEkeywords}
+
+\input{sections/introduction}
+\input{sections/background}
+\input{sections/hypotheses}
+\input{sections/method}
+\input{sections/setup}
+\input{sections/results_time}
+\input{sections/results_recall}
+\input{sections/results_dispatch}
+\input{sections/limitations}
+\input{sections/conclusion}
+
+\appendices
+\input{sections/appendix_artifact}
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}
