@@ -47,7 +47,7 @@ def _inside(inner, outer):
 def test_one_region_with_each_layer_inside_it(tmp_path):
     model = torch.nn.Sequential(*(torch.nn.Linear(8, 8) for _ in range(3)))
     events, calls = _record(tmp_path, model, warmup=2)
-    assert len(calls) == 3   # two warm-up runs, one traced
+    assert len(calls) == 4   # two warm-up runs, the profiler's warm-up step, one traced
     notes = _spans(events, "user_annotation")
     (region,) = [e for e in notes if e["name"] == S.REGION]
     layers = sorted((e for e in notes if S.LAYER_PATTERN.match(e["name"])),

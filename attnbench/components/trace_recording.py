@@ -87,7 +87,11 @@ def record_prefill_trace(run_prefill: Callable[[], None], path: Union[str, Path]
                          cuda: Optional[bool] = None) -> Path:
     """Profile one prefill and write its trace to `path`.
 
-    `warmup` untraced runs come first. The device is synchronised before the
+    `warmup` untraced runs come first. Then one more prefill is the
+    profiler's own warm-up step (collected, then discarded): in Shakedown 2
+    the first kernel of a trace that starts collecting with the prefill had
+    no device record (meanpool's probe, Figure 1), so the recorded prefill
+    is the profiler's second step. The device is synchronised before the
     region opens, so no earlier work runs inside it, and after it closes, so
     every activity is in the trace. Neither synchronise is inside the
     region; the closing synchronise of the timer is the recursion's
@@ -99,14 +103,26 @@ def record_prefill_trace(run_prefill: Callable[[], None], path: Union[str, Path]
     for _ in range(warmup):
         run_prefill()
     _sync(cuda)
-    with profile(**profiler_kwargs(cuda)) as prof:
+    path = Path(path)
+    sched = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1)
+    with profile(**profiler_kwargs(cuda), schedule=sched,
+                 on_trace_ready=lambda p: p.export_chrome_trace(str(path))) as prof:
+        run_prefill()                 # the profiler's warm-up step, not exported
+        _sync(cuda)
+        prof.step()
         with annotate_layers(layers):
             with record_function(REGION):
                 run_prefill()
         _sync(cuda)
-    path = Path(path)
-    prof.export_chrome_trace(str(path))
+        prof.step()
+    if not path.exists():
+        raise RuntimeError(f"the profiler wrote no trace to {path}")
     return path
+
+
+# Prefills `record_prefill_trace` runs beyond `warmup` before the traced one:
+# the profiler's warm-up step. Callers that count calls read this.
+record_prefill_trace.profiler_warmup = 1
 
 
 # --- the mechanism zoo -------------------------------------------------------

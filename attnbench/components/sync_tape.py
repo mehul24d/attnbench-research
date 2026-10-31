@@ -113,6 +113,22 @@ def _sig(t) -> tuple:
     return (tuple(t.shape), str(t.dtype)) if isinstance(t, torch.Tensor) else (type(t).__name__,)
 
 
+def _on_device_value(value, like: torch.Tensor):
+    """`value` as a tensor on `like`'s device without a host-to-device copy:
+    a Python number or a host 0-dim tensor becomes a device fill; a tensor
+    already there is returned as it is."""
+    if isinstance(value, torch.Tensor):
+        if value.device == like.device:
+            return value
+        if value.dim() == 0:
+            value = value.item()             # a host tensor: no device read
+        else:
+            raise TapeMismatch("a replayed boolean assignment's value is a host tensor "
+                               "of more than one element; copying it to the device "
+                               "cannot be captured")
+    return torch.full((), value, dtype=like.dtype, device=like.device)
+
+
 def _single_bool_index(index, device_type) -> Optional[torch.Tensor]:
     if isinstance(index, tuple) and len(index) == 1:
         index = index[0]
@@ -376,5 +392,9 @@ class TapeReplayer(TorchFunctionMode):
         idx = tuple(torch.nonzero_static(mask, size=e.value).unbind(1))
         if kind == "bool_index":
             return args[0][idx]
-        args[0][idx] = args[2]       # bool_setitem
+        # bool_setitem. A scalar value is built on the device by a fill: as a
+        # host tensor its copy to the device is not permitted during graph
+        # capture (Shakedown 2's replay, the block-sparse wrapper's
+        # `nonzero_idx[nonzero_val == 0] = -1`).
+        args[0].index_put_(idx, _on_device_value(args[2], args[0]))
         return None

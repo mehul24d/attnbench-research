@@ -580,3 +580,46 @@ def test_an_output_that_is_an_input_is_that_input_not_a_new_allocation():
     assert out is c
     fresh = H._null_outputs(torch.ops.aten.mm.default, (W, W), {}, "cpu")
     assert fresh.shape == (3, 3) and fresh is not W
+
+
+# --------------------------------------------------------------------------
+# The block-sparse entry sits below the library's Python wrapper (t22)
+# --------------------------------------------------------------------------
+
+def test_the_block_sparse_entry_nulls_the_extension_and_keeps_the_wrapper(monkeypatch):
+    """Shakedown 2's t22: the entry replaced `block_sparse_attn_func`, the
+    library's Python wrapper, so its three synchronisations per layer never
+    ran and the replay used 0 of 84 recorded interactions. The entry is now
+    the extension call under the wrapper, so the wrapper's host work, and its
+    synchronisations from the tape, are in the pass."""
+    import sys
+    import types
+    from attnbench.components.sync_tape import TapeRecorder
+
+    cuda = types.ModuleType("block_sparse_attn_cuda")
+    cuda.ran = 0
+
+    def fwd_block(q, *a, **kw):
+        cuda.ran += 1
+        return q * 2, None, None, None
+    cuda.fwd_block = fwd_block
+    lib = types.ModuleType("block_sparse_attn")
+
+    def block_sparse_attn_func(q, mask):
+        n = int(mask.sum().item())            # the wrapper's own synchronisation
+        return sys.modules["block_sparse_attn_cuda"].fwd_block(q, n)[0]
+    lib.block_sparse_attn_func = block_sparse_attn_func
+    monkeypatch.setitem(sys.modules, "block_sparse_attn_cuda", cuda)
+    monkeypatch.setitem(sys.modules, "block_sparse_attn", lib)
+
+    def prefill():
+        prefill.out = sys.modules["block_sparse_attn"].block_sparse_attn_func(
+            W, torch.tensor([1.0, 0.0]))
+    with TapeRecorder("cpu") as rec:
+        prefill()
+    assert len(rec.tape.entries) == 1 and cuda.ran == 1
+
+    clock = Clock()
+    run_pass(prefill, seq(k(None)), clock, tape=rec.tape, entries=[H.block_sparse_entry()])
+    assert cuda.ran == 1                          # the extension never ran in the pass
+    assert prefill.out.shape == W.shape
