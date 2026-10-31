@@ -154,10 +154,23 @@ echo "  in-guest halt: +${HALT_MINUTES} min -- GPU billing stops, disk survives"
 echo "  hard cap     : --max-run-duration=$MAX_RUN, action=DELETE, counted from RUNNING"
 echo
 
+# Every attempt, whatever its end, is one line here (plan Section 8: "every
+# attempt logged"): submit time (UTC), instance, zone, outcome, seconds
+# waited, the insert operation's reason when there is one. logs/ is
+# git-ignored, so a launch never dirties the tree; the reviewed record is
+# docs/launch_cards/h100_flex_attempts.md.
+ATTEMPT_LOG="${GCP_FLEX_ATTEMPT_LOG:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/logs/flex_attempts.tsv}"
+mkdir -p "$(dirname "$ATTEMPT_LOG")"
+log_attempt() {   # outcome waited reason
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$SUBMITTED_AT" "$INSTANCE_NAME" "$Z" "$1" "${2:-0}" \
+    "$(printf '%s' "${3:-}" | tr '\t\n' '  ' | gcp_redact)" >> "$ATTEMPT_LOG"
+}
+
 CREATED_ZONE=""
 for Z in $ZONE_FALLBACKS; do
   echo
   echo ">> attempting $Z"
+  SUBMITTED_AT="$(command date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Launch definition (plan T0.17): every create request, each zone included,
   # must be submitted by the end of the last GCP launch date, India time, so
   # the date is checked again before each submit. Nothing is live here: the
@@ -198,14 +211,17 @@ for Z in $ZONE_FALLBACKS; do
       flex_cancel "$INSTANCE_NAME" "$Z" || exit 3
     fi
     if (( SUBMIT_RC == 124 )); then
+      log_attempt submit_timeout 0
       echo "STOPPING -- the submit call did not answer within ${CREATE_LIMIT}s. Any request it" >&2
       echo "made was cancelled and confirmed gone. Check the network, then run again." >&2
       exit 1
     fi
     if flex_is_capacity_error "$CREATE_ERR"; then
+      log_attempt capacity_refused 0 "$(head -c 300 "$CREATE_ERR")"
       echo ">> $Z unavailable (nothing created, nothing billed)"
       continue
     fi
+    log_attempt rejected 0 "$(head -c 300 "$CREATE_ERR")"
     echo >&2
     echo "CONFIGURATION ERROR -- the request was rejected, and not for capacity." >&2
     echo "It will fail the same way in every zone. Nothing is waiting and nothing" >&2
@@ -216,15 +232,23 @@ for Z in $ZONE_FALLBACKS; do
   echo ">> request accepted in $Z; waiting (poll ${FLEX_POLL_SECONDS}s, cancel after ${CANCEL_AFTER_SECONDS}s)"
   if flex_wait "$INSTANCE_NAME" "$Z" "$CANCEL_AFTER_SECONDS"; then
     CREATED_ZONE="$Z"
+    log_attempt granted "$FLEX_WAITED"
     break                     # <-- do not remove: a success must end the loop
   fi
 
+  REASON=""
+  case "$FLEX_OUTCOME" in
+    expired|no_capacity) REASON="$(flex_end_reason "$INSTANCE_NAME" "$Z")" ;;
+  esac
+  log_attempt "$FLEX_OUTCOME" "$FLEX_WAITED" "$REASON"
   case "$FLEX_OUTCOME" in
     cancelled)
       echo ">> $Z: no capacity within ${FLEX_WAITED}s; request cancelled (nothing billed)" ;;
+    no_capacity)
+      echo ">> $Z: no capacity: the request was stopped after ${FLEX_WAITED}s; cancelled and confirmed gone (nothing billed)"
+      [[ -n "$REASON" ]] && echo "   operation: $REASON" ;;
     expired)
       echo ">> $Z: the request ended after ${FLEX_WAITED}s without a VM (nothing billed)"
-      REASON="$(flex_end_reason "$INSTANCE_NAME" "$Z")"
       if [[ -n "$REASON" ]]; then
         echo "   operation: $REASON"
         if printf '%s\n' "$REASON" | awk -F'\t' '$2 != "" {f = 1} END {exit !f}' \

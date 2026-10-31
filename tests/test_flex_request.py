@@ -76,8 +76,9 @@ exit 0
 # the environment, with the zone's letters upper-cased and dashes as
 # underscores: GRANT_AFTER_<Z> seconds until RUNNING (unset = never),
 # VISIBLE_AFTER_<Z> seconds before describe can see it, CREATE_<Z> =
-# capacity | invalid | hang | hang_accepted, DELETE_<Z> = ignore, and
-# DESCRIBE_<Z> = hang | error.
+# capacity | invalid | hang | hang_accepted, DELETE_<Z> = ignore,
+# DESCRIBE_<Z> = hang | error, and ODD_STATUS_<Z> from ODD_AFTER_<Z> seconds
+# (STOPPING, as attempt 1 of 31 Oct 2026 showed, or any other status).
 FAKE_GCLOUD = r"""#!/bin/bash
 printf '%s\n' "$*" >> "$GCLOUD_LOG"
 now=$(cat "$FAKE_DIR/clock")
@@ -96,7 +97,7 @@ case "$*" in
   "config get-value project") echo "$ATTNBENCH_GCP_PROJECT"; exit 0 ;;
   *"instances create"*)
     case "$(get CREATE)" in
-      capacity) echo "ZONE_RESOURCE_POOL_EXHAUSTED" >&2; exit 1 ;;
+      capacity) echo "ZONE_RESOURCE_POOL_EXHAUSTED in projects/$ATTNBENCH_GCP_PROJECT/zones/$zone" >&2; exit 1 ;;
       invalid)  echo "ERROR: Invalid value for field 'resource.machineType'" >&2; exit 1 ;;
       hang)     exec /bin/sleep 100000 ;;
       hang_accepted) echo "${now%.*}" > "$inst"; exec /bin/sleep 100000 ;;
@@ -114,6 +115,8 @@ case "$*" in
     if [ "$el" -ge "$window" ]; then rm -f "$inst"; notfound; fi
     vis="$(get VISIBLE_AFTER)"
     if [ -n "$vis" ] && [ "$el" -lt "$vis" ]; then notfound; fi
+    odd="$(get ODD_AFTER)"
+    if [ -n "$odd" ] && [ "$el" -ge "$odd" ]; then get ODD_STATUS; echo; exit 0; fi
     g="$(get GRANT_AFTER)"
     if [ -n "$g" ] && [ "$el" -ge "$g" ]; then echo "${FAKE_GRANTED_STATUS:-RUNNING}"; else echo PENDING; fi
     exit 0 ;;
@@ -494,3 +497,59 @@ def test_the_helper_pins_the_project_and_leaves_the_date_alone():
         assert not re.search(pattern, text, re.M), f"_flex_request.sh {what}"
     code = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
     assert "launch_policy_check" not in code, "the date is the submitter's to check"
+
+
+# --- a request that stops before it is granted (attempt 1, 31 Oct 2026) ---------
+
+@pytest.mark.parametrize("status", ["STOPPING", "TERMINATED"])
+def test_a_stopping_request_is_no_capacity_and_the_walk_goes_on(tmp_path, status):
+    """Attempt 1 in us-central1-a: accepted, then STOPPING while the insert
+    ended ZONE_RESOURCE_POOL_EXHAUSTED. That is no capacity: cancel, confirm,
+    next zone."""
+    r = Run(tmp_path, GCP_ZONE_FALLBACKS="us-central1-a asia-southeast1-b",
+            ODD_STATUS_US_CENTRAL1_A=status, ODD_AFTER_US_CENTRAL1_A=240,
+            GRANT_AFTER_ASIA_SOUTHEAST1_B=0,
+            GCP_FLEX_ATTEMPT_LOG=str(tmp_path / "attempts.tsv"))
+    p = r.run()
+    assert p.returncode == 0, p.stderr[-2000:]
+    assert [_zone_flag(c) for c in r.calls("create")] == ["us-central1-a", "asia-southeast1-b"]
+    assert "us-central1-a: no capacity" in p.stdout and "Granted in asia-southeast1-b" in p.stdout
+    calls = r.all_calls()
+    delete = next(i for i, c in enumerate(calls) if "instances delete" in c)
+    second = [i for i, c in enumerate(calls) if "instances create" in c][1]
+    assert delete < second                          # cancelled before the next request
+
+
+def test_another_unexpected_status_still_stops_the_walk(tmp_path):
+    r = Run(tmp_path, GCP_ZONE_FALLBACKS="us-central1-a asia-southeast1-b",
+            ODD_STATUS_US_CENTRAL1_A="SUSPENDED", ODD_AFTER_US_CENTRAL1_A=240,
+            GCP_FLEX_ATTEMPT_LOG=str(tmp_path / "attempts.tsv"))
+    p = r.run()
+    assert p.returncode == 1 and len(r.calls("create")) == 1
+    assert "could not be followed" in p.stderr
+
+
+def test_every_attempt_is_logged(tmp_path):
+    log = tmp_path / "attempts.tsv"
+    r = Run(tmp_path, GCP_ZONE_FALLBACKS="us-central1-a asia-southeast1-b asia-southeast1-c",
+            CREATE_US_CENTRAL1_A="capacity",
+            ODD_STATUS_ASIA_SOUTHEAST1_B="STOPPING", ODD_AFTER_ASIA_SOUTHEAST1_B=240,
+            GRANT_AFTER_ASIA_SOUTHEAST1_C=300, GCP_FLEX_ATTEMPT_LOG=str(log))
+    p = r.run()
+    assert p.returncode == 0, p.stderr[-2000:]
+    rows = [l.split("\t") for l in log.read_text().splitlines()]
+    assert [(row[1], row[2], row[3]) for row in rows] == [
+        ("h100-test", "us-central1-a", "capacity_refused"),
+        ("h100-test", "asia-southeast1-b", "no_capacity"),
+        ("h100-test", "asia-southeast1-c", "granted")]
+    assert all(re.match(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", row[0]) for row in rows)
+    assert "ZONE_RESOURCE_POOL_EXHAUSTED" in rows[0][5]        # the error is kept, redacted
+    assert "test-project" not in log.read_text()
+
+
+def test_an_attempt_that_stops_the_script_is_logged_too(tmp_path):
+    log = tmp_path / "attempts.tsv"
+    r = Run(tmp_path, CREATE_US_CENTRAL1_A="invalid", GCP_FLEX_ATTEMPT_LOG=str(log))
+    assert r.run().returncode == 1
+    (row,) = [l.split("\t") for l in log.read_text().splitlines()]
+    assert row[2:4] == ["us-central1-a", "rejected"]
