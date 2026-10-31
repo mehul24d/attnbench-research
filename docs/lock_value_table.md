@@ -6,7 +6,7 @@ One row per T4.1 item (28). "Plan default" is what the plan or code already stat
 |---|---|---|---|---|
 | 1 | H0 to H3 tolerances | "within [lock]" per hypothesis | none | Set from the T3.2 repeat spread, once the floors exist |
 | 2 | H6 regret bound | mean and worst case per pairing | none | After T7.6 shows the regret distribution; no number yet |
-| 3 | Ground-truth density set | every admissible density | T4 pilots ran a few densities per arm | Open: audit A4 (accuracy-grid superset or read from admissibility runs) |
+| 3 | Ground-truth density set | every admissible density | T4 pilots ran a few densities per arm | Working, pre-lock (T3.1): block-sparse arms at 0.25 and 0.5; the XAttention arms at their calibrated table (density measured, not set). The lock set is still open (audit A4) |
 | 4 | H4 equivalence bound | delta = 10 points in the power rule; T1.5 also prices 5 points | T1.1 calibrated XAttention: -4.3 and -6.0 points on the two primary `qa_1` cells | 10 points |
 | 5 | H4 confirmatory family | estimator pairs at block 32, 64, 128 plus the random control | none | Count m from the declared family; "three comparisons" is too few (audit D4, open) |
 | 6 | Power target and n | alpha 0.025, power 90%, n about 1,300 x p | p (pilot disagreement, upper 95% bound) not yet computed (T1.5) | Keep alpha 0.025 and power 0.90 |
@@ -33,4 +33,31 @@ One row per T4.1 item (28). "Plan default" is what the plan or code already stat
 | 27 | Realised-length key rule | not stated | prompts land below the budget | Key by the prompt's realised token count, budget kept as a label |
 | 28 | Budget cut order | if forced: full grid for the XAttention pair, compiled XAttention pair, mean-pool, dense; others at 8192, 16384, 32768 | none | As the plan |
 
-Also blank in `configs/t31/p1_session.json` (all belong to rows above): densities, ground-truth groups (eager, compiled default, compiled capture), reps, max rerun rounds, resolution floor, dense rounds, sampler interval.
+Also blank in `configs/t31/p1_session.json`: densities (row 3), ground-truth groups, repeats, dense rounds and the sampler interval, all filled for T3.1 from the block below; the resolution floor (row 16) and the rerun budget (row 23), which stay null as inputs.
+
+## Working values for T3.1 (researcher's decision, 31 Oct 2026)
+
+T3.1 is pre-lock P1 data. It takes the values below, marked "working, pre-lock", and `scripts/t31_steps.py` reads them from this block only (one source). They must never be chosen from P2 or P4 data, and the runner refuses them for any pairing but P1. The floors stay null as inputs: T3.1 produces a session floor from its own dense pre-pass (at the provisional quantile, with the series saved so the lock can recompute it at its own). The rerun budget stays null: it is decided after the T3.2 repeats, and until then T3.1 reruns nothing and says `complete: false` where a cell lacks clean rounds. A Shakedown 2 rehearsal may use any values; its results are flagged "rehearsal" and discarded.
+
+| Value | Working value | Why |
+|---|---|---|
+| Densities | dense 1.0; oracle and mean-pool 0.25 and 0.5; XAttention arms "calibrated" | The pilots' 0.25 plus one denser point; XAttention's density is its estimator's |
+| Ground-truth groups | eager: all five arms; compiled default and compiled capture: mean-pool and XAttention, each with the eager dense control | One compile setting per process (T2.21); the oracle builds on the host |
+| Repeats | 10 clean rounds per cell | Enough for a median and p90 at P1 |
+| Dense rounds (K2) | 5 | Interleaved candidate rounds per cell |
+| Sampler interval | 0.1 s | The sampler process's 10 Hz |
+
+```json t31-working-values
+{
+ "status": "working, pre-lock",
+ "pairing": "P1",
+ "densities": {"dense": [1.0], "oracle": [0.25, 0.5], "meanpool": [0.25, 0.5],
+               "xattention": ["calibrated"], "xattention_noassert": ["calibrated"]},
+ "gt_groups": {"eager": ["dense", "oracle", "meanpool", "xattention", "xattention_noassert"],
+               "compiled_default": ["meanpool", "xattention"],
+               "compiled_capture": ["meanpool", "xattention"]},
+ "reps": 10,
+ "dense_rounds": 5,
+ "sampler_interval_s": 0.1
+}
+```

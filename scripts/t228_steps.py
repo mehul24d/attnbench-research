@@ -20,12 +20,17 @@ Steps, in the runner's order:
           traced-against-untraced overhead, the sampler's own cost on a
           host-bound arm, and `dense_selection.check_control` against t216's
           record
+  density each arm's backend through the density probe at the working,
+          pre-lock densities, one process per compile setting (rehearsal)
   t212    T2.12: each source arm's masks recorded, replayed through
           `PrecomputedMaskBackend` with the real block-sparse kernel, compared
           with the source arm's logits, and timed against it
   t22     T2.2: the null-kernel host profile of one arm's prefill from its
           tape, and the reference mask builder profiled under both instruments
           on this host
+  queue   T2.6's Q for the null kernel and the one-element add, cold and warm,
+          with the blocker and the waiting threshold moved: the add's Q, its
+          lower bound and their sensitivity to the probe
 
 Usage, from the repo root:
     python3 scripts/t228_steps.py run [--dry-run] [--session DIR] [options]
@@ -38,6 +43,7 @@ skips the steps that need CUDA; their wiring is tested with fakes.
 from __future__ import annotations
 
 import argparse
+import json
 import statistics
 import sys
 import time
@@ -50,14 +56,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from t227_steps import (EXIT, PASSED, Skip, StepFailed, _cuda, _harness,  # noqa: E402,F401
                         _jsonable, _need_cuda, _py, _run, _write_json, run_step)
 
-STEPS = ("nvml", "t216", "t213", "t212", "t22")
+STEPS = ("nvml", "t216", "t213", "density", "t212", "t22", "queue")
 
 CHECKLIST = {
     "nvml": "the real NVML reader and the sampler process on a card",
     "t216": "T2.16 dense-baseline selection (K2), recorded first",
     "t213": "T2.13 dry run: harness, strict stamp, sampler cost, check_control",
+    "density": "each arm's backend through the density probe, every compile setting",
     "t212": "T2.12 precomputed replay with the real kernel",
     "t22": "T2.2 null-kernel and reference-builder profile on the target host",
+    "queue": "T2.6 Q for both kinds: the add's Q, its lower bound and their sensitivity",
 }
 
 
@@ -467,10 +475,169 @@ def step_t22(args) -> dict:
     return findings
 
 
+# --- the density probe ----------------------------------------------------------------------
+
+def density_arms(vals: dict, group: str):
+    """(names, densities) for one ground-truth group of the working values:
+    the dense control first, then each of the group's arms at each density.
+    The same expansion as T3.1's `group_arms` at batch 1."""
+    from t31_steps import nominal_density
+    names, dens = ["dense"], [None]
+    for arm in vals["gt_groups"][group]:
+        if arm == "dense":
+            continue
+        for d in vals["densities"][arm]:
+            names.append(arm)
+            dens.append(nominal_density(d))
+    return names, dens
+
+
+def step_density(args) -> dict:
+    """Each arm's backend through the session's density probe
+    (`ground_truth.kernel_densities`), at the working, pre-lock densities of
+    `docs/lock_value_table.md` and under each compile setting T3.1's
+    ground-truth groups give it: one child process per group, since Dynamo
+    keeps one setting per process. This is the probe T3.1's ground truth runs
+    after every timed block; here it runs untimed, before any. Fails on a
+    child that fails: a backend that keeps no per-layer mask density, or a
+    row `densities.density_problems` refuses. Each arm's mask density against
+    its nominal one is a finding (the mask gate, T2.23, is not built). The
+    values are a rehearsal's; nothing here is a result."""
+    _need_cuda(args, "the block-sparse kernel's density probe")
+    from t31_steps import working_values
+    vals, sha = working_values()
+    out = Path(args.out)
+    found: dict = {"values": "rehearsal (working, pre-lock)", "values_sha256": sha,
+                   "length": args.length, "groups": {}}
+    bad = []
+    for group in vals["gt_groups"]:
+        d = out / group
+        rc = _run(_py("t228_steps.py", "density-one", "--group", group, "--out", str(d),
+                      "--length", str(args.length), *(["--dry-run"] if args.dry_run else [])))
+        path = d / "densities.json"
+        found["groups"][group] = {"rc": rc,
+                                  "arms": json.loads(path.read_text()) if path.exists() else None}
+        if rc:
+            bad.append(group)
+    if bad:
+        raise StepFailed(f"the density probe failed for groups {bad}; see their logs", found)
+    return found
+
+
+def density_one(args) -> int:
+    """One group of `step_density`, in its own process: prepare the group's
+    arms as `time_arms` would (the same untimed setup), run each once through
+    `kernel_densities`, check each row, write `densities.json`."""
+    import torch
+    from attnbench import densities as D
+    from attnbench import ground_truth as gt
+    from attnbench.components.shakedown_arms import ARMS
+    from t31_steps import group_setting, working_values
+
+    vals, _ = working_values()
+    setting = group_setting(args.group)
+    names, dens = density_arms(vals, args.group)
+    h = _harness(args)
+    backends, settings = [None], [None]
+    for n in names[1:]:
+        be = h._backend(ARMS[n])
+        if setting is not None:
+            from attnbench.backends.compiled import CompiledBackend
+            be = CompiledBackend(be, setting)
+        backends.append(be)
+        settings.append(setting)
+    wrapped, ids, prompt_id, arms, score_kwargs = h.timing_arms(
+        names, args.length, densities=dens, backends=backends, compile_settings=settings)
+    gt._claim_compile_setting(arms)
+    rows, failed = [], []
+    for a, nominal in zip(arms, dens):
+        kw = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
+
+        def run(a=a, kw=kw):
+            wrapped.run_measured(ids, a.backend, cfg=a.cfg, logits_to_keep=1, **kw)
+        run()                                    # warm: a compiled arm compiles here
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        row = {"arm": a.name, "compile_setting": a.compile_setting, "nominal_density": nominal,
+               "prompt_id": prompt_id, "length": int(ids.shape[-1])}
+        try:
+            row.update(gt.kernel_densities(a, run))
+        except RuntimeError as e:
+            row["problems"] = [str(e)]
+        else:
+            row["problems"] = D.density_problems(row, dense=a.kind == gt.DENSE)
+            if nominal is not None and row["mask_density"] is not None:
+                row["mask_minus_nominal"] = row["mask_density"] - nominal
+        if row["problems"]:
+            failed.append(a.name)
+        rows.append(row)
+    h.unwrap()
+    _write_json(Path(args.out) / "densities.json", rows)
+    for r in rows:
+        print(f"  {r['arm']:40s} mask {r.get('mask_density')}  executed "
+              f"{r.get('executed_density')}  {r['problems'] or 'ok'}", flush=True)
+    return 1 if failed else 0
+
+
+# --- the launch queue --------------------------------------------------------------------
+
+# Shakedown 1's row (cold, blocker 2 s, fraction 0.25) first, then the same
+# warm, then the blocker and the waiting threshold moved one at a time.
+QUEUE_SETTINGS = (
+    {"name": "cold_2s_0.25", "warm": False, "blocker_s": 2.0, "blocked_fraction": 0.25},
+    {"name": "warm_2s_0.25", "warm": True, "blocker_s": 2.0, "blocked_fraction": 0.25},
+    {"name": "warm_1s_0.25", "warm": True, "blocker_s": 1.0, "blocked_fraction": 0.25},
+    {"name": "warm_4s_0.25", "warm": True, "blocker_s": 4.0, "blocked_fraction": 0.25},
+    {"name": "warm_2s_0.1", "warm": True, "blocker_s": 2.0, "blocked_fraction": 0.1},
+    {"name": "warm_2s_0.5", "warm": True, "blocker_s": 2.0, "blocked_fraction": 0.5},
+)
+
+
+def step_queue(args) -> dict:
+    """T2.6's Q for both kinds under each of `QUEUE_SETTINGS`, one
+    `measure_launch_queue.py` row each: the one-element add's Q and its lower
+    bound, and how both move with the probe's settings. Shakedown 1 left the
+    add unresolved (`1,1022,1022,1022,1022`, lower bound 1); the warm rows test
+    whether that 1 was the kernel's first launch. Fails only if the null
+    kernel's Q is not agreed in Shakedown 1's own setting, as T2.27's step
+    does; the add's Q, agreed or not, is a finding. The model's Q stays the
+    null kernel's (Appendix A, 25 Oct 2026)."""
+    import pandas as pd
+    out = Path(args.out)
+    found: dict = {"settings": {}}
+    for s in QUEUE_SETTINGS:
+        d = out / s["name"]
+        cmd = _py("measure_launch_queue.py", "--out", str(d),
+                  "--blocker-s", str(s["blocker_s"]), "--blocked-fraction", str(s["blocked_fraction"]))
+        if s["warm"]:
+            cmd.append("--warm")
+        if args.dry_run:          # a small simulated queue, so the dry run is quick
+            cmd += ["--dry-run", "--dry-run-depth", "64", "--launches", "512", "--trials", "2"]
+        if _run(cmd):
+            raise StepFailed(f"measure_launch_queue.py failed in setting {s['name']}", found)
+        row = pd.read_parquet(d / "launch_queue.parquet").iloc[0].to_dict()
+        found["settings"][s["name"]] = {
+            **s, "warm_launch": row.get("warm_launch"),
+            **{k: row[k] for k in row if k.endswith(("_q", "_q_trials", "_q_lower_bound"))}}
+    got = found["settings"]
+    adds = [v["add_q"] for v in got.values()]
+    agreed = sorted({q for q in adds if q is not None})
+    found["add"] = {
+        "q_by_setting": {n: v["add_q"] for n, v in got.items()},
+        "lower_bound_by_setting": {n: v["add_q_lower_bound"] for n, v in got.items()},
+        "lower_bound": min(v["add_q_lower_bound"] for v in got.values()),
+        "agreed_values": agreed,
+        "same_as_null_kernel": {n: v["add_q"] == v["sleep0_q"] for n, v in got.items()
+                                if v["add_q"] is not None}}
+    if got[QUEUE_SETTINGS[0]["name"]]["sleep0_q"] is None:
+        raise StepFailed("the null kernel's Q was not agreed in Shakedown 1's setting", found)
+    return found
+
+
 # --- entry points ----------------------------------------------------------------------------
 
-STEP_FUNCS = {"nvml": step_nvml, "t216": step_t216, "t213": step_t213, "t212": step_t212,
-              "t22": step_t22}
+STEP_FUNCS = {"nvml": step_nvml, "t216": step_t216, "t213": step_t213, "density": step_density,
+              "t212": step_t212, "t22": step_t22, "queue": step_queue}
 if tuple(STEP_FUNCS) != STEPS or tuple(CHECKLIST) != STEPS:   # not `assert`: T2.17
     raise RuntimeError("STEP_FUNCS, CHECKLIST and STEPS disagree")
 
@@ -478,7 +645,7 @@ if tuple(STEP_FUNCS) != STEPS or tuple(CHECKLIST) != STEPS:   # not `assert`: T2
 def parser() -> argparse.ArgumentParser:
     from attnbench.components.shakedown_arms import ARMS
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("step", choices=STEPS + ("run",))
+    ap.add_argument("step", choices=STEPS + ("run", "density-one"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--length", type=int, default=8192, help="the cell, for every step")
@@ -499,13 +666,14 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--profile-reps", type=int, default=5)
     ap.add_argument("--builder-lengths", default="2048,4096,8192,16384,32768")
     ap.add_argument("--builder-reps", type=int, default=10)
+    ap.add_argument("--group", default=None, help="density-one: the ground-truth group")
     return ap
 
 
 def _config():
     from t227_shakedown import Shakedown
     return Shakedown(STEPS, CHECKLIST, "t228_steps.py", "t228", "t228_shakedown", parser,
-                     "Shakedown 2 (T2.13, T2.16, T2.12, T2.2, NVML)")
+                     "Shakedown 2 (T2.13, T2.16, T2.12, T2.2, NVML, density, Q)")
 
 
 def main(argv=None) -> int:
@@ -514,6 +682,8 @@ def main(argv=None) -> int:
         from t227_shakedown import main as run_main
         return run_main(argv[1:], config=_config())
     args = parser().parse_args(argv)
+    if args.step == "density-one":
+        return density_one(args)
     return run_step(args.step, args, STEP_FUNCS)
 
 

@@ -218,11 +218,18 @@ class Harness:
             name = "sdpa_math"
         return backend_instance(name)
 
-    def _cfg(self, spec: ArmSpec, length: int):
+    def _cfg(self, spec: ArmSpec, length: int, *, density: Optional[float] = None,
+             batch: int = 1):
+        """The arm's config at one cell. `density` sets a block-sparse arm's
+        kept fraction (sparsity 1 - density; None keeps the arm's own); an
+        arm whose density is its estimator's (XAttention) takes none."""
         from ..config import AttnConfig
         sparse = spec.mask == "block_sparse"
-        base = AttnConfig(seq_len=length, batch=1, n_heads_q=1, n_heads_kv=1, head_dim=128,
-                          mask=spec.mask, sparsity=spec.sparsity if sparse else None,
+        if density is not None and not sparse:
+            raise ValueError(f"{spec.name}: its density is not a setting")
+        sparsity = (1.0 - float(density)) if density is not None else spec.sparsity
+        base = AttnConfig(seq_len=length, batch=batch, n_heads_q=1, n_heads_kv=1, head_dim=128,
+                          mask=spec.mask, sparsity=sparsity if sparse else None,
                           block_size=self.grid.block_sizes[0] if sparse else None,
                           mask_source="importance" if sparse else None)
         return self.geometry.onto(base, seq_len=length)
@@ -233,17 +240,24 @@ class Harness:
             self._wrapped = None
 
     def prepare(self, name: str, length: int, *, index: int = 0,
-                backend=None) -> PreparedArm:
+                backend=None, density: Optional[float] = None,
+                batch: int = 1) -> PreparedArm:
         """One arm's prefill at one length and prompt. `backend` replaces the
-        arm's own (T2.17's gate, T2.21's mask agreement)."""
+        arm's own (T2.17's gate, T2.21's mask agreement). `density` and
+        `batch` name the cell (T3.1); a batch repeats the cell's prompt
+        `batch` times (working, pre-lock: one prompt per cell)."""
         from ..accuracy.model import SwappableAttentionModel
         spec = ARMS[name]
         if not runnable(name, self.cuda):
             raise RuntimeError(f"arm {name!r} needs a CUDA device")
         self.unwrap()
         ids, prompt_id = self.input_ids(length, index=index)
+        if batch < 1:
+            raise ValueError("batch must be >= 1")
+        if batch > 1:
+            ids = ids.repeat(batch, 1)
         budget, length = length, int(ids.shape[-1])
-        cfg = self._cfg(spec, length)
+        cfg = self._cfg(spec, length, density=density, batch=batch)
         template = self.geometry.onto(replace(cfg, mask="causal", sparsity=None,
                                               block_size=None, mask_source=None),
                                       seq_len=length)
@@ -268,7 +282,9 @@ class Harness:
                            extra={"cfg": cfg, "input_ids": ids, "wrapped": wrapped},
                            budget=budget)
 
-    def timing_arms(self, names: Sequence[str], length: int, *, index: int = 0):
+    def timing_arms(self, names: Sequence[str], length: int, *, index: int = 0,
+                    densities: Optional[Sequence[Optional[float]]] = None, batch: int = 1,
+                    backends: Optional[Sequence] = None, compile_settings=None):
         """What `ground_truth.time_arms` takes, for these arms on one prompt:
         (wrapped model, input_ids, prompt_id, [ground_truth.Arm], score_kwargs).
         One model wrapper serves every arm, as `time_arms` needs; the dense
@@ -279,14 +295,25 @@ class Harness:
         from .. import ground_truth as gt
         if not names or names[0] != "dense":
             raise ValueError("the dense control comes first")
-        first = self.prepare("dense", length, index=index)
+        first = self.prepare("dense", length, index=index, batch=batch)
+        densities = list(densities) if densities is not None else [None] * len(names)
+        backends = list(backends) if backends is not None else [None] * len(names)
+        settings = list(compile_settings) if compile_settings is not None else [None] * len(names)
+        if not len(densities) == len(backends) == len(settings) == len(names):
+            raise ValueError("names, densities, backends and compile settings differ in length")
         arms = []
-        for n in names:
+        for n, d, be, cs in zip(names, densities, backends, settings):
             spec = ARMS[n]
             kind = (gt.DENSE if n == "dense" else gt.ORACLE if spec.scores_before
                     else gt.INLINE if spec.inline_estimator else gt.IN_BACKEND)
-            arms.append(gt.Arm(n, kind, first.backend if n == "dense" else self._backend(spec),
-                               self._cfg(spec, first.length), inline_estimator=spec.inline_estimator,
+            if be is None:
+                be = first.backend if n == "dense" else self._backend(spec)
+            label = n if d is None else f"{n}@{d:g}"
+            if cs is not None:
+                label += f"@compile-{cs}"
+            arms.append(gt.Arm(label, kind, be,
+                               self._cfg(spec, first.length, density=d, batch=batch),
+                               inline_estimator=spec.inline_estimator, compile_setting=cs,
                                builder_kind=spec.builder_kind))
         score_kwargs = dict(task=TASK, example_id=first.prompt_id, cache_dir=self.score_cache_dir)
         return first.extra["wrapped"], first.extra["input_ids"], first.prompt_id, arms, score_kwargs
@@ -302,9 +329,10 @@ class Harness:
         return CodePath(arm=arm.name, gpu=gpu, implementation=impl,
                         libraries=libraries(), python_optimize=sys.flags.optimize)
 
-    def ready(self, name: str, length: int, *, index: int = 0) -> PreparedArm:
+    def ready(self, name: str, length: int, *, index: int = 0,
+              density: Optional[float] = None, batch: int = 1) -> PreparedArm:
         """`prepare`, one untraced warm run, and the code path."""
-        arm = self.prepare(name, length, index=index)
+        arm = self.prepare(name, length, index=index, density=density, batch=batch)
         arm.run_prefill()
         if self.cuda:
             torch.cuda.synchronize()

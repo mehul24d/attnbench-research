@@ -221,24 +221,31 @@ def test_a_dry_session_cannot_be_continued_as_a_real_one(tmp_path):
 
 # --- real-run refusals and wiring ----------------------------------------------------
 
-def test_the_repository_config_leaves_the_lock_values_undecided_and_a_real_run_refuses():
-    with pytest.raises(st.StepFailed) as e:
-        st.load_config(None, dry_run=False)
-    for k in ("densities", "reps", "resolution_floor_ms", "gt_groups.eager"):
-        assert k in str(e.value)
+def test_the_repository_config_leaves_the_lock_values_null_in_the_file(tmp_path, monkeypatch):
+    """The file keeps every undecided value null; a real run fills the working
+    ones from `docs/lock_value_table.md` (test_t31_wiring) and refuses if a
+    required one is still missing after that."""
     cfg = json.loads(st.DEFAULT_CONFIG.read_text())
+    for k in ("densities", "reps", "resolution_floor_ms", "max_rerun_rounds"):
+        assert cfg[k] is None
     assert "clock_skew_s" not in cfg and "hold_guard_s" not in cfg and cfg["card"] == "L4"
     assert cfg["lengths"] == [2048, 4096, 8192, 16384, 32768]
     assert cfg["batches"] == {"16384": [1, 4]}
-    assert sess.main(["--session", "/nonexistent/x"]) == 2
-
-
-@pytest.mark.parametrize("step", sorted(st.NOT_BUILT))
-def test_unbuilt_steps_refuse_on_a_real_run_naming_their_task(step, tmp_path):
-    args = SimpleNamespace(dry_run=False, out=str(tmp_path), session=str(tmp_path), config=None)
-    with pytest.raises(st.StepFailed) as e:
-        st.STEP_FUNCS[step](args, dict(st.DRY_CONFIG))
-    assert e.value.args[0].startswith("not built: T2.")
+    t = tmp_path / "table.md"
+    t.write_text(st.WORKING_TABLE.read_text().replace('"reps": 10', '"reps": null'))
+    monkey = st.WORKING_TABLE
+    try:
+        st.WORKING_TABLE = t
+        with pytest.raises(st.StepFailed, match="reps"):
+            st.load_config(None, dry_run=False)
+        # The runner refuses on the config itself, on a clean tree too.
+        started = []
+        monkeypatch.setattr(sess, "tree_clean", lambda: True)
+        monkeypatch.setattr(sess, "run_session", lambda *a, **k: started.append(a) or 0)
+        assert sess.main(["--session", str(tmp_path / "never")]) == 2
+        assert started == [] and not (tmp_path / "never").exists()
+    finally:
+        st.WORKING_TABLE = monkey
 
 
 def test_a_real_session_syncs_to_the_results_bucket_and_banks_no_bucket_name(
@@ -346,3 +353,44 @@ def test_the_cpu_dry_run_passes_and_verify_accepts_the_prediction(tmp_path):
     stamps = json.loads((tmp_path / "dry" / "09_ground_truth" / "eager" / "stamps.json")
                         .read_text())
     assert stamps["clock_not_before"] <= min(stamps["first_clocked_block_started_at"])
+
+
+# --- the rehearsal (Shakedown 2) -------------------------------------------------------
+
+def test_a_rehearsal_stops_after_hold_and_never_clocks(tmp_path):
+    ran = []
+    rc = sess.run_session(tmp_path, start=ORDER[0], extra=[], dry_run=False, sync=False,
+                          runner=fake_runner({}, ran), rehearsal=True)
+    assert rc == 0 and ran == list(ORDER[:ORDER.index("hold") + 1])
+    assert sess.FIRST_CLOCKED not in ran
+    assert sess.run_session(tmp_path, start="ground_truth", extra=[], dry_run=False, sync=False,
+                            runner=fake_runner({}, []), rehearsal=True) == 2
+
+
+def test_a_rehearsal_cannot_be_continued_as_a_session_or_the_reverse(tmp_path):
+    sess.run_session(tmp_path / "r", start=ORDER[0], extra=[], dry_run=False, sync=False,
+                     runner=fake_runner({}, []), rehearsal=True)
+    assert sess.run_session(tmp_path / "r", start="predict", extra=[], dry_run=False,
+                            sync=False, runner=fake_runner({}, [])) == 2
+    _run(tmp_path / "s", {"hold": ("failed", 1)})
+    assert sess.run_session(tmp_path / "s", start="hold", extra=[], dry_run=False, sync=False,
+                            runner=fake_runner({}, []), rehearsal=True) == 2
+
+
+def test_the_rehearsal_config_has_its_own_prefix_and_is_written_once(tmp_path):
+    p = sess.rehearsal_config(tmp_path, None)
+    cfg = json.loads(p.read_text())
+    assert cfg["rehearsal"] is True and cfg["prediction_prefix"] == sess.REHEARSAL_PREFIX
+    assert cfg["pairing"] == "P1"                 # the working values are P1's
+    assert cfg["lengths"] == [2048, 16384] and cfg["batches"] == {"16384": [1, 4]}
+    assert st.prediction_dir(cfg, tmp_path).startswith("predictions/P1-rehearsal/")
+    p.write_text(json.dumps({**cfg, "marker": 1}))
+    assert json.loads(sess.rehearsal_config(tmp_path, None).read_text())["marker"] == 1
+
+
+@pytest.mark.parametrize("rehearsal,prefix", [(True, "predictions/P1"),
+                                               (None, "predictions/P1-rehearsal")])
+def test_a_prediction_goes_under_the_rehearsal_prefix_only_from_a_rehearsal(
+        tmp_path, rehearsal, prefix):
+    with pytest.raises(st.StepFailed, match="rehearsal"):
+        st.prediction_dir({"rehearsal": rehearsal, "prediction_prefix": prefix}, tmp_path)
