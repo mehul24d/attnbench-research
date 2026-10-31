@@ -583,11 +583,13 @@ def derive_session_floor(h, cfg, out: Path, *, clock=time.perf_counter) -> dict:
 
 def step_probe(args, cfg) -> dict:
     """T2.18 for every arm. P1's own recordings are the test of record: each
-    arm is probed at the two probe lengths (a chunked arm at its three,
-    checked at the third), extended to every grid length, and checked
-    against the full recording there. Where the result is "different"
-    (XAttention at 32768), the full-length recording is the arm's structure
-    at that length, with every duration discarded."""
+    arm is probed at its probe points (`structural_probe.probe_plan`; a
+    chunked arm checked at the third, every length at or below the model's
+    32768 positions), extended to every grid length, and checked against
+    the full recording there. "Different" is a verdict (researcher's ruling,
+    31 Oct 2026): there the full-length recording is the arm's structure at
+    that length, with every duration discarded and nothing extrapolated, so
+    dense and oracle may take one recording per grid length."""
     if args.dry_run:
         return {"fake": True, "arms": cfg["arms"]}
     _need_gpu("the structural probe")
@@ -605,12 +607,14 @@ def step_probe(args, cfg) -> dict:
                 prompt_id=a.prompt_id, layers=a.layers).sequence
 
         rule = sp.xattention_rule() if ARMS[name].xattention else sp.NO_CHUNKING
-        lengths = sp.chunked_probe_lengths(rule) if rule.chunked else sp.PROBE_LENGTHS
+        plan = sp.probe_plan(rule)
+        lengths = plan.lengths
         seqs = sp.probe(record, out / name, lengths=lengths)
         per = {}
         for L in cfg["lengths"]:
             full = record(L, out / name / f"full_{L}")
-            ext = (sp.extend_checked(seqs, rule, full.context_length) if rule.chunked
+            ext = (sp.extend_checked(seqs, rule, full.context_length,
+                                     full_third=plan.full_third) if rule.chunked
                    else sp.extend(seqs, rule, full.context_length))
             r = {"extension": ext.verdict, "reason": ext.reason, "length": full.context_length}
             if ext.extended:
@@ -619,7 +623,9 @@ def step_probe(args, cfg) -> dict:
             same = ext.extended and r.get("check") == "same sequence"
             r["structure"] = "extended" if same else "recorded at full length"
             per[str(L)] = r
-        found[name] = {"rule": rule.name, "probe_lengths": list(lengths), "by_length": per}
+        found[name] = {"rule": rule.name, "probe_lengths": list(lengths),
+                       "probe_plan": plan.reason, "full_third": plan.full_third,
+                       "by_length": per}
     h.unwrap()
     _write_json(out / "probe.json", found)
     return found

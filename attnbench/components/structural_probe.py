@@ -21,17 +21,23 @@ agreement check. Where it does not exist, the arm's sequence is
 **different** (plan Section 9: a disagreement means the arm is taken as
 "different" for H0 and H2), and the probe says why.
 
-**Chunked arms: three probe lengths** (plan T2.18, Appendix A, 27 Oct
-2026). An arm whose rule chunks is probed at three lengths, each with at
-least two chunks and no two with the same count (`chunked_probe_lengths`).
-`extend_checked` extends from the two shorter to the longest, which must be
-the same sequence as the one recorded there (payloads included, so the
-growth law inferred from two points is checked by the third), and only then
-extends to the target. XAttention at its official chunk size first reaches
-two chunks above 16384 tokens, so its probe lengths are 20480, 28672 and
-34816 (3, 4 and 9 chunks), not short contexts. The lengths sit mid-band
-because a real prompt lands at or below its budget: the probe keys each
-sequence by its recorded context length and checks the counts there.
+**Chunked arms: three probe points** (plan T2.18, Appendix A, 27 Oct
+2026; researcher's ruling, 31 Oct 2026). No probe length exceeds the
+model's positions (`MAX_PROBE_LENGTH`, 32768). `probe_plan` picks the
+lengths from the arm's chunk size: three lengths with distinct chunk counts
+of at least two where the chunk size allows (`chunked_probe_lengths`);
+where only two such lengths exist, those two plus a full recording at
+32768 as the third point (`full_third`). `extend_checked` extends from the
+two shorter to the third, which must be the same sequence as the one
+recorded there (payloads included, so the growth law inferred from two
+points is checked by the third), and only then extends to the target.
+XAttention at its official chunk size has one chunk up to 16384 tokens,
+three from 16512 to 24576 and four from 28672 to 32768, so its plan is
+20480 and 30720 (3 and 4 chunks) and the full recording at 32768. With
+two chunk counts, the third point checks the payloads, not a third count:
+the plan says so. The lengths sit mid-band because a real prompt lands at
+or below its budget: the probe keys each sequence by its recorded context
+length and checks the counts there.
 
 **What two short contexts cannot check, and is refused:**
 
@@ -73,7 +79,9 @@ PROBE_LENGTHS = (2048, 4096)
 CHUNKED_PROBES = 3                 # probe lengths for a chunked arm
 MIN_PROBE_CHUNKS = 2               # chunks at each of them
 LENGTH_STEP = 128                  # probe lengths are whole kernel blocks
-MAX_PROBE_LENGTH = 131072
+# The model's positions: no probe length above them (researcher's ruling,
+# 31 Oct 2026; the earlier 34816 for XAttention exceeded them).
+MAX_PROBE_LENGTH = 32768
 
 
 @dataclass(frozen=True)
@@ -122,6 +130,34 @@ def chunked_probe_lengths(rule: ChunkingRule, *, start: int = PROBE_LENGTHS[0],
         lo, hi = bands[c][0], bands[c][-1]
         out.append(max(lo, (lo + hi) // 2 // step * step))
     return tuple(out)
+
+
+@dataclass(frozen=True)
+class ProbePlan:
+    lengths: tuple            # what `probe` records, the third point included
+    full_third: bool          # the third point is a full recording at the limit
+    reason: str
+
+
+def probe_plan(rule: ChunkingRule, *, limit: int = MAX_PROBE_LENGTH) -> ProbePlan:
+    """The probe points of an arm, from its chunking rule (module docstring)."""
+    if not rule.chunked:
+        return ProbePlan(PROBE_LENGTHS, False, f"{rule.name}: the two short contexts")
+    try:
+        three = chunked_probe_lengths(rule, limit=limit)
+        return ProbePlan(three, False, f"{rule.name}: three chunk counts "
+                         f"({', '.join(str(rule.chunks(L)) for L in three)}) up to {limit}")
+    except op_sequence.SequenceError:
+        two = chunked_probe_lengths(rule, n=2, limit=limit)
+    if two[-1] >= limit:
+        raise op_sequence.SequenceError(
+            f"{rule.name}: the second probe length {two[-1]} leaves no room for the full "
+            f"recording at {limit}")
+    return ProbePlan(two + (limit,), True,
+                     f"{rule.name}: only two chunk counts of at least {MIN_PROBE_CHUNKS} up to "
+                     f"{limit} ({rule.chunks(two[0])}, {rule.chunks(two[1])}); the third point "
+                     f"is a full recording at {limit}, which checks the payloads, not a third "
+                     f"count")
 
 
 @dataclass(frozen=True)
@@ -251,16 +287,19 @@ def extend(seqs: Mapping[int, OpSequence], rule: ChunkingRule, target: int) -> E
 
 
 def extend_checked(seqs: Mapping[int, OpSequence], rule: ChunkingRule,
-                   target: int) -> Extension:
-    """A chunked arm's extension from three probe lengths (module docstring)."""
+                   target: int, *, full_third: bool = False) -> Extension:
+    """A chunked arm's extension from three probe points (module docstring).
+    With `full_third`, the third is the full recording at the limit and may
+    share the second's chunk count."""
     if len(seqs) != CHUNKED_PROBES:
         raise op_sequence.SequenceError(
             f"a chunked arm is probed at {CHUNKED_PROBES} lengths, not {len(seqs)}")
     (l1, s1), (l2, s2), (l3, s3) = sorted(seqs.items())
     counts = {L: rule.chunks(L) for L in (l1, l2, l3)}
     counts[target] = rule.chunks(target)
+    distinct = len({counts[L] for L in ((l1, l2) if full_third else (l1, l2, l3))})
     if min(counts[L] for L in (l1, l2, l3)) < MIN_PROBE_CHUNKS or \
-            len({counts[L] for L in (l1, l2, l3)}) != CHUNKED_PROBES:
+            distinct != (2 if full_third else CHUNKED_PROBES):
         return Extension(DIFFERENT, f"{rule.name}: the probe lengths {l1}, {l2}, {l3} have "
                          f"{counts[l1]}, {counts[l2]}, {counts[l3]} chunks; each needs at "
                          f"least {MIN_PROBE_CHUNKS}, and no two the same", None, counts, ())

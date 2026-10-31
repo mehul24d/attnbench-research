@@ -499,15 +499,19 @@ def step_replay(args) -> dict:
 # --- T2.18 -------------------------------------------------------------------------
 
 def step_probe(args) -> dict:
-    """T2.18 for each arm: recorded at the two probe lengths (traces deleted,
-    durations discarded), or a chunked arm at its three
-    (`structural_probe.chunked_probe_lengths`, checked at the third),
-    extended by the arm's chunking rule to the length the full recording
-    ran at (`--length` is its budget), and checked against that recording
-    (the test of record). Each arm passes only if the extension exists and
-    is the same sequence as the full recording."""
+    """T2.18 for each arm: recorded at its probe points (traces deleted,
+    durations discarded; `structural_probe.probe_plan`, a chunked arm
+    checked at the third), extended by the arm's chunking rule to the length
+    the full recording ran at (`--length` is its budget), and checked against
+    that recording (the test of record). "Different" is a verdict, not a
+    failure (researcher's ruling, 31 Oct 2026): library kernel selection
+    really does change the ordered operations, so where the extension or its
+    check says different, the arm's structure is its full recording at that
+    length (T2.18's fallback; durations discarded, nothing extrapolated). An
+    arm fails only if the probe did not complete with a verdict and its
+    evidence."""
     _need_cuda(args, "the structural probe (the parser needs CUDA activity)")
-    from attnbench.components import recorder, structural_probe as sp
+    from attnbench.components import op_sequence as ops, recorder, structural_probe as sp
 
     out = Path(args.out)
     h = _harness(args)
@@ -525,14 +529,16 @@ def step_probe(args) -> dict:
         try:
             from attnbench.components.shakedown_arms import ARMS
             rule = sp.xattention_rule() if ARMS[name].xattention else sp.NO_CHUNKING
-            lengths = (sp.chunked_probe_lengths(rule) if rule.chunked
-                       else (args.probe_short, args.probe_long))
+            plan = (sp.probe_plan(rule) if rule.chunked else
+                    sp.ProbePlan((args.probe_short, args.probe_long), False, rule.name))
+            lengths = plan.lengths
             seqs = sp.probe(record, spec_dir, lengths=lengths)
             full = record(args.length, spec_dir / f"full_{args.length}")
             target = full.context_length
-            ext = (sp.extend_checked(seqs, rule, target) if rule.chunked
-                   else sp.extend(seqs, rule, target))
+            ext = (sp.extend_checked(seqs, rule, target, full_third=plan.full_third)
+                   if rule.chunked else sp.extend(seqs, rule, target))
             r = {"rule": rule.name, "probe_budgets": list(lengths),
+                 "probe_plan": plan.reason, "full_third": plan.full_third,
                  "probe_lengths": sorted(seqs), "chunks": ext.chunks,
                  "checked_at": ext.checked_at, "extension": ext.verdict,
                  "reason": ext.reason, "payload_exponents": ext.payload_exponents,
@@ -542,7 +548,11 @@ def step_probe(args) -> dict:
                 r.update({"check": c.verdict, "first_difference": c.first_difference,
                           "check_reason": c.reason})
                 _save_sequence(ext.sequence, spec_dir / f"extended_{args.length}.json")
-            ok = ext.extended and r.get("check") == "same sequence"
+            same = ext.extended and r.get("check") == "same sequence"
+            r["structure"] = "extended" if same else f"recorded at full length ({target})"
+            r["evidence"] = r.get("check_reason") if ext.extended else ext.reason
+            verdicts = (ops.SAME, ops.DIFFERENT)
+            ok = ext.verdict in verdicts and (not ext.extended or r.get("check") in verdicts)
         except Exception as e:                       # one arm's failure, recorded
             traceback.print_exc()
             r, ok = {"error": f"{type(e).__name__}: {e}"}, False
@@ -550,7 +560,8 @@ def step_probe(args) -> dict:
         findings[name] = r
         if not ok:
             failed.append(name)
-        print(f"probe {name}: {'passed' if ok else 'FAILED'} {r.get('check') or r.get('reason') or r.get('error')}",
+        print(f"probe {name}: {'passed' if ok else 'FAILED'} "
+              f"{r.get('structure') or ''} {r.get('evidence') or r.get('error')}",
               flush=True)
     if failed:
         raise StepFailed(f"structural probe failed for {failed}", findings)

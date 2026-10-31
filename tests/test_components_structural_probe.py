@@ -219,17 +219,43 @@ def chunked_seqs(rule, lengths=None, **kw):
     return {L: program(L, rule.chunks(L), **kw) for L in lengths}
 
 
-def test_xattention_probe_lengths_have_three_distinct_counts_of_at_least_two():
+# --- no probe length above the model's 32768 positions (ruling, 31 Oct 2026) ---
+
+def test_no_probe_length_exceeds_32768():
+    assert P.MAX_PROBE_LENGTH == 32768
+
+
+def test_xattention_has_two_counts_so_its_third_point_is_a_full_recording_at_32768():
     rule = P.xattention_rule()
-    lengths = P.chunked_probe_lengths(rule)
-    assert lengths == (20480, 28672, 34816)
-    assert [rule.chunks(L) for L in lengths] == [3, 4, 9]
-    assert all(L % P.LENGTH_STEP == 0 for L in lengths)
+    plan = P.probe_plan(rule)
+    assert plan.lengths == (20480, 28672, 32768) and plan.full_third
+    assert [rule.chunks(L) for L in plan.lengths] == [3, 4, 4]
+    assert "full recording at 32768" in plan.reason and "not a third count" in plan.reason
+    assert all(L % P.LENGTH_STEP == 0 and L <= 32768 for L in plan.lengths)
+    with pytest.raises(SequenceError, match="fewer than 3"):
+        P.chunked_probe_lengths(rule)                     # three counts do not exist here
+
+
+def test_a_chunk_size_that_allows_three_counts_takes_three_lengths():
+    plan = P.probe_plan(PER_1K)
+    assert not plan.full_third and len(plan.lengths) == 3
+    assert len({PER_1K.chunks(L) for L in plan.lengths}) == 3
+    assert min(PER_1K.chunks(L) for L in plan.lengths) >= 2
+
+
+def test_an_unchunked_arm_takes_the_two_short_contexts():
+    assert P.probe_plan(P.NO_CHUNKING).lengths == P.PROBE_LENGTHS
+
+
+def test_a_rule_with_one_count_in_range_is_refused():
+    one = P.ChunkingRule("one", lambda L: 1 if L < 16384 else 2)
+    with pytest.raises(SequenceError, match="fewer than 2"):
+        P.probe_plan(one)
 
 
 def test_probe_lengths_sit_mid_band_so_a_short_prompt_keeps_its_count():
     rule = P.xattention_rule()
-    for L in P.chunked_probe_lengths(rule):
+    for L in P.probe_plan(rule).lengths[:2]:
         assert rule.chunks(L - 1000) == rule.chunks(L) == rule.chunks(L + 1000)
 
 
@@ -255,11 +281,29 @@ def test_a_chunked_arm_extends_from_three_lengths_checked_at_the_third(target, c
     assert P.check_against_full(ext, program(target, target // 1024, copy_exp=copy_exp)).same
 
 
-def test_xattention_extends_from_its_three_probe_lengths():
+def test_xattention_extends_from_its_two_lengths_checked_at_the_full_recording():
     rule = P.xattention_rule()
-    ext = P.extend_checked(chunked_seqs(rule), rule, 65536)
-    assert ext.extended, ext.reason
-    assert P.check_against_full(ext, program(65536, rule.chunks(65536))).same
+    plan = P.probe_plan(rule)
+    seqs = chunked_seqs(rule, plan.lengths)
+    ext = P.extend_checked(seqs, rule, 32768, full_third=True)
+    assert ext.extended and ext.checked_at == 32768, ext.reason
+    assert P.check_against_full(ext, program(32768, rule.chunks(32768))).same
+
+
+def test_the_full_third_point_still_catches_a_payload_law_two_points_infer_wrongly():
+    rule = P.xattention_rule()
+    lengths = P.probe_plan(rule).lengths
+    payload = dict(zip(lengths, (8, 16, 16)))               # L^1, then flat at 32768
+    seqs = {L: replace_copy(program(L, rule.chunks(L)), payload[L]) for L in lengths}
+    ext = P.extend_checked(seqs, rule, 24704, full_third=True)
+    assert ext.verdict == DIFFERENT and "differs from the one recorded there" in ext.reason
+
+
+def test_sharing_a_count_at_the_third_needs_the_full_third_plan():
+    rule = P.xattention_rule()
+    seqs = chunked_seqs(rule, P.probe_plan(rule).lengths)
+    ext = P.extend_checked(seqs, rule, 24704)               # not declared full_third
+    assert ext.verdict == DIFFERENT and "no two the same" in ext.reason
 
 
 def test_a_payload_law_two_points_infer_wrongly_is_caught_at_the_third():

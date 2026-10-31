@@ -394,3 +394,31 @@ def test_a_prediction_goes_under_the_rehearsal_prefix_only_from_a_rehearsal(
         tmp_path, rehearsal, prefix):
     with pytest.raises(st.StepFailed, match="rehearsal"):
         st.prediction_dir({"rehearsal": rehearsal, "prediction_prefix": prefix}, tmp_path)
+
+
+# --- T2.18 in T3.1: the probe plan and "different" as a verdict (31 Oct 2026) ---------
+
+def test_the_probe_step_takes_each_arms_plan_and_records_different_at_full_length(
+        tmp_path, monkeypatch):
+    from attnbench.components import op_sequence as ops, recorder, structural_probe as sp
+    arm = SimpleNamespace(run_prefill=lambda: None, code_path="cp", length=8075,
+                          prompt_id="p", layers=())
+    monkeypatch.setattr(st, "_need_gpu", lambda what: None)
+    monkeypatch.setattr(st, "_harness", lambda args: SimpleNamespace(
+        ready=lambda name, L, **kw: arm, unwrap=lambda: None))
+    monkeypatch.setattr(recorder, "record_arm_prefill", lambda *a, **k: SimpleNamespace(
+        sequence=SimpleNamespace(context_length=k["context_length"])))
+    probed = mock.create_autospec(sp.probe, return_value={})
+    monkeypatch.setattr(sp, "probe", probed)
+    different = SimpleNamespace(verdict=ops.DIFFERENT, reason="cuBLAS regime", extended=False)
+    checked = mock.create_autospec(sp.extend_checked, return_value=different)
+    monkeypatch.setattr(sp, "extend_checked", checked)
+    monkeypatch.setattr(sp, "extend", mock.create_autospec(sp.extend, return_value=different))
+    args = SimpleNamespace(out=str(tmp_path), dry_run=False)
+    found = st.step_probe(args, {"arms": ["dense", "xattention"], "lengths": [8192]})
+    assert [c.kwargs["lengths"] for c in probed.call_args_list] == \
+        [sp.PROBE_LENGTHS, (20480, 28672, 32768)]
+    assert checked.call_args.kwargs["full_third"] is True
+    assert found["xattention"]["full_third"] is True
+    for name in ("dense", "xattention"):
+        assert found[name]["by_length"]["8192"]["structure"] == "recorded at full length"

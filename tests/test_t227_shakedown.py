@@ -339,13 +339,31 @@ def test_probe_extends_and_checks_each_arm(tmp_path, gpu, monkeypatch):
         sp.check_against_full, side_effect=lambda e, f: SimpleNamespace(
             verdict=next(verdicts), first_difference=None, reason="")))
     monkeypatch.setattr(st, "_save_sequence", lambda seq, path: None)
-    assert st.run_step("probe", _args(tmp_path, dry_run=False, arms="dense,oracle")) == 1
+    # "different" is a verdict, not a failure (ruling, 31 Oct 2026)
+    assert st.run_step("probe", _args(tmp_path, dry_run=False, arms="dense,oracle")) == 0
     res = json.loads((tmp_path / "result.json").read_text())
-    assert res["findings"]["dense"]["passed"] is True
-    assert res["findings"]["oracle"]["passed"] is False
-    assert "oracle" in res["reason"] and "dense" not in res["reason"]
+    dense, oracle = res["findings"]["dense"], res["findings"]["oracle"]
+    assert dense["passed"] and dense["structure"] == "extended"
+    assert oracle["passed"] and oracle["structure"] == "recorded at full length (8075)"
+    assert oracle["check"] == ops.DIFFERENT
     assert sp.probe.call_args_list[0].kwargs["lengths"] == (2048, 4096)
     assert sp.extend.call_args_list[0].args[2] == 8075      # the full recording's length
+
+
+def test_a_probe_that_does_not_complete_fails_the_step(tmp_path, gpu, monkeypatch):
+    from attnbench.components import recorder, structural_probe as sp
+    arm = FakeArm(name="x", run_prefill=lambda: None, code_path="cp", prompt_id="p", layers=(),
+                  length=8075)
+    monkeypatch.setattr(st, "_harness", lambda args: fake_harness(arm))
+    monkeypatch.setattr(recorder, "record_arm_prefill", mock.create_autospec(
+        recorder.record_arm_prefill, return_value=SimpleNamespace(
+            sequence=SimpleNamespace(context_length=8075))))
+    monkeypatch.setattr(sp, "probe", mock.create_autospec(
+        sp.probe, side_effect=RuntimeError("the trace is incomplete")))
+    assert st.run_step("probe", _args(tmp_path, dry_run=False, arms="dense")) == 1
+    res = json.loads((tmp_path / "result.json").read_text())
+    assert res["findings"]["dense"]["passed"] is False and "incomplete" in res["reason"] + \
+        res["findings"]["dense"]["error"]
 
 
 def test_probe_takes_a_chunked_arm_at_three_lengths_checked_at_the_third(tmp_path, gpu,
@@ -369,8 +387,9 @@ def test_probe_takes_a_chunked_arm_at_three_lengths_checked_at_the_third(tmp_pat
             verdict=ops.SAME, first_difference=None, reason="")))
     monkeypatch.setattr(st, "_save_sequence", lambda seq, path: None)
     assert st.run_step("probe", _args(tmp_path, dry_run=False, arms="xattention")) == 0
-    assert sp.probe.call_args.kwargs["lengths"] == (20480, 28672, 34816)
+    assert sp.probe.call_args.kwargs["lengths"] == (20480, 28672, 32768)
     assert checked.call_args.args[2] == 8075 and not two.called
+    assert checked.call_args.kwargs["full_third"] is True
     res = json.loads((tmp_path / "result.json").read_text())
     assert res["findings"]["xattention"]["checked_at"] == 34700
 
