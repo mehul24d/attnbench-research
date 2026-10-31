@@ -164,6 +164,33 @@ if [[ -n "$BOOT_UTC" ]]; then
   fi
 else
   echo "   WARNING: could not read boot time -- copied files will be UNATTRIBUTED"
+  # A self-halted VM (the FA3 build VM, the in-guest halt) is TERMINATED when
+  # this runs, so there is no SSH and no boot clock, and the session would end
+  # with no cost file. GCP itself kept the create and stop times: the billable
+  # span is the one between them. It is an upper bound on the card's running
+  # time (the instance may have been stopped and started again, and it counts
+  # boot); the file says where its numbers came from.
+  IFS=$'\t' read -r STATUS CREATED STOPPED < <(gcloud compute instances describe "$NAME" \
+      --zone="$ZONE" --project="$PROJECT" \
+      --format='value(status,creationTimestamp,lastStopTimestamp)' 2>/dev/null)
+  if [[ "${STATUS:-}" == "TERMINATED" && -n "${CREATED:-}" && -n "${STOPPED:-}" ]]; then
+    SPAN="$(python3 -I -c '
+import sys
+from datetime import datetime
+a, b = (datetime.fromisoformat(x) for x in sys.argv[1:3])
+print(int((b - a).total_seconds()))' "$CREATED" "$STOPPED" 2>/dev/null)"
+    if [[ "$SPAN" =~ ^[0-9]+$ ]]; then
+      MINS=$(( (SPAN + 59) / 60 ))
+      COST=$(awk -v m="$MINS" -v r="$RATE_INR_HR" 'BEGIN{printf "%.0f", m*r/60}')
+      printf 'instance: %s\nzone: %s\nboot: %s\nteardown: %s\nminutes: %s\nrate_inr_hr: %s\nest_inr: %s\nsource: gcloud create and stop times (self-halted instance, no SSH)\nstopped: %s\n' \
+        "$NAME" "$ZONE" "$CREATED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$MINS" "$RATE_INR_HR" "$COST" "$STOPPED" > "$S/session_cost.txt"
+      echo "   self-halted: created $CREATED, stopped $STOPPED"
+      echo "   billable: ${MINS} min  ~= INR ${COST} at ${RATE_INR_HR}/hr -> $S/session_cost.txt"
+    else
+      echo "   WARNING: could not read the create and stop times -- no cost file"
+    fi
+  fi
 fi
 
 echo "== 4/5 delete (not stop -- a stopped instance still bills for its disk)"
