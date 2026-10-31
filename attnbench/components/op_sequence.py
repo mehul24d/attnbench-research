@@ -59,6 +59,17 @@ check, so the sequence keeps it, `trace_flags` flags it, the flag goes into
 the banked record and the arms table, and `to_operations` leaves it out of
 the recursion (Section 5.1; audit C4, finding 1).
 
+**Memsets with no device record** (researcher's ruling, 31 Oct 2026). A
+`cudaMemsetAsync` whose device activity the trace does not hold (Shakedown
+2: three per layer under XAttention's `addmm`, taken to be zero-work
+memsets) is tolerated, flagged and counted, not refused. It stays an
+operation, so a count that differs across lengths still reads "different";
+its host cost is counted; its device cost is zero, with the cost-source
+flag "no device record" (`NO_DEVICE_RECORD`), as the implicit wait is
+flagged. `memset_flags` prices them at the memset zoo's duration for an
+upper-bound sensitivity. A kernel launch with no device record is still
+refused: that is an incomplete trace.
+
 **Composites.** Section 5.1 splits an `assert` on a GPU tensor and sizing
 from `nonzero()` into a kernel followed by a synchronisation, with no
 operation carrying both. In a trace the split is already there: the
@@ -139,6 +150,7 @@ UNPRICED_MECHANISMS: tuple = ()
 # Waits that are flagged in the trace and not costed (module docstring).
 FLAGGED_MECHANISMS = ("implicit",)
 IMPLICIT_WAIT = "implicit_wait"
+NO_DEVICE_RECORD = "no_device_record"     # a memset the trace holds no device activity for
 
 # Section 5.1: for `.item()` and `bool()` of a tensor the payload is zero by
 # definition, so their s_0 is s_fixed (Appendix A, 25 Oct 2026). The trace
@@ -263,6 +275,7 @@ class SeqOp:
     loaded: bool = False
     stream: Optional[int] = None
     frame: Optional[str] = None
+    no_device_record: bool = False
     correlation: Optional[int] = field(default=None, compare=False)
 
     @property
@@ -611,6 +624,10 @@ def parse_trace(trace: Union[str, Path, Mapping], code_path: CodePath, *,
                                     f"recorded device work")
             op = SeqOp(SeqKind.GRAPH, api=p.name, kernels=tuple(a.name for a in acts),
                        stream=stream, correlation=corr, **ctx)
+        elif cls == "memset" and not acts:
+            # Tolerated, flagged and counted (module docstring).
+            op = SeqOp(SeqKind.MEMSET, api=p.name, no_device_record=True,
+                       correlation=corr, **ctx)
         elif cls == "memset":
             one("gpu_memset")
             op = SeqOp(SeqKind.MEMSET, api=p.name, kernels=(acts[0].name,),
@@ -866,10 +883,25 @@ def sync_map(seq: OpSequence) -> tuple[SyncEntry, ...]:
 
 
 def trace_flags(seq: OpSequence) -> tuple[dict, ...]:
-    """The trace check's flags: one per implicit wait (Section 5.1, T2.3)."""
-    return tuple({"position": i, "flag": IMPLICIT_WAIT, "api": op.api, "layer": op.layer,
-                  "costed": False}
-                 for i, op in enumerate(seq.ops) if op.flagged)
+    """The trace check's flags: one per implicit wait (Section 5.1, T2.3),
+    not costed, and one per memset with no device record, costed on the
+    host only (31 Oct 2026)."""
+    out = []
+    for i, op in enumerate(seq.ops):
+        if op.flagged:
+            out.append({"position": i, "flag": IMPLICIT_WAIT, "api": op.api,
+                        "layer": op.layer, "costed": False})
+        elif op.no_device_record:
+            out.append({"position": i, "flag": NO_DEVICE_RECORD, "api": op.api,
+                        "layer": op.layer, "costed": "host"})
+    return tuple(out)
+
+
+def flag_counts(seq: OpSequence) -> dict:
+    """How many of each flag the sequence carries: the paper reports the
+    flagged-memset count."""
+    c = Counter(f["flag"] for f in trace_flags(seq))
+    return {IMPLICIT_WAIT: c[IMPLICIT_WAIT], NO_DEVICE_RECORD: c[NO_DEVICE_RECORD]}
 
 
 def _sync_label(e: SyncEntry) -> str:
@@ -913,9 +945,9 @@ def sync_column(seq: OpSequence) -> str:
     unpriced = sorted({e.mechanism for e in entries if not e.priced and not e.flagged})
     if unpriced:
         parts.append(f"unpriced: {', '.join(unpriced)}")
-    flags = trace_flags(seq)
-    if flags:
-        parts.append(f"flagged: {IMPLICIT_WAIT} (not costed) x{len(flags)}")
+    implicit = flag_counts(seq)[IMPLICIT_WAIT]
+    if implicit:
+        parts.append(f"flagged: {IMPLICIT_WAIT} (not costed) x{implicit}")
     return "; ".join(parts)
 
 
@@ -1004,7 +1036,9 @@ def attribute_asserts(with_asserts: OpSequence, stripped: OpSequence) -> OpSeque
 
 def to_operations(seq: OpSequence, *, host: Mapping[int, float],
                   device: Mapping[int, float],
-                  link: Mapping[int, float]) -> list[recursion.Operation]:
+                  link: Mapping[int, float],
+                  flagged_memset_s: Optional[Mapping[int, float]] = None
+                  ) -> list[recursion.Operation]:
     """The sequence with its measured components, as recursion operations.
 
     Costs are keyed by sequence position: `host` for every operation except
@@ -1020,10 +1054,16 @@ def to_operations(seq: OpSequence, *, host: Mapping[int, float],
     graph launches all become recursion kernels. An `.item()` or `bool()`
     wait goes to the recursion with payload zero (ZERO_PAYLOAD_MECHANISMS);
     the sequence keeps the recorded bytes. The closing synchronise is not
-    added here; `recursion.close_prefill` does that.
+    added here; `recursion.close_prefill` does that. A memset with no device
+    record takes no `device` cost: it is zero, or, for the upper-bound
+    sensitivity only, `flagged_memset_s` (one entry per such memset).
     """
+    flagged_mem = {i for i, op in enumerate(seq.ops) if op.no_device_record}
+    if flagged_memset_s is not None and set(flagged_memset_s) != flagged_mem:
+        raise SequenceError(f"flagged_memset_s covers {sorted(flagged_memset_s)}, the "
+                            f"memsets with no device record are {sorted(flagged_mem)}")
     want_host = {i for i, op in enumerate(seq.ops) if op.kind is not SeqKind.SYNC}
-    want_dev = {i for i, op in enumerate(seq.ops) if op.is_device}
+    want_dev = {i for i, op in enumerate(seq.ops) if op.is_device} - flagged_mem
     want_link = {i for i, op in enumerate(seq.ops) if op.kind is SeqKind.COPY}
     for name, got, want in (("host", host, want_host), ("device", device, want_dev),
                             ("link", link, want_link)):
@@ -1053,7 +1093,8 @@ def to_operations(seq: OpSequence, *, host: Mapping[int, float],
                                          payload_bytes=op.payload_bytes, **common))
             carried = 0.0
         else:
-            out.append(recursion.kernel_op(host[i] + carried, device[i], **common))
+            d = ((flagged_memset_s or {}).get(i, 0.0) if i in flagged_mem else device[i])
+            out.append(recursion.kernel_op(host[i] + carried, d, **common))
             carried = 0.0
     if carried:
         raise SequenceError("host compute after the last operation has no "
@@ -1077,6 +1118,8 @@ def device_durations(trace: Union[str, Path, Mapping], seq: OpSequence) -> dict[
                 by_corr[c] = by_corr.get(c, 0.0) + (e.end - e.ts) * 1e-6
     out = {}
     for i, op in seq.device_ops():
+        if op.no_device_record:
+            continue                         # nothing on the device to compare with
         if op.correlation not in by_corr:
             raise SequenceError(f"operation {i} is not in this trace")
         out[i] = by_corr[op.correlation]
@@ -1087,7 +1130,9 @@ def device_durations(trace: Union[str, Path, Mapping], seq: OpSequence) -> dict[
 
 _OP_FIELDS = ("kind", "layer", "api", "aten_op", "origin", "kernels", "direction",
               "src_mem", "dst_mem", "payload_bytes", "mechanism", "composite",
-              "loaded", "stream", "frame")
+              "loaded", "stream", "frame", "no_device_record")
+# Records written before 31 Oct 2026 have no `no_device_record`; it reads False.
+_OPTIONAL_FIELDS = {"no_device_record": False}
 
 
 def to_record(seq: OpSequence) -> dict:
@@ -1124,6 +1169,7 @@ def from_record(record: Mapping) -> OpSequence:
                   python_optimize=int(c["python_optimize"]))
     ops = []
     for d in record["ops"]:
+        d = {**_OPTIONAL_FIELDS, **d}
         if set(d) != set(_OP_FIELDS):
             raise SequenceError(f"operation fields {sorted(d)}")
         ops.append(SeqOp(**{**d, "kind": SeqKind(d["kind"]),

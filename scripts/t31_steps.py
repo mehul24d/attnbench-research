@@ -678,7 +678,12 @@ def step_device_components(args, cfg) -> dict:
     bank), its nodes matched to the sequence, substituted positions priced
     from the original operators, then each position's host (T2.2), device
     (T2.4) and link (T2.5) cost as recursion operations: `cells.json`, one
-    entry per ground-truth cell, which the prediction reads."""
+    entry per ground-truth cell, which the prediction reads. A cell whose
+    sequence holds memsets with no device record (31 Oct 2026 ruling) also
+    carries their count and the same operations with those memsets priced
+    at the memset zoo's duration (`memset_flags`), for the upper-bound
+    sensitivity `predict` reports; the prediction itself prices them at
+    zero device cost."""
     if not args.dry_run:
         return device_components_real(args, cfg)
     entries = [{"arm": a, "density": d, "context_length": L, "batch": b,
@@ -694,9 +699,11 @@ def device_components_real(args, cfg) -> dict:
     import pandas as pd
     import torch
     from attnbench.components import host_profile as hp
+    from attnbench.components import memset_flags as msf
     from attnbench.components import op_sequence as ops
     from attnbench.components import recorder, replay
     out, session = Path(args.out), Path(args.session)
+    zoo: dict = {}
     host_dir = step_dir(session, "host_components")
     index = json.loads((host_dir / "cells_index.json").read_text())["cells"]
     row = pd.read_parquet(step_dir(session, "link") / "link" / "link.parquet").iloc[0].to_dict()
@@ -724,16 +731,28 @@ def device_components_real(args, cfg) -> dict:
         except replay.ReplayError as e:
             raise StepFailed(f"{c['dir']}: {e}")
         prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
-        priced = label_outside_layers(ops.to_operations(
-            rec.sequence, host=hp.host_costs(prof, rec.sequence),
-            device=pricing.device_s, link=link_costs(rec.sequence, row)))
+        costs = dict(host=hp.host_costs(prof, rec.sequence), device=pricing.device_s,
+                     link=link_costs(rec.sequence, row))
+        priced = label_outside_layers(ops.to_operations(rec.sequence, **costs))
+        memsets = None
+        if msf.count(rec.sequence):
+            if not zoo:
+                zoo.update(msf.measure_zoo(out / "memset_zoo_trace.json"))
+            trace = rec.directory / "trace.json"
+            sizes = (msf.flagged_sizes(trace, rec.sequence) if trace.exists()
+                     else {i: None for i in msf.flagged(rec.sequence)})
+            upper, src = msf.upper_bound_s(sizes, zoo)
+            memsets = {"count": len(upper), "sources": sorted(set(src.values())),
+                       "ops_upper": [op_to_dict(op) for op in label_outside_layers(
+                           ops.to_operations(rec.sequence, **costs, flagged_memset_s=upper))]}
         sources[c["dir"]] = pricing.counts()
         entries.append({"arm": c["arm"], "density": c["density"],
                         "nominal_density": c["nominal_density"],
                         "context_length": c["context_length"], "budget": c["budget"],
                         "batch": c["batch"], "prompt_id": c["prompt_id"],
                         "code_path": c["code_path"], "cost_sources": pricing.counts(),
-                        "ops": [op_to_dict(op) for op in priced]})
+                        "ops": [op_to_dict(op) for op in priced],
+                        **({"memset_flags": memsets} if memsets else {})})
     h.unwrap()
     _write_json(out / "cells.json", {"fake": False, "cells": entries})
     return {"cells": len(entries), "cost_sources": sources}
@@ -783,6 +802,8 @@ def step_predict(args, cfg) -> dict:
     session, out = Path(args.session), Path(args.out)
     record = build_prediction(cfg, session, dry_run=args.dry_run)
     committed = C.write_prediction(record, out)
+    sensitivity = memset_sensitivity(session)
+    _write_json(out / "memset_sensitivity.json", sensitivity)
     store, base = make_store(session, dry_run=args.dry_run)
     receipt = C.sync_prediction(committed, store, f"{base}/{prediction_dir(cfg, session)}")
     d = receipt.to_dict()
@@ -792,7 +813,37 @@ def step_predict(args, cfg) -> dict:
         d[k] = d[k][len(base) + 1:]
     _write_json(out / "receipt.json", {**d, "local": committed.path.name})
     return {"file": committed.path.name, "sha256": committed.sha256,
-            "synced_at": d["synced_at"], "remote_in_bucket": d["remote"]}
+            "synced_at": d["synced_at"], "remote_in_bucket": d["remote"],
+            "flagged_memsets": sensitivity["flagged_memsets"],
+            "memset_max_shift_s": sensitivity["max_shift_s"]}
+
+
+def memset_sensitivity(session: Path) -> dict:
+    """The upper-bound sensitivity of the 31 Oct 2026 ruling, per cell: D_N
+    with the flagged memsets at zero device cost (the prediction's) and at
+    the memset zoo's duration, and the shift. Written beside the committed
+    prediction, never into it. The paper reports the flagged-memset count."""
+    from attnbench.predict.recursion import MechanismCost, close_prefill, price, recurse
+    rin = json.loads((step_dir(session, "link") / "recursion_inputs.json").read_text())
+    dev = json.loads((step_dir(session, "device_components") / "cells.json").read_text())
+
+    def dn(op_dicts, mech):
+        return recurse(price(close_prefill(op_from_dict(o) for o in op_dicts), mech),
+                       rin["queue_depth"]).end_to_end
+
+    rows = []
+    for e in dev["cells"]:
+        m = e.get("memset_flags")
+        if not m:
+            continue
+        mech = {k: MechanismCost(**v)
+                for k, v in rin["by_length"][str(e.get("budget", e["context_length"]))].items()}
+        base, bound = dn(e["ops"], mech), dn(m["ops_upper"], mech)
+        rows.append({k: e[k] for k in ("arm", "density", "context_length", "batch")} |
+                    {"flagged_memsets": m["count"], "sources": m["sources"],
+                     "prediction_s": base, "upper_bound_s": bound, "shift_s": bound - base})
+    return {"flagged_memsets": sum(r["flagged_memsets"] for r in rows),
+            "max_shift_s": max((r["shift_s"] for r in rows), default=0.0), "cells": rows}
 
 
 def _receipt(session: Path):

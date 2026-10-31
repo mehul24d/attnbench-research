@@ -422,3 +422,32 @@ def test_the_probe_step_takes_each_arms_plan_and_records_different_at_full_lengt
     assert found["xattention"]["full_third"] is True
     for name in ("dense", "xattention"):
         assert found[name]["by_length"]["8192"]["structure"] == "recorded at full length"
+
+
+def test_the_memset_sensitivity_is_the_bounds_prediction_minus_the_models(tmp_path):
+    """31 Oct 2026 ruling: flagged memsets cost zero on the device in the
+    prediction; the sensitivity prices them at the zoo and reports the shift."""
+    session = tmp_path / "s"
+    for step in ("link", "device_components"):
+        st.step_dir(session, step).mkdir(parents=True)
+    args = SimpleNamespace(out=str(st.step_dir(session, "link")), session=str(session),
+                           dry_run=True, config=None)
+    with mock.patch.object(st, "_t227"):
+        st.step_link(args, st.DRY_CONFIG)
+    args.out = str(st.step_dir(session, "device_components"))
+    st.step_device_components(args, st.DRY_CONFIG)
+    path = st.step_dir(session, "device_components") / "cells.json"
+    cells = json.loads(path.read_text())
+    assert st.memset_sensitivity(session) == {"flagged_memsets": 0, "max_shift_s": 0.0,
+                                              "cells": []}
+    e = cells["cells"][0]
+    upper = [dict(o) for o in e["ops"]]
+    k = next(i for i, o in enumerate(upper) if o["kind"] == "kernel")
+    upper[k]["device"] += 0.5                       # a flagged memset at the zoo's duration
+    e["memset_flags"] = {"count": 3, "sources": ["zoo at 1024 bytes"], "ops_upper": upper}
+    path.write_text(json.dumps(cells))
+    got = st.memset_sensitivity(session)
+    (row,) = got["cells"]
+    assert got["flagged_memsets"] == 3 and row["arm"] == e["arm"]
+    assert row["shift_s"] == pytest.approx(row["upper_bound_s"] - row["prediction_s"])
+    assert 0 < row["shift_s"] <= 0.5 and got["max_shift_s"] == row["shift_s"]
