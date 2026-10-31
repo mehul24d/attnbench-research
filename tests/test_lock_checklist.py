@@ -22,7 +22,7 @@ def _filled(plan_text=PLAN_TEXT) -> dict:
 
 def test_the_list_is_read_from_the_plans_t41_row():
     items = L.lock_items(PLAN_TEXT)
-    assert len(items) == 18
+    assert len(items) == 28
     keys = list(items)
     assert keys[0] == "h0_to_h3_tolerances"
     assert keys[-1] == "budget_cut_order"
@@ -38,7 +38,7 @@ def test_the_list_is_read_from_the_plans_t41_row():
 def test_a_complete_lock_file_passes_and_its_report_says_so():
     result = L.check(_filled(), PLAN_TEXT)
     assert result.complete
-    assert result.report().startswith("18 values listed by T4.1; complete")
+    assert result.report().startswith("28 values listed by T4.1; complete")
 
 
 def test_missing_unset_unsourced_and_unknown_entries_are_each_named():
@@ -196,11 +196,6 @@ def test_the_mapping_catches_a_new_at_lock_sentence():
     assert any(not _keys_for(s) for _, s in L.lock_mentions(grown))
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "UNTIL THE PLAN EDIT: T4.1 does not yet name learned-predictor features, "
-    "learned-predictor hyperparameters, K2 correctness tolerance, head-type criterion, "
-    "floors quantile, rerun budget, throttle set. The Mac integration session adds them "
-    "with a dated Appendix A line; this mark then fails as XPASS and is removed."))
 def test_t41_names_every_value_the_plan_fixes_at_lock():
     needed = {k for _, keys in AT_LOCK for k in keys} - {THE_LIST} | set(NAMED_ALSO)
     missing = sorted(needed - set(L.lock_items(PLAN_TEXT)))
