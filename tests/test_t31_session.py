@@ -316,7 +316,7 @@ def test_dense_select_wiring_on_a_real_run(tmp_path):
         found = st.step_dense_select(SimpleNamespace(dry_run=False, out=str(tmp_path)), cfg)
     assert sorted(found) == ["L4_16384_1", "L4_16384_4", "L4_2048_1"]
     kw = sel.call_args.kwargs
-    assert kw == {"rounds": 5, "resolution_floor_ms": 0.5}
+    assert kw == {"rounds": 5, "resolution_floor_ms": 0.5, "device": "cuda"}
     assert [c.args[1].batch for c in sel.call_args_list] == [1, 1, 4]
 
 

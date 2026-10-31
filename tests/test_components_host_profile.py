@@ -623,3 +623,103 @@ def test_the_block_sparse_entry_nulls_the_extension_and_keeps_the_wrapper(monkey
     run_pass(prefill, seq(k(None)), clock, tape=rec.tape, entries=[H.block_sparse_entry()])
     assert cuda.ran == 1                          # the extension never ran in the pass
     assert prefill.out.shape == W.shape
+
+
+# --------------------------------------------------------------------------
+# The embedding lookup outside the layers: priced by the isolated replay
+# (researcher's ruling, 31 Oct 2026; Shakedown 3, t22)
+# --------------------------------------------------------------------------
+
+EMB = torch.randn(10, 3)
+IDS = torch.tensor([1, 2, 3])
+
+
+def gathered(layer=None):
+    op = k("aten::gather", layer)
+    return SeqOp(op.kind, layer=layer, aten_op="aten::gather", origin="aten::embedding",
+                 api=op.api, kernels=op.kernels)
+
+
+def embed_then_mm(clock):
+    def prefill():
+        clock.advance(2.0)
+        e = torch.nn.functional.embedding(IDS, EMB)       # the dispatcher shows `embedding`
+        clock.advance(4.0)
+        torch.mm(e, W)
+    return prefill
+
+
+def test_the_embedding_lookup_is_kept_out_and_its_neighbours_keep_their_gaps():
+    clock = Clock()
+    sq = seq(gathered(), k("aten::mm"))
+    assert H.isolated_positions(sq) == (0,)
+    log = run_pass(embed_then_mm(clock), sq, clock)
+    assert len(log.isolated) == 1 and [i.name for i in log.issues] == ["aten::mm"]
+    assert clock.now == 2.0 + 4.0 + LAUNCH      # the arm's time and one null launch, no other
+    assert H.assign(sq, log, isolated=(0,)) == {1: 2.0 + 4.0 + LAUNCH}
+
+
+def test_the_kept_out_call_s_own_time_is_in_no_gap(monkeypatch):
+    clock = Clock()
+    real = H._null_outputs
+
+    def slow(func, *a, **kw):             # the instrument's work for the kept-out call
+        if H.aten_name(func) == "aten::embedding":
+            clock.advance(3.0)
+        return real(func, *a, **kw)
+    monkeypatch.setattr(H, "_null_outputs", slow)
+    sq = seq(gathered(), k("aten::mm"))
+    log = run_pass(embed_then_mm(clock), sq, clock)
+    assert log.isolated == [3.0]
+    assert H.assign(sq, log, isolated=(0,)) == {1: 2.0 + 4.0 + LAUNCH}
+
+
+def test_the_profile_takes_the_isolated_cost_and_flags_its_source():
+    clock = Clock()
+    sq = seq(gathered(), k("aten::mm"))
+    p = H.profile(embed_then_mm(clock), SyncTape("cpu"), sq, device=device(clock), reps=2,
+                  clock=clock, isolated={0: 7e-6})
+    assert p.host_s[0] == 7e-6 and p.source(0) == H.ISOLATED_REPLAY and p.source(1) == H.NULL_PASS
+    assert p.sources() == {H.NULL_PASS: 1, H.ISOLATED_REPLAY: 1}
+    back = H.from_record(H.to_record(p))
+    assert back.cost_source == {0: H.ISOLATED_REPLAY} and back.host_s == p.host_s
+    assert H.host_costs(p, sq) == p.host_s
+
+
+@pytest.mark.parametrize("given", [None, {}, {0: 1e-6, 1: 1e-6}])
+def test_the_isolated_costs_must_cover_exactly_the_isolated_positions(given):
+    clock = Clock()
+    with pytest.raises(H.ProfileMismatch, match="priced by the isolated replay"):
+        H.profile(embed_then_mm(clock), SyncTape("cpu"), seq(gathered(), k("aten::mm")),
+                  device=device(clock), reps=1, clock=clock, isolated=given)
+
+
+def test_a_gather_inside_a_layer_is_not_isolated_and_is_refused_unmet():
+    clock = Clock()
+    sq = seq(gathered(layer=0), k("aten::mm", layer=0))
+    assert H.isolated_positions(sq) == ()
+    with pytest.raises(H.ProfileMismatch, match="aten::gather in layer 0"):
+        H.profile(embed_then_mm(clock), SyncTape("cpu"), sq, device=device(clock), reps=1,
+                  clock=clock, layers=())
+
+
+def test_an_isolated_position_the_pass_never_meets_is_refused():
+    clock = Clock()
+
+    def no_embedding():
+        torch.mm(torch.ones(3, 3), W)
+    with pytest.raises(H.ProfileMismatch, match="met no call to aten::embedding"):
+        H.profile(no_embedding, SyncTape("cpu"), seq(gathered(), k("aten::mm")),
+                  device=device(clock), reps=1, clock=clock, isolated={0: 1e-6})
+
+
+def test_an_old_profile_record_reads_every_cost_as_the_null_pass():
+    clock = Clock()
+
+    def prefill():
+        torch.mm(torch.ones(3, 3), W)
+    sq = seq(k("aten::mm"))
+    rec = H.to_record(H.profile(prefill, SyncTape("cpu"), sq, device=device(clock), reps=1,
+                                clock=clock))
+    del rec["cost_source"]
+    assert H.from_record(rec).sources() == {H.NULL_PASS: 1, H.ISOLATED_REPLAY: 0}

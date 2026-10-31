@@ -56,6 +56,19 @@ the tape, so the work is the recorded work. A region's duration is the cost of
 its marker position, and it is taken out of the gap it falls in, so it is
 charged once (`op_sequence.to_operations` adds it to the next operation).
 
+**The embedding lookup** (researcher's ruling, 31 Oct 2026). Shakedown 3's
+t22 pass was refused at its first position: the recording names the
+kernel's operator, `aten::gather`, outside the layers, while the dispatcher
+shows the pass `aten::embedding`, whose own kernel then runs below it
+unseen. A position whose operator is in `ISOLATED_OUTSIDE_LAYERS` and that
+lies outside the layers is therefore priced from an isolated replay of the
+original operators (`isolated_host_s`: the host time of the call that
+issued it, run alone after a synchronise, the flush taken out), and its cost
+source is flagged `ISOLATED_REPLAY` (`HostProfile.cost_source`); every other
+position keeps the null pass's. In the pass that call is replaced with no
+launch, and its own time is kept out of the next gap. Any other position the
+pass does not meet is refused, as before.
+
 **What this does not cover**, refused rather than approximated: a CUDA-graph
 launch in the sequence (a compiled arm's pass has its own null form, T2.21),
 and a synchronisation, which has no host cost in the recursion (s_fixed is
@@ -91,6 +104,10 @@ from .op_sequence import HOST_COMPUTE, OpSequence, SeqKind
 from .sync_tape import SyncTape, TapeReplayer
 
 SCHEMA = "attnbench.host_profile/1"
+NULL_PASS, ISOLATED_REPLAY = "null_pass", "isolated_replay"
+# Operators outside the layers priced by the isolated replay (module
+# docstring): the embedding lookup's gather on the L4.
+ISOLATED_OUTSIDE_LAYERS = frozenset({"aten::gather"})
 
 
 class ProfileMismatch(RuntimeError):
@@ -137,6 +154,7 @@ class PassLog:
     issues: list = field(default_factory=list)
     markers: list = field(default_factory=list)       # host-compute durations, in order
     launches: list = field(default_factory=list)      # every null launch, in order
+    isolated: list = field(default_factory=list)      # calls priced by the isolated replay
 
 
 def aten_name(func) -> str:
@@ -182,9 +200,11 @@ class NullDeviceMode(TorchDispatchMode):
     no device tensor, runs for real."""
 
     def __init__(self, device: NullDevice, launching: Iterable[str], log: PassLog,
-                 state: "_State", clock: Callable[[], float]):
+                 state: "_State", clock: Callable[[], float],
+                 isolated: Iterable[str] = ()):
         super().__init__()
         self.device, self.launching = device, frozenset(launching)
+        self.isolated = frozenset(isolated)
         self.log, self.state, self.clock = log, state, clock
 
     def _touches_device(self, args, kwargs) -> bool:
@@ -195,6 +215,14 @@ class NullDeviceMode(TorchDispatchMode):
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
         name = aten_name(func)
+        if name in self.isolated and self.state.layer is None and \
+                self._touches_device(args, kwargs):
+            t0 = self.clock()      # priced by the isolated replay: no launch, out of the gap
+            out = _null_outputs(func, args, kwargs, self.device.device_type)
+            d = self.clock() - t0
+            self.state.marker_s += d
+            self.log.isolated.append(d)
+            return out
         if name not in self.launching or not self._touches_device(args, kwargs):
             return func(*args, **kwargs)
         entry = self.clock()      # after the instrument's own classification
@@ -350,18 +378,39 @@ def _refuse_graph(op) -> None:
             "does not measure (a compiled arm has its own form, T2.21)")
 
 
+def isolated_positions(seq: OpSequence,
+                       ops: Iterable[str] = ISOLATED_OUTSIDE_LAYERS) -> tuple[int, ...]:
+    """Positions priced by the isolated replay: an issued operation outside
+    the layers whose operator is in `ops` (module docstring)."""
+    ops = frozenset(ops)
+    return tuple(i for i, op in enumerate(seq.ops)
+                 if _is_issue(op) and op.layer is None and op.aten_op in ops)
+
+
+def _isolated_origins(seq: OpSequence, positions: Sequence[int]) -> frozenset:
+    out = set()
+    for i in positions:
+        if seq.ops[i].origin is None:
+            raise ProfileMismatch(f"position {i} ({seq.ops[i].aten_op}) names no issuing call; "
+                                  f"the pass cannot tell which call to keep out")
+        out.add(seq.ops[i].origin)
+    return frozenset(out)
+
+
 def null_pass(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, *,
               device: NullDevice, staged_device=None,
               entries: Sequence[NullEntry] = (),
               layers: Sequence[torch.nn.Module] = (),
-              clock: Callable[[], float] = time.perf_counter) -> PassLog:
+              clock: Callable[[], float] = time.perf_counter,
+              isolated_ops: Iterable[str] = ISOLATED_OUTSIDE_LAYERS) -> PassLog:
     """One null-kernel pass of the arm's prefill (module docstring)."""
     launching = launching_names(seq)
+    origins = _isolated_origins(seq, isolated_positions(seq, isolated_ops))
     staged = tape.stage(staged_device) if staged_device is not None else tape.stage(
         torch.device(device.device_type))
     log = PassLog()
     state = _State(clock, clock())
-    mode = NullDeviceMode(device, launching, log, state, clock)
+    mode = NullDeviceMode(device, launching, log, state, clock, isolated=origins)
     rep = TapeReplayer(tape, staged)
     with rep, _entries(entries, device, log, state, clock), \
             _host_compute_regions(log, state, clock), _layer_hooks(layers, state), mode:
@@ -379,14 +428,18 @@ class Run:
     positions: tuple[int, ...]
 
 
-def runs_of(seq: OpSequence) -> list[Run]:
+def runs_of(seq: OpSequence, skip: Iterable[int] = ()) -> list[Run]:
     """Maximal stretches of consecutive issued operations with one aten
     operator in one layer. A synchronisation or a host-compute marker ends a
-    run (it is a different host event)."""
+    run (it is a different host event). Positions in `skip` (priced by the
+    isolated replay) are passed over."""
     out: list[Run] = []
     cur: Optional[tuple] = None
     pos: list[int] = []
+    skip = frozenset(skip)
     for i, op in enumerate(seq.ops):
+        if i in skip:
+            continue
         if not _is_issue(op):
             if cur is not None:
                 out.append(Run(cur[0], cur[1], tuple(pos)))
@@ -417,11 +470,20 @@ def _merge_equal_neighbours(runs: Sequence[Run]) -> list[Run]:
     return out
 
 
-def assign(seq: OpSequence, log: PassLog) -> dict[int, float]:
-    """Position -> host seconds for one pass: every issued operation, and every
-    host-compute marker. Raises `ProfileMismatch` where the pass did not meet
-    the sequence exactly (module docstring)."""
-    runs = _merge_equal_neighbours(runs_of(seq))
+def assign(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> dict[int, float]:
+    """Position -> host seconds for one pass: every issued operation but the
+    `isolated` ones, and every host-compute marker. Raises `ProfileMismatch`
+    where the pass did not meet the sequence exactly (module docstring)."""
+    if isolated and not log.isolated:
+        raise ProfileMismatch(
+            f"the recording issues {len(isolated)} operation(s) priced by the isolated replay "
+            f"({seq.ops[isolated[0]].aten_op} outside the layers), and the pass met no call "
+            f"to {seq.ops[isolated[0]].origin} there")
+    if len(isolated) % max(len(log.isolated), 1) or (log.isolated and not isolated):
+        raise ProfileMismatch(
+            f"the pass kept out {len(log.isolated)} call(s) for {len(isolated)} position(s) "
+            f"priced by the isolated replay")
+    runs = _merge_equal_neighbours(runs_of(seq, skip=isolated))
     floor = statistics.median(log.launches) if log.launches else 0.0
     host: dict[int, float] = {}
     issues = log.issues
@@ -478,6 +540,16 @@ class HostProfile:
     launch_floor_s: float                           # median null launch, all passes
     reps: int
     sequence_sha256: str
+    cost_source: Mapping[int, str] = field(default_factory=dict)   # absent: NULL_PASS
+
+    def source(self, i: int) -> str:
+        return self.cost_source.get(i, NULL_PASS)
+
+    def sources(self) -> dict[str, int]:
+        out = {NULL_PASS: 0, ISOLATED_REPLAY: 0}
+        for i in self.host_s:
+            out[self.source(i)] += 1
+        return out
 
     @property
     def total_s(self) -> float:
@@ -485,29 +557,88 @@ class HostProfile:
 
 
 def profile(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, *,
-            device: NullDevice, reps: int, warmup: int = 1, **kw) -> HostProfile:
-    """`warmup` untimed passes, then `reps` passes; per-position median."""
+            device: NullDevice, reps: int, warmup: int = 1,
+            isolated: Optional[Mapping[int, float]] = None,
+            isolated_ops: Iterable[str] = ISOLATED_OUTSIDE_LAYERS, **kw) -> HostProfile:
+    """`warmup` untimed passes, then `reps` passes; per-position median.
+    `isolated` holds the isolated replay's host seconds for exactly the
+    positions `isolated_positions` names (`isolated_host_s`)."""
     if isinstance(reps, bool) or not isinstance(reps, int) or reps < 1:
         raise ValueError("reps must be an int >= 1")
     if warmup < 0:
         raise ValueError("warmup must be >= 0")
+    iso = isolated_positions(seq, isolated_ops)
+    if set(iso) != set(isolated or {}):
+        raise ProfileMismatch(
+            f"positions {list(iso)} are priced by the isolated replay; the isolated costs "
+            f"given cover {sorted(isolated or {})}")
+    kw = dict(kw, isolated_ops=isolated_ops)
     for _ in range(warmup):
-        assign(seq, null_pass(run_prefill, tape, seq, device=device, **kw))
+        assign(seq, null_pass(run_prefill, tape, seq, device=device, **kw), isolated=iso)
     per, launches = [], []
     for _ in range(reps):
         log = null_pass(run_prefill, tape, seq, device=device, **kw)
-        per.append(assign(seq, log))
+        per.append(assign(seq, log, isolated=iso))
         launches.extend(log.launches)
     keys = set(per[0])
     for h in per[1:]:
         if set(h) != keys:
             raise ProfileMismatch("two passes gave costs for different positions")
     reps_s = {i: tuple(h[i] for h in per) for i in sorted(keys)}
+    host_s = {i: float(statistics.median(v)) for i, v in reps_s.items()}
+    host_s.update({i: float(isolated[i]) for i in iso})
     return HostProfile(
-        host_s={i: float(statistics.median(v)) for i, v in reps_s.items()},
+        host_s=dict(sorted(host_s.items())),
         reps_s=reps_s, launch_floor_s=float(statistics.median(launches)) if launches else 0.0,
         reps=reps,
-        sequence_sha256=op_sequence.record_sha256(op_sequence.to_record(seq)))
+        sequence_sha256=op_sequence.record_sha256(op_sequence.to_record(seq)),
+        cost_source={i: ISOLATED_REPLAY for i in iso})
+
+
+def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[int, float]:
+    """Host seconds for `positions` from an isolated replay of the original
+    operators (`replay.isolated_replay(..., substitute=False)`): the kernel
+    launches in its region, flushes left out, are the sequence's kernel
+    positions in order; a position's cost is the duration of the innermost
+    call to its issuing operator (`origin`) around its launch, less any
+    flush inside it. Refused where the replay's launches are not the
+    recording's."""
+    from .replay import FLUSH, REPLAY_REGION
+    events = op_sequence._events(op_sequence.load_trace(trace))
+    regions = [e for e in events if e.cat == "user_annotation" and e.name == REPLAY_REGION]
+    if len(regions) != 1:
+        raise ProfileMismatch(f"{len(regions)} replay regions in the isolated trace, expected one")
+    reg = regions[0]
+    thread = (reg.pid, reg.tid)
+    on_thread = [e for e in events if (e.pid, e.tid) == thread]
+    flushes = [e for e in on_thread if e.cat == "user_annotation" and e.name == FLUSH]
+    inside = lambda e, c: c.ts - op_sequence._EPS <= e.ts and e.end <= c.end + op_sequence._EPS
+    launches = sorted((e for e in on_thread if e.cat in op_sequence._HOST_CATS
+                       and op_sequence.api_class(e.name) == "launch" and inside(e, reg)
+                       and not any(inside(e, f) for f in flushes)), key=lambda e: e.ts)
+    kernels = [i for i, op in enumerate(seq.ops) if op.kind is SeqKind.KERNEL]
+    if len(launches) != len(kernels):
+        raise ProfileMismatch(f"the isolated replay launched {len(launches)} kernels and the "
+                              f"recording has {len(kernels)}; not the recorded path")
+    calls = op_sequence._containers([e for e in on_thread if e.cat == "cpu_op"], launches)
+    out = {}
+    for i in positions:
+        op = seq.ops[i]
+        if op.kind is not SeqKind.KERNEL:
+            raise ProfileMismatch(f"position {i} is a {op.kind.value}, not a kernel")
+        ev = launches[kernels.index(i)]
+        chain = calls.get(ev.idx, [])
+        if not chain or chain[-1].name != op.aten_op:
+            raise ProfileMismatch(
+                f"position {i}: the isolated replay's launch is under "
+                f"{chain[-1].name if chain else 'no operator'}, the recording's under {op.aten_op}")
+        issuing = [c for c in chain if c.name == op.origin]
+        if not issuing:
+            raise ProfileMismatch(f"position {i}: no call to {op.origin} around its launch")
+        c = issuing[-1]
+        flushed = sum(f.end - f.ts for f in flushes if inside(f, c))
+        out[i] = max(c.end - c.ts - flushed, 0.0) * 1e-6
+    return out
 
 
 def host_costs(p: HostProfile, seq: OpSequence) -> dict[int, float]:
@@ -522,7 +653,8 @@ def to_record(p: HostProfile) -> dict:
     return {"schema": SCHEMA, "sequence_sha256": p.sequence_sha256, "reps": p.reps,
             "launch_floor_s": p.launch_floor_s,
             "host_s": {str(i): v for i, v in sorted(p.host_s.items())},
-            "reps_s": {str(i): list(v) for i, v in sorted(p.reps_s.items())}}
+            "reps_s": {str(i): list(v) for i, v in sorted(p.reps_s.items())},
+            "cost_source": {str(i): v for i, v in sorted(p.cost_source.items())}}
 
 
 def from_record(rec: Mapping) -> HostProfile:
@@ -532,7 +664,8 @@ def from_record(rec: Mapping) -> HostProfile:
         host_s={int(i): float(v) for i, v in rec["host_s"].items()},
         reps_s={int(i): tuple(float(x) for x in v) for i, v in rec["reps_s"].items()},
         launch_floor_s=float(rec["launch_floor_s"]), reps=int(rec["reps"]),
-        sequence_sha256=rec["sequence_sha256"])
+        sequence_sha256=rec["sequence_sha256"],
+        cost_source={int(i): str(v) for i, v in (rec.get("cost_source") or {}).items()})
 
 
 def dumps(p: HostProfile) -> str:

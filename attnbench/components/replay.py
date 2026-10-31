@@ -180,9 +180,9 @@ class Captured:
         self.backend.replay(self.handle)
 
 
-def _bank_capture(banked, kernel_module) -> mask_bank.MaskCapture:
+def _bank_capture(banked, kernel_module, copy: bool = False) -> mask_bank.MaskCapture:
     return mask_bank.MaskCapture(module=kernel_module, substitute=banked,
-                                 optional=banked is None)
+                                 optional=banked is None, copy=copy)
 
 
 def _check_calls(cap: mask_bank.MaskCapture, banked) -> None:
@@ -192,10 +192,10 @@ def _check_calls(cap: mask_bank.MaskCapture, banked) -> None:
                           f"{n} masks are banked")
 
 
-def _body(run_prefill, tape, staged, banked, kernel_module, sink: list):
+def _body(run_prefill, tape, staged, banked, kernel_module, sink: list, copy: bool = False):
     def body():
         rep = TapeReplayer(tape, staged)
-        with rep, _bank_capture(banked, kernel_module) as cap:
+        with rep, _bank_capture(banked, kernel_module, copy) as cap:
             run_prefill()
         rep.finish()
         _check_calls(cap, banked)
@@ -205,10 +205,13 @@ def _body(run_prefill, tape, staged, banked, kernel_module, sink: list):
 
 def capture(run_prefill: Callable[[], None], tape: SyncTape, *, device,
             masks: Optional[mask_bank.MaskRecord] = None, backend=None,
-            warmup: int = 1, kernel_module=None) -> Captured:
+            warmup: int = 1, kernel_module=None, copy_live: bool = False) -> Captured:
     """The arm's prefill as one graph, from the tape and the bank. The modes
     are entered inside the capture, so the backend's own synchronisation
-    around it is not taken for the arm's."""
+    around it is not taken for the arm's. With `copy_live` each live mask is
+    copied at its call, inside the graph (`mask_diagnosis`). A graph's
+    kernels run at a replay, not at the capture: its live masks hold
+    nothing until the first replay."""
     backend = backend or CudaGraphBackend()
     if tape.unhandled:
         raise ReplayError(f"the tape has unhandled interactions at {tape.unhandled}: "
@@ -216,7 +219,7 @@ def capture(run_prefill: Callable[[], None], tape: SyncTape, *, device,
     staged = tape.stage(device)
     banked = masks.tensors(device) if masks is not None else None
     live: list = []
-    body = _body(run_prefill, tape, staged, banked, kernel_module, live)
+    body = _body(run_prefill, tape, staged, banked, kernel_module, live, copy_live)
     for _ in range(warmup):
         backend.warmup(body)
     handle = backend.capture(body)

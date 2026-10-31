@@ -154,8 +154,10 @@ def measure(ops: QueueOps, *, kinds: Sequence[str] = tuple(KINDS),
 def queue_depth(row, kind: str) -> int:
     """Q for the recursion. Refuses a dry-run row, a kind not measured, and
     trials that disagree or never filled the queue: each would put a number
-    in the model that the probe did not establish."""
-    if bool(row["dry_run"]):
+    in the model that the probe did not establish. A dry-run row is read
+    only behind the stubbed GPU boundary (`attnbench.cpu_boundary`)."""
+    from .. import cpu_boundary
+    if bool(row["dry_run"]) and not cpu_boundary.active():
         raise ValueError("this is a dry-run row: its Q comes from a simulation")
     key = f"{kind}_q"
     if key not in row:

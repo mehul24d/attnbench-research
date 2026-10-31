@@ -21,6 +21,17 @@ agreement check. Where it does not exist, the arm's sequence is
 **different** (plan Section 9: a disagreement means the arm is taken as
 "different" for H0 and H2), and the probe says why.
 
+**Regions** (researcher's decision, 31 Oct 2026). A recording has work
+before the decoder layers (the embedding lookup, the rotary tables), in
+them, and after them (the final norm, the head). The chunk rule describes
+the attention's query chunks, so it applies in the layers only; before and
+after them the sequence must be the same at both lengths, operation for
+operation, with its payloads scaled as anywhere else (`regions`). Shakedown
+3's XAttention recording failed here: the 11 operations outside the layers
+were taken for a unit repeating 3 and 4 times. Work between two layers
+belongs to no region and is "different", not guessed at. A recording with
+no layer annotations at all is one region in the layers, as before.
+
 **Chunked arms: three probe points** (plan T2.18, Appendix A, 27 Oct
 2026; researcher's ruling, 31 Oct 2026). No probe length exceeds the
 model's positions (`MAX_PROBE_LENGTH`, 32768). `probe_plan` picks the
@@ -160,6 +171,42 @@ def probe_plan(rule: ChunkingRule, *, limit: int = MAX_PROBE_LENGTH) -> ProbePla
                      f"count")
 
 
+PRE_LAYERS, IN_LAYERS, BETWEEN_LAYERS, POST_LAYERS = (
+    "before the layers", "in the layers", "between layers", "after the layers")
+
+
+@dataclass(frozen=True)
+class Region:
+    kind: str
+    layer: Optional[int]
+    positions: tuple
+
+    @property
+    def chunked(self) -> bool:
+        """Only the layers take the chunk rule (module docstring)."""
+        return self.kind == IN_LAYERS
+
+    @property
+    def label(self) -> str:
+        return f"layer {self.layer}" if self.layer is not None else self.kind
+
+
+def regions(ops: Sequence[SeqOp]) -> list[Region]:
+    """The sequence's segments (one per layer, and the work outside them),
+    each named by where it sits."""
+    segs = _segments(ops)
+    in_layers = [i for i, (layer, _) in enumerate(segs) if layer is not None]
+    if not in_layers:
+        return [Region(IN_LAYERS, None, tuple(ix)) for _, ix in segs]
+    first, last = in_layers[0], in_layers[-1]
+    out = []
+    for i, (layer, ix) in enumerate(segs):
+        kind = (IN_LAYERS if layer is not None else PRE_LAYERS if i < first
+                else POST_LAYERS if i > last else BETWEEN_LAYERS)
+        out.append(Region(kind, layer, tuple(ix)))
+    return out
+
+
 @dataclass(frozen=True)
 class Extension:
     verdict: str                          # SAME (extended) or DIFFERENT
@@ -228,27 +275,37 @@ def extend(seqs: Mapping[int, OpSequence], rule: ChunkingRule, target: int) -> E
         return different(f"{rule.name}: fewer chunks at {l2} than at {l1}")
     if min(c1, c2, ct) < 1:
         raise op_sequence.SequenceError(f"{rule.name}: a chunk count below one ({chunks})")
-    sa, sb = _segments(s1.ops), _segments(s2.ops)
-    if [l for l, _ in sa] != [l for l, _ in sb]:
+    ra, rb = regions(s1.ops), regions(s2.ops)
+    if [(r.kind, r.layer) for r in ra] != [(r.kind, r.layer) for r in rb]:
         return different("the two lengths differ in their layer structure")
+    between = [r for r in ra if r.kind == BETWEEN_LAYERS]
+    if between:
+        return different(f"{len(between[0].positions)} operation(s) between layers, which "
+                         f"no region holds")
     ratio_t, ratio = target / l2, l2 / l1
     out: list[SeqOp] = []
     exps = []
-    for (layer, ia), (_, ib) in zip(sa, sb):
-        a_ops = [s1.ops[i] for i in ia]
-        b_ops = [s2.ops[i] for i in ib]
-        dec = _decompose(_keys(a_ops), _keys(b_ops), c1, c2)
+    for reg_a, reg_b in zip(ra, rb):
+        layer, where = reg_a.layer, reg_a.label
+        a_ops = [s1.ops[i] for i in reg_a.positions]
+        b_ops = [s2.ops[i] for i in reg_b.positions]
+        n1, n2, nt = (c1, c2, ct) if reg_a.chunked else (1, 1, 1)
+        dec = _decompose(_keys(a_ops), _keys(b_ops), n1, n2)
         if dec is None:
-            return different(f"layer {layer}: no prefix + unit x chunks + suffix fits "
+            if not reg_a.chunked:
+                return different(f"{where}: the operations differ between {l1} and {l2} "
+                                 f"({len(a_ops)} and {len(b_ops)}); no chunk rule applies "
+                                 f"there")
+            return different(f"{where}: no prefix + unit x chunks + suffix fits "
                              f"both lengths ({len(a_ops)} and {len(b_ops)} operations, "
                              f"{c1} and {c2} chunks)")
         p, u, s = dec
-        for ops, c, L in ((a_ops, c1, l1), (b_ops, c2, l2)):
+        for ops, c, L in ((a_ops, n1, l1), (b_ops, n2, l2)):
             for r in range(1, c):
                 for j in range(u):
                     if ops[p + r * u + j].payload_bytes != ops[p + j].payload_bytes:
                         return different(
-                            f"layer {layer}: at {L}, chunk {r} carries "
+                            f"{where}: at {L}, chunk {r} carries "
                             f"{ops[p + r * u + j].payload_bytes} bytes where chunk 0 "
                             f"carries {ops[p + j].payload_bytes}; per-chunk payloads "
                             f"that vary cannot be extended by repeating one unit")
@@ -257,12 +314,12 @@ def extend(seqs: Mapping[int, OpSequence], rule: ChunkingRule, target: int) -> E
         def partner(k_b: int) -> int:
             if k_b < p:
                 return k_b
-            if k_b < p + c2 * u:
+            if k_b < p + n2 * u:
                 return p + (k_b - p) % u if u else k_b
-            return k_b - (c2 - c1) * u
+            return k_b - (n2 - n1) * u
 
         layer_ops = []
-        target_idx = list(range(p)) + [p + j for _ in range(ct) for j in range(u)] + \
+        target_idx = list(range(p)) + [p + j for _ in range(nt) for j in range(u)] + \
             list(range(len(b_ops) - s, len(b_ops)))
         for kb in target_idx:
             ob, oa = b_ops[kb], a_ops[partner(kb)]
@@ -271,7 +328,7 @@ def extend(seqs: Mapping[int, OpSequence], rule: ChunkingRule, target: int) -> E
                 e = _exponent(oa.payload_bytes, ob.payload_bytes, ratio)
                 if e is None:
                     return different(
-                        f"layer {layer}: a payload grows from {oa.payload_bytes} to "
+                        f"{where}: a payload grows from {oa.payload_bytes} to "
                         f"{ob.payload_bytes} bytes between {l1} and {l2}, not as "
                         f"L^0, L^1 or L^2")
                 if (layer, kb, e) not in exps:

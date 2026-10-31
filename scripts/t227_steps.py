@@ -100,7 +100,19 @@ def _cuda() -> bool:
     return torch.cuda.is_available()
 
 
+def _boundary() -> bool:
+    """Behind the stubbed GPU boundary (`--cpu-boundary`, 31 Oct 2026)."""
+    from attnbench import cpu_boundary
+    return cpu_boundary.active()
+
+
+def _dev() -> str:
+    return "cpu" if _boundary() else "cuda"
+
+
 def _need_cuda(args, what: str) -> None:
+    if _boundary():
+        return
     if not _cuda():
         if args.dry_run:
             raise Skip(f"needs a CUDA device: {what}")
@@ -109,7 +121,7 @@ def _need_cuda(args, what: str) -> None:
 
 def _harness(args):
     from attnbench.components.shakedown_arms import Harness
-    return Harness(device="cuda" if _cuda() else "cpu", dry_run=args.dry_run,
+    return Harness(device="cuda" if _cuda() else "cpu", dry_run=args.dry_run or _boundary(),
                    score_cache_dir=str(Path(args.out) / "score_cache"))
 
 
@@ -447,9 +459,17 @@ def step_replay(args) -> dict:
                       "sequence": _sequence_summary(seq),
                       "tape_entries": len(rec.tape), "tape_substitutions": rec.tape.substitutions,
                       "mask_calls": len(rec.masks.masks) if rec.masks else 0}
-    cap = replay.capture(arm.run_prefill, rec.tape, device="cuda", masks=rec.masks)
+    graph = replay.EagerBackend if _boundary() else replay.CudaGraphBackend
+    cap = replay.capture(arm.run_prefill, rec.tape, device=_dev(), masks=rec.masks,
+                         backend=graph())
     agreement = replay.mask_agreement(cap)
     findings["mask_agreement"] = agreement
+    if rec.masks is not None:      # findings only (31 Oct 2026): no gate reads them
+        from attnbench.components import mask_diagnosis as md
+        diag = md.guarded(md.replay_diagnosis, arm.run_prefill, rec, device=_dev(),
+                          graph_backend=None if _boundary() else graph())
+        _write_json(out / "mask_diagnosis.json", diag)
+        findings["mask_diagnosis"] = md.summaries(diag)
     timing = replay.time_replay(cap, args.replay_reps)
     nodes = replay.replay_nodes(replay.profile_replay(cap, out / "replay_trace.json"))
     m = replay.match(seq, nodes)
@@ -457,7 +477,7 @@ def step_replay(args) -> dict:
     rvt = replay.replay_vs_trace(seq, trace_s, m.device_s, m)
     torch.cuda.synchronize()
     iso_path = replay.isolated_replay(arm.run_prefill, rec.tape, out / "isolated_trace.json",
-                                      device="cuda", masks=rec.masks)
+                                      device=_dev(), masks=rec.masks)
     iso = replay.match(seq, replay.replay_nodes(iso_path, exclude=replay.FLUSH))
     ce = replay.cache_effect(seq, m.device_s, iso.device_s)
     original, pricing, pricing_error = None, None, None
@@ -466,7 +486,7 @@ def step_replay(args) -> dict:
         torch.cuda.synchronize()
         orig_path = replay.isolated_replay(arm.run_prefill, rec.tape,
                                            out / "isolated_original_trace.json",
-                                           device="cuda", masks=rec.masks, substitute=False)
+                                           device=_dev(), masks=rec.masks, substitute=False)
         original = replay.match(seq, replay.replay_nodes(orig_path, exclude=replay.FLUSH))
     try:
         pricing = replay.price_positions(seq, m, original)
@@ -907,6 +927,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("step", choices=STEPS + ("arm-pass", "graph-breaks-one"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--cpu-boundary", action="store_true",
+                    help="the real path on a CPU behind the stubbed GPU boundary")
     ap.add_argument("--arms", default=",".join(ARMS))
     ap.add_argument("--length", type=int, default=8192,
                     help="the cell: T2.4's, T2.17's and T2.18's target")
@@ -926,8 +948,21 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+def boundary_main(args, run) -> int:
+    """`--cpu-boundary`: the step's real path on a CPU behind the stubbed GPU
+    boundary (`attnbench.cpu_boundary`); not with --dry-run."""
+    if args.dry_run:
+        print("REFUSING: --cpu-boundary runs the real path; it is not --dry-run", file=sys.stderr)
+        return 2
+    from attnbench import cpu_boundary
+    with cpu_boundary.installed():
+        return run()
+
+
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
+    if getattr(args, "cpu_boundary", False):
+        return boundary_main(args, lambda: run_step(args.step, args))
     if args.step == "arm-pass":
         return cmd_arm_pass(args)
     if args.step == "graph-breaks-one":

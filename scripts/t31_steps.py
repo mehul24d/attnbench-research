@@ -50,8 +50,20 @@ the results bucket, found as `run_phase.sh` finds it, under
 `prediction_prefix/<session>`; the receipt holds bucket-relative paths, so
 nothing banked names the project.
 
+**The CPU boundary** (`--cpu-boundary`, 31 Oct 2026). Shakedown 3 stopped
+on wiring defects the fakes could not show, so this mode runs steps 1 to 8
+with the real arms, backends, recorder, null pass, replay and pricing on
+the two-layer random model, behind `attnbench.cpu_boundary` (the
+block-sparse kernel, Triton, the CUDA device and the profiler's device
+activity stubbed, nothing else). The GPU measurements take their dry-run
+rows through the real parsing (`link`, `launch_queue`), the replay is
+eager (`replay.EagerBackend`), the null kernel is a no-op, and the store,
+skew and code stamp are a dry run's: nothing leaves the machine. Its
+config is `CPU_BOUNDARY_CONFIG` with the working densities and groups.
+
 Usage, from the repo root:
-    python3 scripts/t31_steps.py STEP --out DIR --session DIR [--dry-run] [--config F]
+    python3 scripts/t31_steps.py STEP --out DIR --session DIR [--dry-run | --cpu-boundary]
+        [--config F]
 """
 
 from __future__ import annotations
@@ -96,7 +108,11 @@ WORKING_FENCE = "```json t31-working-values"
 WORKING_KEYS = ("densities", "gt_groups", "reps", "dense_rounds", "sampler_interval_s")
 WORKING_STATUS = "working, pre-lock"
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
-BATCH1_ONLY = ("xattention", "xattention_noassert")   # the kernel call's limit (T2.12)
+# Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
+# oracle's scoring pass and the mean-pool estimator, which refuse a batch
+# above one as built (found by the CPU-boundary rehearsal, 31 Oct 2026; the
+# batch-4 cells hold the dense control only until a ruling says otherwise).
+BATCH1_ONLY = ("xattention", "xattention_noassert", "oracle", "meanpool")
 HOST_PROFILE_REPS = 5
 
 # A dry run's own values: small, and labelled so nothing it writes can pass
@@ -114,6 +130,24 @@ DRY_CONFIG = {
     "sampler_interval_s": None,
     "clock_skew_s": 2, "hold_guard_s": 1,
     "prediction_prefix": "predictions/P1-dryrun",
+}
+
+# The CPU boundary's own values: every arm at the working densities on a
+# short grid, a batch above one, and the dry run's skew (31 Oct 2026). It is
+# a rehearsal of P1 (the floors and working values are P1's only), with its
+# own prefix, a local store and a zero code stamp, as a card rehearsal is.
+CPU_BOUNDARY_CONFIG = {
+    "pairing": "P1", "rehearsal": True, "cpu_boundary": True,
+    "card": "cpu", "model": "tiny-qwen2-random",
+    "lengths": [2048, 4096], "batches": {"4096": [1, 2]},
+    "arms": ["dense", "oracle", "meanpool", "xattention", "xattention_noassert"],
+    "densities": None, "gt_groups": None,
+    "reps": 3, "warmup": 2, "max_rerun_rounds": 0,
+    "resolution_floor_ms": None, "dense_rounds": 2,
+    "flag_reasons": DRY_CONFIG["flag_reasons"],
+    "sampler_interval_s": None,
+    "clock_skew_s": 2, "hold_guard_s": 1,
+    "prediction_prefix": "predictions/P1-cpu-boundary",
 }
 
 # What each refusing step still needs (plan Section 8 rows), so a GPU run
@@ -201,11 +235,22 @@ def fill_working_values(cfg: dict, path=None) -> dict:
     return cfg
 
 
-def load_config(path, *, dry_run: bool) -> dict:
+def cpu_boundary_config(path=None) -> dict:
+    """`CPU_BOUNDARY_CONFIG` with the working table's densities and groups,
+    labelled as taken from it."""
+    vals, sha = working_values(path)
+    return dict(CPU_BOUNDARY_CONFIG, densities=vals["densities"], gt_groups=vals["gt_groups"],
+                working_values={"sha256": sha, "status": WORKING_STATUS,
+                                "filled": ["densities", "gt_groups"]})
+
+
+def load_config(path, *, dry_run: bool, cpu_boundary: bool = False) -> dict:
     """The session's values: the file, with its null working values filled
     from the table. A real run refuses any value still undecided."""
     if path is None and dry_run:
         return dict(DRY_CONFIG)
+    if path is None and cpu_boundary:
+        return cpu_boundary_config()
     cfg = json.loads(Path(path or DEFAULT_CONFIG).read_text())
     if not dry_run:
         cfg = fill_working_values(cfg)
@@ -237,20 +282,75 @@ def cells(cfg: dict):
     return out
 
 
+def density_setting(arm: str, density):
+    """What `Harness.ready` takes for a cell's density: none for dense, whose
+    1.0 names the cell and is not a setting (Shakedown 3, step 5)."""
+    return None if arm == "dense" else density
+
+
+def ready_cell(h, arm: str, density, length: int, batch: int):
+    """The arm prepared and warmed at one ground-truth cell."""
+    return h.ready(arm, length, density=density_setting(arm, density), batch=batch)
+
+
 def cell_dir(base: Path, arm: str, density, length: int, batch: int) -> Path:
     d = "cal" if density is None else f"{density:g}"
     return Path(base) / f"{arm}_d{d}_L{length}_b{batch}"
 
 
+def _boundary() -> bool:
+    """Running behind the stubbed GPU boundary (`--cpu-boundary`)."""
+    from attnbench import cpu_boundary
+    return cpu_boundary.active()
+
+
+def _device() -> str:
+    return "cpu" if _boundary() else "cuda"
+
+
+def _local(args) -> bool:
+    """A dry run's store, skew and code stamp: a dry run, or the CPU boundary."""
+    return bool(args.dry_run or getattr(args, "cpu_boundary", False))
+
+
 def _need_gpu(step: str) -> None:
-    if not _cuda():
+    if not (_cuda() or _boundary()):
         raise StepFailed(f"{step} needs a CUDA device")
 
 
 def _harness(args):
     from attnbench.components.shakedown_arms import Harness
-    return Harness(device="cuda", dry_run=False,
-                   score_cache_dir=str(Path(args.session) / "score_cache"))
+    session = getattr(args, "session", None)
+    return Harness(device=_device(), dry_run=_boundary(),
+                   score_cache_dir=str(Path(session) / "score_cache") if session else None)
+
+
+def _null_device():
+    """T2.2's null kernel; behind the CPU boundary, a launch that does nothing."""
+    from attnbench.components import host_profile as hp
+    if _boundary():
+        return hp.NullDevice(launch=lambda: None, device_type="cpu")
+    return hp.cuda_device()
+
+
+def host_profile_cell(a, rec, out: Path, *, reps: int, entries=()):
+    """T2.2's null-kernel profile of one recording, with the positions the
+    ruling of 31 Oct 2026 prices by an isolated replay of the original
+    operators (`host_profile.ISOLATED_OUTSIDE_LAYERS`; behind the CPU
+    boundary its embedding kernel, `cpu_boundary.EMBEDDING_KERNEL_OP`)."""
+    from attnbench import cpu_boundary
+    from attnbench.components import host_profile as hp
+    from attnbench.components import replay
+    ops = hp.ISOLATED_OUTSIDE_LAYERS | (
+        {cpu_boundary.EMBEDDING_KERNEL_OP} if _boundary() else set())
+    pos = hp.isolated_positions(rec.sequence, ops)
+    iso = {}
+    if pos:
+        trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
+                                       device=_device(), masks=rec.masks, substitute=False)
+        iso = hp.isolated_host_s(trace, rec.sequence, pos)
+    return hp.profile(a.run_prefill, rec.tape, rec.sequence, device=_null_device(), reps=reps,
+                      entries=entries, layers=a.layers, isolated=iso, isolated_ops=ops)
 
 
 def code_path_definition(cp) -> dict:
@@ -470,7 +570,7 @@ class QuietCard:
 # --- steps -------------------------------------------------------------------------
 
 def _t227(args, step: str, out: Path) -> None:
-    cmd = _py("t227_steps.py", step, "--out", str(out), *(["--dry-run"] if args.dry_run else []))
+    cmd = _py("t227_steps.py", step, "--out", str(out), *(["--dry-run"] if _local(args) else []))
     rc = _run(cmd)
     if rc != 0:
         raise StepFailed(f"T2.27's `{step}` step exited {rc}; see {out / 'result.json'}")
@@ -506,6 +606,7 @@ def step_link(args, cfg) -> dict:
         qrow = pd.read_parquet(out / "launch_queue" / "launch_queue.parquet").iloc[0].to_dict()
         hw = link.hardware_features(lrow)
         inputs = {"queue_depth": int(launch_queue.queue_depth(qrow, "sleep0")), "fake": False,
+                  "stub_rows": _boundary(),          # the CPU boundary's dry-run rows
                   "hardware": {"pinned_bandwidth": hw.pinned_bandwidth,
                                "pageable_bandwidth": hw.pageable_bandwidth},
                   "by_length": {str(L): {m: {"s_fixed": c.s_fixed, "bandwidth": c.bandwidth,
@@ -524,8 +625,8 @@ def step_dense_select(args, cfg) -> dict:
         return {"dry_run": "no dense selection on a CPU; check_control is not called"}
     from dataclasses import replace
     from attnbench import dense_selection as ds
-    from attnbench.components.shakedown_arms import ARMS, Harness
-    h = Harness(device="cuda", dry_run=False)
+    from attnbench.components.shakedown_arms import ARMS
+    h = _harness(args)
     found = {}
     if cfg.get("resolution_floor_ms") is None:      # null as an input: derive it here
         floor = derive_session_floor(h, cfg, Path(args.out))
@@ -537,7 +638,8 @@ def step_dense_select(args, cfg) -> dict:
             attn_cfg = replace(h._cfg(ARMS["dense"], L), batch=b)
             choice = ds.select_dense_baseline(
                 cell, attn_cfg, ds.registry_candidates(cfg["card"]),
-                rounds=cfg["dense_rounds"], resolution_floor_ms=cfg["resolution_floor_ms"])
+                rounds=cfg["dense_rounds"], resolution_floor_ms=cfg["resolution_floor_ms"],
+                device=_device())
             path = ds.write_choice(choice, Path(args.out))
             found[cell.key] = {"chosen": choice.chosen, "complete": choice.complete,
                                "file": path.name}
@@ -647,13 +749,12 @@ def step_host_components(args, cfg) -> dict:
     index = []
     for arm, d, L, b in cells(cfg):
         cd = cell_dir(out, arm, d, L, b)
-        a = h.ready(arm, L, density=d, batch=b)
+        a = ready_cell(h, arm, d, L, b)
         rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording", code_path=a.code_path,
                                           context_length=a.length, batch=b,
                                           prompt_id=a.prompt_id, layers=a.layers)
         entries = () if arm == "dense" else (hp.block_sparse_entry(),)
-        prof = hp.profile(a.run_prefill, rec.tape, rec.sequence, device=hp.cuda_device(),
-                          reps=HOST_PROFILE_REPS, entries=entries, layers=a.layers)
+        prof = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries)
         (cd / "host_profile.json").write_text(hp.dumps(prof))
         realised = d
         if d is None:
@@ -666,7 +767,8 @@ def step_host_components(args, cfg) -> dict:
                       "context_length": a.length, "batch": b, "prompt_id": a.prompt_id,
                       "dir": str(cd.relative_to(out)),
                       "code_path": code_path_definition(a.code_path),
-                      "host_total_ms": prof.total_s * 1e3})
+                      "host_total_ms": prof.total_s * 1e3,
+                      "host_cost_sources": prof.sources()})
     h.unwrap()
     _write_json(out / "cells_index.json", {"cells": index})
     return {"cells": len(index)}
@@ -713,18 +815,24 @@ def device_components_real(args, cfg) -> dict:
         cd = out / c["dir"]
         cd.mkdir(parents=True, exist_ok=True)
         rec = recorder.load_recording(host_dir / c["dir"] / "recording")
-        a = h.ready(c["arm"], c["budget"], density=c["nominal_density"], batch=c["batch"])
-        cap = replay.capture(a.run_prefill, rec.tape, device="cuda", masks=rec.masks)
+        a = ready_cell(h, c["arm"], c["nominal_density"], c["budget"], c["batch"])
+        cap = replay.capture(a.run_prefill, rec.tape, device=_device(), masks=rec.masks,
+                             backend=replay.EagerBackend() if _boundary() else None)
         agreement = replay.mask_agreement(cap)
         if agreement is not None and not agreement.get("identical"):
-            raise StepFailed(f"{c['dir']}: the replay's live masks differ from the bank")
+            from attnbench.components import mask_diagnosis as md   # findings only (31 Oct 2026)
+            diag = md.guarded(md.replay_diagnosis, a.run_prefill, rec, device=_device(),
+                              graph_backend=None if _boundary() else replay.CudaGraphBackend())
+            _write_json(cd / "mask_diagnosis.json", diag)
+            raise StepFailed(f"{c['dir']}: the replay's live masks differ from the bank",
+                             {"mask_diagnosis": md.summaries(diag)})
         m = replay.match(rec.sequence, replay.replay_nodes(
             replay.profile_replay(cap, cd / "replay_trace.json")))
         original = None
         if not m.complete:
             torch.cuda.synchronize()
             orig = replay.isolated_replay(a.run_prefill, rec.tape, cd / "isolated_original.json",
-                                          device="cuda", masks=rec.masks, substitute=False)
+                                          device=_device(), masks=rec.masks, substitute=False)
             original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH))
         try:
             pricing = replay.price_positions(rec.sequence, m, original)
@@ -758,7 +866,7 @@ def device_components_real(args, cfg) -> dict:
     return {"cells": len(entries), "cost_sources": sources}
 
 
-def build_prediction(cfg, session: Path, *, dry_run: bool, now=None):
+def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None):
     """The T2.11 record from the link and device-component steps' outputs."""
     from attnbench.predict import commit as C
     from attnbench.predict.recursion import MechanismCost, close_prefill, price
@@ -788,7 +896,8 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None):
     if want != got:
         raise StepFailed(f"priced cells differ from the grid: missing {sorted(want - got)}, "
                          f"extra {sorted(got - want)}")
-    code = C.CodeStamp("0" * 40, False) if dry_run else C.current_code_stamp()
+    code = C.CodeStamp("0" * 40, False) if (dry_run if local is None else local) \
+        else C.current_code_stamp()
     return C.build_record(cfg["pairing"], out, rin["queue_depth"], code_paths=code_paths,
                           banked=[], fitted_sum=None, learned=None, code=code,
                           written_at=now or datetime.now(timezone.utc))
@@ -800,11 +909,11 @@ def step_predict(args, cfg) -> dict:
     no banked pairing, so no fitted baseline (commit.NOT_FITTED_REASON)."""
     from attnbench.predict import commit as C
     session, out = Path(args.session), Path(args.out)
-    record = build_prediction(cfg, session, dry_run=args.dry_run)
+    record = build_prediction(cfg, session, dry_run=args.dry_run, local=_local(args))
     committed = C.write_prediction(record, out)
     sensitivity = memset_sensitivity(session)
     _write_json(out / "memset_sensitivity.json", sensitivity)
-    store, base = make_store(session, dry_run=args.dry_run)
+    store, base = make_store(session, dry_run=_local(args))
     receipt = C.sync_prediction(committed, store, f"{base}/{prediction_dir(cfg, session)}")
     d = receipt.to_dict()
     for k in ("remote", "remote_sidecar"):          # relative to the bucket (results_bucket)
@@ -857,8 +966,8 @@ def _receipt(session: Path):
 
 def step_hold(args, cfg) -> dict:
     """Wait until the instance clock is past synced_at + skew + guard."""
-    skew, guard = _skew(cfg, args.dry_run)
-    so.check_session_skew(skew, guard, dry_run=args.dry_run)
+    skew, guard = _skew(cfg, _local(args))
+    so.check_session_skew(skew, guard, dry_run=_local(args))
     receipt, _ = _receipt(Path(args.session))
     t0 = so.utc_now()
     released = so.hold(receipt.synced_at, clock_skew=skew, guard=guard)
@@ -1037,8 +1146,8 @@ def step_verify(args, cfg) -> dict:
         raise StepFailed("a ground-truth group read another prediction's receipt")
     start = so.session_start([s["clock_not_before"] for s in stamps],
                              [t for s in stamps for t in s["first_clocked_block_started_at"]])
-    store, base = make_store(session, dry_run=args.dry_run)
-    skew, _guard = _skew(cfg, args.dry_run)
+    store, base = make_store(session, dry_run=_local(args))
+    skew, _guard = _skew(cfg, _local(args))
     try:
         cp = C.load_committed(store, f"{base}/{receipt.remote}", ground_truth_started_at=start,
                               clock_skew=skew, banked_at={}, local=local)   # P1 is the first pairing: none banked
@@ -1078,7 +1187,7 @@ def run_step(name: str, args) -> int:
     out.mkdir(parents=True, exist_ok=True)
     started = time.time()
     try:
-        cfg = load_config(args.config, dry_run=args.dry_run)
+        cfg = load_config(args.config, dry_run=args.dry_run, cpu_boundary=args.cpu_boundary)
         status, reason, findings = PASSED, "", STEP_FUNCS[name](args, cfg)
     except Skip as e:
         status, reason, findings = SKIPPED, str(e), {}
@@ -1089,7 +1198,7 @@ def run_step(name: str, args) -> int:
         status, reason, findings = FAILED, f"{type(e).__name__}: {e}", {}
     _write_json(out / "result.json", {
         "step": name, "status": status, "reason": reason, "dry_run": args.dry_run,
-        "seconds": round(time.time() - started, 1), "findings": findings})
+        "cpu_boundary": args.cpu_boundary, "seconds": round(time.time() - started, 1), "findings": findings})
     print(f"[{name}] {status.upper()}{': ' + reason if reason else ''}", flush=True)
     return EXIT[status]
 
@@ -1100,6 +1209,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--out", required=True)
     ap.add_argument("--session", required=True)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--cpu-boundary", action="store_true",
+                    help="the real arms on a CPU behind the stubbed GPU boundary (steps 1-8)")
     ap.add_argument("--config", default=None,
                     help=f"session values (default {DEFAULT_CONFIG.relative_to(ROOT)}; "
                          f"a dry run uses its own unless given)")
@@ -1109,6 +1220,18 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
+    if args.cpu_boundary:
+        if args.dry_run:
+            print("REFUSING: --cpu-boundary runs the real steps; it is not --dry-run",
+                  file=sys.stderr)
+            return 2
+        if args.step not in STEPS[:STEPS.index("hold") + 1]:
+            print(f"REFUSING: the CPU boundary runs steps 1 to 8, not {args.step}",
+                  file=sys.stderr)
+            return 2
+        from attnbench import cpu_boundary
+        with cpu_boundary.installed():
+            return run_step(args.step, args)
     if args.step == "ground-truth-one":
         try:
             return cmd_ground_truth_one(args)
