@@ -56,3 +56,21 @@ def test_every_observed_target_is_one_the_probe_logs():
     logged = {f"{m}.{p}" for m, p in gt.SCORE_TARGETS + gt.MASK_TARGETS}
     assert set(gt.BUILDER_OF_TARGET) <= logged
     assert set(gt.BUILDER_OF_TARGET.values()) <= set(BUILDER_KINDS)
+
+
+def test_a_compiled_rows_eager_comparison_reaches_the_row(tmp_path):
+    """The density rule's report (31 Oct 2026 ruling) is on the row, flag
+    included; it is a report, so a flagged row is still a row."""
+    def densities(arm, run):
+        out = fake_densities(arm, run)
+        if arm.kind != "dense":
+            out.update({"eager_mask_density": 0.27, "density_vs_eager": -0.02,
+                        "density_vs_eager_flagged": True})
+        return out
+    got = gt.time_arms(_wrapped(), _ids(), [_oracle("cpu"), _dense()], reps=REPS,
+                       density_of=densities, controls=_controls(),
+                       score_kwargs=dict(task="t", example_id="e", cache_dir=str(tmp_path)))
+    row, dense = got["rows"]
+    assert (row["eager_mask_density"], row["density_vs_eager"],
+            row["density_vs_eager_flagged"]) == (0.27, -0.02, True)
+    assert "density_vs_eager" not in dense

@@ -35,8 +35,15 @@ where it read a CUDA-graph output that a later replay had overwritten. So:
   - both recorders copy what they see (`KernelInputRecorder` at the kernel,
     `MaskTap` where the model wrapper calls the backend) and compute only
     after the pass;
-  - a compiled arm's per-layer densities must equal its eager twin's
-    (`check_equal`), or the arm is refused;
+  - a compiled arm's densities come from its own compiled twin pass, the
+    code path's executed masks. Two compiled twin passes must agree
+    exactly (`check_repeatable`): density is a function of the input. The
+    difference from the eager twin is reported and flagged beyond
+    `DENSITY_FLAG_TOLERANCE` (`versus_eager`), not refused: a compiled run
+    that rounds differently can threshold a slightly different mask
+    (researcher's ruling, 31 Oct 2026, after Shakedown 2's XAttention gave
+    0.66688 eager and 0.66582 compiled). The H6 bitwise mask gate on the
+    compiled path is separate and unchanged;
   - nothing records inside a timed block (`timed_region`, entered by the
     harness's two timed sites) or inside a compiled region: either is
     refused (`RecordingRefused`), never worked around.
@@ -86,7 +93,14 @@ class RecordingRefused(RuntimeError):
 
 
 class DensityMismatch(RuntimeError):
-    """A compiled arm's per-layer densities differ from its eager twin's."""
+    """Two compiled twin passes of one arm on one input gave different
+    densities."""
+
+
+# Absolute mask-density difference, compiled minus eager, beyond which a
+# compiled row is flagged. A T4.1 lock value; 0.01 is the working value
+# (researcher's ruling, 31 Oct 2026).
+DENSITY_FLAG_TOLERANCE = 0.01
 
 
 _TIMED_DEPTH = 0
@@ -168,17 +182,28 @@ class MaskTap:
                            f"density (last_layer_density), so its rows would carry none")
 
 
-def check_equal(arm: str, compiled: list, eager: list) -> None:
-    """A compiled arm's executed densities, kernel call by kernel call,
-    against its eager twin's: equal, or `DensityMismatch` naming the calls."""
-    if len(compiled) != len(eager):
-        raise DensityMismatch(f"{arm}: {len(compiled)} kernel calls as compiled against "
-                              f"{len(eager)} in its eager twin")
-    bad = [(i, c, e) for i, (c, e) in enumerate(zip(compiled, eager)) if c != e]
+def check_repeatable(arm: str, first: list, second: list) -> None:
+    """Two compiled twin passes on one input, call by call (or layer by
+    layer): equal, or `DensityMismatch` naming the calls."""
+    if len(first) != len(second):
+        raise DensityMismatch(f"{arm}: {len(first)} kernel calls in one compiled twin pass "
+                              f"and {len(second)} in the next")
+    bad = [(i, a, b) for i, (a, b) in enumerate(zip(first, second)) if a != b]
     if bad:
-        shown = ", ".join(f"call {i}: {c:.6f} vs {e:.6f}" for i, c, e in bad[:5])
-        raise DensityMismatch(f"{arm}: the compiled arm's executed masks differ from its "
-                              f"eager twin's on {len(bad)} of {len(eager)} kernel calls ({shown})")
+        shown = ", ".join(f"call {i}: {a:.6f} vs {b:.6f}" for i, a, b in bad[:5])
+        raise DensityMismatch(f"{arm}: two compiled twin passes on one input disagree on "
+                              f"{len(bad)} of {len(first)} calls ({shown}); density is a "
+                              f"function of the input")
+
+
+def versus_eager(compiled_mask_density: float, eager_mask_density: float, *,
+                 tolerance: float = DENSITY_FLAG_TOLERANCE) -> dict:
+    """The compiled row's report against its eager twin: reported always,
+    flagged beyond `tolerance`, never refused."""
+    diff = float(compiled_mask_density) - float(eager_mask_density)
+    return {"eager_mask_density": float(eager_mask_density),
+            "density_vs_eager": diff,
+            "density_vs_eager_flagged": abs(diff) > tolerance}
 
 
 class KernelInputRecorder:

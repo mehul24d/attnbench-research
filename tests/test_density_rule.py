@@ -167,33 +167,117 @@ def test_dense_is_unchanged():
         D.DENSE_FIELDS
 
 
-# --- a compiled arm: eager twin, then the equality check -----------------------------
+# --- a compiled arm: its own compiled twin passes, reported against eager ----------
+# (researcher's ruling, 31 Oct 2026: no "equals eager" gate)
 
-def test_a_compiled_arm_is_measured_on_its_eager_twin_and_checked_against_itself(fake_bsa):
+def test_a_compiled_arm_is_measured_on_its_compiled_twin_twice_then_eager(fake_bsa):
     inner = HandedMaskBackend()
     comp = Compiled(inner)
     run, seen = _runner()
     got = gt.kernel_densities(_arm(comp, compiled=True), run)
     assert got["mask_density"] == pytest.approx(_mean(LAYERS))
-    assert [getattr(b, "_inner", None) for b in seen] == [inner, comp]   # twin, then as timed
+    assert [getattr(b, "_inner", None) for b in seen] == [comp, comp, inner]
+    assert got["density_vs_eager"] == 0 and got["density_vs_eager_flagged"] is False
 
 
-def test_a_compiled_arm_whose_masks_differ_from_its_eager_twin_is_refused(fake_bsa):
-    def drop_a_block(mask):
-        a = mask.active.clone()
-        a[-1, 1] = False
-        return Mask(a, mask.causal)
+def _drop_a_block(mask):
+    a = mask.active.clone()
+    a[-1, 1] = False
+    return Mask(a, mask.causal)
+
+
+def test_a_handed_mask_arm_compiled_executes_its_own_masks(fake_bsa):
+    """The mask is the one the arm was handed; what the compiled path ran is
+    the executed density, and it is that path's own."""
     run, _ = _runner()
-    with pytest.raises(D.DensityMismatch, match="eager twin"):
-        gt.kernel_densities(_arm(Compiled(HandedMaskBackend(), change=drop_a_block),
-                                 compiled=True), run)
+    got = gt.kernel_densities(_arm(Compiled(HandedMaskBackend(), change=_drop_a_block),
+                                   compiled=True), run)
+    executed = _mean([_drop_a_block(Mask(m.active.clone())) for m in LAYERS])
+    assert got["mask_density"] == pytest.approx(_mean(LAYERS))
+    assert got["executed_density"] == pytest.approx(executed)
+    assert got["density_vs_eager"] == 0
 
 
-def test_a_compiled_own_mask_arm_is_checked_on_its_record(fake_bsa):
+class RoundsDifferently(Compiled):
+    """XAttention's case: the compiled estimator thresholds one more block."""
+
+    def forward(self, q, k, v, cfg, mask=None):
+        old = self.arm.extra
+        self.arm.extra = old + 1
+        try:
+            return self.arm.forward(q, k, v, cfg, mask=mask)
+        finally:
+            self.arm.extra = old
+
+
+def _own_runner():
+    q = torch.zeros(4, 1, 8)
+
+    def run(backend=None):
+        for _ in LAYERS:
+            backend.forward(q, q, q, None, mask=None)      # the arm builds its own mask
+    return run
+
+
+def test_a_compiled_own_mask_arm_reports_its_own_density_against_eager(fake_bsa):
+    got = gt.kernel_densities(_arm(RoundsDifferently(OwnMaskBackend(extra=1)), compiled=True),
+                              _own_runner())
+    compiled, eager = (float(D.block_density(_mask(n).active)) for n in (2, 1))
+    assert got["mask_density"] == pytest.approx(compiled)          # the code path's own
+    assert got["executed_density"] == pytest.approx(compiled)
+    assert got["eager_mask_density"] == pytest.approx(eager)
+    assert got["density_vs_eager"] == pytest.approx(compiled - eager)
+    assert got["density_vs_eager_flagged"] is True                 # 0.1 > 0.01: flagged, kept
+
+
+def test_the_eager_difference_is_flagged_only_beyond_the_tolerance():
+    assert D.DENSITY_FLAG_TOLERANCE == 0.01
+    near = D.versus_eager(0.66582, 0.66688)                       # Shakedown 2's XAttention
+    assert near["density_vs_eager"] == pytest.approx(-0.00106) and not near["density_vs_eager_flagged"]
+    assert D.versus_eager(0.70, 0.68)["density_vs_eager_flagged"]
+    assert not D.versus_eager(0.69, 0.68)["density_vs_eager_flagged"]
+
+
+class Drifting(Compiled):
+    """A compiled arm whose second pass on the same input executes a
+    different mask: density would not be a function of the input."""
+
+    def __init__(self, arm):
+        super().__init__(arm)
+        self.calls = 0
+
+    def forward(self, q, k, v, cfg, mask=None):
+        self.calls += 1
+        if self.calls > len(LAYERS):
+            mask = _drop_a_block(mask)
+        return self.arm.forward(q, k, v, cfg, mask=mask)
+
+
+def test_two_compiled_passes_that_disagree_are_refused(fake_bsa):
     run, _ = _runner()
-    with pytest.raises(D.DensityMismatch):
-        gt.kernel_densities(_arm(Compiled(OwnMaskBackend(), change=lambda m: m),
-                                 compiled=True), run)
+    with pytest.raises(D.DensityMismatch, match="two compiled twin passes"):
+        gt.kernel_densities(_arm(Drifting(HandedMaskBackend()), compiled=True), run)
+
+
+class RecordDrifts(OwnMaskBackend):
+    """Executes the same mask on every pass, but its per-layer record
+    drifts on the second: the record check catches what the kernel's does not."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, q, k, v, cfg, mask=None):
+        self.calls += 1
+        out = super().forward(q, k, v, cfg, mask=mask)
+        if len(LAYERS) < self.calls <= 2 * len(LAYERS):
+            self.last_layer_density[-1] = self.last_layer_density[-1] - 0.05
+        return out
+
+
+def test_a_compiled_record_that_drifts_between_passes_is_refused(fake_bsa):
+    with pytest.raises(D.DensityMismatch, match="two compiled twin passes"):
+        gt.kernel_densities(_arm(Compiled(RecordDrifts()), compiled=True), _own_runner())
 
 
 def test_a_compiled_arm_without_an_eager_arm_is_refused(fake_bsa):
