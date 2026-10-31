@@ -34,8 +34,9 @@ def main() -> int:
     ap.add_argument("--blocker-s", type=float, default=2.0,
                     help="seconds the blocker spins; must outlast the fast launches")
     ap.add_argument("--blocked-fraction", type=float, default=0.25)
-    ap.add_argument("--warm", action="store_true",
-                    help="one completed launch of each kind before its blocker (default: cold)")
+    ap.add_argument("--cold", action="store_true",
+                    help="no launch of the kind before its blocker: a diagnostic. The record "
+                         "is warm, one completed launch first (31 Oct 2026)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--dry-run-depth", type=int, default=1024)
     args = ap.parse_args()
@@ -56,7 +57,7 @@ def main() -> int:
                      trials=args.trials, launches=args.launches,
                      blocker_s=args.blocker_s,
                      blocked_fraction=args.blocked_fraction,
-                     dry_run=args.dry_run, clock=clock, warm=args.warm)
+                     dry_run=args.dry_run, clock=clock, warm=not args.cold)
 
     import pandas as pd
     df = pd.DataFrame([row])

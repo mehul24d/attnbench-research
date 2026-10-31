@@ -152,15 +152,11 @@ def _cpu_microcode(cpuinfo: str = "/proc/cpuinfo") -> Optional[str]:
     return ",".join(seen) or None
 
 
-# The provisioning model's vocabulary (plan Section 5.2), keyed by the value
-# a launch script writes into the VM's metadata at create time.
-PROVISIONING_TAG = "attnbench-provisioning-model"
-PROVISIONING_MODELS = {
-    "STANDARD": "on-demand",
-    "SPOT": "spot",
-    "FLEX_START": "dws-flex-start",
-    "RESERVED": "reserved",
-}
+# The provisioning model's vocabulary is `attnbench.provisioning`'s; these
+# are its objects under the names provenance has always used.
+from . import provisioning as _prov  # noqa: E402
+PROVISIONING_TAG = _prov.TAG
+PROVISIONING_MODELS = _prov.ROW_NAME
 
 _GCP_METADATA = "http://169.254.169.254/computeMetadata/v1/instance/"
 _GCP_SERIES_RE = re.compile(r"^([a-z][0-9]+[a-z]?)-")
@@ -233,7 +229,7 @@ def _provisioning_model(tag: Optional[str], preemptible: Optional[str],
         return None, (f"tag {tag} cannot be cross-checked: "
                       f"{checked_against} is {preemptible!r}")
     is_pre = preemptible.strip().upper() == "TRUE"
-    if is_pre != (model == "spot"):
+    if is_pre != _prov.is_preemptible(model):
         return None, (f"tag {tag} disagrees with scheduling/preemptible "
                       f"{checked_against} {preemptible.strip().upper()}")
     return model, None
@@ -273,7 +269,7 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
         # `instance-life-cycle` ("spot" or "on-demand"), as GCP's is against
         # `scheduling/preemptible`.
         life = fetch("instance-life-cycle")
-        life = {"spot": "TRUE", "on-demand": "FALSE"}.get((life or "").strip().lower())
+        life = _prov.AWS_LIFE_CYCLE.get((life or "").strip().lower())
         model, problem = _provisioning_model(
             fetch(f"tags/instance/{PROVISIONING_TAG}"), life,
             checked_against="instance-life-cycle")

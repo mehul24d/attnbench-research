@@ -193,7 +193,7 @@ def real_fa3_gate(cfg, args) -> dict:
 
 def fake_fa3_gate(cfg, args) -> dict:
     import pandas as pd
-    from attnbench.provenance import PROVISIONING_MODELS
+    from attnbench.provisioning import row_name
     out = Path(args.out) / GATE_PROBE
     out.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([{"backend": "fa3", "config_key": f"dry{n}", "passed": True,
@@ -202,7 +202,7 @@ def fake_fa3_gate(cfg, args) -> dict:
     S.write_json(out / "versions.json", {
         "cloud_provider": "gcp", "instance_type": cfg.instance_type,
         "instance_generation": "a3", "cpu_microcode": "0xdry",
-        "provisioning_model": PROVISIONING_MODELS[cfg.provisioning[0]],
+        "provisioning_model": row_name(cfg.provisioning[0]),
         "provisioning_model_problem": None, "python_optimize": 0, "git_dirty": False,
         "gpu_name": f"fake {cfg.gpu}"})
     return {**read_gate(cfg, out), "fake": True}
@@ -230,7 +230,9 @@ def _t64_gate() -> S.SessionConfig:
     cfg = S.SessionConfig(
         task="T6.4-gate", pairing="P4", title="The H100 FA3 correctness gate (no timing)",
         script="t64_session.py", phase_prefix="t64gate", session_prefix="t64_fa3_gate",
-        gpu="H100", instance_type=T64.instance_type, provisioning=T64.provisioning,
+        # Spot is allowed for the gate alone (researcher, 31 Oct 2026): it times
+        # nothing, so the preemption risk costs a rerun, not a row.
+        gpu="H100", instance_type=T64.instance_type, provisioning=T64.provisioning + ("SPOT",),
         code_path=T64.code_path, banked=(),
         steps=(S.Step("prereqs", "T2.16", "deployed files present"),
                T64.step("fa3_import"),

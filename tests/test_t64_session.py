@@ -182,7 +182,8 @@ GATE_STEPS = ("prereqs", "fa3_import", "fa3_gate", "halt")
 def test_the_gate_is_four_untimed_steps_ending_in_a_halt():
     assert GATE.names == GATE_STEPS
     assert GATE.step_args == ("--gate-only",) and GATE.requirements == () and GATE.banked == ()
-    assert GATE.instance_type == T64.instance_type and GATE.provisioning == T64.provisioning
+    assert GATE.instance_type == T64.instance_type
+    assert GATE.provisioning == ("FLEX_START", "SPOT") and T64.provisioning == ("FLEX_START",)
     assert not set(GATE.names) & (set(T64.names) - {"prereqs", "fa3_import"})
 
 
@@ -230,15 +231,21 @@ def test_the_gate_dry_run_passes_in_their_own_processes_with_the_flag(tmp_path):
 
 def _gate_files(d, rows, **stamp):
     import pandas as pd
-    from attnbench.provenance import PROVISIONING_MODELS
+    from attnbench.provisioning import row_name
     d.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_parquet(d / "correctness.parquet")
-    S.write_json(d / "versions.json", {**H100_ROW, "provisioning_model": PROVISIONING_MODELS["FLEX_START"],
+    S.write_json(d / "versions.json", {**H100_ROW, "provisioning_model": row_name("FLEX_START"),
                                        **stamp})
 
 
 EXACT = {"backend": "fa3", "config_key": "c1", "passed": True, "check_kind": "exact",
          "max_abs_err": 2e-3}
+
+
+def test_the_gate_takes_a_spot_instance_and_p4_does_not(tmp_path):
+    _gate_files(tmp_path, [EXACT], provisioning_model="spot")
+    assert P4.read_gate(GATE, tmp_path)["configs_checked"] == 1
+    assert S.check_provenance_row(T64, {**H100_ROW, "provisioning_model": "spot"}, [])
 
 
 def test_the_gate_passes_on_exact_checks_that_all_passed(tmp_path):
@@ -253,7 +260,7 @@ def test_the_gate_passes_on_exact_checks_that_all_passed(tmp_path):
     ([EXACT, {**EXACT, "config_key": "c2", "check_kind": "cross_backend"}], {}, "float64"),
     ([EXACT, {**EXACT, "config_key": "c2", "passed": False}], {}, "failed the float64 gate"),
     ([EXACT], {"gpu_name": "NVIDIA L4"}, "not this session's instance"),
-    ([EXACT], {"provisioning_model": "spot"}, "not this session's instance"),
+    ([EXACT], {"provisioning_model": "on-demand"}, "not this session's instance"),
     ([EXACT], {"git_dirty": True}, "not this session's instance"),
 ])
 def test_the_gate_fails(tmp_path, rows, stamp, why):

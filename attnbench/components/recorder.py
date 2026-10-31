@@ -136,19 +136,20 @@ def record_arm_prefill(run_prefill: Callable[[], None], out_dir, *, code_path: C
     out = _fresh_dir(out_dir)
     traced = mask_bank.MaskCapture(module=kernel_module, optional=True)
     n = {"calls": 0}
+    profiled = warmup + getattr(record_trace, "profiler_warmup", 0) + 1
 
     def run():
         n["calls"] += 1
-        if n["calls"] == warmup + 1:      # the profiled call: keep only its masks
+        if n["calls"] == profiled:        # the profiled call: keep only its masks
             traced.calls.clear()
         run_prefill()
 
     with traced:
         trace_path = Path(record_trace(run, out / "trace.json", layers=layers,
                                        warmup=warmup, cuda=cuda))
-    if n["calls"] != warmup + 1:
+    if n["calls"] != profiled:
         raise RecordingError(f"the recorder ran the prefill {n['calls']} times, "
-                             f"expected {warmup + 1}")
+                             f"expected {profiled}")
     seq = parse(trace_path, code_path, context_length=context_length, batch=batch)
     seq_path = out / "sequence.json"
     record = op_sequence.to_record(seq)

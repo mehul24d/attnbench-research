@@ -125,6 +125,53 @@ def test_keep_going_is_a_runner_option():
     assert sh.main(["--list", "--keep-going"]) == 0
 
 
+# --- --only: a rerun of the steps an earlier session failed (Shakedown 3) -----------
+
+def test_only_runs_just_the_named_steps_in_checklist_order(tmp_path):
+    ran = []
+    rc = sh.run_session(tmp_path, start=CHECKLIST[0], extra=[], dry_run=False, sync=False,
+                        runner=fake_runner({}, ran), only=("figure1", "t21_t220", "probe"))
+    assert rc == 0 and ran == ["t21_t220", "probe", "figure1"]
+    assert (tmp_path / "07_probe" / "step.log").exists()            # numbered as in the checklist
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert m["only"] == ["t21_t220", "probe", "figure1"]
+
+
+def test_only_reports_and_exits_on_its_own_steps(tmp_path, capsys):
+    ran = []
+    rc = sh.run_session(tmp_path, start=CHECKLIST[0], extra=[], dry_run=False, sync=False,
+                        runner=fake_runner({"probe": ("failed", 1)}, ran),
+                        only=("replay", "probe", "figure1"), keep_going=True)
+    assert rc == 1 and ran == ["replay", "probe", "figure1"]
+    summary = capsys.readouterr().out.strip().splitlines()[-1]
+    assert summary.endswith("replay passed, probe failed, figure1 passed")
+
+
+def test_only_resumes_within_its_own_steps(tmp_path):
+    ran = []
+    sh.run_session(tmp_path, start=CHECKLIST[0], extra=[], dry_run=False, sync=False,
+                   runner=fake_runner({"probe": ("failed", 1)}, ran), only=("replay", "probe"))
+    ran.clear()
+    rc = sh.run_session(tmp_path, start="probe", extra=[], dry_run=False, sync=False,
+                        runner=fake_runner({}, ran))
+    assert rc == 0 and ran == ["probe"]          # zoo and the rest were never selected
+
+
+def test_only_starts_a_new_session(tmp_path):
+    ran = []
+    sh.run_session(tmp_path, start=CHECKLIST[0], extra=[], dry_run=False, sync=False,
+                   runner=fake_runner({}, ran), only=("zoo",))
+    assert sh.run_session(tmp_path, start=CHECKLIST[0], extra=[], dry_run=False, sync=False,
+                          runner=fake_runner({}, ran), only=("link",)) == 2
+    assert sh.run_session(tmp_path / "b", start="link", extra=[], dry_run=False, sync=False,
+                          runner=fake_runner({}, ran), only=("link",)) == 2
+
+
+def test_only_refuses_an_unknown_step(capsys):
+    assert sh.main(["--only", "probe,figure2", "--dry-run"]) == 2
+    assert "figure2" in capsys.readouterr().err
+
+
 def test_resume_keeps_the_failed_attempt_beside_the_fix(tmp_path):
     ran = []
     sh.run_session(tmp_path, start=CHECKLIST[0], extra=[], dry_run=False, sync=False,
@@ -413,5 +460,5 @@ def test_a_real_prompt_over_its_budget_is_refused(monkeypatch):
 def test_the_expected_provisioning_is_in_the_rows_vocabulary():
     """Shakedown 2's t21_t220 (31 Oct 2026) failed on 'on-demand' against
     'STANDARD': the row carries provenance's name, not the GCP one."""
-    from attnbench.provenance import PROVISIONING_MODELS
-    assert st.EXPECTED_PROVISIONING == PROVISIONING_MODELS["STANDARD"]
+    from attnbench.provisioning import row_name
+    assert st.EXPECTED_PROVISIONING == row_name("STANDARD") == "on-demand"

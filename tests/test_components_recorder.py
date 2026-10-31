@@ -84,7 +84,7 @@ def rec(arm, d, **kw):
 def test_a_sparse_arm_is_recorded_whole(tmp_path):
     arm = Arm(seed=lambda call: 0 if call == 1 else 1)    # the warmup's masks differ
     r = rec(arm, tmp_path / "r")
-    assert arm.call == 3                                    # warmup, profiled, untraced
+    assert arm.call == 4                    # warmup, profiler's warm-up, profiled, untraced
     names = sorted(p.name for p in (tmp_path / "r").iterdir())
     assert names == ["masks.json", "masks.npz", "recording.json", "sequence.json",
                      "tape.pt", "trace.json"]
@@ -149,7 +149,7 @@ def test_a_mask_buffer_reused_across_layers_is_refused(tmp_path):
 
 def test_a_different_number_of_kernel_calls_is_refused(tmp_path):
     with pytest.raises(RecordingError, match="2 kernel calls and the untraced pass 3"):
-        rec(Arm(calls_at=lambda call: 2 if call <= 2 else 3), tmp_path / "r")
+        rec(Arm(calls_at=lambda call: 2 if call <= 3 else 3), tmp_path / "r")   # profiled call 3
 
 
 def test_a_dense_arm_banks_no_masks_and_says_so(tmp_path):
@@ -191,12 +191,12 @@ def test_a_trace_recorder_that_runs_the_prefill_the_wrong_number_of_times_is_ref
 
 
 def test_warmup_is_passed_through(tmp_path):
-    arm = Arm(seed=lambda call: 0 if call <= 3 else 1)
+    arm = Arm(seed=lambda call: 0 if call <= 4 else 1)
     with pytest.raises(RecordingError, match="differ"):
-        rec(arm, tmp_path / "a", warmup=2)          # profiled call 3, untraced call 4
-    arm = Arm(seed=lambda call: 0 if call <= 2 else 1)
-    r = rec(arm, tmp_path / "c", warmup=2)          # calls 3 and 4 agree
-    assert arm.call == 4 and r.masks.masks[0].sha256 == S_sha(mask(100))
+        rec(arm, tmp_path / "a", warmup=2)          # profiled call 4, untraced call 5
+    arm = Arm(seed=lambda call: 0 if call <= 3 else 1)
+    r = rec(arm, tmp_path / "c", warmup=2)          # calls 4 and 5 agree
+    assert arm.call == 5 and r.masks.masks[0].sha256 == S_sha(mask(100))
 
 
 def test_record_masks_copies_each_mask_at_its_call(tmp_path):

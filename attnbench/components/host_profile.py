@@ -154,14 +154,25 @@ class NullEntry:
 
 
 def block_sparse_entry(module=None) -> NullEntry:
-    """The block-sparse kernel every sparse arm reaches
-    (`block_sparse_attn.block_sparse_attn_func`, as `mask_bank` hooks it):
-    returns an output shaped like q."""
+    """The block-sparse kernel's extension call, `block_sparse_attn_cuda.
+    fwd_block`, below the library's Python wrapper: returns the extension's
+    four outputs, `out` shaped like q and the rest None (inference reads only
+    `out`).
+
+    Not `block_sparse_attn.block_sparse_attn_func`: nulling the wrapper
+    skipped its Python (`replace_ones_with_count`,
+    `convert_blockmask_row_reverse`: three synchronisations per layer), so
+    Shakedown 2's t22 replay used 0 of 84 recorded interactions, and the
+    wrapper's host cost, which is the arm's, would have been lost. At the
+    pinned commit the wrapper reaches the extension through the custom op
+    `flash_attn::_block_sparse_attn_forward` (torch >= 2.4), which the null
+    pass's dispatch mode nulls first when the sequence names it; this entry
+    is for a build without that op."""
     if module is None:
         import importlib
-        module = importlib.import_module("block_sparse_attn")
-    return NullEntry(module, "block_sparse_attn_func",
-                     lambda q, *a, **kw: torch.empty_like(q))
+        module = importlib.import_module("block_sparse_attn_cuda")
+    return NullEntry(module, "fwd_block",
+                     lambda q, *a, **kw: (torch.empty_like(q), None, None, None))
 
 
 class NullDeviceMode(TorchDispatchMode):

@@ -156,8 +156,12 @@ flex_cancel() {
 #               request was refused; nothing exists, nothing bills
 #   cancelled   the client deadline passed; the request was deleted and the
 #               delete confirmed
-#   failed      the VM is in a state this script does not expect (stopped,
-#               suspended); it was deleted and the delete confirmed
+#   no_capacity the VM went to STOPPING, STOPPED or TERMINATED before it was
+#               granted: Compute Engine ending the request for capacity (attempt
+#               1, 31 Oct 2026: STOPPING while the insert ended
+#               ZONE_RESOURCE_POOL_EXHAUSTED); deleted, the delete confirmed
+#   failed      the VM is in another state this script does not expect
+#               (suspended, ...); it was deleted and the delete confirmed
 #   unreadable  too many polls in a row could not be read; a cancel was tried
 # Returns 0 only for running. If a cancel could not be confirmed it exits the
 # script with status 3 (FLEX_LIVE stays 1, the exit trap tries once more).
@@ -183,6 +187,10 @@ flex_wait() {
           FLEX_OUTCOME="expired"; FLEX_LIVE=0; return 1
         fi
         unknown=0 ;;  # just submitted: not visible yet
+      STOPPING|STOPPED|TERMINATED)
+        echo ">> $name is $st before it was granted: Compute Engine ended the request (no capacity)." >&2
+        flex_cancel "$name" "$zone" || exit 3
+        FLEX_OUTCOME="no_capacity"; return 1 ;;
       UNKNOWN)
         unknown=$((unknown + 1))
         if (( unknown >= FLEX_UNKNOWN_LIMIT )); then

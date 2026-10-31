@@ -222,3 +222,37 @@ def test_a_tape_of_another_schema_is_refused(tmp_path):
                tmp_path / "t.pt")
     with pytest.raises(TapeMismatch, match="schema"):
         SyncTape.load(tmp_path / "t.pt")
+
+
+def test_a_replayed_scalar_setitem_builds_its_value_on_the_device():
+    """Shakedown 2's replay: `nonzero_idx[nonzero_val == 0] = -1` inside the
+    block-sparse kernel's wrapper reached `index_put_` with the -1 as a host
+    tensor, whose copy to the device is not permitted during graph capture.
+    The replay builds the value with a fill on the device instead, and still
+    writes the recorded number of elements."""
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class Ops(TorchDispatchMode):
+        def __init__(self):
+            super().__init__()
+            self.seen = []
+
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            self.seen.append(str(func))
+            return func(*args, **(kwargs or {}))
+
+    def setter(x):
+        y = x.clone()
+        y[y > 4] = -1.0
+        return y
+
+    tape, rec = record(setter, X)
+    rep = TapeReplayer(tape, tape.stage("cpu"))
+    with rep, Ops() as ops:
+        out = setter(X.clone())
+    rep.finish()
+    assert torch.equal(out, rec)
+    put = next(i for i, f in enumerate(ops.seen) if f.startswith("aten.index_put"))
+    assert any(f.startswith("aten.full") for f in ops.seen[:put])
+    assert not any(f.startswith(("aten.lift_fresh", "aten._to_copy", "aten.scalar_tensor"))
+                   for f in ops.seen[:put])

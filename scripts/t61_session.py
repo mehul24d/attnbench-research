@@ -422,11 +422,10 @@ def check_provenance_row(cfg: SessionConfig, row: dict, integrity: list) -> list
     for k, v in expect.items():
         if row.get(k) != v:
             problems.append(f"{k} is {row.get(k)!r}, expected {v!r}")
-    # `cfg.provisioning` holds the GCP names the launcher creates; a row carries
-    # provenance's vocabulary for them (STANDARD -> "on-demand", FLEX_START ->
-    # "dws-flex-start"). Comparing the two directly refused every real row.
-    from attnbench.provenance import PROVISIONING_MODELS
-    allowed = [PROVISIONING_MODELS[p] for p in cfg.provisioning]
+    # `cfg.provisioning` holds launch names; a row carries row names
+    # (`attnbench.provisioning`). Comparing the two directly refused every real row.
+    from attnbench.provisioning import row_names
+    allowed = list(row_names(cfg.provisioning))
     if row.get("provisioning_model") not in allowed:
         problems.append(f"provisioning_model {row.get('provisioning_model')!r} is not one of "
                         f"{allowed}")
@@ -476,12 +475,12 @@ def _us(s):
 
 
 def fake_preflight(cfg: SessionConfig, args) -> dict:
-    from attnbench.provenance import PROVISIONING_MODELS
+    from attnbench.provisioning import row_name
     # The name a real row carries: the fake used the GCP name, which the
     # check also compared against, so every dry run passed a real row's failure.
     row = {"cloud_provider": "gcp", "instance_type": cfg.instance_type,
            "instance_generation": cfg.instance_type.split("-")[0], "cpu_microcode": "0xdry",
-           "provisioning_model": PROVISIONING_MODELS[cfg.provisioning[0]],
+           "provisioning_model": row_name(cfg.provisioning[0]),
            "provisioning_model_problem": None,
            "python_optimize": 0, "git_dirty": False, "gpu_name": f"fake {cfg.gpu}",
            "null_launch_s_median": 5e-6}

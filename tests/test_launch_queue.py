@@ -111,7 +111,8 @@ def test_disagreeing_trials_record_no_q():
 
     f = Flaky()
     row = lq.measure(f.ops(), kinds=["sleep0"], trials=2, launches=100,
-                     blocker_s=0.2, clock=lambda: f.sim.t if f.sim else 0)
+                     blocker_s=0.2, clock=lambda: f.sim.t if f.sim else 0,
+                     warm=False)          # this fake's queue exists only from its blocker on
     assert row["sleep0_q"] is None and row["sleep0_q_trials"] == "32,31"
 
 
@@ -137,12 +138,12 @@ def _lazy_loading(depth, load_ns=1_000_000_000):
 def test_a_cold_first_launch_reads_as_a_queue_of_one_and_a_warm_one_does_not():
     sim, ops = _lazy_loading(64)
     cold = lq.measure(ops, kinds=["add"], trials=3, launches=200, blocker_s=2.0,
-                      clock=sim.clock)
+                      clock=sim.clock, warm=False)
     assert cold["add_q_trials"] == "1,64,64" and cold["add_q"] is None
     assert cold["add_q_lower_bound"] == 1 and cold["warm_launch"] is False
     sim, ops = _lazy_loading(64)
     warm = lq.measure(ops, kinds=["add"], trials=3, launches=200, blocker_s=2.0,
-                      clock=sim.clock, warm=True)
+                      clock=sim.clock)                  # warm is the default: the record
     assert warm["add_q_trials"] == "64,64,64" and warm["add_q"] == 64
     assert warm["warm_launch"] is True
 
@@ -156,7 +157,7 @@ def test_the_device_is_left_idle_after_a_failed_launch():
     ops = lq.QueueOps(sync=lambda: synced.append(1), blocker=lambda s: None,
                       launcher=lambda k: boom)
     with pytest.raises(RuntimeError):
-        lq.trial(ops, "sleep0", launches=3, blocker_s=0.1)
+        lq.trial(ops, "sleep0", launches=3, blocker_s=0.1, warm=False)  # fails behind the blocker
     assert len(synced) == 2
 
 
@@ -169,4 +170,14 @@ def test_the_dry_run_writes_one_stamped_row(tmp_path):
     df = pd.read_parquet(tmp_path / "launch_queue.parquet")
     assert len(df) == 1 and bool(df["dry_run"][0]) and df["sleep0_q"][0] == 48
     assert {"git_commit", "python_optimize"} <= set(df.columns)
+    assert bool(df["warm_launch"][0])                    # the record is warm (31 Oct 2026)
     assert subprocess.run(cmd, capture_output=True, text=True, timeout=300).returncode == 2
+
+
+def test_cold_is_a_diagnostic_the_script_still_runs(tmp_path):
+    cmd = [sys.executable, str(REPO / "scripts" / "measure_launch_queue.py"),
+           "--out", str(tmp_path), "--dry-run", "--dry-run-depth", "48", "--cold",
+           "--trials", "2", "--launches", "200", "--blocker-s", "0.2"]
+    got = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    assert got.returncode == 0, got.stderr
+    assert not bool(pd.read_parquet(tmp_path / "launch_queue.parquet")["warm_launch"][0])

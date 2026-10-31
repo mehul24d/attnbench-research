@@ -99,6 +99,11 @@ CLASSIFIED: dict[tuple[str, str, str], str] = {
         "own output at the model's causal prefill config, the config that arm "
         "runs alone, after comparing its mask with the compiled estimator's. "
         "It runs no config the arm would not; the comparison is untimed.",
+    ("attnbench/densities.py", "forward", "forward"):
+        "UNGUARDED BY DESIGN. MaskTap.forward passes the call it is handed to "
+        "the wrapped backend unchanged, after copying the mask, in the untimed "
+        "density twin pass (31 Oct 2026). Its caller is the arm's own prefill, "
+        "so it runs exactly the config the arm runs alone.",
 
     # --- guarded -------------------------------------------------------------
     ("attnbench/gates.py", "check_correctness", "reference"):
