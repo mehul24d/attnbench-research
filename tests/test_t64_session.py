@@ -230,10 +230,10 @@ def test_the_gate_dry_run_passes_in_their_own_processes_with_the_flag(tmp_path):
 
 def _gate_files(d, rows, **stamp):
     import pandas as pd
-    from attnbench.provenance import PROVISIONING_MODELS
+    from attnbench.provisioning import row_name
     d.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_parquet(d / "correctness.parquet")
-    S.write_json(d / "versions.json", {**H100_ROW, "provisioning_model": PROVISIONING_MODELS["FLEX_START"],
+    S.write_json(d / "versions.json", {**H100_ROW, "provisioning_model": row_name("FLEX_START"),
                                        **stamp})
 
 

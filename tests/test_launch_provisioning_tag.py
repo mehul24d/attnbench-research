@@ -93,9 +93,10 @@ def test_each_create_is_tagged_with_its_own_model(script, extra, models, tmp_pat
 
 
 def test_every_tag_value_is_one_provenance_reads():
+    from attnbench import provisioning
     for _, _, models in CASES:
         for m in models:
-            assert m in provenance.PROVISIONING_MODELS
+            assert provisioning.row_name(m) in provisioning.ROW_NAMES
 
 
 def test_the_case_list_covers_every_launcher_that_measures():

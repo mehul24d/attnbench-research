@@ -57,10 +57,9 @@ STEPS = ("t21_t220", "zoo", "link", "launch_queue", "nsys", "replay", "probe",
          "assert_gate", "graph_breaks", "null_kernel", "figure1")
 
 EXPECTED_INSTANCE_TYPE = "g2-standard-8"
-# In provenance's vocabulary (`provenance.PROVISIONING_MODELS["STANDARD"]`),
-# which is what a row carries. The GCP name "STANDARD" failed every real
-# t21_t220 (Shakedown 2, 31 Oct 2026).
-EXPECTED_PROVISIONING = "on-demand"
+# A row name (`attnbench.provisioning`), which is what a row carries. The
+# launch name "STANDARD" failed every real t21_t220 (Shakedown 2, 31 Oct 2026).
+from attnbench.provisioning import ON_DEMAND as EXPECTED_PROVISIONING  # noqa: E402
 EXPECTED_GPU = "L4"
 
 

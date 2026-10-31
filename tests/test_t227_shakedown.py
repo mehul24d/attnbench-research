@@ -413,5 +413,5 @@ def test_a_real_prompt_over_its_budget_is_refused(monkeypatch):
 def test_the_expected_provisioning_is_in_the_rows_vocabulary():
     """Shakedown 2's t21_t220 (31 Oct 2026) failed on 'on-demand' against
     'STANDARD': the row carries provenance's name, not the GCP one."""
-    from attnbench.provenance import PROVISIONING_MODELS
-    assert st.EXPECTED_PROVISIONING == PROVISIONING_MODELS["STANDARD"]
+    from attnbench.provisioning import row_name
+    assert st.EXPECTED_PROVISIONING == row_name("STANDARD") == "on-demand"
