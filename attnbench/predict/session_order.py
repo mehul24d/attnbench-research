@@ -34,9 +34,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, Mapping
 
-from .commit import SyncReceipt, ground_truth_start
+from .commit import (PLANNED_SYNC_WAIT_S, REQUIRED_SYNC_GAP_S, SYNC_WAIT_MARGIN_S, SyncReceipt,
+                     ground_truth_start)
 
-REQUIRED_SKEW = timedelta(seconds=60)   # Appendix A, 25 Oct 2026
+# The one source of the numbers is `commit` (Appendix A, 25 and 31 Oct 2026).
+REQUIRED_SKEW = timedelta(seconds=REQUIRED_SYNC_GAP_S)
+PLANNED_GUARD = timedelta(seconds=SYNC_WAIT_MARGIN_S)
+PLANNED_WAIT = timedelta(seconds=PLANNED_SYNC_WAIT_S)
 
 
 class HoldError(RuntimeError):
@@ -58,7 +62,8 @@ def receipt_from_dict(d: Mapping) -> SyncReceipt:
 
 
 def check_session_skew(clock_skew: timedelta, guard: timedelta, *, dry_run: bool) -> None:
-    """A real session holds at least the plan's 60 s; a dry run may shorten it."""
+    """A real session holds the planned wait (the gap plus the margin, `commit`);
+    a dry run may shorten it."""
     if guard < timedelta(0):
         raise HoldError(f"the guard must be >= 0, got {guard}")
     if clock_skew < timedelta(0):
@@ -68,6 +73,10 @@ def check_session_skew(clock_skew: timedelta, guard: timedelta, *, dry_run: bool
             f"a session holds at least {REQUIRED_SKEW.total_seconds():.0f} s after the "
             f"sync (Appendix A, 25 Oct 2026); {clock_skew.total_seconds():.0f} s is "
             f"allowed only in a dry run")
+    if not dry_run and clock_skew + guard < PLANNED_WAIT:
+        raise HoldError(
+            f"a session holds the planned {PLANNED_WAIT.total_seconds():.0f} s after the "
+            f"sync; {(clock_skew + guard).total_seconds():.0f} s is allowed only in a dry run")
 
 
 def release_at(synced_at: datetime, *, clock_skew: timedelta,

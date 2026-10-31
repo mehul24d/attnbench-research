@@ -21,7 +21,7 @@ the first failure, each synced to GCS as it ends (`run_phase.sh`, phase
 | 5 | `host_components` | T2.2 null pass, every arm and cell | 30 | no |
 | 6 | `device_components` | T2.4 replay, every arm, density and cell; priced cells | 60 | no |
 | 7 | `predict` | T2.11: write, sync, read back; the receipt | 1 | yes |
-| 8 | `hold` | until sync + 60 s + 5 s guard, instance clock | 1 | yes |
+| 8 | `hold` | until sync + 90 s (PLANNED_SYNC_WAIT_S), instance clock | 1 | yes |
 | 9 | `ground_truth` | T2.13, one process per compile group (eager, default, capture) | 135 | no |
 | 10 | `verify` | `load_committed` against the earliest ground-truth stamp | 1 | yes |
 | 11 | `postflight` | T2.1 probe `end` | 2 | yes |
@@ -35,7 +35,7 @@ needs.
   the composed workload (plan Section 5.1).
 - Step 7 writes the file and its sha256, uploads both with no-clobber,
   reads them back, and records the store's creation time (`synced_at`).
-- Step 8 waits until the instance clock reads `synced_at + 60 s + 5 s`.
+- Step 8 waits until the instance clock reads `synced_at + 90 s` (`PLANNED_SYNC_WAIT_S`: the 60 s gap plus a 30 s margin).
   The analysis refuses at `synced_at + 60 s` and later, so the guard makes
   the release strictly past it.
 - Each ground-truth process checks the same condition itself before its
@@ -151,6 +151,6 @@ needs the first. Either is added as a step after `verify` once built.
 a Mac in about 40 s. It uses synthetic priced cells for steps 4 to 6 and a
 dense-only ground truth on the two-layer random model through the real
 `ground_truth.time_arms`. Steps 7 to 10 run the real code against a local
-store. Skew is 2 s and guard 1 s, so it does not wait 65 s. A real run
-refuses less than 60 s. `tests/test_t31_session.py` covers the order, the
+store. Skew is 2 s and guard 1 s, so it does not wait 90 s. A real run
+refuses less than the planned 90 s. `tests/test_t31_session.py` covers the order, the
 resume rules, the refusals and the GPU wiring (autospec fakes).

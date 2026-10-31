@@ -52,8 +52,19 @@ def literal_hits(text: str, name: str = "<src>") -> list[str]:
                 and not isinstance(node.value, bool) and float(node.value) in BANNED):
             continue
         ctx = parents.get(node)
+        prev = node
         while ctx is not None and not isinstance(ctx, CONTEXT):
-            ctx = parents.get(ctx)
+            if isinstance(ctx, ast.Dict) and prev in ctx.values:
+                # inside a dict value: judged with its key, not the whole dict
+                key = ctx.keys[ctx.values.index(prev)]
+                seg = (ast.unparse(key) if key is not None else "") + ": " + ast.unparse(prev)
+                if THEME.search(seg):
+                    hits.append(f"{name}:{node.lineno}: {seg[:90]}")
+                ctx = None
+                break
+            prev, ctx = ctx, parents.get(ctx)
+        if ctx is None:
+            continue
         # A comparison or sum nested in a statement is judged with its statement's
         # target (`target = synced + 65`, `if t - synced < 60`).
         outer = ctx
@@ -74,6 +85,8 @@ def test_no_sync_hold_is_a_literal(path):
 
 def test_the_scan_catches_the_literals_it_exists_for():
     # The scan is only worth anything if it fails on the shapes that went through.
+    assert literal_hits("cfg = {'clock_skew_s': 60, 'lengths': [64, 90]}") == [
+        "<src>:1: 'clock_skew_s': 60"]
     for src in ("target = epoch(r['synced_at']) + 65",
                 "HOLD_S = 90.0",
                 "time.sleep(hold_for_sync_margin + 60)",

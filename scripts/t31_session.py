@@ -16,7 +16,7 @@ rules are the T2.27 runner's (`t227_shakedown.py`), whose helpers this uses.
    5 host_components    T2.2 null-kernel profile
    6 device_components  T2.4 replay; the priced cells
    7 predict            T2.11 write, sync, read back: the receipt
-   8 hold               until sync + 60 s + guard on the instance clock
+   8 hold               until sync + PLANNED_SYNC_WAIT_S on the instance clock
    9 ground_truth       T2.13, one process per compile-setting group
   10 verify             the analysis's late-prediction check, in session
   11 postflight         T2.1 probe `end`
@@ -24,7 +24,7 @@ rules are the T2.27 runner's (`t227_shakedown.py`), whose helpers this uses.
 **The order of the prediction and the clock** (plan Section 5.1; Appendix
 A, 25 and 27 Oct 2026). Nothing before `predict` times the composed
 workload. `hold` waits until the instance clock reads the prediction's
-sync time plus 60 s plus a guard, and each ground-truth process checks that
+sync time plus `PLANNED_SYNC_WAIT_S` (`commit`), and each ground-truth process checks that
 again before its first forward of any kind, and records the time it did so.
 `verify` then runs the analysis's own refusal (`commit.load_committed`)
 against the earliest of those stamps.
@@ -69,7 +69,7 @@ CHECKLIST = {
     "host_components": "T2.2 null-kernel host profile",
     "device_components": "T2.4 replay; priced cells",
     "predict": "T2.11 prediction written, synced, read back",
-    "hold": "sync + 60 s + guard on the instance clock",
+    "hold": "sync + PLANNED_SYNC_WAIT_S (commit) on the instance clock",
     "ground_truth": "T2.13 ground truth, one process per compile group",
     "verify": "late-prediction check (load_committed) in session",
     "postflight": "T2.1 probe end",

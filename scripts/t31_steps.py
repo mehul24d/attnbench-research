@@ -20,7 +20,7 @@ Steps, in the runner's order (plan Section 5.3):
   host_components    T2.2 null-kernel profile, every arm and cell
   device_components  T2.4 replay, every arm, density and cell; the priced cells
   predict            T2.11 record, write, sync and read back: the receipt
-  hold               until the instance clock passes sync + 60 s + guard
+  hold               until the instance clock passes sync + PLANNED_SYNC_WAIT_S
   ground_truth       T2.13, one process per compile-setting group
   verify             the analysis's own late-prediction check, in session
   postflight         T2.1 host-speed probe `end`
@@ -64,6 +64,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+from attnbench.predict import session_order as so  # noqa: E402
+from attnbench.predict.commit import (PLANNED_SYNC_WAIT_S,  # noqa: E402,F401
+                                      REQUIRED_SYNC_GAP_S, SYNC_WAIT_MARGIN_S)
 
 PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
 EXIT = {PASSED: 0, FAILED: 1, SKIPPED: 3}
@@ -174,8 +178,16 @@ def cells(cfg: dict):
     return out
 
 
-def _skew(cfg) -> tuple[timedelta, timedelta]:
-    return timedelta(seconds=cfg["clock_skew_s"]), timedelta(seconds=cfg["hold_guard_s"])
+def _skew(cfg, dry_run: bool = False) -> tuple[timedelta, timedelta]:
+    """(clock skew, guard): the gap and the margin of `commit`, whose sum is
+    PLANNED_SYNC_WAIT_S. Only a dry run's config may name its own."""
+    if not dry_run:
+        if "clock_skew_s" in cfg or "hold_guard_s" in cfg:
+            raise StepFailed("a real session's hold is PLANNED_SYNC_WAIT_S; its config "
+                             "may not set clock_skew_s or hold_guard_s")
+        return so.REQUIRED_SKEW, so.PLANNED_GUARD
+    return (timedelta(seconds=cfg.get("clock_skew_s", REQUIRED_SYNC_GAP_S)),
+            timedelta(seconds=cfg.get("hold_guard_s", SYNC_WAIT_MARGIN_S)))
 
 
 def _not_built(args, step: str):
@@ -474,8 +486,7 @@ def _receipt(session: Path):
 
 def step_hold(args, cfg) -> dict:
     """Wait until the instance clock is past synced_at + skew + guard."""
-    from attnbench.predict import session_order as so
-    skew, guard = _skew(cfg)
+    skew, guard = _skew(cfg, args.dry_run)
     so.check_session_skew(skew, guard, dry_run=args.dry_run)
     receipt, _ = _receipt(Path(args.session))
     t0 = so.utc_now()
@@ -501,24 +512,30 @@ def step_ground_truth(args, cfg) -> dict:
     return found
 
 
-def _sampler(cfg):
-    from attnbench.clock_sampling import REASON_NAMES, BlockSampler
-    bits = {v: k for k, v in REASON_NAMES.items()}
+def _sampler(cfg, dry_run: bool):
+    """The session's detector: the sampler process reading the throttle bits
+    in every block (`ProcessSampler`); a dry run reads a scripted reader. A
+    counters-only `BlockSampler` is refused by `gt.Controls` (audit C3)."""
+    from attnbench import clock_sampling as cs
+    bits = {v: k for k, v in cs.REASON_NAMES.items()}
     flag = 0
     for name in cfg["flag_reasons"]:
         flag |= bits[name]
-    return BlockSampler(QuietCard(), flag_bits=flag, interval_s=cfg["sampler_interval_s"])
+    factory, fa = ((cs.scripted_reader_factory, ()) if dry_run
+                   else (cs.nvml_reader_factory, (0,)))
+    hz = cs.SAMPLER_HZ
+    interval = cfg["sampler_interval_s"] or 1.0 / hz
+    return cs.ProcessSampler(factory, fa, flag_bits=flag, interval_s=interval)
 
 
 def cmd_ground_truth_one(args) -> int:
     """One group's arms at every cell, in this process only. Refuses unless
     the prediction's hold has passed by this process's own clock."""
     from attnbench import ground_truth as gt
-    from attnbench.predict import session_order as so
     cfg = load_config(args.config, dry_run=args.dry_run)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    skew, guard = _skew(cfg)
+    skew, guard = _skew(cfg, args.dry_run)
     so.check_session_skew(skew, guard, dry_run=args.dry_run)
     receipt, _ = _receipt(Path(args.session))
     so.ready_to_clock(receipt.synced_at, so.utc_now(), clock_skew=skew, guard=guard)
@@ -528,26 +545,33 @@ def cmd_ground_truth_one(args) -> int:
     from attnbench.components.shakedown_arms import Harness
     h = Harness(device="cpu", dry_run=True, score_cache_dir=str(out / "score_cache"))
     arms_in_group = cfg["gt_groups"][args.group]
-    controls = gt.Controls(resolution_floor_ms=cfg["resolution_floor_ms"],
-                           max_rerun_rounds=cfg["max_rerun_rounds"], sampler=_sampler(cfg))
+    with _sampler(cfg, args.dry_run) as sampler:
+        controls = gt.Controls(resolution_floor_ms=cfg["resolution_floor_ms"],
+                               max_rerun_rounds=cfg["max_rerun_rounds"], sampler=sampler)
+        first = _dry_cells(h, gt, cfg, controls, args, receipt, out)
+    stamps = {"group": args.group, "arms": arms_in_group, "clock_not_before": not_before,
+              "first_clocked_block_started_at": first,
+              "synced_at": receipt.synced_at.isoformat()}
+    _write_json(out / "stamps.json", stamps)
+    print(f"[ground-truth-one {args.group}] {len(first)} cells", flush=True)
+    return 0
+
+
+def _dry_cells(h, gt, cfg, controls, args, receipt, out) -> list:
     first = []
     for L in cfg["lengths"]:
         pa = h.prepare("dense", L)
         arm = gt.Arm("dense", gt.DENSE, pa.backend, pa.extra["cfg"])
         res = gt.time_arms(pa.extra["wrapped"], pa.extra["input_ids"], [arm],
-                           reps=cfg["reps"], controls=controls, warmup=cfg["warmup"])
-        first.append(res["first_timed_block_started_at"])
+                           reps=cfg["reps"], controls=controls, warmup=cfg["warmup"],
+                           density_of=gt.kernel_densities)
+        first.append(res["first_clocked_block_started_at"])
         for row in res["rows"]:
             row.update(model=cfg["model"], code_path=None, density=1.0,
                        context_length=L, batch=1, group=args.group,
                        session_receipt_sha256=receipt.sha256)
         _write_json(out / f"gt_L{L}.json", res)
-    stamps = {"group": args.group, "arms": arms_in_group, "clock_not_before": not_before,
-              "first_timed_block_started_at": first,
-              "synced_at": receipt.synced_at.isoformat()}
-    _write_json(out / "stamps.json", stamps)
-    print(f"[ground-truth-one {args.group}] {len(first)} cells", flush=True)
-    return 0
+    return first
 
 
 def step_verify(args, cfg) -> dict:
@@ -555,7 +579,6 @@ def step_verify(args, cfg) -> dict:
     the session against the store's copy, with the earliest stamp of any
     ground-truth process as the start."""
     from attnbench.predict import commit as C
-    from attnbench.predict import session_order as so
     session = Path(args.session)
     receipt, local = _receipt(session)
     gt_dir = step_dir(session, "ground_truth")
@@ -565,12 +588,12 @@ def step_verify(args, cfg) -> dict:
     if any(s["synced_at"] != receipt.synced_at.isoformat() for s in stamps):
         raise StepFailed("a ground-truth group read another prediction's receipt")
     start = so.session_start([s["clock_not_before"] for s in stamps],
-                             [t for s in stamps for t in s["first_timed_block_started_at"]])
+                             [t for s in stamps for t in s["first_clocked_block_started_at"]])
     store, base = make_store(session, dry_run=args.dry_run)
-    skew, _guard = _skew(cfg)
+    skew, _guard = _skew(cfg, args.dry_run)
     try:
         cp = C.load_committed(store, f"{base}/{receipt.remote}", ground_truth_started_at=start,
-                              clock_skew=skew, local=local)
+                              clock_skew=skew, banked_at={}, local=local)   # P1 is the first pairing: none banked
     except C.PredictionCommitError as e:
         raise StepFailed(f"{type(e).__name__}: {e}")
     return {"start": start.isoformat(), "synced_at": cp.synced_at.isoformat(),

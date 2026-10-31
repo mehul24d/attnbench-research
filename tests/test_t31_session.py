@@ -30,7 +30,7 @@ from attnbench.predict import session_order as so  # noqa: E402
 
 UTC = timezone.utc
 T0 = datetime(2026, 11, 7, 3, 0, 0, tzinfo=UTC)
-SKEW, GUARD = timedelta(seconds=60), timedelta(seconds=5)
+SKEW, GUARD = so.REQUIRED_SKEW, so.PLANNED_GUARD
 ORDER = ("preflight", "link", "dense_select", "probe", "host_components",
          "device_components", "predict", "hold", "ground_truth", "verify", "postflight")
 
@@ -77,15 +77,15 @@ def test_the_hold_release_is_accepted_by_the_analysis(tmp_path):
     store, receipt = _synced(tmp_path)
     start = so.release_at(receipt.synced_at, clock_skew=SKEW, guard=GUARD)
     cp = C.load_committed(store, receipt.remote, ground_truth_started_at=start,
-                          clock_skew=SKEW)
+                          clock_skew=SKEW, banked_at={})
     assert cp.sha256 == receipt.sha256
-    assert (start - receipt.synced_at) >= timedelta(seconds=60)
+    assert (start - receipt.synced_at) >= timedelta(seconds=C.PLANNED_SYNC_WAIT_S)
 
 
 def test_a_block_at_exactly_sync_plus_skew_is_late_so_the_guard_is_needed(tmp_path):
     store, receipt = _synced(tmp_path)
     with pytest.raises(C.LatePredictionError):
-        C.load_committed(store, receipt.remote, clock_skew=SKEW,
+        C.load_committed(store, receipt.remote, clock_skew=SKEW, banked_at={},
                          ground_truth_started_at=receipt.synced_at + SKEW)
     with pytest.raises(so.HoldError):
         so.ready_to_clock(receipt.synced_at, receipt.synced_at + SKEW,
@@ -227,7 +227,7 @@ def test_the_repository_config_leaves_the_lock_values_undecided_and_a_real_run_r
     for k in ("densities", "reps", "resolution_floor_ms", "gt_groups.eager"):
         assert k in str(e.value)
     cfg = json.loads(st.DEFAULT_CONFIG.read_text())
-    assert cfg["clock_skew_s"] == 60 and cfg["card"] == "L4"
+    assert "clock_skew_s" not in cfg and "hold_guard_s" not in cfg and cfg["card"] == "L4"
     assert cfg["lengths"] == [2048, 4096, 8192, 16384, 32768]
     assert cfg["batches"] == {"16384": [1, 4]}
     assert sess.main(["--session", "/nonexistent/x"]) == 2
@@ -345,4 +345,4 @@ def test_the_cpu_dry_run_passes_and_verify_accepts_the_prediction(tmp_path):
     assert h["released_at"] >= h["synced_at"]
     stamps = json.loads((tmp_path / "dry" / "09_ground_truth" / "eager" / "stamps.json")
                         .read_text())
-    assert stamps["clock_not_before"] <= min(stamps["first_timed_block_started_at"])
+    assert stamps["clock_not_before"] <= min(stamps["first_clocked_block_started_at"])

@@ -1,21 +1,45 @@
 {
- "_comment": "T3.1 session values. null = not decided; a real run refuses any null. Grid and batch from plan Section 5.3 step 7 and 5.4 (Batch). Throttle set from Appendix A, 27 Oct 2026. Skew from Appendix A, 25 Oct 2026.",
+ "_comment": "T3.1 session values. null = not decided; a real run refuses any null. Grid and batch from plan Section 5.3 step 7 and 5.4 (Batch). Throttle set from Appendix A, 27 Oct 2026. The hold is PLANNED_SYNC_WAIT_S from predict/commit.py, not a config value.",
  "pairing": "P1",
  "card": "L4",
  "model": "primary",
- "lengths": [2048, 4096, 8192, 16384, 32768],
- "batches": {"16384": [1, 4]},
- "arms": ["dense", "oracle", "meanpool", "xattention", "xattention_noassert"],
+ "lengths": [
+  2048,
+  4096,
+  8192,
+  16384,
+  32768
+ ],
+ "batches": {
+  "16384": [
+   1,
+   4
+  ]
+ },
+ "arms": [
+  "dense",
+  "oracle",
+  "meanpool",
+  "xattention",
+  "xattention_noassert"
+ ],
  "densities": null,
- "gt_groups": {"eager": null, "compiled_default": null, "compiled_capture": null},
+ "gt_groups": {
+  "eager": null,
+  "compiled_default": null,
+  "compiled_capture": null
+ },
  "reps": null,
  "warmup": 3,
  "max_rerun_rounds": null,
  "resolution_floor_ms": null,
  "dense_rounds": null,
- "flag_reasons": ["hw_slowdown", "sw_thermal_slowdown", "hw_thermal_slowdown", "hw_power_brake_slowdown"],
+ "flag_reasons": [
+  "hw_slowdown",
+  "sw_thermal_slowdown",
+  "hw_thermal_slowdown",
+  "hw_power_brake_slowdown"
+ ],
  "sampler_interval_s": null,
- "clock_skew_s": 60,
- "hold_guard_s": 5,
  "prediction_prefix": "predictions/P1"
 }
