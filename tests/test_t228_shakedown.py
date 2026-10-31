@@ -332,7 +332,7 @@ def _t212_rig(monkeypatch, tmp_path, *, shift):
     h = SimpleNamespace(timing_arms=lambda names, n: (_Logits(shift), None, "p", arms, {}),
                         unwrap=lambda: None)
     monkeypatch.setattr(st, "_harness", lambda args: h)
-    monkeypatch.setattr(st, "_sampler", lambda args: contextlib.nullcontext())
+    monkeypatch.setattr(st, "_sampler", lambda args: contextlib.nullcontext(st.NullSampler()))
     rows = [{"arm": n, "prefill_ms_median": m, "arm_label": "l"}
             for n, m in [("dense", 30.0), ("meanpool", 20.0), ("precomputed_meanpool", 12.0),
                          ("xattention", 22.0), ("precomputed_xattention", 14.0)]]
