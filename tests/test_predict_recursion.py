@@ -14,7 +14,8 @@ import random
 import pytest
 
 from attnbench.predict.recursion import (
-    COMPOSITE_MECHANISMS, SYNC_MECHANISMS, CostModelError, MechanismCost,
+    ADDED_MECHANISMS, COMPOSITE_MECHANISMS, PRICED_MECHANISMS,
+    SYNC_MECHANISMS, CostModelError, MechanismCost,
     OpKind, Operation, close_prefill, closing_sync_op, copy_op,
     is_closing_sync, kernel_op, predict_prefill, price, recurse, s0, simulate,
     sync_op)
@@ -302,6 +303,78 @@ def test_the_mechanism_vocabulary_covers_section_5_1():
                                     "copy_to_host_pinned",
                                     "copy_to_host_pageable"}
     assert not set(SYNC_MECHANISMS) & set(COMPOSITE_MECHANISMS)
+
+
+# --------------------------------------------------------------------------
+# The mechanisms added on 25 Oct 2026: a blocking copy from the host and an
+# event synchronise (Appendix A; Section 5.1)
+# --------------------------------------------------------------------------
+
+ADDED_COSTS = {
+    "event_synchronize": MechanismCost(s_fixed=3),
+    "copy_from_host_pinned": MechanismCost(s_fixed=1, bandwidth=8,
+                                           loaded_bandwidth=4),
+    "copy_from_host_pageable": MechanismCost(s_fixed=2, bandwidth=2,
+                                             loaded_bandwidth=1),
+}
+
+
+def test_the_priced_mechanisms_are_the_measured_five_and_the_added_three():
+    assert ADDED_MECHANISMS == ("event_synchronize", "copy_from_host_pinned",
+                                "copy_from_host_pageable")
+    assert PRICED_MECHANISMS == SYNC_MECHANISMS + ADDED_MECHANISMS
+    assert not set(ADDED_MECHANISMS) & set(SYNC_MECHANISMS)
+    assert not set(PRICED_MECHANISMS) & set(COMPOSITE_MECHANISMS)
+
+
+@pytest.mark.parametrize("mechanism,payload,loaded,s0", [
+    ("event_synchronize", 0, False, 3),
+    ("copy_from_host_pinned", 16, False, 1 + 16 / 8),
+    ("copy_from_host_pinned", 16, True, 1 + 16 / 4),
+    ("copy_from_host_pageable", 16, False, 2 + 16 / 2),
+    ("copy_from_host_pageable", 16, True, 2 + 16 / 1),
+    ("copy_from_host_pageable", 0, True, 2),
+])
+def test_an_added_mechanism_is_priced_by_its_own_s_fixed_and_bandwidth(
+        mechanism, payload, loaded, s0):
+    p = price([kernel_op(1, 10), sync_op(mechanism, payload_bytes=payload,
+                                         loaded=loaded)], ADDED_COSTS)
+    assert p.sync_cost == (0, s0)
+    assert p.mechanisms == (None, mechanism)
+
+
+def test_an_added_mechanism_waits_like_any_synchronisation():
+    # K(h1,d10): D1 = 11. Copy from pageable host memory, 16 bytes:
+    # s0 = 2 + 16/2 = 10, H2 = max(1, 11) + 10 = 21 = D2.
+    # Event synchronise: H3 = max(21, 21) + 3 = 24.
+    ops = [kernel_op(1, 10),
+           sync_op("copy_from_host_pageable", payload_bytes=16),
+           sync_op("event_synchronize")]
+    t = recurse(price(ops, ADDED_COSTS), None)
+    assert t.device_done == (11, 21, 24)
+    assert t.sync_wait == (0, 10, 0)
+
+
+def test_an_event_synchronise_moves_no_payload():
+    with pytest.raises(CostModelError, match="moves no payload"):
+        price([sync_op("event_synchronize", payload_bytes=4)], ADDED_COSTS)
+
+
+def test_a_copy_from_the_host_needs_its_bandwidth():
+    costs = {"copy_from_host_pinned": MechanismCost(s_fixed=1)}
+    with pytest.raises(CostModelError, match="needs bandwidth"):
+        price([sync_op("copy_from_host_pinned", payload_bytes=4)], costs)
+    costs = {"copy_from_host_pinned": MechanismCost(s_fixed=1, bandwidth=8)}
+    with pytest.raises(CostModelError, match="needs loaded_bandwidth"):
+        price([sync_op("copy_from_host_pinned", payload_bytes=4, loaded=True)],
+              costs)
+
+
+@pytest.mark.parametrize("mechanism", ADDED_MECHANISMS)
+def test_an_added_mechanism_without_a_measured_s_fixed_is_refused(mechanism):
+    # A cost table from today's T2.5 row holds only SYNC_MECHANISMS.
+    with pytest.raises(CostModelError, match="no s_fixed"):
+        price([sync_op(mechanism)], COSTS)
 
 
 # --------------------------------------------------------------------------

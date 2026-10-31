@@ -258,7 +258,8 @@ def step_t213(args) -> dict:
     h = _harness(args)
     wrapped, ids, prompt_id, arms, score_kwargs = h.timing_arms(names, args.length)
     sync = (lambda: __import__("torch").cuda.synchronize()) if cuda else (lambda: None)
-    kw = dict(reps=args.reps, warmup=args.warmup, synchronize=sync, score_kwargs=score_kwargs)
+    kw = dict(reps=args.reps, warmup=args.warmup, synchronize=sync, score_kwargs=score_kwargs,
+              density_of=gt.kernel_densities)
 
     gt.reset_process_compile_setting()
     t_call = time.time()
@@ -291,7 +292,9 @@ def step_t213(args) -> dict:
     choice = _find_choice(args)
     if choice is not None:
         try:
-            ds.check_control(choice, getattr(arms[0].backend, "name", None), stamp)
+            card = __import__("torch").cuda.get_device_name(0) if cuda else "cpu"
+            ds.check_control(choice, getattr(arms[0].backend, "name", None), stamp,
+                             key=ds.Cell(card, int(ids.shape[-1]), int(ids.shape[0])))
             verdict = {"passed": True, "chosen": choice.chosen}
         except ds.SelectionError as e:
             verdict = {"passed": False, "why": str(e), "chosen": choice.chosen,
@@ -396,7 +399,7 @@ def step_t212(args) -> dict:
         sync = torch.cuda.synchronize
         with _sampler(args) as ps:
             res = gt.time_arms(wrapped, ids, timed, reps=args.reps, warmup=args.warmup,
-                               controls=_controls(args, ps),
+                               controls=_controls(args, ps), density_of=gt.kernel_densities,
                                synchronize=sync, score_kwargs=score_kwargs)
         med = _medians(res)
         findings["timing"] = {"medians_ms": med, "complete": res["complete"],

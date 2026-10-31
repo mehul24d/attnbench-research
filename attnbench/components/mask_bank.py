@@ -238,6 +238,14 @@ def _code_path_dict(cp: CodePath) -> dict:
             "python_optimize": cp.python_optimize}
 
 
+def calls_sha256(calls) -> str:
+    """sha256 over the manifest's call entries (shape, causal, density, mask
+    hash), canonical JSON: the masks' own hashes do not cover the density and
+    causal fields (audit C4, finding 2)."""
+    blob = json.dumps(list(calls), sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(blob).hexdigest()
+
+
 def save(record: MaskRecord, path) -> tuple[Path, Path]:
     """`<path>.npz` (packed masks) and `<path>.json` (manifest); both paths."""
     path = Path(path)
@@ -247,18 +255,20 @@ def save(record: MaskRecord, path) -> tuple[Path, Path]:
     buf = io.BytesIO()
     np.savez_compressed(buf, **{f"call_{i}": m.packed for i, m in enumerate(record.masks)})
     npz.write_bytes(buf.getvalue())
+    calls = [{"shape": list(m.shape), "causal": m.causal, "density": m.density,
+              "sha256": m.sha256} for m in record.masks]
     manifest.write_text(json.dumps({
         "schema": SCHEMA, "code_path": _code_path_dict(record.code_path),
         "context_length": record.context_length, "batch": record.batch,
         "prompt_id": record.prompt_id, "sha256": record.sha256,
         "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest(),
-        "calls": [{"shape": list(m.shape), "causal": m.causal, "density": m.density,
-                   "sha256": m.sha256} for m in record.masks]}, indent=1))
+        "calls": calls, "calls_sha256": calls_sha256(calls)}, indent=1))
     return npz, manifest
 
 
 def load(path) -> MaskRecord:
-    """Read a bank back, checking every sha256 it records."""
+    """Read a bank back, checking every sha256 it records, the hash over the
+    call entries, and each call's density against its own mask."""
     path = Path(path)
     npz, manifest = path.with_suffix(".npz"), path.with_suffix(".json")
     meta = json.loads(manifest.read_text())
@@ -266,14 +276,28 @@ def load(path) -> MaskRecord:
         raise MaskBankError(f"schema {meta.get('schema')!r}, expected {SCHEMA!r}")
     if hashlib.sha256(npz.read_bytes()).hexdigest() != meta["npz_sha256"]:
         raise MaskBankError(f"{npz} does not match its manifest")
+    if "calls_sha256" not in meta:
+        raise MaskBankError(f"{manifest} has no calls_sha256, so its density and causal "
+                            f"fields are covered by no hash")
+    if calls_sha256(meta["calls"]) != meta["calls_sha256"]:
+        raise MaskBankError(f"{manifest}: the call entries do not match their calls_sha256")
     arrays = np.load(npz)
     masks = []
     for i, c in enumerate(meta["calls"]):
         packed = arrays[f"call_{i}"]
         if hashlib.sha256(packed.tobytes()).hexdigest() != c["sha256"]:
             raise MaskBankError(f"call {i} does not match its recorded sha256")
-        masks.append(BankedMask(tuple(c["shape"]), bool(c["causal"]),
-                                float(c["density"]), c["sha256"], packed))
+        m = BankedMask(tuple(c["shape"]), bool(c["causal"]), float(c["density"]),
+                       c["sha256"], packed)
+        n = int(np.prod(m.shape))
+        if len(m.shape) < 2 or (n + 7) // 8 != packed.size:
+            raise MaskBankError(f"call {i}: shape {list(m.shape)} does not fit its "
+                                f"{packed.size} packed bytes")
+        got = density(m.array(), m.causal)
+        if got != m.density:
+            raise MaskBankError(f"call {i}: the manifest's density {m.density} does not "
+                                f"follow from its mask ({got}, causal={m.causal})")
+        masks.append(m)
     cp = meta["code_path"]
     record = MaskRecord(
         CodePath(arm=cp["arm"], gpu=cp["gpu"], implementation=cp["implementation"],

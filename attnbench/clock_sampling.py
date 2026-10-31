@@ -94,6 +94,9 @@ NEVER_FLAGS = GPU_IDLE | APPLICATIONS_CLOCKS_SETTING | DISPLAY_CLOCK_SETTING
 # passes this to its sampler; the samplers themselves have no default.
 RESEARCHER_FLAG_BITS = (HW_SLOWDOWN | SW_THERMAL_SLOWDOWN | HW_THERMAL_SLOWDOWN
                         | HW_POWER_BRAKE_SLOWDOWN)
+# Recorded on every block, never a flag: a sampler refuses a flag set that
+# holds it (audit C3, finding 1; Appendix A, 27 Oct 2026).
+RECORDED_ONLY = SW_POWER_CAP
 SAMPLER_HZ = 10.0
 
 # NVML's cumulative violation counters, and the throttle bits each one is the
@@ -106,6 +109,31 @@ VIOLATION_POLICIES = {
 
 class ClockSamplingError(RuntimeError):
     """Throttle state that cannot be observed, or a reader that cannot be built."""
+
+
+def counters_only_misses(flag_bits: int) -> int:
+    """The bits of `flag_bits` a counters-only sampler can never flag: those
+    no counter integrates (hardware slowdown) and those whose counter also
+    integrates a bit outside the set (the power counter holds the software
+    cap with the hardware brake). A block under any of them is clean to it."""
+    seen = 0
+    for policy_bits in VIOLATION_POLICIES.values():
+        if not policy_bits & ~flag_bits:
+            seen |= policy_bits
+    return flag_bits & ~seen
+
+
+def _check_flag_bits(flag_bits: int) -> None:
+    if flag_bits & NEVER_FLAGS:
+        raise ValueError(
+            f"{reason_names(flag_bits & NEVER_FLAGS)} are not slowdowns and "
+            f"cannot flag a block")
+    if flag_bits & RECORDED_ONLY:
+        raise ValueError(
+            "the software power cap is recorded on every block and never flags "
+            "(Appendix A, 27 Oct 2026); leave it out of flag_bits")
+    if not flag_bits:
+        raise ValueError("flag_bits is empty, so no block could ever be flagged")
 
 
 def reason_names(bits: int) -> list:
@@ -232,15 +260,16 @@ class BlockSampler:
                 "block could not be seen: a boundary read after the closing "
                 "synchronise sees an idle GPU. Give interval_s, or use a "
                 "device that reports violation time")
-        if flag_bits & NEVER_FLAGS:
-            raise ValueError(
-                f"{reason_names(flag_bits & NEVER_FLAGS)} are not slowdowns and "
-                f"cannot flag a block")
-        if not flag_bits:
-            raise ValueError("flag_bits is empty, so no block could ever be flagged")
+        _check_flag_bits(flag_bits)
         self.reader, self.flag_bits, self.interval_s = reader, flag_bits, interval_s
         self._lock = threading.Lock()
         self._reset()
+
+    @property
+    def sees_in_block(self) -> bool:
+        """True with an in-block thread. Without one this is a counters-only
+        sampler, which cannot see `counters_only_misses(flag_bits)`."""
+        return self.interval_s is not None
 
     def _reset(self) -> None:
         self._samples: list = []
@@ -393,12 +422,7 @@ class ProcessSampler:
                  stall_s: Optional[float] = None):
         if not interval_s > 0:
             raise ValueError("interval_s must be positive")
-        if flag_bits & NEVER_FLAGS:
-            raise ValueError(
-                f"{reason_names(flag_bits & NEVER_FLAGS)} are not slowdowns and "
-                f"cannot flag a block")
-        if not flag_bits:
-            raise ValueError("flag_bits is empty, so no block could ever be flagged")
+        _check_flag_bits(flag_bits)
         if capacity < 8:
             raise ValueError("capacity must hold at least a few samples")
         self.reader_factory, self.factory_args = reader_factory, tuple(factory_args)
@@ -407,6 +431,8 @@ class ProcessSampler:
         self.stall_s = stall_s if stall_s is not None else max(2.0, 10 * interval_s)
         self._proc = None
         self._n0: Optional[int] = None
+
+    sees_in_block = True     # it reads the bits throughout every block
 
     # -- life cycle ---------------------------------------------------------
     def start(self) -> None:

@@ -9,13 +9,13 @@ does not index D_(i-Q).
 from __future__ import annotations
 
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from attnbench.predict.commit import (
-    CodeStamp, PredictionCommitError, build_record, cell_key, verify_bytes,
-    write_prediction)
+    CodeStamp, PredictionCommitError, build_record, cell_key, load_committed,
+    sync_prediction, verify_bytes, write_prediction)
 from attnbench.predict.recursion import (
     close_prefill, copy_op, kernel_op, price, sync_op)
 from attnbench.predict.residuals import (
@@ -25,7 +25,8 @@ from attnbench.predict.sensitivity import (
     decision_sensitivity, queue_sensitivity)
 from attnbench.predict.training import Cell, HardwareFeatures
 
-from test_predict_commit import CODE_PATHS, CP, CP2, CP2_DEF, CP_DEF, MODEL
+from test_predict_commit import (CODE_PATHS, CP, CP2, CP2_DEF, CP_DEF, MODEL, Clock,
+                                 MemoryStore)
 from test_predict_recursion import COSTS, oracle
 
 def KEY(arm, density, L, batch=1):
@@ -56,12 +57,20 @@ def cell(ops, arm, L=4096, density=0.5, batch=1, code_path=CP,
                 priced=price(ops, COSTS), hardware=HW)
 
 
-def committed(tmp_path, cells, Q=4, **kw):
+def committed(tmp_path, cells, Q=4, *, loaded=False, **kw):
+    """The committed prediction: through `verify_bytes` (the recomputations
+    take either reader), or, with `loaded`, synced and read back through
+    `load_committed`, which scoring requires."""
     kw.setdefault("code_paths", CODE_PATHS)
     rec = build_record("P1", cells, Q, banked=[], fitted_sum=None, learned=None,
                        code=CLEAN, written_at=T0, **kw)
     f = write_prediction(rec, tmp_path)
-    return verify_bytes(f.path.read_bytes(), f.sidecar.read_text(), f.path.name)
+    if not loaded:
+        return verify_bytes(f.path.read_bytes(), f.sidecar.read_text(), f.path.name)
+    store = MemoryStore(Clock(T0 + timedelta(seconds=1)))
+    receipt = sync_prediction(f, store, "gs://bucket/predictions/P1")
+    return load_committed(store, receipt.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
+                          clock_skew=timedelta(0), banked_at={})
 
 
 # --------------------------------------------------------------------------
@@ -236,7 +245,7 @@ MK = KEY("meanpool", 0.5, 4096)
 def three_arms(tmp_path):
     return committed(tmp_path, [cell(SYNC_SEQ, "xattn"),
                                 cell(DENSE_SEQ, "dense", density=1.0),
-                                cell(QSEQ, "meanpool")])
+                                cell(QSEQ, "meanpool")], loaded=True)
 
 
 def test_synchronisation_count_leaves_out_the_closing_synchronise(tmp_path):

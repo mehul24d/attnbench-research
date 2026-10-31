@@ -17,6 +17,7 @@ must hold. It shares no code with the parser.
 from __future__ import annotations
 
 import contextlib
+from dataclasses import replace
 import json
 import random
 
@@ -255,7 +256,10 @@ def test_a_blocking_memcpy_is_a_sync_by_itself():
         (SeqKind.SYNC, "copy_to_host_pageable", 64)
 
 
-def test_waits_the_plan_does_not_price_are_kept_and_named():
+def test_the_three_added_waits_are_named_two_priced_and_the_implicit_one_flagged():
+    """Appendix A, 25 Oct 2026 (C1): the blocking copy from the host and the
+    event synchronise are priced; the implicit cudaFree wait is flagged and
+    not costed (researcher's decision, 29 Oct 2026; audit C4, finding 1)."""
     tb = TB()
     with tb.region():
         with tb.cpu("aten::to"), tb.cpu("aten::_to_copy"), tb.cpu("aten::copy_"):
@@ -267,9 +271,10 @@ def test_waits_the_plan_does_not_price_are_kept_and_named():
     assert [o.mechanism for o in ops] == ["copy_from_host_pageable",
                                           "event_synchronize", "implicit"]
     assert ops[0].payload_bytes == 8
-    assert not any(o.priced for o in ops)
-    assert set(S.UNPRICED_MECHANISMS) >= {o.mechanism for o in ops}
-    assert not set(S.UNPRICED_MECHANISMS) & set(R.SYNC_MECHANISMS)
+    assert [o.priced for o in ops[:2]] == [True, True]
+    assert ops[2].flagged and not any(o.flagged for o in ops[:2])
+    assert {o.mechanism for o in ops[:2]} <= set(R.PRICED_MECHANISMS)
+    assert S.FLAGGED_MECHANISMS == ("implicit",) and S.UNPRICED_MECHANISMS == ()
 
 
 # --- composites -----------------------------------------------------------------
@@ -693,7 +698,7 @@ def test_sync_column_when_layers_differ_and_outside_layers():
     assert S.sync_column(parse(tb)) == (
         "0 to 3 per layer over 3 layers (4 in all: bool x3, "
         "copy_to_host_pinned (aten::nonzero) x1); 2 outside the layers: "
-        "copy_from_host_pageable x1, item x1; unpriced: copy_from_host_pageable")
+        "copy_from_host_pageable x1, item x1")
 
 
 # --- asserts from the paired arms -----------------------------------------------
@@ -819,13 +824,19 @@ def test_to_operations_hand_computed_prefill():
         (R.OpKind.SYNC, 0.0, 0.0, 0.0),
         (R.OpKind.KERNEL, 6.0, 20.0, 0.0),   # 1 + host compute 5, past the sync
     ]
-    assert ops[1].payload_bytes == 64 and ops[2].payload_bytes == 4
+    # Section 5.1: an .item() wait has payload zero by definition, so it
+    # reaches the recursion with none; the sequence keeps the 4 bytes the
+    # trace recorded, for the "same sequence" comparison.
+    assert ops[1].payload_bytes == 64 and ops[2].payload_bytes == 0
+    assert seq.ops[4].mechanism == "item" and seq.ops[4].payload_bytes == 4
     assert ops[2].mechanism == "item" and ops[0].label == "aten::mm"
+    # A bandwidth for item would charge 4/4 if the payload went through; it
+    # does not, so s0 = s_fixed = 7.
     costs = {"item": R.MechanismCost(7.0, bandwidth=4.0),
              "synchronize": R.MechanismCost(2.0)}
-    # H1 = 4, D1 = 14; H2 = 6, D2 = 18; sync: H3 = max(6, 18) + 7 + 4/4 = 26;
-    # H4 = 32, D4 = 52; closing sync: max(32, 52) + 2 = 54.
-    assert R.predict_prefill(R.close_prefill(ops), costs, None) == 54.0
+    # H1 = 4, D1 = 14; H2 = 6, D2 = 18; sync: H3 = max(6, 18) + 7 = 25;
+    # H4 = 31, D4 = max(31, 25) + 20 = 51; closing sync: max(31, 51) + 2 = 53.
+    assert R.predict_prefill(R.close_prefill(ops), costs, None) == 53.0
 
 
 def test_to_operations_maps_every_device_kind_to_a_kernel():
@@ -858,8 +869,12 @@ def test_to_operations_refuses_an_unpriced_wait_and_trailing_host_compute():
     with tb.region():
         kernel(tb)
         tb.sync("cudaEventSynchronize")
-    with pytest.raises(SequenceError, match="'event_synchronize' wait"):
-        S.to_operations(parse(tb), host={0: 1.0}, device={0: 1.0}, link={})
+    out = S.to_operations(parse(tb), host={0: 1.0}, device={0: 1.0}, link={})
+    assert out[-1].mechanism == "event_synchronize"          # priced since C1
+    seq = parse(tb)
+    odd = replace(seq, ops=(seq.ops[0], replace(seq.ops[1], mechanism="mystery")))
+    with pytest.raises(SequenceError, match="'mystery' wait"):
+        S.to_operations(odd, host={0: 1.0}, device={0: 1.0}, link={})
     tb = TB()
     with tb.region():
         kernel(tb)

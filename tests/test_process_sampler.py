@@ -234,11 +234,11 @@ def test_the_power_counter_cannot_flag_when_it_holds_the_software_cap():
     brake_only.begin()
     clock.t = 2.0
     assert not brake_only.end().flagged
-    both = cs.BlockSampler(reader, flag_bits=cs.SW_POWER_CAP | cs.HW_POWER_BRAKE_SLOWDOWN)
-    clock.t = 3.0
-    both.begin()
-    clock.t = 4.0
-    assert both.end().flagged            # a session that did ask for the cap gets it
+    # The cap is recorded and never flags, so no session may ask for it
+    # (researcher's decision, 29 Oct 2026; it replaces "a session that asks
+    # for the cap gets it").
+    with pytest.raises(ValueError, match="software power cap"):
+        cs.BlockSampler(reader, flag_bits=cs.SW_POWER_CAP | cs.HW_POWER_BRAKE_SLOWDOWN)
 
 
 def test_the_thermal_counter_still_flags_under_the_researchers_set():

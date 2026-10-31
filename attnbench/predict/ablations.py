@@ -9,6 +9,12 @@ models, so both are built and named:
   - `no_sync_wait`: the dependency removed. The host pays s_0 and goes on
     without waiting for the device (`recursion.recurse(sync_wait=False)`).
 
+Both act on the arm's own synchronisations only. The closing synchronise
+belongs to the ground-truth timer (Appendix A, 22 Oct 2026), so it keeps its
+s_0 and its wait, and an arm with no synchronisation of its own predicts the
+same under either ablation as under the full recursion. Both therefore read
+a closed prefill (`recursion.is_closed`) and refuse any other.
+
 The host-only and device-only lower bounds are sum h and sum l + sum d, as
 written. The queue sensitivity's multiples of Q are rounded here, once, so
 every caller gets the same depths.
@@ -20,7 +26,8 @@ import dataclasses
 import math
 from typing import Optional
 
-from .recursion import CostModelError, PricedSequence, Timeline, recurse
+from .recursion import (CostModelError, PricedSequence, Timeline, is_closed,
+                        recurse)
 
 # Section 5.4: "recomputed with Q at 0.25x, 0.5x, 2x and 4x the measured
 # value, and with no queue term" (the last is queue_depth=None).
@@ -29,14 +36,21 @@ QUEUE_MULTIPLES = (0.25, 0.5, 2, 4)
 
 def no_sync_cost(priced: PricedSequence,
                  queue_depth: Optional[int]) -> Timeline:
-    """The recursion with s_0 = 0 and the wait at each synchronisation kept."""
-    zero = dataclasses.replace(priced, sync_cost=(0.0,) * len(priced))
+    """The recursion with s_0 = 0 and the wait at each synchronisation kept.
+    The closing synchronise keeps its s_0."""
+    if not is_closed(priced):
+        raise CostModelError(
+            "the no-cost ablation keeps the closing synchronise's s_0, and "
+            "this sequence does not end with one; build it with close_prefill")
+    zero = dataclasses.replace(
+        priced, sync_cost=(0.0,) * (len(priced) - 1) + priced.sync_cost[-1:])
     return recurse(zero, queue_depth)
 
 
 def no_sync_wait(priced: PricedSequence,
                  queue_depth: Optional[int]) -> Timeline:
-    """The recursion with s_0 kept and no wait for the device."""
+    """The recursion with s_0 kept and no wait for the device, except at the
+    closing synchronise."""
     return recurse(priced, queue_depth, sync_wait=False)
 
 
