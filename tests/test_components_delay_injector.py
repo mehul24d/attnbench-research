@@ -397,15 +397,20 @@ def test_the_observer_effect_is_the_difference_of_the_medians():
 
 # --- the plan lists only sites the injector accepts (at integration) ------------------
 
-@pytest.mark.xfail(
-    strict=True, raises=InjectionError,
-    reason="plan_variants may pick a site the injector refuses (one inside a "
-           "multi-operation call); the filter in delay_injection.py is added at "
-           "integration (researcher's decision, relayed 28 Oct 2026)")
 def test_every_site_plan_variants_returns_is_accepted_by_the_injector():
-    n_busy = 7          # recursion 0 to 5 and 7
+    allowed = di.injectable_sites(BASE, SEQ, CALLS)
+    n_busy = len(allowed)
+    assert 0 < n_busy < 7           # the unfiltered plan had seven candidates, some refused
     cases = [(BUSY, "synchronize", tuple(range(n_busy + 1))),
              (IDLE, "item", (0, 1, 4))]
     for placement, mechanism, counts in cases:
-        for v in plan_variants(BASE, mechanism, placement, counts, COSTS, None):
+        for v in plan_variants(BASE, mechanism, placement, counts, COSTS, None,
+                               sites_allowed=allowed):
+            di.schedule_for(v, BASE, SEQ, CALLS)
+
+
+def test_without_the_filter_the_plan_can_name_a_refused_site():
+    # The break-test of the filter above: the same plan, unfiltered, is refused.
+    with pytest.raises(InjectionError, match="inside call"):
+        for v in plan_variants(BASE, "synchronize", BUSY, tuple(range(8)), COSTS, None):
             di.schedule_for(v, BASE, SEQ, CALLS)

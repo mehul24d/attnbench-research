@@ -262,6 +262,17 @@ def _base_matches(base: Sequence[recursion.Operation], seq: OpSequence) -> tuple
     return positions
 
 
+def injectable_sites(base: Sequence[recursion.Operation], seq: OpSequence,
+                     calls: Sequence[Call]) -> tuple[int, ...]:
+    """The sites (indices into `base`) the injector can take: those that end a
+    launching call. A site inside a call's operations, or on an operation no
+    launching call issues, is refused by `schedule_for`; passing this to
+    `plan_variants(sites_allowed=...)` keeps the plan to sites it accepts."""
+    positions = _base_matches(base, seq)
+    last = {pos[-1] for pos in call_positions(seq, calls)}
+    return tuple(k for k, p in enumerate(positions) if p in last)
+
+
 def schedule_for(variant: Variant, base: Sequence[recursion.Operation],
                  seq: OpSequence, calls: Sequence[Call], *,
                  payload_bytes: int = 0, loaded: bool = False) -> Schedule:
