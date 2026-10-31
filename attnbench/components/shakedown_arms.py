@@ -33,7 +33,10 @@ it. `PreparedArm.length` is the prompt's own token count, which the
 configs and every recorded sequence use, as the accuracy runs do
 (`generation.generate_one`); `PreparedArm.budget` is the cell. A CPU dry run has no tokenizer download and no RULER
 data: it uses a two-layer random-weight Qwen2 model built from a config and
-seeded random token ids, and only the arms that run on a CPU (dense).
+seeded random token ids, and only the arms that run on a CPU (dense), or
+every arm behind the stubbed GPU boundary (`attnbench.cpu_boundary`), where
+XAttention takes the calibration of record cut to the tiny model's shape
+(`tiny_table`).
 
 **One wrapper at a time.** `SwappableAttentionModel` replaces each layer's
 `self_attn` when it is built and remembers the originals; wrapping a model
@@ -90,7 +93,10 @@ ARMS: dict[str, ArmSpec] = {s.name: s for s in (
 
 
 def runnable(name: str, cuda: bool) -> bool:
-    return cuda or not ARMS[name].needs_cuda
+    """A CUDA arm runs on a CUDA device, or on a CPU behind the stubbed GPU
+    boundary (`attnbench.cpu_boundary`)."""
+    from .. import cpu_boundary
+    return cuda or not ARMS[name].needs_cuda or cpu_boundary.active()
 
 
 @dataclass
@@ -130,13 +136,24 @@ def libraries() -> tuple[tuple[str, str], ...]:
 
 
 def tiny_model():
-    """A two-layer random Qwen2 for CPU dry runs: no download, head_dim 128."""
+    """A two-layer random Qwen2 for CPU dry runs: no download, head_dim 128,
+    and the study model's 32768 positions, so the structural probe's lengths
+    fit (`structural_probe.MAX_PROBE_LENGTH`)."""
     from transformers import Qwen2Config, Qwen2ForCausalLM
     torch.manual_seed(0)
     cfg = Qwen2Config(vocab_size=512, hidden_size=256, intermediate_size=512,
                       num_hidden_layers=2, num_attention_heads=2,
-                      num_key_value_heads=1, max_position_embeddings=8192)
+                      num_key_value_heads=1, max_position_embeddings=32768)
     return Qwen2ForCausalLM(cfg).eval()
+
+
+def tiny_table(table, config):
+    """The calibration of record cut to the tiny model's layers and query
+    heads (the first of each), named as a cut, for a CPU dry run."""
+    from ..backends.xattention import ThresholdTable
+    n_layers, n_heads = config.num_hidden_layers, config.num_attention_heads
+    rows = tuple(tuple(r[:n_heads]) for r in table.values[:n_layers])
+    return ThresholdTable(name=f"{table.name}[:{n_layers},:{n_heads}]", values=rows)
 
 
 class Harness:
@@ -212,6 +229,8 @@ class Harness:
             from ..backends import get
             from ..backends.xattention import ThresholdTable
             table = ThresholdTable.load(REPO / XATTN_CALIBRATION_TABLES[XATTN_TABLE])
+            if self.dry_run:
+                table = tiny_table(table, self.model.config)
             return get(spec.backend)(threshold=table, stride=XATTN_STRIDE)
         name = spec.backend
         if name == "sdpa_flash" and not self.cuda:
@@ -232,7 +251,10 @@ class Harness:
                           mask=spec.mask, sparsity=sparsity if sparse else None,
                           block_size=self.grid.block_sizes[0] if sparse else None,
                           mask_source="importance" if sparse else None)
-        return self.geometry.onto(base, seq_len=length)
+        # `onto` gives the model's geometry and resets batch to one (the
+        # accuracy runs' batch); the cell's batch is put back (found by the
+        # CPU-boundary rehearsal, 31 Oct 2026: every batch-4 config said 1).
+        return replace(self.geometry.onto(base, seq_len=length), batch=batch)
 
     def unwrap(self) -> None:
         if self._wrapped is not None:
@@ -325,7 +347,8 @@ class Harness:
         if arm.spec.xattention:
             eff = getattr(arm.backend, "triton_effective", None)
             impl = "xattn:triton" if eff is True else "xattn:torch"
-        gpu = torch.cuda.get_device_name(0) if self.cuda else "cpu"
+        from .. import cpu_boundary
+        gpu = torch.cuda.get_device_name(0) if self.cuda or cpu_boundary.active() else "cpu"
         return CodePath(arm=arm.name, gpu=gpu, implementation=impl,
                         libraries=libraries(), python_optimize=sys.flags.optimize)
 

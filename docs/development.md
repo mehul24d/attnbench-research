@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 5487 passed, 127 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 5514 passed, 127 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -33,17 +33,36 @@ Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 5556 passed, 58 skipped**, because
+**With `results/` present the suite reads 5583 passed, 58 skipped**, because
 the 65 banked-file tests run instead of skipping (all but two do) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 5552 passed, 62 skipped). All three
-totals are 5614, which is
+present and those two hidden it reads 5579 passed, 62 skipped). All three
+totals are 5641, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 
 To measure the fresh-clone count on a machine that has the RULER data and the
 tokenizer, point `ATTNBENCH_RULER_DATA` and `HF_HOME` at empty directories. An empty string is not the same
 as unset.
+
+## The CPU-boundary rehearsal
+
+Before a shakedown is launched, the T3.1 rehearsal (steps 1 to 8) runs on a
+CPU with the real arms, backends, recorder, null pass, replay and pricing,
+on the two-layer random model, behind `attnbench/cpu_boundary.py`, which
+stubs only what needs a GPU and lists each stub. It needs the x-attention
+clone outside the repo, and runs best under the L4's transformers (4.46.0)
+in a venv over the system torch:
+
+```bash
+export ATTNBENCH_XATTN_DIR=/path/to/x-attention       # at XATTN_COMMIT
+python3 scripts/t31_session.py --cpu-boundary --session /tmp/t31_cpu
+python3 scripts/t228_steps.py density --cpu-boundary --out /tmp/density --length 1024
+```
+
+`t227_steps.py` and `t228_steps.py` take `--cpu-boundary` for one step.
+`tests/test_shakedown3_cpu.py` holds Shakedown 3's failures, reproduced on
+the real classes.
 
 ## Earlier work in this repository
 

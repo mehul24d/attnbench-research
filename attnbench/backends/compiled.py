@@ -72,6 +72,11 @@ SETTINGS: dict[str, dict[str, bool]] = {
 }
 
 
+# The eager arm's density record, which a wrapper forwards only if the arm
+# keeps one (`hasattr` is how the harness asks).
+DENSITY_RECORD = ("reset_density", "last_layer_density")
+
+
 class CompiledVariantError(RuntimeError):
     """A compiled variant that would not be the variant it claims to be."""
 
@@ -157,12 +162,15 @@ class CompiledBackend:
         if hasattr(self.arm, "set_layer"):
             self.arm.set_layer(layer_idx)
 
-    def reset_density(self) -> None:
-        self.arm.reset_density()
-
-    @property
-    def last_layer_density(self):
-        return self.arm.last_layer_density
+    def __getattr__(self, name):
+        """`reset_density` and `last_layer_density` are the arm's, and only
+        where the arm keeps a density record (XAttention). Shakedown 3: the
+        wrapper always had them, so `hasattr(backend, "reset_density")` was
+        true for compiled mean-pool and the call reached a
+        `BlockSparseAttention` that keeps none."""
+        if name in DENSITY_RECORD and "arm" in self.__dict__:
+            return getattr(self.__dict__["arm"], name)
+        raise AttributeError(f"{type(self).__name__} has no attribute {name!r}")
 
     def _call(self, fn: Callable, *args, **kwargs):
         before = graphs_compiled()
@@ -292,12 +300,11 @@ class MaskAgreement:
     def set_layer(self, layer_idx: int) -> None:
         self.compiled.set_layer(layer_idx)
 
-    def reset_density(self) -> None:
-        self.arm.reset_density()
-
-    @property
-    def last_layer_density(self):
-        return self.arm.last_layer_density
+    def __getattr__(self, name):
+        """As `CompiledBackend`'s: the arm's density record, if it keeps one."""
+        if name in DENSITY_RECORD and "arm" in self.__dict__:
+            return getattr(self.__dict__["arm"], name)
+        raise AttributeError(f"{type(self).__name__} has no attribute {name!r}")
 
     def forward(self, q, k, v, cfg: AttnConfig, mask=None):
         if self.prompt < 0:

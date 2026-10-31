@@ -458,7 +458,11 @@ def measure(ops: DeviceOps, *, sync_reps: int = 2000, copy_reps: int = 50,
 # --- readers -----------------------------------------------------------------------------
 
 def _refuse_dry_run(row) -> None:
-    if bool(row["dry_run"]):
+    """A dry-run row's figures come from fakes. Read only behind the stubbed
+    GPU boundary (`attnbench.cpu_boundary`), whose rehearsal never prices
+    anything banked."""
+    from .. import cpu_boundary
+    if bool(row["dry_run"]) and not cpu_boundary.active():
         raise ValueError("this is a dry-run row: its figures come from fakes")
 
 

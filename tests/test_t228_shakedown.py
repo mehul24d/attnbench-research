@@ -320,8 +320,8 @@ def _t212_rig(monkeypatch, tmp_path, *, shift):
             return getattr(self.inner, n)
 
         def mask_set(self, ids, n_heads_q):
-            return SimpleNamespace(masks={0: 1, 1: 1}, mask_density=0.5, prompt_digest="d",
-                                   save=lambda d: None)
+            return SimpleNamespace(masks={0: 1, 1: 1}, mask_density=lambda: 0.5,  # a method
+                                   prompt_digest="d", save=lambda d: None)
 
     monkeypatch.setattr(pm, "MaskRecorder", Rec)
     monkeypatch.setattr(pm, "PrecomputedMaskBackend", Pre)
@@ -353,6 +353,8 @@ def test_t212_passes_when_the_replays_match_and_reports_the_estimators_cost(
     f = json.loads((tmp_path / "result.json").read_text())["findings"]
     assert f["arms"]["xattention"]["bitwise_equal_logits"] and f["arms"]["meanpool"]["executed_density_equal"]
     assert f["timing"]["estimator_cost_ms"] == {"meanpool": 8.0, "xattention": 8.0}
+    # Shakedown 3 wrote the bound method, not its value (the old fake had a float)
+    assert f["arms"]["meanpool"]["mask_density"] == 0.5
 
 
 def test_t212_a_meanpool_mismatch_is_a_finding_and_an_xattention_one_fails(
@@ -382,7 +384,8 @@ def _t22_rig(monkeypatch, *, builder_rc=0):
     monkeypatch.setattr(st, "_harness", lambda args: SimpleNamespace(ready=lambda n, L: arm,
                                                                      unwrap=lambda: None))
     monkeypatch.setattr(recorder, "record_arm_prefill",
-                        lambda *a, **k: SimpleNamespace(tape=object(), sequence=object()))
+                        lambda *a, **k: SimpleNamespace(tape=object(), masks=None,
+                                                        sequence=SimpleNamespace(ops=())))
     got = {}
 
     def profile(run, tape, seq, **kw):

@@ -75,7 +75,8 @@ def _sampler(args):
     """The session's detector: the sampler process at `--sampler-hz`, the
     researcher's flag set. A dry run reads a scripted reader (no card)."""
     from attnbench import clock_sampling as cs
-    factory, fa = ((cs.scripted_reader_factory, ()) if args.dry_run
+    from t227_steps import _boundary
+    factory, fa = ((cs.scripted_reader_factory, ()) if args.dry_run or _boundary()
                    else (cs.nvml_reader_factory, (0,)))
     return cs.ProcessSampler(factory, fa, flag_bits=cs.RESEARCHER_FLAG_BITS,
                              interval_s=1.0 / args.sampler_hz)
@@ -392,15 +393,28 @@ def step_t212(args) -> dict:
         same_density = (len(src_density) == len(pre.last_layer_density)
                         and all(abs(x - y) < 1e-9 for x, y in zip(src_density, pre.last_layer_density)))
         findings["arms"][a.name] = {
-            "layers_recorded": len(mset.masks), "mask_density": mset.mask_density,
+            "layers_recorded": len(mset.masks), "mask_density": mset.mask_density(),
             "bitwise_equal_logits": bitwise, "max_abs_logit_diff": diff,
             "executed_density_equal": same_density,
+            "density_record_layers": {"source": len(src_density),           # what was compared
+                                      "precomputed": len(pre.last_layer_density)},
             "expected_bitwise": bool(spec.xattention)}
         if not same_density:
             failures.append(f"{a.name}: the replay's executed density differs from its source's")
         if spec.xattention and not bitwise:
             failures.append(f"{a.name}: the replay is not bitwise equal to its source "
                             f"(max abs {diff}); the plan expects it to be")
+        # Findings only (31 Oct 2026), after every check above has read its
+        # inputs: these runs append to the density records.
+        from attnbench.components import mask_diagnosis as md
+        diag = md.guarded(
+            md.t212_diagnosis,
+            lambda: wrapped.run_measured(ids, a.backend, cfg=a.cfg, logits_to_keep=1, **kw),
+            lambda: wrapped.run_measured(ids, pre, cfg=dense.cfg, logits_to_keep=1),
+            [mset.masks[i] for i in sorted(mset.masks)], source_backend=a.backend,
+            precomputed_backend=pre)
+        _write_json(out / f"mask_diagnosis_{a.name}.json", diag)
+        findings["arms"][a.name]["mask_diagnosis"] = md.summaries(diag)
         timed += [a, gt.Arm(f"precomputed_{a.name}", gt.PRECOMPUTED, pre, dense.cfg,
                             prompt_digest=mset.prompt_digest)]
     if len(timed) > 1:
@@ -447,11 +461,12 @@ def step_t22(args) -> dict:
                                       code_path=arm.code_path, context_length=args.length,
                                       batch=1, prompt_id=arm.prompt_id, layers=arm.layers)
     entries = () if arm.spec.name == "dense" else (hp.block_sparse_entry(),)
-    prof = hp.profile(arm.run_prefill, rec.tape, rec.sequence, device=hp.cuda_device(),
-                      reps=args.profile_reps, entries=entries, layers=arm.layers)
+    from t31_steps import host_profile_cell
+    prof = host_profile_cell(arm, rec, out, reps=args.profile_reps, entries=entries)
     (out / "host_profile.json").write_text(hp.dumps(prof))
     findings: dict = {
         "arm": arm.name, "length": args.length, "positions": len(prof.host_s),
+        "cost_sources": prof.sources(),
         "host_total_ms": prof.total_s * 1e3, "launch_floor_us": prof.launch_floor_s * 1e6,
         "reps": prof.reps, "sequence_sha256": prof.sequence_sha256}
     h.unwrap()
@@ -513,7 +528,8 @@ def step_density(args) -> dict:
     for group in vals["gt_groups"]:
         d = out / group
         rc = _run(_py("t228_steps.py", "density-one", "--group", group, "--out", str(d),
-                      "--length", str(args.length), *(["--dry-run"] if args.dry_run else [])))
+                      "--length", str(args.length), *(["--dry-run"] if args.dry_run else []),
+                      *(["--cpu-boundary"] if getattr(args, "cpu_boundary", False) else [])))
         path = d / "densities.json"
         found["groups"][group] = {"rc": rc,
                                   "arms": json.loads(path.read_text()) if path.exists() else None}
@@ -542,8 +558,9 @@ def density_one(args) -> int:
     for n in names[1:]:
         be = h._backend(ARMS[n])
         if setting is not None:
+            from attnbench import cpu_boundary
             from attnbench.backends.compiled import CompiledBackend
-            be = CompiledBackend(be, setting)
+            be = CompiledBackend(be, setting, **cpu_boundary.compile_kwargs())
         backends.append(be)
         settings.append(setting)
     wrapped, ids, prompt_id, arms, score_kwargs = h.timing_arms(
@@ -649,6 +666,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("step", choices=STEPS + ("run", "density-one"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--cpu-boundary", action="store_true",
+                    help="the real path on a CPU behind the stubbed GPU boundary")
     ap.add_argument("--length", type=int, default=8192, help="the cell, for every step")
     ap.add_argument("--arms", default="dense,oracle,meanpool,xattention",
                     help="t213's arms; the dense control first")
@@ -683,6 +702,10 @@ def main(argv=None) -> int:
         from t227_shakedown import main as run_main
         return run_main(argv[1:], config=_config())
     args = parser().parse_args(argv)
+    if args.cpu_boundary:
+        from t227_steps import boundary_main
+        return boundary_main(args, lambda: density_one(args) if args.step == "density-one"
+                             else run_step(args.step, args, STEP_FUNCS))
     if args.step == "density-one":
         return density_one(args)
     return run_step(args.step, args, STEP_FUNCS)

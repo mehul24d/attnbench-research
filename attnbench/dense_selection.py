@@ -100,8 +100,15 @@ class SelectionRecordError(ValueError):
     bytes are not the ones that were hashed."""
 
 
+# The CPU boundary's card (`attnbench.cpu_boundary`): every planned kernel
+# is GPU-only, so the CPU's math SDPA is its one candidate, under its name.
+CPU_CARD, CPU_CANDIDATES = "cpu", ("sdpa_math",)
+
+
 def planned_candidates(card: str) -> tuple:
     """The protocol's candidates for a card: FA3 only on the H100."""
+    if card == CPU_CARD:
+        return CPU_CANDIDATES
     return BASE_CANDIDATES + ((FA3,) if "H100" in card.upper() else ())
 
 

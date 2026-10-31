@@ -75,20 +75,23 @@ def test_a_table_that_does_not_say_pre_lock_is_refused(tmp_path):
         st.working_values(t)
 
 
-def test_the_grid_skips_xattention_at_batch_four_and_names_calibrated_density_none():
+def test_the_grid_runs_the_batch_one_arms_at_batch_one_and_names_calibrated_density_none():
     cfg = st.load_config(None, dry_run=False)
     cs = st.cells(cfg)
     assert ("xattention", None, 2048, 1) in cs
     assert not [c for c in cs if c[0] in st.BATCH1_ONLY and c[3] > 1]
-    assert ("meanpool", 0.25, 16384, 4) in cs
-    # 5 lengths x (1 + 2 + 2 + 1 + 1) at batch 1, and (1 + 2 + 2) at 16384 batch 4
-    assert len(cs) == 5 * 7 + 5
+    assert set(st.BATCH1_ONLY) == {"xattention", "xattention_noassert", "oracle", "meanpool"}
+    assert ("dense", 1.0, 16384, 4) in cs and ("meanpool", 0.25, 16384, 4) not in cs
+    # 5 lengths x (1 + 2 + 2 + 1 + 1) at batch 1, and the dense control at 16384 batch 4
+    assert len(cs) == 5 * 7 + 1
 
 
 def test_groups_and_their_settings():
     cfg = st.load_config(None, dry_run=False)
-    names, dens = st.group_arms(cfg, "compiled_default", 16384, 4)
-    assert names == ["dense", "meanpool", "meanpool"] and dens == [None, 0.25, 0.5]
+    names, dens = st.group_arms(cfg, "compiled_default", 16384, 1)
+    assert names == ["dense", "meanpool", "meanpool", "xattention"]
+    assert dens == [None, 0.25, 0.5, None]
+    assert st.group_arms(cfg, "compiled_default", 16384, 4) == (["dense"], [None])
     assert st.group_setting("eager") is None and st.group_setting("compiled_capture") == "capture"
     with pytest.raises(st.StepFailed):
         st.group_setting("whatever")
@@ -295,10 +298,10 @@ def test_each_group_times_its_arms_with_the_k2_choice_as_the_control(tmp_path, m
                            receipt=SimpleNamespace(sha256="abc"), out=tmp_path)
     assert first == [1.0, 1.0, 1.0]
     assert seen[0][:2] == (("dense", "meanpool", "xattention"), (None, 0.25, None))
-    assert seen[2][0] == ("dense", "meanpool")        # no XAttention at batch 4
+    assert seen[2][0] == ("dense",)        # the batch-one arms are not run at batch 4
     assert all(s[4] == "CUDNN" for s in seen)        # the control is the K2 choice
     assert checked == [("sdpa_cudnn", 2048, 1), ("sdpa_cudnn", 16384, 1), ("sdpa_cudnn", 16384, 4)]
-    row = json.loads((tmp_path / "gt_L16384_b4.json").read_text())["rows"][1]
+    row = json.loads((tmp_path / "gt_L16384_b1.json").read_text())["rows"][1]
     assert row["nominal_density"] == 0.25 and row["group"] == "eager"
 
 

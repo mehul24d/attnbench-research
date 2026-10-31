@@ -49,6 +49,10 @@ A rehearsal (Shakedown 2) runs steps 1 to 8 on the card and stops after
 config with `"rehearsal": true` and its own prediction prefix, written into
 the session as `rehearsal_config.json`; its results are discarded:
     python3 scripts/t31_session.py --rehearsal
+The same rehearsal on a CPU, with the real arms behind the stubbed GPU
+boundary (`attnbench.cpu_boundary`; x-attention from `ATTNBENCH_XATTN_DIR`),
+which must pass before a shakedown is launched (31 Oct 2026):
+    python3 scripts/t31_session.py --cpu-boundary --session /tmp/t31_cpu
 """
 
 from __future__ import annotations
@@ -215,6 +219,9 @@ def main(argv=None) -> int:
     ap.add_argument("--config", default=None)
     ap.add_argument("--rehearsal", action="store_true",
                     help="steps 1 to 8 only, no ground truth; results discarded (Shakedown 2)")
+    ap.add_argument("--cpu-boundary", action="store_true",
+                    help="the rehearsal (steps 1 to 8) on a CPU, real arms behind the stubbed "
+                         "GPU boundary")
     ap.add_argument("--list", action="store_true",
                     help="print the steps, and what is not built yet, and exit")
     args = ap.parse_args(argv)
@@ -224,6 +231,17 @@ def main(argv=None) -> int:
             if s in NOT_BUILT:   # empty since 31 Oct 2026; kept for a step that regresses
                 print(f"   {'':18s} NOT BUILT: {NOT_BUILT[s]}")
         return 0
+    if args.cpu_boundary and (args.dry_run or args.rehearsal):
+        print("REFUSING: --cpu-boundary is its own rehearsal; not with --dry-run or --rehearsal",
+              file=sys.stderr)
+        return 2
+    if args.cpu_boundary:
+        if args.session is None:
+            print("REFUSING: --cpu-boundary needs a --session outside results/", file=sys.stderr)
+            return 2
+        extra = ["--cpu-boundary"] + (["--config", args.config] if args.config else [])
+        return run_session(Path(args.session), start=args.start, extra=extra, dry_run=False,
+                           sync=False, rehearsal=True)
     if args.rehearsal and args.dry_run:
         print("REFUSING: a rehearsal runs on the card; use --dry-run alone on a CPU",
               file=sys.stderr)
