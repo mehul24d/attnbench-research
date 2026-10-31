@@ -18,7 +18,8 @@ name, and every named file carries the sha256 it was written for:
     and figure panel names it, and no figure panel holds two classes. A
     class is checked against the row's own `arm_kind` and `deployable`
     where they decide it (`_check_class`).
-  - `builder_kinds`: where an arm's mask is built, "cpu" or "gpu".
+  - `builder_kinds`: where an arm's TIMED mask construction runs, "cpu" or
+    "gpu" (the harness checks the row's kind against the probe's events).
     Ground-truth rows do not carry it yet (it joins density, length and
     batch on the T2.13 row schema at integration), so the caller states it,
     as with the cell. A row's own `builder_kind` is read when it has one,

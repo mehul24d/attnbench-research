@@ -121,6 +121,18 @@ MASK_TARGETS = (
     ("attnbench.masks", "mask_for"),
 )
 
+# Where each observed construction runs. `builder_kind` is set by where the
+# TIMED mask construction runs, not by what the arm is called: the host's
+# reference builder (`mask_for`) is "cpu"; the device builder and the
+# XAttention estimator (which builds its mask on the device inside the
+# backend) are "gpu". `check_timed_region` holds an arm's declared kind to what
+# the probe saw inside the timed blocks.
+BUILDER_OF_TARGET = {
+    "attnbench.masks.importance_block_mask_device": "gpu",
+    "attnbench.masks.mask_for": "cpu",
+    "attnbench.backends.xattention.XAttentionBackend.estimate": "gpu",
+}
+
 
 class TimedRegionError(RuntimeError):
     """A measurement whose timed region does not contain what it must."""
@@ -316,6 +328,13 @@ def check_timed_region(log: EventLog, arm: Arm, reps: list) -> None:
         if outside:
             raise TimedRegionError(
                 f"{arm.name}: the oracle may cache its scores, not its masks")
+    seen = {BUILDER_OF_TARGET[e.what] for e in log.events
+            if e.phase == TIMED and e.what in BUILDER_OF_TARGET}
+    if arm.builder_kind is not None and seen and seen != {arm.builder_kind}:
+        raise TimedRegionError(
+            f"{arm.name} declares builder_kind={arm.builder_kind!r}, but the timed blocks "
+            f"constructed its mask on {sorted(seen)}: builder_kind is where the timed "
+            f"construction runs (rule 2)")
 
 
 def untimed_setup(wrapped, input_ids, arm: Arm, *, score_kwargs: Optional[dict]) -> dict:

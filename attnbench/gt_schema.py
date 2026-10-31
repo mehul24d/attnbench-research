@@ -12,9 +12,14 @@ its builder kind, so CPU-builder and GPU-builder results are never pooled
   - mask_density, executed_density: as `densities.py` defines them. A dense
     row has no mask (None) and executes every block (1.0); any other row has
     both in (0, 1].
-  - builder_kind: "cpu" or "gpu", where the arm's mask is built. A dense row
-    has none (None). A deployable row (inline or in-backend estimator) must
-    name one. An oracle or precomputed row may name one or None.
+  - builder_kind: "cpu" or "gpu", where the arm's TIMED mask construction
+    runs (not where the arm's scores came from): the oracle builds its mask
+    from cached scores on the host inside the timed block, so it is "cpu".
+    `ground_truth.check_timed_region` holds the declared kind to what the
+    probe saw in the timed blocks. A dense row has none (None). A deployable
+    row (inline or in-backend estimator) must name one. A precomputed row
+    (no construction in any block) may name one or None. No value "none"
+    exists: an arm with no timed construction says None.
 
 torch-free, so the readers in `figures` can use it.
 """
