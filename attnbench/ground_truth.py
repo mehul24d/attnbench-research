@@ -89,7 +89,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .clock_sampling import BlockClock, BlockSampler, ProcessSampler, reason_names
+from .gt_schema import BUILDER_KINDS, check_row
+from .clock_sampling import (RESEARCHER_FLAG_BITS, BlockClock, BlockSampler, ProcessSampler,
+                             counters_only_misses, reason_names)
 from .precomputed_masks import prompt_digest
 
 DENSE = "dense"
@@ -119,6 +121,18 @@ MASK_TARGETS = (
     ("attnbench.masks", "mask_for"),
 )
 
+# Where each observed construction runs. `builder_kind` is set by where the
+# TIMED mask construction runs, not by what the arm is called: the host's
+# reference builder (`mask_for`) is "cpu"; the device builder and the
+# XAttention estimator (which builds its mask on the device inside the
+# backend) are "gpu". `check_timed_region` holds an arm's declared kind to what
+# the probe saw inside the timed blocks.
+BUILDER_OF_TARGET = {
+    "attnbench.masks.importance_block_mask_device": "gpu",
+    "attnbench.masks.mask_for": "cpu",
+    "attnbench.backends.xattention.XAttentionBackend.estimate": "gpu",
+}
+
 
 class TimedRegionError(RuntimeError):
     """A measurement whose timed region does not contain what it must."""
@@ -138,6 +152,7 @@ class Arm:
     inline_estimator: Optional[str] = None
     compile_setting: Optional[str] = None   # None: eager
     prompt_digest: Optional[str] = None     # the prompt a precomputed arm's masks belong to
+    builder_kind: Optional[str] = None      # where its mask is built: gt_schema.BUILDER_KINDS
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -147,6 +162,16 @@ class Arm:
         if (self.kind == PRECOMPUTED) != (self.prompt_digest is not None):
             raise ValueError("a precomputed arm names the prompt its masks were computed on, "
                              "and only a precomputed arm does")
+        # Every row names where its arm's mask is built, so CPU-builder and
+        # GPU-builder results are never pooled (rule 2; audit C3, finding 2).
+        if self.builder_kind is not None and self.builder_kind not in BUILDER_KINDS:
+            raise ValueError(f"builder_kind must be one of {BUILDER_KINDS} or None, got "
+                             f"{self.builder_kind!r}")
+        if self.kind == DENSE and self.builder_kind is not None:
+            raise ValueError("a dense arm builds no mask, so it has no builder_kind")
+        if self.kind in DEPLOYABLE_KINDS and self.builder_kind is None:
+            raise ValueError(f"a deployable arm ({self.kind}) names its builder_kind: "
+                             f"{BUILDER_KINDS}")
 
     @property
     def deployable(self) -> bool:
@@ -303,6 +328,13 @@ def check_timed_region(log: EventLog, arm: Arm, reps: list) -> None:
         if outside:
             raise TimedRegionError(
                 f"{arm.name}: the oracle may cache its scores, not its masks")
+    seen = {BUILDER_OF_TARGET[e.what] for e in log.events
+            if e.phase == TIMED and e.what in BUILDER_OF_TARGET}
+    if arm.builder_kind is not None and seen and seen != {arm.builder_kind}:
+        raise TimedRegionError(
+            f"{arm.name} declares builder_kind={arm.builder_kind!r}, but the timed blocks "
+            f"constructed its mask on {sorted(seen)}: builder_kind is where the timed "
+            f"construction runs (rule 2)")
 
 
 def untimed_setup(wrapped, input_ids, arm: Arm, *, score_kwargs: Optional[dict]) -> dict:
@@ -338,6 +370,20 @@ class Controls:
             raise ValueError("resolution_floor_ms must be a positive number")
         if self.max_rerun_rounds < 0:
             raise ValueError("max_rerun_rounds must be >= 0")
+        s = self.sampler
+        # Audit C3, finding 1: a counters-only sampler reads the bits only at
+        # the block's edges, where the GPU is idle, and no counter can show
+        # hardware slowdown or tell the brake from the software cap.
+        if isinstance(s, BlockSampler) and not s.sees_in_block:
+            raise ValueError(
+                f"a counters-only sampler cannot see "
+                f"{reason_names(counters_only_misses(RESEARCHER_FLAG_BITS))} inside a "
+                f"block: use the session's ProcessSampler (or an in-block interval)")
+        missing = RESEARCHER_FLAG_BITS & ~getattr(s, "flag_bits", 0)
+        if missing:
+            raise ValueError(
+                f"the sampler's flag set leaves out {reason_names(missing)}, which the "
+                f"researcher's set flags (Appendix A, 27 Oct 2026)")
 
 
 _PROCESS_COMPILE_SETTING: Optional[str] = None
@@ -384,7 +430,29 @@ def _clocked(fn, synchronize, clock) -> float:
     return clock() - t0
 
 
+def kernel_densities(arm: Arm, run: Callable[[], None]) -> dict:
+    """The session's density probe for `time_arms` (T2.20; audit C3, finding 2):
+    one untimed forward, `run()`, with the kernel's inputs recorded. The
+    executed density is read at the kernel boundary (`densities`); the mask
+    density is the arm's own per-layer record (`last_layer_density`, which
+    the XAttention, compiled and precomputed backends keep). A backend that
+    keeps none is refused, not guessed at. A dense arm has no mask and
+    executes every block. UNRUN without a GPU and the block-sparse kernel."""
+    from . import densities as D
+    if arm.kind == DENSE:
+        return dict(D.DENSE_FIELDS)
+    with D.KernelInputRecorder() as rec:
+        run()
+    per_layer = list(getattr(arm.backend, "last_layer_density", None) or ())
+    if not per_layer:
+        raise RuntimeError(
+            f"{arm.name}'s backend keeps no per-layer mask density "
+            f"(last_layer_density), so its rows would carry none")
+    return rec.fields(mask_density=sum(float(d) for d in per_layer) / len(per_layer))
+
+
 def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
+              density_of: Callable[[Arm, Callable[[], None]], dict],
               warmup: int = 3,
               synchronize: Callable[[], None] = lambda: None,
               clock: Callable[[], float] = time.perf_counter,
@@ -401,6 +469,12 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
     "rows": [one per arm]}. With a `tracer` (a context-manager factory) every
     forward, warm-up included, runs inside it and the result is labelled
     traced; use `time_with_profiler_overhead` for that.
+
+    `density_of(arm, run)` gives each arm's mask and executed density from
+    one forward, `run()`, after every timed block (`kernel_densities` is the
+    session's). Every row carries its context length and batch (the
+    prompt's), both densities and the arm's builder kind, and is checked
+    against `gt_schema` before anything is returned.
     """
     if reps < 1:
         raise ValueError("reps must be >= 1")
@@ -485,6 +559,13 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
 
     for a in arms:
         check_timed_region(logs[a.name], a, list(range(r)))
+    densities = {}
+    for a in arms:          # untimed: after every block, outside the probe and the tracer
+        def run(a=a):
+            wrapped.run_measured(input_ids, a.backend, cfg=a.cfg, logits_to_keep=1,
+                                 **kwargs[a.name])
+        densities[a.name] = dict(density_of(a, run))
+    batch, length = int(input_ids.shape[0]), int(input_ids.shape[-1])   # (batch, tokens)
     flagged_rounds = {x["round"] for x in rounds if x["flagged"]}
     rows = []
     for a in arms:
@@ -508,7 +589,11 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
             "sm_mhz_max": max(c.sm_mhz_max for c in block_clock[a.name].values()),
             "score_calls_timed": sum(e.kind == "score" for e in ev),
             "mask_builds_timed": sum(e.kind == "mask_build" for e in ev),
+            "context_length": length, "batch": batch, "builder_kind": a.builder_kind,
+            **{k: densities[a.name][k] for k in ("mask_density", "executed_density")
+               if k in densities[a.name]},
         })
+        check_row(rows[-1], f"time_arms' row for {a.name}")
     return {
         "first_clocked_block_started_at": first_started,
         "complete": clean == reps, "clean_rounds": clean, "rounds_run": r,

@@ -168,12 +168,73 @@ def test_the_project_number_never_reaches_a_row(tmp_path):
     assert not any("123456789012" in str(v) for v in got.values())
 
 
-def test_aws_is_recognised_and_not_read(tmp_path):
-    fetch = FakeMetadata({})
-    got = provenance._cloud_identity(_dmi(tmp_path, "Amazon EC2", "g6.xlarge"), fetch)
-    assert fetch.calls == []
-    assert got["cloud_provider"] == "aws" and got["provisioning_model"] is None
-    assert "T5.1" in got["provisioning_model_problem"]
+def _aws(tag=None, life="on-demand", itype="p4d.24xlarge"):
+    v = {"instance-type": itype, "instance-life-cycle": life}
+    if tag is not None:
+        v[f"tags/instance/{provenance.PROVISIONING_TAG}"] = tag
+    return FakeMetadata(v)
+
+
+@pytest.mark.parametrize("tag,life,model", [("STANDARD", "on-demand", "on-demand"),
+                                            ("SPOT", "spot", "spot")])
+def test_an_aws_tag_that_agrees_with_the_life_cycle_gives_the_model(tmp_path, tag, life, model):
+    got = provenance._cloud_identity(_dmi(tmp_path, "Amazon EC2", "p4d.24xlarge"), _aws(tag, life))
+    assert got["cloud_provider"] == "aws" and got["provisioning_model"] == model
+    assert got["provisioning_model_problem"] is None
+    assert (got["instance_type"], got["instance_generation"]) == ("p4d.24xlarge", "p4d")
+
+
+@pytest.mark.parametrize("itype,gen", [("g6.xlarge", "g6"), ("p5.48xlarge", "p5"),
+                                       ("g5g.2xlarge", "g5g"), ("weird", None)])
+def test_the_aws_family_is_the_generation(tmp_path, itype, gen):
+    got = provenance._cloud_identity(_dmi(tmp_path, "Amazon EC2", itype), _aws("STANDARD", itype=itype))
+    assert got["instance_generation"] == gen
+
+
+def test_an_aws_tag_that_disagrees_with_the_life_cycle_is_none_and_says_why(tmp_path):
+    got = provenance._cloud_identity(_dmi(tmp_path, "Amazon EC2", "g6.xlarge"),
+                                     _aws("STANDARD", "spot"))
+    assert got["provisioning_model"] is None
+    assert "instance-life-cycle TRUE" in got["provisioning_model_problem"]
+
+
+def test_a_missing_aws_tag_or_unreadable_service_is_none_not_a_guess(tmp_path):
+    dmi = _dmi(tmp_path, "Amazon EC2", "g6.xlarge")
+    no_tag = provenance._cloud_identity(dmi, _aws(None))
+    assert no_tag["provisioning_model"] is None
+    assert provenance.PROVISIONING_TAG in no_tag["provisioning_model_problem"]
+    dead = provenance._cloud_identity(dmi, FakeMetadata({}))
+    assert dead["cloud_provider"] == "aws" and dead["provisioning_model"] is None
+    assert dead["instance_type"] is None
+
+
+def test_the_aws_tag_name_is_the_one_the_launcher_writes():
+    text = (REPO / "scripts" / "aws_launch_session.sh").read_text()
+    assert f"Key={provenance.PROVISIONING_TAG}," in text
+    assert "InstanceMetadataTags=enabled" in text and "HttpTokens=required" in text
+
+
+def test_the_aws_fetcher_asks_for_a_token_then_the_value(monkeypatch):
+    import urllib.request
+    seen = []
+
+    class R:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self.body
+
+    class Opener:
+        def open(self, req, timeout=None):
+            seen.append((req.get_method(), req.full_url, dict(req.header_items())))
+            return R(b"TOKEN" if req.get_method() == "PUT" else b"STANDARD")
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a: Opener())
+    got = provenance._aws_metadata(f"tags/instance/{provenance.PROVISIONING_TAG}")
+    assert got == "STANDARD"
+    assert seen[0][0] == "PUT" and seen[0][1].endswith("/latest/api/token")
+    assert seen[1][1].endswith(f"/latest/meta-data/tags/instance/{provenance.PROVISIONING_TAG}")
+    assert seen[1][2]["X-aws-ec2-metadata-token"] == "TOKEN"
 
 
 # --- the stamp ------------------------------------------------------------------

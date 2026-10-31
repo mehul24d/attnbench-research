@@ -162,14 +162,16 @@ def test_check_control_is_read_against_t216s_record(tmp_path, monkeypatch):
     ch = SimpleNamespace(chosen="sdpa_flash")
     monkeypatch.setattr(st, "_find_choice", lambda args: ch)
     monkeypatch.setattr(ds, "check_control",
-                        lambda c, name, stamp: seen.update(name=name, stamp=stamp))
+                        lambda c, name, stamp, *, key: seen.update(name=name, stamp=stamp,
+                                                                   key=key))
     a = _args(tmp_path, arms="dense", length=128, reps=2, warmup=2, floor_ms=1e6)
     st.run_step("t213", a, st.STEP_FUNCS)
     f = json.loads((tmp_path / "result.json").read_text())["findings"]
     assert f["check_control"] == {"passed": True, "chosen": "sdpa_flash"}
     assert seen["name"] == "sdpa_math" and seen["stamp"] == f["stamp"]["first_clocked_block_started_at"]
+    assert (seen["key"].card, seen["key"].context_length, seen["key"].batch) == ("cpu", 128, 1)
 
-    def refuse(c, name, stamp):
+    def refuse(c, name, stamp, *, key):
         raise ds.SelectionError("the dense control is not the choice")
     monkeypatch.setattr(ds, "check_control", refuse)
     ch.recorded_at = 1.0
@@ -325,12 +327,12 @@ def _t212_rig(monkeypatch, tmp_path, *, shift):
     monkeypatch.setattr(pm, "PrecomputedMaskBackend", Pre)
     cfg = SimpleNamespace(n_heads_q=4)
     arms = [gt.Arm("dense", gt.DENSE, object(), cfg),
-            gt.Arm("meanpool", gt.INLINE, Source(), cfg, inline_estimator="x"),
-            gt.Arm("xattention", gt.IN_BACKEND, Source(), cfg)]
+            gt.Arm("meanpool", gt.INLINE, Source(), cfg, inline_estimator="x", builder_kind="gpu"),
+            gt.Arm("xattention", gt.IN_BACKEND, Source(), cfg, builder_kind="gpu")]
     h = SimpleNamespace(timing_arms=lambda names, n: (_Logits(shift), None, "p", arms, {}),
                         unwrap=lambda: None)
     monkeypatch.setattr(st, "_harness", lambda args: h)
-    monkeypatch.setattr(st, "_sampler", lambda args: contextlib.nullcontext())
+    monkeypatch.setattr(st, "_sampler", lambda args: contextlib.nullcontext(st.NullSampler()))
     rows = [{"arm": n, "prefill_ms_median": m, "arm_label": "l"}
             for n, m in [("dense", 30.0), ("meanpool", 20.0), ("precomputed_meanpool", 12.0),
                          ("xattention", 22.0), ("precomputed_xattention", 14.0)]]

@@ -368,12 +368,35 @@ def _check_follows(choice: Choice) -> None:
         raise SelectionRecordError(f"derived fields do not follow from the samples: {diff}")
 
 
+def cell_of_key(key) -> Cell:
+    """The K2 cell (card, context length, batch) of a prediction key
+    (`training.CellKey`: its code path label starts with the GPU, as
+    `commit.code_path_label` writes it), or `key` itself if it is a Cell."""
+    if isinstance(key, Cell):
+        return key
+    try:
+        card = str(key.code_path).split("|", 1)[0]
+        return Cell(card, int(key.context_length), int(key.batch))
+    except (AttributeError, TypeError, ValueError) as e:
+        raise SelectionError(f"not a prediction key or a K2 cell: {key!r}") from e
+
+
 def check_control(choice: Choice, control_backend_name: str,
-                  first_clocked_block_started_at: float) -> None:
+                  first_clocked_block_started_at: float, *, key) -> None:
     """What the session runner asks before ground truth is accepted: the dense
-    control is the recorded choice, the record is complete, and it was made
-    before the first clocked block of any kind started (the strict rule,
-    Appendix A, 27 Oct 2026: warm-ups count)."""
+    control is the recorded choice for the cell being measured (`key`, the
+    prediction key, or its K2 `Cell`; audit C3, finding 3), the record is
+    complete, and it was made before the first clocked block of any kind
+    started (the strict rule, Appendix A, 27 Oct 2026: warm-ups count)."""
+    want = cell_of_key(key)
+    got = choice.cell
+    for what, a, b in (("card", got.card, want.card),
+                       ("context length", got.context_length, want.context_length),
+                       ("batch", got.batch, want.batch)):
+        if a != b:
+            raise SelectionError(
+                f"the dense choice was recorded for {got.key}, but this cell has {what} "
+                f"{b!r}, not {a!r}: a K2 choice is per card, context length and batch")
     if not choice.complete:
         raise SelectionError(
             f"the choice for {choice.cell.key} is incomplete (unavailable: "

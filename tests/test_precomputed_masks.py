@@ -20,7 +20,7 @@ import torch
 transformers = pytest.importorskip("transformers")
 from transformers import LlamaConfig, LlamaForCausalLM  # noqa: E402
 
-from _gt_fakes import FakeClock, ScriptedReader  # noqa: E402
+from _gt_fakes import FakeClock, ScriptedReader, fake_densities  # noqa: E402
 from attnbench import clock_sampling as cs  # noqa: E402
 from attnbench import ground_truth as gt  # noqa: E402
 from attnbench import kernels, masks  # noqa: E402
@@ -231,8 +231,9 @@ def test_the_arm_is_timed_with_no_estimator_cost_and_is_labelled_an_ablation():
     dense = gt.Arm("dense", gt.DENSE, NaiveAttention(), _causal_cfg())
     clock = FakeClock()
     controls = gt.Controls(1e9, 0, cs.BlockSampler(ScriptedReader(clock),
-                                                   flag_bits=cs.SW_THERMAL_SLOWDOWN))
-    out = gt.time_arms(wrapped, ids, [arm, dense], reps=2, controls=controls)
+                                                   flag_bits=cs.RESEARCHER_FLAG_BITS,
+                                                   interval_s=0.001))
+    out = gt.time_arms(wrapped, ids, [arm, dense], reps=2, density_of=fake_densities, controls=controls)
     row = out["rows"][0]
     assert not row["deployable"] and row["arm_label"] == gt.PRECOMPUTED_LABEL
     assert row["score_calls_timed"] == 0 and row["mask_builds_timed"] == 0
@@ -256,9 +257,10 @@ def test_an_arm_that_secretly_builds_a_mask_is_refused():
     dense = gt.Arm("dense", gt.DENSE, NaiveAttention(), _causal_cfg())
     clock = FakeClock()
     controls = gt.Controls(1e9, 0, cs.BlockSampler(ScriptedReader(clock),
-                                                   flag_bits=cs.SW_THERMAL_SLOWDOWN))
+                                                   flag_bits=cs.RESEARCHER_FLAG_BITS,
+                                                   interval_s=0.001))
     with pytest.raises(gt.TimedRegionError, match="computed offline"):
-        gt.time_arms(wrapped, ids, [arm, dense], reps=2, controls=controls)
+        gt.time_arms(wrapped, ids, [arm, dense], reps=2, density_of=fake_densities, controls=controls)
 
 
 def test_masks_from_another_prompt_are_refused_by_the_arm_and_by_the_harness():
@@ -272,9 +274,10 @@ def test_masks_from_another_prompt_are_refused_by_the_arm_and_by_the_harness():
     dense = gt.Arm("dense", gt.DENSE, NaiveAttention(), _causal_cfg())
     clock = FakeClock()
     controls = gt.Controls(1e9, 0, cs.BlockSampler(ScriptedReader(clock),
-                                                   flag_bits=cs.SW_THERMAL_SLOWDOWN))
+                                                   flag_bits=cs.RESEARCHER_FLAG_BITS,
+                                                   interval_s=0.001))
     with pytest.raises(gt.TimedRegionError, match="another prompt"):
-        gt.time_arms(wrapped, _ids(seed=9), [arm, dense], reps=2, controls=controls)
+        gt.time_arms(wrapped, _ids(seed=9), [arm, dense], reps=2, density_of=fake_densities, controls=controls)
 
 
 def test_a_precomputed_arm_must_name_its_prompt_and_only_it_may():

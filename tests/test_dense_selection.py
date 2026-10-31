@@ -140,7 +140,7 @@ def test_an_unavailable_planned_candidate_makes_the_record_incomplete_and_unusab
     assert not ch.complete and ch.missing == [ds.FA2]
     assert _status(ch, ds.FA2).status == ds.UNAVAILABLE
     with pytest.raises(ds.SelectionError, match="incomplete"):
-        ds.check_control(ch, ch.chosen, ch.recorded_at + 1)
+        ds.check_control(ch, ch.chosen, ch.recorded_at + 1, key=CELL)
 
 
 def test_the_candidate_set_is_the_protocols():
@@ -356,13 +356,13 @@ def test_a_missing_or_malformed_sidecar_is_refused(tmp_path):
 
 def test_the_control_must_be_the_choice_recorded_before_the_first_block():
     ch = _select()
-    ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at + 1.0)          # passes
+    ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at + 1.0, key=CELL)          # passes
     with pytest.raises(ds.SelectionError, match="recorded choice"):
-        ds.check_control(ch, ds.SDPA_FLASH, ch.recorded_at + 1.0)      # the banked baseline
+        ds.check_control(ch, ds.SDPA_FLASH, ch.recorded_at + 1.0, key=CELL)      # the banked baseline
     with pytest.raises(ds.SelectionError, match="not before the first clocked block"):
-        ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at)
+        ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at, key=CELL)
     with pytest.raises(ds.SelectionError, match="not before"):
-        ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at - 1.0)
+        ds.check_control(ch, ds.SDPA_CUDNN, ch.recorded_at - 1.0, key=CELL)
 
 
 def test_nothing_correct_means_nothing_to_control_against():
@@ -373,7 +373,7 @@ def test_nothing_correct_means_nothing_to_control_against():
     ch = _select(cands, clock)
     assert ch.chosen is None and ch.complete
     with pytest.raises(ds.SelectionError, match="no candidate was correct"):
-        ds.check_control(ch, ds.SDPA_FLASH, ch.recorded_at + 1)
+        ds.check_control(ch, ds.SDPA_FLASH, ch.recorded_at + 1, key=CELL)
 
 
 # --- restating banked figures ---------------------------------------------------------
