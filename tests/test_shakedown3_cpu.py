@@ -87,23 +87,11 @@ def test_a_density_on_an_arm_that_has_none_is_still_refused(harness):
 
 # --- the density probe: the compiled wrapper over mean-pool -------------------------------
 
-def _forget_dynamo_imports():
-    """Dynamo binds a traced function's imports into its module's globals
-    (`__import_block_sparse_attn`), and `torch._dynamo.reset()` leaves them:
-    in the full suite an earlier test's fake kernel module was still bound
-    there, and the guard read its `__defaults__` (None)."""
-    from attnbench.backends import block_sparse
-    for k in [k for k in vars(block_sparse) if k.startswith("__import_")]:
-        delattr(block_sparse, k)
-
-
 @pytest.fixture
 def fresh_dynamo():
     compiled.reset_compiled_state()
-    _forget_dynamo_imports()
     yield
     compiled.reset_compiled_state()
-    _forget_dynamo_imports()
 
 
 def test_the_compiled_wrapper_has_a_density_record_only_if_its_arm_has(boundary, fresh_dynamo):
@@ -113,14 +101,18 @@ def test_the_compiled_wrapper_has_a_density_record_only_if_its_arm_has(boundary,
     assert not hasattr(c, "reset_density") and not hasattr(c, "last_layer_density")
 
 
-def test_the_density_probe_runs_compiled_mean_pool_on_the_real_wrapper(harness, fresh_dynamo):
-    """Shakedown 3, t228 `density`: `CompiledBackend.reset_density` called
-    the inner `BlockSparseAttention.reset_density`, which does not exist."""
-    names, dens = ["dense", "meanpool"], [None, 0.25]
-    be = compiled.CompiledBackend(harness._backend(sa.ARMS["meanpool"]), "default",
-                                  mode=None, dynamo_backend="eager")
-    wrapped, ids, _, arms, score_kwargs = harness.timing_arms(     # 8 blocks: a real choice
-        names, 1024, densities=dens, backends=[None, be], compile_settings=[None, "default"])
+COMPILED_MEANPOOL = """
+import json, sys, tempfile
+from attnbench import cpu_boundary as cb, ground_truth as gt
+from attnbench.backends import compiled
+from attnbench.components import shakedown_arms as sa
+with cb.installed(xattn=False):
+    h = sa.Harness(device="cpu", dry_run=True, score_cache_dir=tempfile.mkdtemp())
+    be = compiled.CompiledBackend(h._backend(sa.ARMS["meanpool"]), "default",
+                                  **cb.compile_kwargs())
+    wrapped, ids, _, arms, score_kwargs = h.timing_arms(      # 8 blocks: a real choice
+        ["dense", "meanpool"], 1024, densities=[None, 0.25], backends=[None, be],
+        compile_settings=[None, "default"])
     a = arms[1]
     kw = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
 
@@ -128,7 +120,23 @@ def test_the_density_probe_runs_compiled_mean_pool_on_the_real_wrapper(harness, 
         wrapped.run_measured(ids, backend if backend is not None else a.backend, cfg=a.cfg,
                              logits_to_keep=1, **kw)
     run()
-    row = gt.kernel_densities(a, run)
+    print(json.dumps(gt.kernel_densities(a, run)))
+"""
+
+
+def test_the_density_probe_runs_compiled_mean_pool_on_the_real_wrapper():
+    """Shakedown 3, t228 `density`: `CompiledBackend.reset_density` called
+    the inner `BlockSparseAttention.reset_density`, which does not exist.
+    In a process of its own, as each compile setting runs (`density-one`):
+    in the full suite an earlier `torch._dynamo.explain` left state behind
+    that broke this test's guards, which a session's fresh process never
+    meets."""
+    import json
+    import subprocess
+    r = subprocess.run([sys.executable, "-c", COMPILED_MEANPOOL], cwd=ROOT,
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stderr[-3000:]
+    row = json.loads(r.stdout.strip().splitlines()[-1])
     assert 0.0 < row["mask_density"] < 1.0
     assert row["executed_density"] == pytest.approx(row["mask_density"])
     assert row["density_vs_eager"] == pytest.approx(0.0, abs=1e-12)
