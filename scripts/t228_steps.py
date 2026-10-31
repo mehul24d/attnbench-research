@@ -553,8 +553,9 @@ def density_one(args) -> int:
     for a, nominal in zip(arms, dens):
         kw = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
 
-        def run(a=a, kw=kw):
-            wrapped.run_measured(ids, a.backend, cfg=a.cfg, logits_to_keep=1, **kw)
+        def run(backend=None, a=a, kw=kw):
+            wrapped.run_measured(ids, backend if backend is not None else a.backend,
+                                 cfg=a.cfg, logits_to_keep=1, **kw)
         run()                                    # warm: a compiled arm compiles here
         if torch.cuda.is_available():
             torch.cuda.synchronize()

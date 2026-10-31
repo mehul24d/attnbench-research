@@ -272,14 +272,16 @@ def timed_block(log: EventLog, rep: int, *, synchronize: Callable[[], None],
     block's `BlockClock` is appended to `clock_out`."""
     if sampler is not None and clock_out is None:
         raise ValueError("a sampler needs clock_out to hand its record to")
+    from .densities import timed_region
     synchronize()
     if sampler is not None:
         sampler.begin()
     log.open_rep = rep
     t0 = clock()
     try:
-        yield
-        synchronize()
+        with timed_region():              # no density recording in here (the density rule)
+            yield
+            synchronize()
         log.record("sync", "closing synchronise")
         out.append(clock() - t0)
     except BaseException:
@@ -423,32 +425,53 @@ def _tracing(tracer):
 
 
 def _clocked(fn, synchronize, clock) -> float:
+    from .densities import timed_region
     synchronize()
-    t0 = clock()
-    fn()
-    synchronize()
-    return clock() - t0
+    with timed_region():                  # no density recording in here (the density rule)
+        t0 = clock()
+        fn()
+        synchronize()
+        return clock() - t0
 
 
-def kernel_densities(arm: Arm, run: Callable[[], None]) -> dict:
-    """The session's density probe for `time_arms` (T2.20; audit C3, finding 2):
-    one untimed forward, `run()`, with the kernel's inputs recorded. The
-    executed density is read at the kernel boundary (`densities`); the mask
-    density is the arm's own per-layer record (`last_layer_density`, which
-    the XAttention, compiled and precomputed backends keep). A backend that
-    keeps none is refused, not guessed at. A dense arm has no mask and
-    executes every block. UNRUN without a GPU and the block-sparse kernel."""
+def kernel_densities(arm: Arm, run: Callable[..., None]) -> dict:
+    """The session's density probe for `time_arms` (T2.20; the density rule,
+    researcher's decision of 31 Oct 2026). Untimed, after every timed block.
+
+    `run(backend=)` is one forward with that backend in the arm's place.
+    First the eager twin: the arm's eager backend (a compiled arm's `.arm`)
+    behind a `MaskTap`, with the kernel-input recorder on. The mask density
+    is the tap's (the masks the arm was handed, or the copies of its own
+    per-layer record); the executed density is the recorder's, from copies of
+    what the kernel was handed. Then, for a compiled arm only, the arm as
+    timed, recorder on (it is never traced into the graph), and its executed
+    masks must equal the twin's call by call (`check_equal`). Shakedown 2 is why: the oracle and mean-pool
+    backends keep no record, and a recorder inside `compiled_default` read
+    an overwritten CUDA-graph output. A dense arm has no mask and executes
+    every block. UNRUN on a GPU."""
     from . import densities as D
     if arm.kind == DENSE:
         return dict(D.DENSE_FIELDS)
-    with D.KernelInputRecorder() as rec:
-        run()
-    per_layer = list(getattr(arm.backend, "last_layer_density", None) or ())
-    if not per_layer:
-        raise RuntimeError(
-            f"{arm.name}'s backend keeps no per-layer mask density "
-            f"(last_layer_density), so its rows would carry none")
-    return rec.fields(mask_density=sum(float(d) for d in per_layer) / len(per_layer))
+    compiled = arm.compile_setting is not None
+    eager = getattr(arm.backend, "arm", None) if compiled else arm.backend
+    if eager is None:
+        raise RuntimeError(f"{arm.name} is compiled, but its backend exposes no eager arm "
+                           f"(`.arm`) for the twin pass")
+
+    def one(backend):
+        tap = D.MaskTap(backend)
+        if hasattr(backend, "reset_density"):
+            backend.reset_density()
+        with D.KernelInputRecorder() as rec:
+            run(backend=tap)
+        return tap, rec
+
+    tap, rec = one(eager)
+    twin = tap.per_layer_density(arm.name)
+    if compiled:
+        _, as_timed = one(arm.backend)
+        D.check_equal(arm.name, as_timed.per_call_density(), rec.per_call_density())
+    return rec.fields(mask_density=sum(twin) / len(twin))
 
 
 def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
@@ -561,9 +584,9 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
         check_timed_region(logs[a.name], a, list(range(r)))
     densities = {}
     for a in arms:          # untimed: after every block, outside the probe and the tracer
-        def run(a=a):
-            wrapped.run_measured(input_ids, a.backend, cfg=a.cfg, logits_to_keep=1,
-                                 **kwargs[a.name])
+        def run(backend=None, a=a):
+            wrapped.run_measured(input_ids, backend if backend is not None else a.backend,
+                                 cfg=a.cfg, logits_to_keep=1, **kwargs[a.name])
         densities[a.name] = dict(density_of(a, run))
     batch, length = int(input_ids.shape[0]), int(input_ids.shape[-1])   # (batch, tokens)
     flagged_rounds = {x["round"] for x in rounds if x["flagged"]}
