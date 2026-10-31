@@ -271,9 +271,11 @@ def test_the_kernel_recorder_is_not_traced_into_a_compiled_function(fake_bsa):
     still records the call."""
     import torch._dynamo
 
+    # The module object, not an `import` inside the compiled function: Dynamo
+    # resolved that import to another test's fake (test_compiled_variants)
+    # even after `torch._dynamo.reset()`.
     def layer(q, m):
-        import block_sparse_attn
-        return block_sparse_attn.block_sparse_attn_func(
+        return fake_bsa.block_sparse_attn_func(
             q, q, q, None, None, torch.ones(1, dtype=torch.int32), None, m, 512, 512,
             is_causal=True) * 2
 
