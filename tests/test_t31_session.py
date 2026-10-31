@@ -221,7 +221,7 @@ def test_a_dry_session_cannot_be_continued_as_a_real_one(tmp_path):
 
 # --- real-run refusals and wiring ----------------------------------------------------
 
-def test_the_repository_config_leaves_the_lock_values_null_in_the_file(tmp_path):
+def test_the_repository_config_leaves_the_lock_values_null_in_the_file(tmp_path, monkeypatch):
     """The file keeps every undecided value null; a real run fills the working
     ones from `docs/lock_value_table.md` (test_t31_wiring) and refuses if a
     required one is still missing after that."""
@@ -238,9 +238,14 @@ def test_the_repository_config_leaves_the_lock_values_null_in_the_file(tmp_path)
         st.WORKING_TABLE = t
         with pytest.raises(st.StepFailed, match="reps"):
             st.load_config(None, dry_run=False)
+        # The runner refuses on the config itself, on a clean tree too.
+        started = []
+        monkeypatch.setattr(sess, "tree_clean", lambda: True)
+        monkeypatch.setattr(sess, "run_session", lambda *a, **k: started.append(a) or 0)
+        assert sess.main(["--session", str(tmp_path / "never")]) == 2
+        assert started == [] and not (tmp_path / "never").exists()
     finally:
         st.WORKING_TABLE = monkey
-    assert sess.main(["--session", "/nonexistent/x"]) == 2
 
 
 def test_a_real_session_syncs_to_the_results_bucket_and_banks_no_bucket_name(
