@@ -1,6 +1,6 @@
 # T4.1 lock values still blank (31 Oct 2026)
 
-One row per T4.1 item (28). "Plan default" is what the plan or code already states; "pilot value" is what banked data or a shakedown gives; "proposal" is Claude's, for the researcher to accept or change. A dash means nothing is stated yet. Nothing here is a decision.
+One row per T4.1 item (31). "Plan default" is what the plan or code already states; "pilot value" is what banked data or a shakedown gives; "proposal" is Claude's, for the researcher to accept or change. A dash means nothing is stated yet. Nothing here is a decision.
 
 | # | Value | Plan default | Pilot value | Proposal |
 |---|---|---|---|---|
@@ -32,6 +32,9 @@ One row per T4.1 item (28). "Plan default" is what the plan or code already stat
 | 26 | Prompt-set hash and tokenizer version | recorded | transformers 4.46.0 on image v6 | Record both from the T3.1 prompts |
 | 27 | Realised-length key rule | not stated | prompts land below the budget | Key by the prompt's realised token count, budget kept as a label |
 | 28 | Budget cut order | if forced: full grid for the XAttention pair, compiled XAttention pair, mean-pool, dense; others at 8192, 16384, 32768 | none | As the plan |
+| 29 | Compiled-versus-eager density flag tolerance | ±0.01 absolute, working (31 Oct 2026 ruling) | Shakedown 2: XAttention 0.66582 compiled, 0.66688 eager (−0.00106) | Keep ±0.01 unless Shakedown 3's compiled rows show a wider spread |
+| 30 | Probe-length rule (T2.18) | three lengths at or below 32768 with distinct chunk counts of at least two, else two plus a full recording at 32768 (31 Oct 2026 ruling) | XAttention: 20480, 28672, full at 32768 | As ruled |
+| 31 | Flagged-memset sensitivity bound (T2.3) | each memset with no device record priced at the memset zoo's duration for its size (31 Oct 2026 ruling) | Shakedown 2: 84 flagged memsets per XAttention prefill | As ruled; the paper reports the count and the shift |
 
 Also blank in `configs/t31/p1_session.json`: densities (row 3), ground-truth groups, repeats, dense rounds and the sampler interval, all filled for T3.1 from the block below; the resolution floor (row 16) and the rerun budget (row 23), which stay null as inputs.
 

@@ -439,15 +439,18 @@ def kernel_densities(arm: Arm, run: Callable[..., None]) -> dict:
     researcher's decision of 31 Oct 2026). Untimed, after every timed block.
 
     `run(backend=)` is one forward with that backend in the arm's place.
-    First the eager twin: the arm's eager backend (a compiled arm's `.arm`)
-    behind a `MaskTap`, with the kernel-input recorder on. The mask density
-    is the tap's (the masks the arm was handed, or the copies of its own
-    per-layer record); the executed density is the recorder's, from copies of
-    what the kernel was handed. Then, for a compiled arm only, the arm as
-    timed, recorder on (it is never traced into the graph), and its executed
-    masks must equal the twin's call by call (`check_equal`). Shakedown 2 is why: the oracle and mean-pool
-    backends keep no record, and a recorder inside `compiled_default` read
-    an overwritten CUDA-graph output. A dense arm has no mask and executes
+    An eager arm: one pass of the arm behind a `MaskTap`, with the
+    kernel-input recorder on. The mask density is the tap's (the masks the
+    arm was handed, or the copies of its own per-layer record); the executed
+    density is the recorder's, from copies of what the kernel was handed.
+    A compiled arm (researcher's ruling, 31 Oct 2026): its densities are its
+    own compiled twin pass's; a second compiled pass must agree exactly
+    (`check_repeatable`); and the eager twin (`.arm`) is run once more for
+    `versus_eager`, reported and flagged beyond the tolerance, not a gate.
+    Shakedown 2 is why: the oracle and mean-pool backends keep no record, a
+    recorder inside `compiled_default` read an overwritten CUDA-graph
+    output, and compiled XAttention thresholds a slightly different mask
+    (0.66582 against 0.66688 eager). A dense arm has no mask and executes
     every block. UNRUN on a GPU."""
     from . import densities as D
     if arm.kind == DENSE:
@@ -466,12 +469,19 @@ def kernel_densities(arm: Arm, run: Callable[..., None]) -> dict:
             run(backend=tap)
         return tap, rec
 
-    tap, rec = one(eager)
+    def mean(xs):
+        return sum(xs) / len(xs)
+
+    tap, rec = one(arm.backend)
     twin = tap.per_layer_density(arm.name)
-    if compiled:
-        _, as_timed = one(arm.backend)
-        D.check_equal(arm.name, as_timed.per_call_density(), rec.per_call_density())
-    return rec.fields(mask_density=sum(twin) / len(twin))
+    if not compiled:
+        return rec.fields(mask_density=mean(twin))
+    tap2, rec2 = one(arm.backend)
+    D.check_repeatable(arm.name, rec.per_call_density(), rec2.per_call_density())
+    D.check_repeatable(arm.name, twin, tap2.per_layer_density(arm.name))
+    etap, _ = one(eager)
+    return {**rec.fields(mask_density=mean(twin)),
+            **D.versus_eager(mean(twin), mean(etap.per_layer_density(arm.name)))}
 
 
 def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
@@ -613,7 +623,9 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
             "score_calls_timed": sum(e.kind == "score" for e in ev),
             "mask_builds_timed": sum(e.kind == "mask_build" for e in ev),
             "context_length": length, "batch": batch, "builder_kind": a.builder_kind,
-            **{k: densities[a.name][k] for k in ("mask_density", "executed_density")
+            **{k: densities[a.name][k] for k in ("mask_density", "executed_density",
+                                                  "eager_mask_density", "density_vs_eager",
+                                                  "density_vs_eager_flagged")
                if k in densities[a.name]},
         })
         check_row(rows[-1], f"time_arms' row for {a.name}")

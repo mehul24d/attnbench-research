@@ -1,12 +1,17 @@
 # Launch card: Shakedown 3 (one L4 session, three runs)
 
-Prepared 31 Oct 2026. Not launched. The researcher launches it; nothing here
+Prepared 31 Oct 2026; revised the same day for the researcher's four
+rulings (probe verdicts, probe lengths, flagged memsets, compiled density).
+Not launched. Deploys from `main` at the merge of `rulings-2026-10-31` or
+later. The researcher launches it; nothing here
 runs on its own. The step minutes are estimates. Shakedown 2's failed steps
 ended early, so their times on 31 Oct (47 to 265 s) understate a passing run.
 
 ## What runs
 
-Only the steps Shakedown 2 failed, then T3.1 rehearsal steps 1 to 8. Every
+Only the steps Shakedown 2 failed, and T3.1 rehearsal steps 1 to 8, in the
+order A, C, B: if the halt cuts the session, it cuts B's last step, not the
+rehearsal. Every
 runner runs each step in its own process, syncs it to GCS as it ends
 (`run_phase.sh`), and with `--keep-going` records a failure and goes on.
 `--only` (new) runs the named steps in checklist order in a new session,
@@ -17,13 +22,13 @@ reported.
 |---|---|---|---|---|
 | A | `t227_shakedown.py --keep-going --only t21_t220,replay,probe,figure1` | `t21_t220` | Compared a row name with a launch name. One vocabulary module now (`attnbench/provisioning.py`) | 1 |
 | | | `replay` | Pageable host-to-device copy of a scalar during graph capture. The replayed `setitem` builds its value on the device | 3 |
-| | | `probe` | See "Known before launch": two arms' fixes need rulings | 6 |
+| | | `probe` | Dense and oracle: "different" (cuBLAS memset at 1951 tokens) is now a verdict, and the full recording is the structure. XAttention: memsets with no device record are flagged, not refused; probe points 20480, 28672 and a full recording at 32768. Meanpool: the profiler warm-up | 8 |
 | | | `figure1` | The first kernel after the profiler starts had no device record. The recorder now runs one profiler warm-up step | 3 |
 | B | `t228_steps.py run --keep-going --only t216,t213,density,t212,t22` | `t216` | Passed on 31 Oct. Rerun because `t213` reads the K2 record from its own session | 1 |
-| | | `t213`, `t212` | The oracle and mean-pool backends keep no per-layer density. The density rule: measured from the executed mask in an untimed eager twin pass | 16 |
-| | | `density` | The same, plus `compiled_default` read an overwritten CUDA-graph output. The recorder now copies and is never traced; a compiled arm's masks must equal its eager twin's | 10 |
+| | | `t213`, `t212` | The oracle and mean-pool backends keep no per-layer density. The density rule: measured from the executed mask in an untimed twin pass | 16 |
+| | | `density` | The same, plus `compiled_default` read an overwritten CUDA-graph output. The recorder now copies and is never traced. A compiled row's density is its own compiled twin's; two compiled passes must agree exactly; the difference from eager is reported, flagged beyond ±0.01 | 10 |
 | | | `t22` | The null entry replaced the extension's Python wrapper, so the tape took a shorter path. The entry nulls the extension and keeps the wrapper | 10 |
-| C | `t31_session.py --rehearsal` | T3.1 steps 1 to 8, `preflight` to `hold` | Stopped at `preflight` on the vocabulary defect. Results discarded, never banked | 25 |
+| C | `t31_session.py --rehearsal` | T3.1 steps 1 to 8, `preflight` to `hold` | Stopped at `preflight` on the vocabulary defect. Now also: XAttention's probe at 32768, and the memset zoo in `device_components`. Results discarded, never banked | 28 |
 
 The `queue` step is not rerun. Shakedown 2 gave the add 1022 warm in every
 setting, and the warm probe is now the method of record (Appendix A, 31 Oct
@@ -45,19 +50,20 @@ setting, and the warm probe is now the method of record (Appendix A, 31 Oct
 | | Minutes | ₹ at 108.64/h |
 |---|---|---|
 | Boot to the runs starting (Shakedown 2: 5 min) | 6 | 11 |
-| Run A | 13 | 24 |
+| Run A | 15 | 27 |
+| Run C | 28 | 51 |
 | Run B | 37 | 67 |
-| Run C | 25 | 45 |
 | Teardown: results pull, delete, cleanup check | 8 | 14 |
-| **Expected** | **89** | **161** |
+| **Expected** | **94** | **163** (GPU billing stops at the halt) |
 | In-guest halt (`GCP_HALT_MINUTES=90`): GPU billing stops | 90 | 163 |
 | Hard delete (`GCP_MAX_RUN=2h`) | 120 | disk only after the halt |
 
 **Cost cap: ₹200.** The halt's ₹163 plus the disk to the hard delete. The
-expected session fills the 90-minute halt, so there is no margin. If the halt
-fires mid-run, every finished step is already synced and the session ends
-there. The order puts the runs that fix the blocking defects first; run C's
-later steps are the ones a halt would cut.
+runs are expected to end at about 86 minutes, 4 minutes before the halt, so
+there is almost no margin; the teardown may straddle the halt, which is
+harmless, since every step is synced as it ends and the teardown deletes a
+stopped VM. If the halt fires mid-run, the session ends there. The order is
+A, C, B, so a halt cuts B's last step (`t22`), not the rehearsal.
 
 ## The commands
 
@@ -82,8 +88,8 @@ On the instance, from `~/attnbench_scaffold`:
 
 ```bash
 python3 scripts/t227_shakedown.py --keep-going --only t21_t220,replay,probe,figure1
-python3 scripts/t228_steps.py run --keep-going --only t216,t213,density,t212,t22
 python3 scripts/t31_session.py --rehearsal              # results discarded
+python3 scripts/t228_steps.py run --keep-going --only t216,t213,density,t212,t22
 ```
 
 Back on the Mac:
@@ -96,25 +102,20 @@ bash scripts/gcp_cleanup_check.sh
 
 ## Known before launch
 
-- **The probe has three open items, and they reach run C.** Without rulings
-  (proposed 31 Oct 2026), the `probe` step is expected to fail again on
-  dense, oracle and XAttention. T3.1's own step 4 records XAttention at its
-  three probe lengths, so the rehearsal is expected to stop at step 4, and
-  steps 5 to 8 would not run:
-  1. XAttention's three-length rule asks for 34816 tokens, which is over the
-     32768 position limit. Below 32768 XAttention has only two chunk counts
-     (3 and 4), so `chunked_probe_lengths(limit=32768)` refuses.
-  2. XAttention's 84 `cudaMemsetAsync` calls (3 per layer, under `addmm`) have
-     no device record. The hypothesis is zero-work memsets; whether to
-     tolerate them is open.
-  3. Dense and oracle: cuBLAS issues a `Memset` before `addmm` at 1951 tokens
-     but not at 4068 or 8075 (a GEMM algorithm regime). The proposal is probe
-     lengths inside one regime.
-- **XAttention may fail the compiled equality check.** On 31 Oct its eager
-  mask density was 0.66688 and its `compiled_capture` density 0.66582. The
-  density rule refuses a compiled arm whose masks differ from its eager twin,
-  so `density` is expected to refuse compiled XAttention. That is the rule
-  working; what to do about it is open.
+- **The four rulings are in the code** (Appendix A, 31 Oct 2026). The
+  `probe` step and T3.1's step 4 pass on a verdict with its evidence;
+  "different" is recorded with the full structure. XAttention's memsets
+  with no device record are counted (`flag_counts`); `predict` writes
+  `memset_sensitivity.json` with the upper-bound shift. Compiled XAttention
+  is no longer refused for differing from eager; it is refused only if two
+  compiled passes disagree.
+- **The memset zoo and the bound's operations are unrun.** They run first
+  in the rehearsal's `device_components` (step 6), on the L4. The zoo calls
+  `cudaMemsetAsync` through the CUDA runtime library torch loads; if that
+  library is not found, step 6 fails and says so.
+- **The H6 bitwise mask gate is unchanged.** If compiled XAttention's masks
+  are not bitwise equal to eager, the arm loses L4 admissibility on that
+  path. That is a result.
 - **The density figures are a rehearsal's.** Working, pre-lock values from
   `docs/lock_value_table.md`.
 - **The L4 rows are on-demand.** `t21_t220` checks the row name `on-demand`
