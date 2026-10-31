@@ -87,11 +87,23 @@ def test_a_density_on_an_arm_that_has_none_is_still_refused(harness):
 
 # --- the density probe: the compiled wrapper over mean-pool -------------------------------
 
+def _forget_dynamo_imports():
+    """Dynamo binds a traced function's imports into its module's globals
+    (`__import_block_sparse_attn`), and `torch._dynamo.reset()` leaves them:
+    in the full suite an earlier test's fake kernel module was still bound
+    there, and the guard read its `__defaults__` (None)."""
+    from attnbench.backends import block_sparse
+    for k in [k for k in vars(block_sparse) if k.startswith("__import_")]:
+        delattr(block_sparse, k)
+
+
 @pytest.fixture
 def fresh_dynamo():
     compiled.reset_compiled_state()
+    _forget_dynamo_imports()
     yield
     compiled.reset_compiled_state()
+    _forget_dynamo_imports()
 
 
 def test_the_compiled_wrapper_has_a_density_record_only_if_its_arm_has(boundary, fresh_dynamo):
