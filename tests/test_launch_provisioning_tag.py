@@ -30,6 +30,7 @@ FAKE_GCLOUD = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GCLOUD_LOG"
 case "$*" in
   *"config get-value project"*) echo "test-project"; exit 0 ;;
+  *"instances describe"*)       echo "ERROR: (gcloud.compute.instances.describe) The resource 'x' was not found" >&2; exit 1 ;;
   *"instances create"*)         echo "fake gcloud: create refused" >&2; exit 1 ;;
 esac
 exit 1
@@ -42,6 +43,7 @@ if [[ "$*" == "+%F" ]]; then echo {today}; else exec /bin/date "$@"; fi
 # (script, extra environment, the models its create calls must ask for, in order)
 CASES = [
     ("gcp_launch_l4.sh", {}, ["STANDARD"]),
+    ("gcp_launch_fa3_build.sh", {}, ["STANDARD"]),
     ("gcp_launch_h100.sh", {}, ["FLEX_START"]),
     ("gcp_launch_a100.sh", {}, ["FLEX_START", "SPOT"]),
 ]

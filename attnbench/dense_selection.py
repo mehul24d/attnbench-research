@@ -25,8 +25,8 @@ and records the result in a file that can be checked against its own inputs.
   context and cannot be caught; the record names it as a fault.
 - `failed_repeats`: raised during the warm-up rounds.
 - `unavailable`: planned for this card and not supplied, because it is not
-  installed or no backend of that name exists (FA3 has none in this
-  repository yet). **This is a gap, not a result.** A record with any
+  installed or no backend of that name exists (FA3's backend exists; it is
+  unavailable until its wheel is installed on an H100). **This is a gap, not a result.** A record with any
   unavailable candidate says `complete: False`, and `check_control` refuses
   it: the fastest of the candidates that could run is not "the fastest
   correct dense kernel".
