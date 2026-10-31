@@ -160,6 +160,7 @@ class SessionConfig:
     fakes: dict = field(default_factory=dict)    # step -> dry-run body
     reals: dict = field(default_factory=dict)    # step -> real body
     preflight_findings: Optional[Callable] = None   # row -> extra findings (P4's floor)
+    step_args: tuple = ()         # passed to every step's process (P4's --gate-only)
 
     @property
     def names(self) -> tuple:
@@ -421,9 +422,14 @@ def check_provenance_row(cfg: SessionConfig, row: dict, integrity: list) -> list
     for k, v in expect.items():
         if row.get(k) != v:
             problems.append(f"{k} is {row.get(k)!r}, expected {v!r}")
-    if row.get("provisioning_model") not in cfg.provisioning:
+    # `cfg.provisioning` holds the GCP names the launcher creates; a row carries
+    # provenance's vocabulary for them (STANDARD -> "on-demand", FLEX_START ->
+    # "dws-flex-start"). Comparing the two directly refused every real row.
+    from attnbench.provenance import PROVISIONING_MODELS
+    allowed = [PROVISIONING_MODELS[p] for p in cfg.provisioning]
+    if row.get("provisioning_model") not in allowed:
         problems.append(f"provisioning_model {row.get('provisioning_model')!r} is not one of "
-                        f"{list(cfg.provisioning)}")
+                        f"{allowed}")
     for k in ("cpu_microcode", "instance_generation"):
         if not row.get(k):
             problems.append(f"{k} is empty")
@@ -470,9 +476,13 @@ def _us(s):
 
 
 def fake_preflight(cfg: SessionConfig, args) -> dict:
+    from attnbench.provenance import PROVISIONING_MODELS
+    # The name a real row carries: the fake used the GCP name, which the
+    # check also compared against, so every dry run passed a real row's failure.
     row = {"cloud_provider": "gcp", "instance_type": cfg.instance_type,
            "instance_generation": cfg.instance_type.split("-")[0], "cpu_microcode": "0xdry",
-           "provisioning_model": cfg.provisioning[0], "provisioning_model_problem": None,
+           "provisioning_model": PROVISIONING_MODELS[cfg.provisioning[0]],
+           "provisioning_model_problem": None,
            "python_optimize": 0, "git_dirty": False, "gpu_name": f"fake {cfg.gpu}",
            "null_launch_s_median": 5e-6}
     problems = check_provenance_row(cfg, row, [])
@@ -917,7 +927,7 @@ def last_status(manifest: dict) -> dict:
 def step_command(cfg: SessionConfig, step: str, session: Path, out: Path, extra: list, *,
                  dry_run: bool, sync: bool) -> list:
     cmd = [sys.executable, str(ROOT / "scripts" / cfg.script), "step", step,
-           "--session", str(session), "--out", str(out), *extra,
+           "--session", str(session), "--out", str(out), *extra, *cfg.step_args,
            *(["--dry-run"] if dry_run else [])]
     if sync:
         n = cfg.names.index(step) + 1

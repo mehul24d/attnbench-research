@@ -408,3 +408,10 @@ def test_a_real_prompt_over_its_budget_is_refused(monkeypatch):
     h = _real_prompt_harness(monkeypatch, 2049)
     with pytest.raises(RuntimeError, match="2049 tokens, over the 2048-token budget"):
         h.input_ids(2048)
+
+
+def test_the_expected_provisioning_is_in_the_rows_vocabulary():
+    """Shakedown 2's t21_t220 (31 Oct 2026) failed on 'on-demand' against
+    'STANDARD': the row carries provenance's name, not the GCP one."""
+    from attnbench.provenance import PROVISIONING_MODELS
+    assert st.EXPECTED_PROVISIONING == PROVISIONING_MODELS["STANDARD"]
