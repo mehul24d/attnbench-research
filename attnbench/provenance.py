@@ -180,6 +180,31 @@ def _gcp_metadata(path: str, timeout: float = 2.0) -> Optional[str]:
         return None
 
 
+_AWS_METADATA = "http://169.254.169.254/latest/"
+_AWS_TYPE_RE = re.compile(r"^([a-z]+[0-9]+[a-z]*)\.")
+
+
+def _aws_metadata(path: str, timeout: float = 2.0) -> Optional[str]:
+    """One value from the EC2 metadata service (IMDSv2: the launcher requires
+    tokens), or None. `path` is relative to `meta-data/`. Instance tags are
+    readable here because the launcher enables `InstanceMetadataTags`. No
+    proxy, as for GCE; any failure is None."""
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        tok = urllib.request.Request(
+            _AWS_METADATA + "api/token", method="PUT",
+            headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"})
+        with opener.open(tok, timeout=timeout) as r:
+            token = r.read().decode().strip()
+        req = urllib.request.Request(_AWS_METADATA + "meta-data/" + path,
+                                     headers={"X-aws-ec2-metadata-token": token})
+        with opener.open(req, timeout=timeout) as r:
+            return r.read().decode().strip() or None
+    except Exception:
+        return None
+
+
 def _read_dmi(dmi_dir: str, name: str) -> Optional[str]:
     try:
         return Path(dmi_dir, name).read_text().strip() or None
@@ -187,7 +212,8 @@ def _read_dmi(dmi_dir: str, name: str) -> Optional[str]:
         return None
 
 
-def _provisioning_model(tag: Optional[str], preemptible: Optional[str]
+def _provisioning_model(tag: Optional[str], preemptible: Optional[str],
+                        checked_against: str = "scheduling/preemptible"
                         ) -> tuple[Optional[str], Optional[str]]:
     """(model, problem) from the launcher's tag, cross-checked against GCP.
 
@@ -205,11 +231,11 @@ def _provisioning_model(tag: Optional[str], preemptible: Optional[str]
         return None, f"unknown {PROVISIONING_TAG} tag {tag!r}"
     if preemptible is None or preemptible.strip().upper() not in ("TRUE", "FALSE"):
         return None, (f"tag {tag} cannot be cross-checked: "
-                      f"scheduling/preemptible is {preemptible!r}")
+                      f"{checked_against} is {preemptible!r}")
     is_pre = preemptible.strip().upper() == "TRUE"
     if is_pre != (model == "spot"):
         return None, (f"tag {tag} disagrees with scheduling/preemptible "
-                      f"{preemptible.strip().upper()}")
+                      f"{checked_against} {preemptible.strip().upper()}")
     return model, None
 
 
@@ -222,8 +248,10 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
     `projects/<number>/machineTypes/<type>`; only `<type>` is kept, so the
     project number never reaches a row. The generation is the machine
     series (`g2`, `a2`, `a3`), which fixes the host platform (Section 5.2).
-    AWS is recognised but not read: its launchers are T5.1's, and nothing
-    here is tested against its metadata service yet.
+    AWS is read through IMDSv2 (`_aws_metadata`): the instance type, its
+    family as the generation, and the launcher's tag, cross-checked against
+    `instance-life-cycle`. Tested against a fake only; the first real read is
+    T5.1's first session.
     """
     out = {"cloud_provider": None, "instance_type": None,
            "instance_generation": None, "provisioning_model": None,
@@ -234,8 +262,22 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
         out["cloud_provider"] = "gcp"
     elif vendor.startswith("Amazon EC2"):
         out["cloud_provider"] = "aws"
-        out["provisioning_model_problem"] = (
-            "AWS instance metadata is not read before T5.1")
+        fetch = fetch or _aws_metadata
+        instance_type = fetch("instance-type")
+        if instance_type:
+            out["instance_type"] = instance_type
+            m = _AWS_TYPE_RE.match(instance_type)
+            out["instance_generation"] = m.group(1) if m else None
+        # The tag the launcher wrote (T5.1), cross-checked against EC2's own
+        # `instance-life-cycle` ("spot" or "on-demand"), as GCP's is against
+        # `scheduling/preemptible`.
+        life = fetch("instance-life-cycle")
+        life = {"spot": "TRUE", "on-demand": "FALSE"}.get((life or "").strip().lower())
+        model, problem = _provisioning_model(
+            fetch(f"tags/instance/{PROVISIONING_TAG}"), life,
+            checked_against="instance-life-cycle")
+        out["provisioning_model"] = model
+        out["provisioning_model_problem"] = problem
         return out
     else:
         out["provisioning_model_problem"] = "no cloud instance detected (DMI)"
