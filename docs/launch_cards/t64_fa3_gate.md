@@ -1,6 +1,8 @@
 # Launch card: the H100 FA3 correctness gate (no timing)
 
-Prepared 31 Oct 2026. Not launched. The researcher launches it; nothing here
+Prepared 31 Oct 2026. Attempt 1 (31 Oct, us-central1-a) was not granted.
+From then on the gate is retried by `scripts/gcp_h100_gate_retry.sh` (below).
+Not launched. The researcher launches it; nothing here
 runs on its own. The gate comes before P4 (plan Section 8 calendar, 31 Oct
 2026). Flex-start requests go in the gaps between L4 sessions, and every
 attempt, granted or not, gets a row in `h100_flex_attempts.md`.
@@ -45,6 +47,31 @@ refused. A gate session directory cannot be continued as a P4 session.
 
 **Proposed cap: ₹500.** That is the halt's ₹462 plus the disk until the hard
 delete. The `halt` step usually ends the VM well before then.
+
+## The retry loop (researcher, 31 Oct 2026)
+
+`caffeinate -i bash scripts/gcp_h100_gate_retry.sh`, from a clean checkout on
+the Mac, with `ATTNBENCH_GCP_PROJECT`, `CLOUDSDK_CORE_PROJECT`,
+`FA3_WHEEL_SHA256` and, for Spot, `H100_SPOT_RATE_INR_HR` set. It prints its
+terms, then every 30 minutes, start to start:
+
+- skips the round while any attnbench GPU VM (g2, a2 or a3, any status)
+  exists in the project;
+- walks `us-central1-a`, `asia-southeast1-b` and `asia-southeast1-c` on
+  FLEX_START, each request cancelled after 300 s; if no zone has capacity,
+  the same walk on SPOT. Spot is allowed for the gate alone: it times
+  nothing, and `t64_session.py` refuses a Spot row in P4;
+- on a grant, stops polling and runs the gate below end to end, with the
+  teardown on any exit; on a launcher error, stops; after 48 rounds, stops.
+
+**Cap ₹250**, held by `--max-run-duration`, which deletes the VM server-side
+at cap ÷ rate: 32 minutes on Flex at ₹463.47/h. The in-guest halt is at 40
+minutes, so the delete comes first. No Spot planning rate is on record; the
+launcher header says Flex is 41% cheaper than Spot, which puts Spot near
+₹700/h, and at that rate ₹250 buys about 21 minutes. The loop refuses Spot
+when the cap buys less than 30 minutes at the declared Spot rate. Every
+attempt is a row in `logs/flex_attempts.tsv`; copy the rows into
+`h100_flex_attempts.md`.
 
 ## The commands
 

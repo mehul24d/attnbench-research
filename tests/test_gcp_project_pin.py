@@ -34,7 +34,7 @@ LAUNCHERS = ("gcp_launch_l4.sh", "gcp_launch_a100.sh", "gcp_launch_h100.sh",
 SESSION = ("gcp_deploy_source.sh", "gcp_preflight_instance.sh",
            "gcp_verify_gcs_writable.sh", "gcp_capture_image.sh", "gcp_status.sh",
            "gcp_session_elapsed.sh", "gcp_bootstrap_instance.sh",
-           "gcp_watch_fa3_build.sh")
+           "gcp_watch_fa3_build.sh", "gcp_h100_gate_retry.sh")
 PINNED = LAUNCHERS + ("gcp_cleanup_check.sh", "gcp_teardown_session.sh") + SESSION
 
 PIN = "pinned-proj-123"
@@ -81,6 +81,7 @@ ARGS = {
     "gcp_session_elapsed.sh": ["inst", "zone", "100"],
     "gcp_bootstrap_instance.sh": ["inst", "zone"],
     "gcp_watch_fa3_build.sh": ["inst", "zone"],
+    "gcp_h100_gate_retry.sh": [],
 }
 
 # The bootstrap's local steps run Python; this stands in for it so the
@@ -105,6 +106,24 @@ def _fixture_repo(tmp_path):
     subprocess.run(git + ["add", "-A"], check=True)
     subprocess.run(git + ["commit", "-qm", "init"], check=True)
     return r
+
+
+def _retry_loop_copy(tmp_path):
+    """The H100 retry loop checks its own repository's tree and calls its
+    sibling launcher, so it runs from a clean copy with a launcher that finds
+    no capacity: one round, one instance list, then it stops."""
+    r = _fixture_repo(tmp_path)
+    (r / "scripts").mkdir()
+    for f in ("gcp_h100_gate_retry.sh", "_gcp_project.sh"):
+        (r / "scripts" / f).write_text((SCRIPTS / f).read_text())
+    (r / "scripts" / "gcp_launch_h100.sh").write_text("exit 4\n")
+    (r / ".gitignore").write_text("logs/\n")
+    git = ["git", "-C", str(r), "-c", "user.email=t", "-c", "user.name=t"]
+    subprocess.run(git + ["add", "-A"], check=True)
+    subprocess.run(git + ["commit", "-qm", "loop"], check=True)
+    return r / "scripts" / "gcp_h100_gate_retry.sh", {
+        "FA3_WHEEL_SHA256": "0" * 64, "H100_SPOT": "0", "H100_MAX_ROUNDS": "1",
+        "H100_POLL_MINUTES": "0"}
 
 
 def _run(name, tmp_path, *, pin=PIN, active=PIN, rate="297.47", script=None, extra=None):
@@ -136,6 +155,10 @@ def _run(name, tmp_path, *, pin=PIN, active=PIN, rate="297.47", script=None, ext
     if name == "gcp_watch_fa3_build.sh":   # two quick polls, then it stops (exit 4)
         env.setdefault("FA3_WATCH_INTERVAL_S", "0")
         env.setdefault("FA3_WATCH_MAX_POLLS", "2")
+    if name == "gcp_h100_gate_retry.sh" and script is None:
+        script, loop_env = _retry_loop_copy(tmp_path)
+        for k, v in loop_env.items():
+            env.setdefault(k, v)
     if name == "gcp_bootstrap_instance.sh":
         cwd = REPO
         fake_py = bin_dir / "fake_python"
@@ -306,7 +329,8 @@ def test_a_matching_project_reaches_gcloud_with_the_flag_and_is_never_printed(na
 
 # Scripts whose gcloud output under this fake is all captured or discarded,
 # so no redacted text reaches the terminal to check.
-QUIET = {"gcp_session_elapsed.sh", "gcp_capture_image.sh"}
+QUIET = {"gcp_session_elapsed.sh", "gcp_capture_image.sh",
+         "gcp_h100_gate_retry.sh"}   # its one call here, the instance list, prints nothing
 
 
 ON_INSTANCE = ("run_phase.sh", "build_fa3_wheel.sh", "fa3_import_check.sh", "_fa3_pin.sh")

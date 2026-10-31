@@ -230,7 +230,9 @@ def _t64_gate() -> S.SessionConfig:
     cfg = S.SessionConfig(
         task="T6.4-gate", pairing="P4", title="The H100 FA3 correctness gate (no timing)",
         script="t64_session.py", phase_prefix="t64gate", session_prefix="t64_fa3_gate",
-        gpu="H100", instance_type=T64.instance_type, provisioning=T64.provisioning,
+        # Spot is allowed for the gate alone (researcher, 31 Oct 2026): it times
+        # nothing, so the preemption risk costs a rerun, not a row.
+        gpu="H100", instance_type=T64.instance_type, provisioning=T64.provisioning + ("SPOT",),
         code_path=T64.code_path, banked=(),
         steps=(S.Step("prereqs", "T2.16", "deployed files present"),
                T64.step("fa3_import"),

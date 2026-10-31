@@ -45,6 +45,7 @@ CASES = [
     ("gcp_launch_l4.sh", {}, ["STANDARD"]),
     ("gcp_launch_fa3_build.sh", {}, ["STANDARD"]),
     ("gcp_launch_h100.sh", {}, ["FLEX_START"]),
+    ("gcp_launch_h100.sh", {"GCP_H100_PROVISIONING": "SPOT"}, ["SPOT"]),   # the FA3 gate only
     ("gcp_launch_a100.sh", {}, ["FLEX_START", "SPOT"]),
 ]
 # `gcp_launch_compile_session.sh` needs a fuller fake (machine images, zone
@@ -83,7 +84,8 @@ def _flag(call: str, name: str) -> list[str]:
     return re.findall(rf"--{name}=(\S+)", call)
 
 
-@pytest.mark.parametrize("script,extra,models", CASES, ids=[c[0] for c in CASES])
+@pytest.mark.parametrize("script,extra,models", CASES,
+                         ids=[c[0] + "".join(f"-{v}" for v in c[1].values()) for c in CASES])
 def test_each_create_is_tagged_with_its_own_model(script, extra, models, tmp_path):
     creates = _creates(script, extra, tmp_path)
     assert len(creates) == len(models), (script, creates)

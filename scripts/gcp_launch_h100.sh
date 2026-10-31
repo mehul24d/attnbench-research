@@ -23,7 +23,16 @@
 #     out. A laptop that sleeps cannot: then the server window ends it, and a
 #     VM that starts meanwhile is bounded by --max-run-duration below.
 # The script ends when the VM is RUNNING, when every zone has been tried, or
-# on an error. It does not wait for the VM to boot.
+# on an error. It does not wait for the VM to boot. Exit 0: a VM; exit 4:
+# every zone was tried and none had capacity (nothing live, nothing billed);
+# any other exit: stop and look.
+#
+# SPOT (FA3 correctness gate only; researcher, 31 Oct 2026):
+# GCP_H100_PROVISIONING=SPOT asks for Spot instead, through the same submit,
+# poll and cancel path, without --request-valid-for-duration (a FLEX_START
+# flag). No Spot planning rate is on record: declare it as GCP_RATE_INR_HR.
+# P4 itself stays FLEX_START (t64_session.py refuses a Spot row outside the
+# gate).
 #
 # Creates a BILLABLE resource. Planning rates, all-in, from the Cloud Billing
 # catalog on 2026-10-20 (plan Section 5.2): GPU + 26 cores + 234 GiB RAM + the
@@ -101,6 +110,13 @@ BOOT_DISK_TYPE="pd-balanced"
 # T0.17). This is the server-side backstop; the client cancels earlier.
 FLEX_REQUEST_VALID_FOR="2h"
 FLEX_REQUEST_VALID_FOR_SECONDS=7200   # the same duration; a test holds the two equal
+PROVISIONING="${GCP_H100_PROVISIONING:-FLEX_START}"
+case "$PROVISIONING" in
+  FLEX_START) MODEL_ARGS=(--provisioning-model=FLEX_START
+                          --request-valid-for-duration="$FLEX_REQUEST_VALID_FOR") ;;
+  SPOT)       MODEL_ARGS=(--provisioning-model=SPOT) ;;
+  *) echo "REFUSING TO LAUNCH -- GCP_H100_PROVISIONING must be FLEX_START or SPOT" >&2; exit 1 ;;
+esac
 CANCEL_AFTER_SECONDS="${GCP_CANCEL_AFTER_SECONDS:-6900}"
 CREATE_LIMIT="${GCP_FLEX_CREATE_LIMIT:-120}"   # seconds for the one --async submit call
 if [[ ! "$CANCEL_AFTER_SECONDS" =~ ^[0-9]+$ ]] \
@@ -140,12 +156,13 @@ echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 # zone's own rate keeps the prompt and the cap consistent; an unrecognised
 # zone says so rather than guessing.
 for Z in $ZONE_FALLBACKS; do
-  case "$Z" in
-    asia-southeast1-*) RATE_LINE="Rs ~463/h all-in (asia-southeast1, planning rate 2026-10-20)" ;;
-    us-central1-*)     RATE_LINE="Rs ~462/h all-in (us-central1, planning rate 2026-10-20)" ;;
-    *)                 RATE_LINE="rate NOT PRICED for $Z -- confirm before proceeding" ;;
+  case "$PROVISIONING:$Z" in
+    SPOT:*)                       RATE_LINE="no Spot planning rate on record; the declared rate below is used" ;;
+    FLEX_START:asia-southeast1-*) RATE_LINE="Rs ~463/h all-in (asia-southeast1, planning rate 2026-10-20)" ;;
+    FLEX_START:us-central1-*)     RATE_LINE="Rs ~462/h all-in (us-central1, planning rate 2026-10-20)" ;;
+    *)                            RATE_LINE="rate NOT PRICED for $Z -- confirm before proceeding" ;;
   esac
-  echo "  $Z : FLEX_START (DWS)  -- $RATE_LINE"
+  echo "  $Z : $PROVISIONING  -- $RATE_LINE"
 done
 echo "  declared rate: Rs ${RATE_INR_HR}/h (GCP_RATE_INR_HR)"
 echo "  waiting      : submitted --async, polled every ${FLEX_POLL_SECONDS}s, cancelled after ${CANCEL_AFTER_SECONDS}s"
@@ -191,9 +208,8 @@ for Z in $ZONE_FALLBACKS; do
     --boot-disk-size="$BOOT_DISK_SIZE" \
     --boot-disk-type="$BOOT_DISK_TYPE" \
     --maintenance-policy=TERMINATE \
-    --provisioning-model=FLEX_START \
-    --metadata=attnbench-provisioning-model=FLEX_START \
-    --request-valid-for-duration="$FLEX_REQUEST_VALID_FOR" \
+    "${MODEL_ARGS[@]}" \
+    --metadata=attnbench-provisioning-model="$PROVISIONING" \
     --instance-termination-action=DELETE \
     --max-run-duration="$MAX_RUN" \
     --reservation-affinity=none \
@@ -269,7 +285,7 @@ if [[ -z "$CREATED_ZONE" ]]; then
   echo >&2
   echo "No zone in '$ZONE_FALLBACKS' gave a VM. Nothing is waiting and nothing is billing." >&2
   echo "A request can be made again later (the launch date is checked again then)." >&2
-  exit 1
+  exit 4
 fi
 
 echo
@@ -281,4 +297,4 @@ echo "  bash scripts/gcp_verify_gcs_writable.sh $INSTANCE_NAME $CREATED_ZONE"
 echo "  teardown early: gcloud compute instances delete $INSTANCE_NAME --zone=$CREATED_ZONE --project=\$ATTNBENCH_GCP_PROJECT --quiet"
 echo "  confirm clean : bash scripts/gcp_cleanup_check.sh"
 echo "FLEX_WAIT_SECONDS=$FLEX_WAITED"
-echo "PROVISIONING_MODEL=FLEX_START"
+echo "PROVISIONING_MODEL=$PROVISIONING"
