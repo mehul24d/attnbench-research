@@ -33,9 +33,14 @@ timed runs. `ground-truth-one` refuses to start unless the instance clock is
 past the release (`session_order.ready_to_clock`), and stamps
 `clock_not_before` before its first forward of any kind.
 
-**What is not built.** On a GPU, `probe`, `host_components`,
-`device_components` and `ground_truth` refuse, naming the missing piece of
-their Phase 2 task (`NOT_BUILT`); `t31_session.py --list` prints them. A
+**Wired 31 Oct 2026, not yet run on a GPU.** `probe` (T2.18 against P1's
+own full recordings), `host_components` (a recording and the T2.2 null
+pass per cell), `device_components` (the T2.4 replay per cell, priced with
+the host, device and link costs) and `ground_truth` (each group's arms at
+every cell, the K2 choice as the control, compiled under the group's one
+setting) take the working values of `docs/lock_value_table.md`, marked
+"working, pre-lock". The floors and the rerun budget stay null: the session
+floor comes from `dense_select`'s pre-pass and nothing is rerun. A
 CPU dry run replaces those four with fakes: synthetic priced cells, and a
 dense-only ground truth on the two-layer random model through the real
 `ground_truth.time_arms`. Everything from `predict` on is the real code in
@@ -77,9 +82,22 @@ STEPS = ("preflight", "link", "dense_select", "probe", "host_components",
 
 DEFAULT_CONFIG = ROOT / "configs" / "t31" / "p1_session.json"
 
-# Values a real session must have; null in the file means not decided yet.
-REQUIRED = ("densities", "reps", "max_rerun_rounds", "resolution_floor_ms",
-            "dense_rounds")
+# Values a real session must have once the working values are in; null in the
+# file means not decided yet. The floors and the rerun budget are not here:
+# they stay null as inputs (researcher's decision, 31 Oct 2026). T3.1 derives
+# a session floor from its own dense pre-pass (`dense_select`) and reruns
+# nothing until the budget is decided after T3.2.
+REQUIRED = ("densities", "reps", "dense_rounds")
+
+# The working values T3.1 takes for what T4.1 has not fixed (one source: the
+# fenced block in this file). Marked "working, pre-lock"; P1 only.
+WORKING_TABLE = ROOT / "docs" / "lock_value_table.md"
+WORKING_FENCE = "```json t31-working-values"
+WORKING_KEYS = ("densities", "gt_groups", "reps", "dense_rounds", "sampler_interval_s")
+WORKING_STATUS = "working, pre-lock"
+CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
+BATCH1_ONLY = ("xattention", "xattention_noassert")   # the kernel call's limit (T2.12)
+HOST_PROFILE_REPS = 5
 
 # A dry run's own values: small, and labelled so nothing it writes can pass
 # for P1's.
@@ -100,21 +118,7 @@ DRY_CONFIG = {
 
 # What each refusing step still needs (plan Section 8 rows), so a GPU run
 # stops at the first of them with the reason and `--list` can print them.
-NOT_BUILT = {
-    "probe": "T2.18: three probe lengths with at least two chunks each for a chunked "
-             "arm, and the full-length structure recording where the result is "
-             "'different' (XAttention at 32768)",
-    "host_components": "T2.2: the per-cell arm runner (run_prefill, tape, recording) at "
-                       "every length, batch and density, and the L4 smoke run; a "
-                       "compiled arm's graph launch is refused (T2.21)",
-    "device_components": "T2.4: pricing the positions the tape substitutes "
-                         "(device_costs refuses an incomplete match), and the "
-                         "conversion of every arm, density and cell to priced "
-                         "operations",
-    "ground_truth": "T2.13: the cell join (one wrapped model serving every arm's score "
-                    "source, batch-4 inputs, the density set, compiled and precomputed "
-                    "arms) and the real NVML reader on a card",
-}
+NOT_BUILT: dict = {}   # every step is wired (31 Oct 2026); none has run on a GPU
 
 
 class Skip(Exception):
@@ -153,12 +157,58 @@ def step_dir(session: Path, step: str) -> Path:
     return Path(session) / f"{STEPS.index(step) + 1:02d}_{step}"
 
 
+def working_values(path=None) -> tuple[dict, str]:
+    """(values, sha256 of the block) from the table file's fenced block."""
+    import hashlib
+    import re
+    text = Path(path or WORKING_TABLE).read_text(encoding="utf-8")   # read at call time
+    m = re.search(re.escape(WORKING_FENCE) + r"\n(.*?)\n```", text, re.S)
+    if not m:
+        raise StepFailed(f"{WORKING_TABLE.name} has no {WORKING_FENCE!r} block")
+    raw = m.group(1)
+    vals = json.loads(raw)
+    if vals.get("status") != WORKING_STATUS:
+        raise StepFailed(f"the working values say {vals.get('status')!r}, not {WORKING_STATUS!r}")
+    return vals, hashlib.sha256(raw.encode()).hexdigest()
+
+
+def fill_working_values(cfg: dict, path=None) -> dict:
+    """Fill each null working key from the table, and record that it was.
+    Refused for any pairing but the table's (P1): these values must never
+    come from, or go to, P2 or P4."""
+    vals, sha = working_values(path)
+    cfg = dict(cfg)
+    filled = []
+    for k in WORKING_KEYS:
+        if k == "gt_groups":
+            groups = dict(cfg.get(k) or {})
+            for g, arms in vals[k].items():
+                if groups.get(g) is None:
+                    groups[g] = list(arms)
+                    filled.append(f"gt_groups.{g}")
+            cfg[k] = groups
+        elif cfg.get(k) is None:
+            cfg[k] = vals[k]
+            filled.append(k)
+    if filled:
+        if cfg.get("pairing") != vals["pairing"]:
+            raise StepFailed(f"the working values are {vals['pairing']}'s only; this session "
+                             f"is {cfg.get('pairing')!r}")
+        src = Path(path or WORKING_TABLE).resolve()
+        src = src.relative_to(ROOT) if src.is_relative_to(ROOT) else src
+        cfg["working_values"] = {"source": str(src), "sha256": sha,
+                                 "status": WORKING_STATUS, "filled": filled}
+    return cfg
+
+
 def load_config(path, *, dry_run: bool) -> dict:
-    """The session's values. A real run refuses any undecided one."""
+    """The session's values: the file, with its null working values filled
+    from the table. A real run refuses any value still undecided."""
     if path is None and dry_run:
         return dict(DRY_CONFIG)
     cfg = json.loads(Path(path or DEFAULT_CONFIG).read_text())
     if not dry_run:
+        cfg = fill_working_values(cfg)
         missing = [k for k in REQUIRED if cfg.get(k) is None]
         missing += [f"gt_groups.{g}" for g, arms in (cfg.get("gt_groups") or {}).items()
                     if arms is None]
@@ -167,14 +217,108 @@ def load_config(path, *, dry_run: bool) -> dict:
     return cfg
 
 
+def nominal_density(d):
+    """A cell's density setting: a float, or None where the estimator sets it."""
+    return None if d == CALIBRATED else float(d)
+
+
 def cells(cfg: dict):
-    """(arm, density, length, batch) for every ground-truth cell."""
+    """(arm, density, length, batch) for every ground-truth cell; density is
+    None for an arm whose estimator sets it. The XAttention arms run at batch
+    1 only (the kernel call's limit, T2.12)."""
     out = []
     for L in cfg["lengths"]:
         for b in cfg["batches"].get(str(L), [1]):
             for arm in cfg["arms"]:
+                if b > 1 and arm in BATCH1_ONLY:
+                    continue
                 for d in cfg["densities"][arm]:
-                    out.append((arm, float(d), int(L), int(b)))
+                    out.append((arm, nominal_density(d), int(L), int(b)))
+    return out
+
+
+def cell_dir(base: Path, arm: str, density, length: int, batch: int) -> Path:
+    d = "cal" if density is None else f"{density:g}"
+    return Path(base) / f"{arm}_d{d}_L{length}_b{batch}"
+
+
+def _need_gpu(step: str) -> None:
+    if not _cuda():
+        raise StepFailed(f"{step} needs a CUDA device")
+
+
+def _harness(args):
+    from attnbench.components.shakedown_arms import Harness
+    return Harness(device="cuda", dry_run=False,
+                   score_cache_dir=str(Path(args.session) / "score_cache"))
+
+
+def code_path_definition(cp) -> dict:
+    """T2.11's code-path definition (no arm) from a shakedown `CodePath`."""
+    return {"gpu": cp.gpu, "implementation": cp.implementation,
+            "libraries": [list(x) for x in cp.libraries], "python_optimize": cp.python_optimize}
+
+
+def session_floor_ms(cfg, session: Path) -> float:
+    """The resolution floor the ground truth flags against: the config's if
+    the lock has set one, else the session floor `dense_select` derived."""
+    if cfg.get("resolution_floor_ms") is not None:
+        return float(cfg["resolution_floor_ms"])
+    p = step_dir(session, "dense_select") / "session_floor.json"
+    if not p.exists():
+        raise StepFailed(f"no session floor at {p}: dense_select has not derived one")
+    return float(json.loads(p.read_text())["floor_ms"])
+
+
+def rerun_budget(cfg) -> int:
+    """Extra rounds allowed for flagged ones: none until it is decided (T3.2)."""
+    v = cfg.get("max_rerun_rounds")
+    return 0 if v is None else int(v)
+
+
+def label_outside_layers(operations) -> list:
+    """Give work outside the decoder layers a layer of its own, which the step
+    form needs (`baselines.steps`: "label work outside the layers with its
+    own layer value"): kernels and copies before the first layer take -1
+    (the embedding), after the last take one past it (the norm and output
+    head). A synchronisation keeps None. An unlabelled kernel between two
+    layers is refused: it would put work in the wrong step."""
+    from dataclasses import replace
+    from attnbench.predict.recursion import OpKind
+    layered = [i for i, op in enumerate(operations) if op.layer is not None]
+    if not layered:
+        raise StepFailed("no operation carries a layer label: the recording saw no layers")
+    first, last = layered[0], layered[-1]
+    after = max(operations[i].layer for i in layered) + 1
+    out = []
+    for i, op in enumerate(operations):
+        if op.layer is None and op.kind is not OpKind.SYNC:
+            if i < first:
+                op = replace(op, layer=-1)
+            elif i > last:
+                op = replace(op, layer=after)
+            else:
+                raise StepFailed(f"operation {i} ({op.kind.value}) sits between layers "
+                                 f"with no layer label")
+        out.append(op)
+    return out
+
+
+def link_costs(seq, row) -> dict[int, float]:
+    """Seconds per host-device copy position: payload over the T2.5
+    bandwidth of its direction and host memory (pinned or pageable)."""
+    from attnbench.components.op_sequence import SeqKind
+    out = {}
+    for i, op in enumerate(seq.ops):
+        if op.kind is not SeqKind.COPY:
+            continue
+        direction = {"HtoD": "h2d", "DtoH": "d2h"}.get(op.direction)
+        mem = op.src_mem if op.direction == "HtoD" else op.dst_mem
+        if direction is None or mem not in ("Pinned", "Pageable"):
+            raise StepFailed(f"copy at position {i}: no link cost for {op.direction} "
+                             f"from {op.src_mem} to {op.dst_mem}")
+        bw = float(row[f"bw_{direction}_{mem.lower()}_Bps"])
+        out[i] = op.payload_bytes / bw
     return out
 
 
@@ -188,11 +332,6 @@ def _skew(cfg, dry_run: bool = False) -> tuple[timedelta, timedelta]:
         return so.REQUIRED_SKEW, so.PLANNED_GUARD
     return (timedelta(seconds=cfg.get("clock_skew_s", REQUIRED_SYNC_GAP_S)),
             timedelta(seconds=cfg.get("hold_guard_s", SYNC_WAIT_MARGIN_S)))
-
-
-def _not_built(args, step: str):
-    if not args.dry_run:
-        raise StepFailed(f"not built: {NOT_BUILT[step]}")
 
 
 # --- stores --------------------------------------------------------------------
@@ -266,6 +405,9 @@ def prediction_dir(cfg, session: Path) -> str:
     prefix = (cfg.get("prediction_prefix") or "").strip("/")
     if not prefix:
         raise StepFailed("the session config names no prediction_prefix")
+    if bool(cfg.get("rehearsal")) != prefix.endswith("-rehearsal"):
+        raise StepFailed(f"a rehearsal's prediction goes under a '-rehearsal' prefix, and only "
+                         f"a rehearsal's: rehearsal={cfg.get('rehearsal')!r}, prefix {prefix!r}")
     return f"{prefix}/{Path(session).name}"
 
 
@@ -385,6 +527,10 @@ def step_dense_select(args, cfg) -> dict:
     from attnbench.components.shakedown_arms import ARMS, Harness
     h = Harness(device="cuda", dry_run=False)
     found = {}
+    if cfg.get("resolution_floor_ms") is None:      # null as an input: derive it here
+        floor = derive_session_floor(h, cfg, Path(args.out))
+        cfg = dict(cfg, resolution_floor_ms=floor["floor_ms"])
+        found["session_floor"] = floor
     for L in cfg["lengths"]:
         for b in cfg["batches"].get(str(L), [1]):
             cell = ds.Cell(card=cfg["card"], context_length=L, batch=b)
@@ -400,28 +546,191 @@ def step_dense_select(args, cfg) -> dict:
     return found
 
 
+def derive_session_floor(h, cfg, out: Path, *, clock=time.perf_counter) -> dict:
+    """The floors are null as inputs (31 Oct 2026): T3.1 derives a session
+    floor from its own dense pre-pass. The dense arm is run `reps` times at
+    every (length, batch) after two warm-ups, and the floor is
+    `lock.floors.resolution_floor` over those series at the provisional
+    shakedown quantile, labelled working, pre-lock. The series are saved so
+    the lock can recompute the floor at its own quantile. Run only when the
+    config's floor is null; a floor the lock has set is used as it is."""
+    import torch
+    from attnbench.lock import floors
+    series = {}
+    for L in cfg["lengths"]:
+        for b in cfg["batches"].get(str(L), [1]):
+            a = h.prepare("dense", L, batch=b)
+            for _ in range(2):
+                a.run_prefill()
+            torch.cuda.synchronize()
+            xs = []
+            for _ in range(cfg["reps"]):
+                t0 = clock()
+                a.run_prefill()
+                torch.cuda.synchronize()
+                xs.append((clock() - t0) * 1e3)
+            series[f"dense L{L} b{b}"] = xs
+    h.unwrap()
+    r = floors.resolution_floor(series, quantile=floors.SHAKEDOWN_QUANTILE, pairing=cfg["pairing"])
+    rec = {"floor_ms": r.floor_ms, "quantile": r.quantile, "n_series": r.n_series,
+           "n_repeats": r.n_repeats, "inputs_sha256": r.inputs_sha256, "pairing": r.pairing,
+           "status": f"{WORKING_STATUS}: derived from this session's dense pre-pass at the "
+                     f"provisional quantile; the lock recomputes it from `series`",
+           "series": series}
+    _write_json(out / "session_floor.json", rec)
+    return {k: v for k, v in rec.items() if k != "series"}
+
+
 def step_probe(args, cfg) -> dict:
-    """T2.18 for every arm whose code path has not been traced (all, on P1)."""
-    _not_built(args, "probe")
-    return {"fake": True, "arms": cfg["arms"]}
+    """T2.18 for every arm. P1's own recordings are the test of record: each
+    arm is probed at the two probe lengths (a chunked arm at its three,
+    checked at the third), extended to every grid length, and checked
+    against the full recording there. Where the result is "different"
+    (XAttention at 32768), the full-length recording is the arm's structure
+    at that length, with every duration discarded."""
+    if args.dry_run:
+        return {"fake": True, "arms": cfg["arms"]}
+    _need_gpu("the structural probe")
+    from attnbench.components import recorder, structural_probe as sp
+    from attnbench.components.shakedown_arms import ARMS
+    out = Path(args.out)
+    h = _harness(args)
+    found: dict = {}
+    for name in cfg["arms"]:
+
+        def record(L, d, name=name):
+            a = h.ready(name, L)
+            return recorder.record_arm_prefill(
+                a.run_prefill, d, code_path=a.code_path, context_length=a.length, batch=1,
+                prompt_id=a.prompt_id, layers=a.layers).sequence
+
+        rule = sp.xattention_rule() if ARMS[name].xattention else sp.NO_CHUNKING
+        lengths = sp.chunked_probe_lengths(rule) if rule.chunked else sp.PROBE_LENGTHS
+        seqs = sp.probe(record, out / name, lengths=lengths)
+        per = {}
+        for L in cfg["lengths"]:
+            full = record(L, out / name / f"full_{L}")
+            ext = (sp.extend_checked(seqs, rule, full.context_length) if rule.chunked
+                   else sp.extend(seqs, rule, full.context_length))
+            r = {"extension": ext.verdict, "reason": ext.reason, "length": full.context_length}
+            if ext.extended:
+                c = sp.check_against_full(ext, full)
+                r.update(check=c.verdict, first_difference=c.first_difference)
+            same = ext.extended and r.get("check") == "same sequence"
+            r["structure"] = "extended" if same else "recorded at full length"
+            per[str(L)] = r
+        found[name] = {"rule": rule.name, "probe_lengths": list(lengths), "by_length": per}
+    h.unwrap()
+    _write_json(out / "probe.json", found)
+    return found
 
 
 def step_host_components(args, cfg) -> dict:
-    """T2.2's null pass per arm and cell."""
-    _not_built(args, "host_components")
-    return {"fake": True}
+    """T2.2 per cell: the arm's prefill recorded at the cell (trace,
+    sequence, masks, tape), then the null-kernel host profile from its tape
+    (`HOST_PROFILE_REPS` passes). Writes `cells_index.json`, which the
+    device step reads; a calibrated arm's density is the mask density it
+    produced on the cell's prompt."""
+    if args.dry_run:
+        return {"fake": True}
+    _need_gpu("the null-kernel host profile")
+    from attnbench.components import host_profile as hp
+    from attnbench.components import recorder
+    out = Path(args.out)
+    h = _harness(args)
+    index = []
+    for arm, d, L, b in cells(cfg):
+        cd = cell_dir(out, arm, d, L, b)
+        a = h.ready(arm, L, density=d, batch=b)
+        rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording", code_path=a.code_path,
+                                          context_length=a.length, batch=b,
+                                          prompt_id=a.prompt_id, layers=a.layers)
+        entries = () if arm == "dense" else (hp.block_sparse_entry(),)
+        prof = hp.profile(a.run_prefill, rec.tape, rec.sequence, device=hp.cuda_device(),
+                          reps=HOST_PROFILE_REPS, entries=entries, layers=a.layers)
+        (cd / "host_profile.json").write_text(hp.dumps(prof))
+        realised = d
+        if d is None:
+            per_layer = list(getattr(a.backend, "last_layer_density", None) or ())
+            if not per_layer:
+                raise StepFailed(f"{arm}: its backend keeps no mask density, so its cell "
+                                 f"has no density")
+            realised = round(sum(float(x) for x in per_layer) / len(per_layer), 6)
+        index.append({"arm": arm, "nominal_density": d, "density": realised, "budget": L,
+                      "context_length": a.length, "batch": b, "prompt_id": a.prompt_id,
+                      "dir": str(cd.relative_to(out)),
+                      "code_path": code_path_definition(a.code_path),
+                      "host_total_ms": prof.total_s * 1e3})
+    h.unwrap()
+    _write_json(out / "cells_index.json", {"cells": index})
+    return {"cells": len(index)}
 
 
 def step_device_components(args, cfg) -> dict:
-    """T2.4's replay per arm, density and cell, and the priced cells the
-    prediction reads: `cells.json`, one entry per ground-truth cell."""
-    _not_built(args, "device_components")
+    """T2.4 per cell, on the host step's recording: the CUDA-graph replay
+    from the tape and the bank (live masks checked bitwise against the
+    bank), its nodes matched to the sequence, substituted positions priced
+    from the original operators, then each position's host (T2.2), device
+    (T2.4) and link (T2.5) cost as recursion operations: `cells.json`, one
+    entry per ground-truth cell, which the prediction reads."""
+    if not args.dry_run:
+        return device_components_real(args, cfg)
     entries = [{"arm": a, "density": d, "context_length": L, "batch": b,
                 "code_path": FAKE_CODE_PATH,
                 "ops": [op_to_dict(op) for op in fake_ops(a, d, L, b)]}
                for a, d, L, b in cells(cfg)]
     _write_json(Path(args.out) / "cells.json", {"fake": True, "cells": entries})
     return {"fake": True, "cells": len(entries)}
+
+
+def device_components_real(args, cfg) -> dict:
+    _need_gpu("the CUDA-graph replay")
+    import pandas as pd
+    import torch
+    from attnbench.components import host_profile as hp
+    from attnbench.components import op_sequence as ops
+    from attnbench.components import recorder, replay
+    out, session = Path(args.out), Path(args.session)
+    host_dir = step_dir(session, "host_components")
+    index = json.loads((host_dir / "cells_index.json").read_text())["cells"]
+    row = pd.read_parquet(step_dir(session, "link") / "link" / "link.parquet").iloc[0].to_dict()
+    h = _harness(args)
+    entries, sources = [], {}
+    for c in index:
+        cd = out / c["dir"]
+        cd.mkdir(parents=True, exist_ok=True)
+        rec = recorder.load_recording(host_dir / c["dir"] / "recording")
+        a = h.ready(c["arm"], c["budget"], density=c["nominal_density"], batch=c["batch"])
+        cap = replay.capture(a.run_prefill, rec.tape, device="cuda", masks=rec.masks)
+        agreement = replay.mask_agreement(cap)
+        if agreement is not None and not agreement.get("identical"):
+            raise StepFailed(f"{c['dir']}: the replay's live masks differ from the bank")
+        m = replay.match(rec.sequence, replay.replay_nodes(
+            replay.profile_replay(cap, cd / "replay_trace.json")))
+        original = None
+        if not m.complete:
+            torch.cuda.synchronize()
+            orig = replay.isolated_replay(a.run_prefill, rec.tape, cd / "isolated_original.json",
+                                          device="cuda", masks=rec.masks, substitute=False)
+            original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH))
+        try:
+            pricing = replay.price_positions(rec.sequence, m, original)
+        except replay.ReplayError as e:
+            raise StepFailed(f"{c['dir']}: {e}")
+        prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
+        priced = label_outside_layers(ops.to_operations(
+            rec.sequence, host=hp.host_costs(prof, rec.sequence),
+            device=pricing.device_s, link=link_costs(rec.sequence, row)))
+        sources[c["dir"]] = pricing.counts()
+        entries.append({"arm": c["arm"], "density": c["density"],
+                        "nominal_density": c["nominal_density"],
+                        "context_length": c["context_length"], "budget": c["budget"],
+                        "batch": c["batch"], "prompt_id": c["prompt_id"],
+                        "code_path": c["code_path"], "cost_sources": pricing.counts(),
+                        "ops": [op_to_dict(op) for op in priced]})
+    h.unwrap()
+    _write_json(out / "cells.json", {"fake": False, "cells": entries})
+    return {"cells": len(entries), "cost_sources": sources}
 
 
 def build_prediction(cfg, session: Path, *, dry_run: bool, now=None):
@@ -439,13 +748,18 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None):
     for e in dev["cells"]:
         label = C.code_path_label(e["code_path"])
         code_paths[label] = e["code_path"]
-        mech = {m: MechanismCost(**v) for m, v in rin["by_length"][str(e["context_length"])].items()}
+        # The link table is per grid length; a prompt lands at or below its budget.
+        grid_L = e.get("budget", e["context_length"])
+        mech = {m: MechanismCost(**v) for m, v in rin["by_length"][str(grid_L)].items()}
         priced = price(close_prefill(op_from_dict(o) for o in e["ops"]), mech)
         out.append(Cell(pairing=cfg["pairing"], model_name=cfg["model"], code_path=label,
                         arm=e["arm"], context_length=e["context_length"],
                         density=e["density"], batch=e["batch"], priced=priced, hardware=hw))
     want = {(a, d, L, b) for a, d, L, b in cells(cfg)}
-    got = {(c.arm, c.density, c.context_length, c.batch) for c in out}
+    # A cell is named by its setting: the nominal density (None where the
+    # estimator sets it) and the length budget (the prompt lands at or below it).
+    got = {(e["arm"], e.get("nominal_density", e["density"]),
+            e.get("budget", e["context_length"]), e["batch"]) for e in dev["cells"]}
     if want != got:
         raise StepFailed(f"priced cells differ from the grid: missing {sorted(want - got)}, "
                          f"extra {sorted(got - want)}")
@@ -499,7 +813,6 @@ def step_hold(args, cfg) -> dict:
 def step_ground_truth(args, cfg) -> dict:
     """T2.13, one process per compile-setting group (Appendix A, 27 Oct 2026),
     each with its own dense control."""
-    _not_built(args, "ground_truth")
     found = {}
     for group in cfg["gt_groups"]:
         d = Path(args.out) / group
@@ -540,21 +853,99 @@ def cmd_ground_truth_one(args) -> int:
     receipt, _ = _receipt(Path(args.session))
     so.ready_to_clock(receipt.synced_at, so.utc_now(), clock_skew=skew, guard=guard)
     not_before = time.time()          # before this process's first forward of any kind
-    if not args.dry_run:
-        raise StepFailed(f"not built: {NOT_BUILT['ground_truth']}")
-    from attnbench.components.shakedown_arms import Harness
-    h = Harness(device="cpu", dry_run=True, score_cache_dir=str(out / "score_cache"))
     arms_in_group = cfg["gt_groups"][args.group]
+    if args.dry_run:
+        from attnbench.components.shakedown_arms import Harness
+        h = Harness(device="cpu", dry_run=True, score_cache_dir=str(out / "score_cache"))
+        floor, rerun = cfg["resolution_floor_ms"], cfg["max_rerun_rounds"]
+    else:
+        _need_gpu("the ground truth")
+        h = _harness(args)
+        floor, rerun = session_floor_ms(cfg, Path(args.session)), rerun_budget(cfg)
     with _sampler(cfg, args.dry_run) as sampler:
-        controls = gt.Controls(resolution_floor_ms=cfg["resolution_floor_ms"],
-                               max_rerun_rounds=cfg["max_rerun_rounds"], sampler=sampler)
-        first = _dry_cells(h, gt, cfg, controls, args, receipt, out)
+        controls = gt.Controls(resolution_floor_ms=floor, max_rerun_rounds=rerun,
+                               sampler=sampler)
+        cells_fn = _dry_cells if args.dry_run else _real_cells
+        first = cells_fn(h, gt, cfg, controls, args, receipt, out)
     stamps = {"group": args.group, "arms": arms_in_group, "clock_not_before": not_before,
               "first_clocked_block_started_at": first,
               "synced_at": receipt.synced_at.isoformat()}
     _write_json(out / "stamps.json", stamps)
     print(f"[ground-truth-one {args.group}] {len(first)} cells", flush=True)
     return 0
+
+
+def group_setting(group: str):
+    """None for the eager group, else the compile setting the group's name
+    carries (`compiled_default` -> "default"); one setting per process."""
+    if group == "eager":
+        return None
+    if not group.startswith("compiled_"):
+        raise StepFailed(f"unknown ground-truth group {group!r}")
+    return group[len("compiled_"):]
+
+
+def group_arms(cfg, group: str, length: int, batch: int):
+    """(names, densities) for one group's cell: the eager dense control first,
+    then every other arm of the group at each of its densities."""
+    names, dens = ["dense"], [None]
+    for arm in cfg["gt_groups"][group]:
+        if arm == "dense" or (batch > 1 and arm in BATCH1_ONLY):
+            continue
+        for d in cfg["densities"][arm]:
+            names.append(arm)
+            dens.append(nominal_density(d))
+    return names, dens
+
+
+def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
+    """Every (length, batch) of this group: the K2 choice as the dense
+    control (checked with `check_control` against the session's record),
+    the group's arms at their densities, compiled under the group's one
+    setting, timed with the session's sampler, and each row given its cell."""
+    import torch
+    from attnbench import dense_selection as ds
+    from attnbench.components.shakedown_arms import ARMS
+    setting = group_setting(args.group)
+    if setting is not None:
+        from attnbench.backends.compiled import CompiledBackend
+    sel_dir = step_dir(Path(args.session), "dense_select")
+    first = []
+    for L in cfg["lengths"]:
+        for b in cfg["batches"].get(str(L), [1]):
+            cell = ds.Cell(card=cfg["card"], context_length=L, batch=b)
+            choice = ds.load_choice(sel_dir / ds._filename(SimpleChoice(cell)))
+            control = ds.registry_candidates(cfg["card"])[choice.chosen]
+            names, dens = group_arms(cfg, args.group, L, b)
+            backends, settings = [control], [None]
+            for n in names[1:]:
+                be = h._backend(ARMS[n])
+                if setting is not None:
+                    be = CompiledBackend(be, setting)
+                backends.append(be)
+                settings.append(setting)
+            wrapped, ids, pid, arms, score_kwargs = h.timing_arms(
+                names, L, densities=dens, batch=b, backends=backends, compile_settings=settings)
+            res = gt.time_arms(wrapped, ids, arms, reps=cfg["reps"], controls=controls,
+                               warmup=cfg["warmup"], density_of=gt.kernel_densities,
+                               synchronize=torch.cuda.synchronize, score_kwargs=score_kwargs)
+            stamp = res["first_clocked_block_started_at"]
+            ds.check_control(choice, choice.chosen, stamp, key=cell)
+            first.append(stamp)
+            for row, n, d in zip(res["rows"], names, dens):
+                row.update(model=cfg["model"], cell_arm=n, nominal_density=d, budget=L,
+                           group=args.group, compile_setting=setting, prompt_id=pid,
+                           session_receipt_sha256=receipt.sha256,
+                           working_values=cfg.get("working_values"))
+            _write_json(out / f"gt_L{L}_b{b}.json", res)
+            h.unwrap()
+    return first
+
+
+class SimpleChoice:
+    """Just enough of a `Choice` for `dense_selection._filename`."""
+    def __init__(self, cell):
+        self.cell = cell
 
 
 def _dry_cells(h, gt, cfg, controls, args, receipt, out) -> list:

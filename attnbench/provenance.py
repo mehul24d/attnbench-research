@@ -255,7 +255,7 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
     """
     out = {"cloud_provider": None, "instance_type": None,
            "instance_generation": None, "provisioning_model": None,
-           "provisioning_model_problem": None}
+           "provisioning_model_problem": None, "boot_image": None}
     vendor = _read_dmi(dmi_dir, "sys_vendor") or ""
     product = _read_dmi(dmi_dir, "product_name") or ""
     if product == "Google Compute Engine" or vendor == "Google":
@@ -264,6 +264,7 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
         out["cloud_provider"] = "aws"
         fetch = fetch or _aws_metadata
         instance_type = fetch("instance-type")
+        out["boot_image"] = fetch("ami-id")
         if instance_type:
             out["instance_type"] = instance_type
             m = _AWS_TYPE_RE.match(instance_type)
@@ -284,6 +285,11 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
         return out
 
     fetch = fetch or _gcp_metadata
+    # The boot image (T2.14: image v6 plus the bootstrap), as
+    # `projects/<project>/global/images/<name>`; only the name is kept, so no
+    # project reaches a row.
+    image = fetch("image")
+    out["boot_image"] = image.rsplit("/", 1)[-1] if image else None
     machine_type = fetch("machine-type")
     if machine_type:
         out["instance_type"] = machine_type.rsplit("/", 1)[-1]
@@ -295,6 +301,18 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
     out["provisioning_model"] = model
     out["provisioning_model_problem"] = problem
     return out
+
+
+BOOTSTRAP_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "gcp_bootstrap_instance.sh"
+
+
+def _bootstrap_sha256(path: Path = BOOTSTRAP_SCRIPT) -> Optional[str]:
+    """The sha256 of the bootstrap script this checkout holds, or None."""
+    import hashlib
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 @functools.lru_cache(maxsize=1)
@@ -339,6 +357,11 @@ class Provenance:
     instance_generation: Optional[str]
     provisioning_model: Optional[str]
     provisioning_model_problem: Optional[str]
+    # From 2026-10-31 (T2.14, GCP half): the boot image's name and the sha256 of
+    # `scripts/gcp_bootstrap_instance.sh` in this checkout, the two halves of
+    # the session's environment. Earlier rows lack them.
+    boot_image: Optional[str]
+    bootstrap_sha256: Optional[str]
     python_optimize: int
 
     torch: Optional[str]
@@ -419,6 +442,7 @@ def capture(clocks_locked: bool = False) -> Provenance:
         cpu_count=os.cpu_count(),
         cpu_microcode=_cpu_microcode(),
         **_cloud_identity_cached(),
+        bootstrap_sha256=_bootstrap_sha256(),
         python_optimize=sys.flags.optimize,
         torch=torch.__version__,
         torch_cuda=torch.version.cuda,
@@ -509,6 +533,7 @@ RECORDED_FIELDS = frozenset({
     "timestamp", "python", "platform", "cpu_model", "cpu_count",
     "cpu_microcode", "cloud_provider", "instance_type", "instance_generation",
     "provisioning_model", "provisioning_model_problem", "python_optimize",
+    "boot_image", "bootstrap_sha256",
     "torch", "torch_cuda", "cudnn", "triton",
     "flash_attn", "flashinfer", "xformers", "fla", "transformers",
     "driver", "compute_capability", "gpu_memory_gb", "gpu_count",

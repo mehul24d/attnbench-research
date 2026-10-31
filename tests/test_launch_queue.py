@@ -115,6 +115,38 @@ def test_disagreeing_trials_record_no_q():
     assert row["sleep0_q"] is None and row["sleep0_q_trials"] == "32,31"
 
 
+def _lazy_loading(depth, load_ns=1_000_000_000):
+    """A simulated queue whose kernel's first launch costs `load_ns` on the
+    host (the module load), as Shakedown 1's add appears to have."""
+    sim = lq.SimulatedQueue(depth)
+    base = sim.ops()
+    loaded = set()
+
+    def launcher(kind):
+        inner = base.launcher(kind)
+
+        def launch():
+            if kind not in loaded:
+                loaded.add(kind)
+                sim.t += load_ns
+            inner()
+        return launch
+    return sim, lq.QueueOps(sync=base.sync, blocker=base.blocker, launcher=launcher)
+
+
+def test_a_cold_first_launch_reads_as_a_queue_of_one_and_a_warm_one_does_not():
+    sim, ops = _lazy_loading(64)
+    cold = lq.measure(ops, kinds=["add"], trials=3, launches=200, blocker_s=2.0,
+                      clock=sim.clock)
+    assert cold["add_q_trials"] == "1,64,64" and cold["add_q"] is None
+    assert cold["add_q_lower_bound"] == 1 and cold["warm_launch"] is False
+    sim, ops = _lazy_loading(64)
+    warm = lq.measure(ops, kinds=["add"], trials=3, launches=200, blocker_s=2.0,
+                      clock=sim.clock, warm=True)
+    assert warm["add_q_trials"] == "64,64,64" and warm["add_q"] == 64
+    assert warm["warm_launch"] is True
+
+
 def test_the_device_is_left_idle_after_a_failed_launch():
     synced = []
 

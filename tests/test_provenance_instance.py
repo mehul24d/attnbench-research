@@ -163,6 +163,28 @@ def test_the_instance_type_and_its_series(tmp_path, machine_type, generation):
     assert got["instance_generation"] == generation
 
 
+def test_the_boot_image_is_named_without_its_project(tmp_path):
+    md = _md("STANDARD", "FALSE")
+    md.values["image"] = "projects/secret-project-123/global/images/attnbench-env-v6-20260917"
+    got = provenance._cloud_identity(_gce(tmp_path), md)
+    assert got["boot_image"] == "attnbench-env-v6-20260917"
+    assert not any("secret-project" in str(v) for v in got.values())
+
+
+def test_the_aws_boot_image_is_the_ami(tmp_path):
+    md = _aws("STANDARD")
+    md.values["ami-id"] = "ami-0123456789abcdef0"
+    got = provenance._cloud_identity(_dmi(tmp_path, "Amazon EC2", "g6.xlarge"), md)
+    assert got["boot_image"] == "ami-0123456789abcdef0"
+
+
+def test_the_bootstrap_hash_is_the_script_s(tmp_path):
+    import hashlib
+    want = hashlib.sha256(provenance.BOOTSTRAP_SCRIPT.read_bytes()).hexdigest()
+    assert provenance._bootstrap_sha256() == want
+    assert provenance._bootstrap_sha256(tmp_path / "absent") is None
+
+
 def test_the_project_number_never_reaches_a_row(tmp_path):
     got = provenance._cloud_identity(_gce(tmp_path), _md("STANDARD", "FALSE"))
     assert not any("123456789012" in str(v) for v in got.values())
@@ -241,7 +263,8 @@ def test_the_aws_fetcher_asks_for_a_token_then_the_value(monkeypatch):
 
 T220_FIELDS = ("cpu_microcode", "cloud_provider", "instance_type",
                "instance_generation", "provisioning_model",
-               "provisioning_model_problem", "python_optimize")
+               "provisioning_model_problem", "python_optimize",
+               "boot_image", "bootstrap_sha256")
 
 
 def test_capture_carries_every_t220_field():
@@ -254,7 +277,7 @@ def test_capture_carries_every_t220_field():
 def test_capture_takes_the_cloud_fields_from_the_reader(monkeypatch):
     fake = {"cloud_provider": "gcp", "instance_type": "g2-standard-8",
             "instance_generation": "g2", "provisioning_model": "on-demand",
-            "provisioning_model_problem": None}
+            "provisioning_model_problem": None, "boot_image": "attnbench-env-v6-20260917"}
     monkeypatch.setattr(provenance, "_cloud_identity_cached", lambda: fake)
     d = provenance.capture().to_dict()
     assert {k: d[k] for k in fake} == fake

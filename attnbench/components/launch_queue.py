@@ -82,9 +82,17 @@ def cuda_queue_ops(calibration_cycles: int = 10_000_000) -> QueueOps:
 
 
 def trial(ops: QueueOps, kind: str, *, launches: int, blocker_s: float,
-          clock: Callable[[], int] = time.perf_counter_ns) -> list[float]:
-    """Host seconds per short-kernel launch behind one blocker."""
+          clock: Callable[[], int] = time.perf_counter_ns,
+          warm: bool = False) -> list[float]:
+    """Host seconds per short-kernel launch behind one blocker. With `warm`,
+    one launch of the kind is made and completed before the blocker, so a
+    first launch's one-off cost (loading the kernel) cannot pass for a full
+    queue. Shakedown 1's add gave `1,1022,1022,1022,1022`: its first trial's
+    first launch waited. Off by default: the T2.6 method is the cold one."""
     launch = ops.launcher(kind)
+    if warm:
+        ops.sync()
+        launch()
     ops.sync()
     ops.blocker(blocker_s)
     out = []
@@ -116,17 +124,17 @@ def depth_from_trial(times: Sequence[float], blocker_s: float,
 def measure(ops: QueueOps, *, kinds: Sequence[str] = tuple(KINDS),
             trials: int = 5, launches: int = 16384, blocker_s: float = 2.0,
             blocked_fraction: float = 0.25, dry_run: bool = False,
-            clock=time.perf_counter_ns) -> dict:
+            clock=time.perf_counter_ns, warm: bool = False) -> dict:
     """One flat row: per kind, every trial's Q and the agreed Q if all
     trials agree."""
-    row = {"dry_run": dry_run, "trials": trials, "launches": launches,
+    row = {"dry_run": dry_run, "trials": trials, "launches": launches, "warm_launch": warm,
            "blocker_s": blocker_s, "blocked_fraction": blocked_fraction,
            "cycles_per_s": getattr(ops, "cycles_per_s", None)}
     for kind in kinds:
         if kind not in KINDS:
             raise KeyError(f"unknown kernel kind {kind!r}; known: {sorted(KINDS)}")
         got = [depth_from_trial(trial(ops, kind, launches=launches,
-                                      blocker_s=blocker_s, clock=clock),
+                                      blocker_s=blocker_s, clock=clock, warm=warm),
                                 blocker_s, blocked_fraction)
                for _ in range(trials)]
         qs = [g["q"] for g in got]

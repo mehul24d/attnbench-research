@@ -44,6 +44,11 @@ Usage, on the L4 from the repo root (after deploy, preflight, write gate and
 Dry run on a CPU (fakes for steps 4 to 6 and a dense-only ground truth on the
 random two-layer model; no sync, no clean-tree refusal):
     python3 scripts/t31_session.py --dry-run --session /tmp/t31_dry
+A rehearsal (Shakedown 2) runs steps 1 to 8 on the card and stops after
+`hold`: no ground truth, so nothing is clocked. Its config is the session
+config with `"rehearsal": true` and its own prediction prefix, written into
+the session as `rehearsal_config.json`; its results are discarded:
+    python3 scripts/t31_session.py --rehearsal
 """
 
 from __future__ import annotations
@@ -79,6 +84,16 @@ if tuple(CHECKLIST) != STEPS:      # not `assert`: T2.17 keeps the harness free 
 
 FIRST_CLOCKED = "ground_truth"
 
+# A rehearsal ends before the first clocked step, and its prediction is
+# written where P1's never is.
+REHEARSAL_LAST = "hold"
+REHEARSAL_PREFIX = "predictions/P1-rehearsal"
+# Any values will do for a rehearsal (researcher, 31 Oct 2026); a short grid
+# that still has a batch above 1 keeps Shakedown 2 inside its halt.
+REHEARSAL_GRID = {"lengths": [2048, 16384], "batches": {"16384": [1, 4]}}
+if STEPS.index(REHEARSAL_LAST) >= STEPS.index(FIRST_CLOCKED):
+    raise RuntimeError("a rehearsal must stop before ground truth")
+
 
 def step_command(step: str, session: Path, extra: list[str], *, dry_run: bool,
                  sync: bool) -> list[str]:
@@ -96,7 +111,7 @@ def clocked_started(manifest: dict) -> bool:
 
 
 def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, sync: bool,
-                runner=run_logged) -> int:
+                runner=run_logged, rehearsal: bool = False) -> int:
     session.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(session)
     manifest.setdefault("dry_run", dry_run)
@@ -104,7 +119,16 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         print(f"REFUSING: {session} is a {'dry' if manifest['dry_run'] else 'real'} session",
               file=sys.stderr)
         return 2
+    manifest.setdefault("rehearsal", rehearsal)
+    if manifest["rehearsal"] != rehearsal:
+        print(f"REFUSING: {session} is {'a' if manifest['rehearsal'] else 'not a'} rehearsal",
+              file=sys.stderr)
+        return 2
+    last = STEPS.index(REHEARSAL_LAST) if rehearsal else len(STEPS) - 1
     first = STEPS.index(start)
+    if first > last:
+        print(f"REFUSING --from {start}: a rehearsal ends at {REHEARSAL_LAST}", file=sys.stderr)
+        return 2
     if clocked_started(manifest) and first <= STEPS.index("predict"):
         print(f"REFUSING --from {start}: ground truth has started in {session}, so a "
               f"prediction written now would follow timed data. Start a new session.",
@@ -116,7 +140,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         print(f"REFUSING --from {start}: earlier steps have not passed in {session}: "
               f"{unpassed}", file=sys.stderr)
         return 2
-    for step in STEPS[first:]:
+    for step in STEPS[first:last + 1]:
         d = step_dir(session, step)
         if d.exists():
             kept = d.with_name(f"{d.name}.{done.get(step, 'previous')}."
@@ -160,8 +184,24 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
                   f"--session {session}", flush=True)
             return 1
     statuses = last_status(manifest)
-    print("\nT3.1 session: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS))
+    label = "T3.1 rehearsal (results discarded)" if rehearsal else "T3.1 session"
+    print(f"\n{label}: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS[:last + 1]))
     return 0
+
+
+def rehearsal_config(session: Path, source) -> Path:
+    """The session config as a rehearsal's: `"rehearsal": true`, its own
+    prediction prefix and `REHEARSAL_GRID`, written once into the session (a
+    resume reuses it)."""
+    import json
+    from t31_steps import DEFAULT_CONFIG
+    path = Path(session) / "rehearsal_config.json"
+    if not path.exists():
+        cfg = json.loads(Path(source or DEFAULT_CONFIG).read_text())
+        cfg.update(rehearsal=True, prediction_prefix=REHEARSAL_PREFIX, **REHEARSAL_GRID)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cfg, indent=1))
+    return path
 
 
 def main(argv=None) -> int:
@@ -173,15 +213,26 @@ def main(argv=None) -> int:
     ap.add_argument("--no-sync", action="store_true",
                     help="do not wrap steps in run_phase.sh (implied by --dry-run)")
     ap.add_argument("--config", default=None)
+    ap.add_argument("--rehearsal", action="store_true",
+                    help="steps 1 to 8 only, no ground truth; results discarded (Shakedown 2)")
     ap.add_argument("--list", action="store_true",
                     help="print the steps, and what is not built yet, and exit")
     args = ap.parse_args(argv)
     if args.list:
         for i, s in enumerate(STEPS, 1):
             print(f"{i:2d} {s:18s} {CHECKLIST[s]}")
-            if s in NOT_BUILT:
+            if s in NOT_BUILT:   # empty since 31 Oct 2026; kept for a step that regresses
                 print(f"   {'':18s} NOT BUILT: {NOT_BUILT[s]}")
         return 0
+    if args.rehearsal and args.dry_run:
+        print("REFUSING: a rehearsal runs on the card; use --dry-run alone on a CPU",
+              file=sys.stderr)
+        return 2
+    if args.rehearsal and args.session is None and args.start == STEPS[0]:
+        args.session = str(ROOT / "results" /
+                           f"t31_rehearsal_{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}")
+    if args.rehearsal and args.session is not None:
+        args.config = str(rehearsal_config(Path(args.session), args.config))
     try:
         load_config(args.config, dry_run=args.dry_run)   # refuse undecided values up front
     except Exception as e:
@@ -198,7 +249,8 @@ def main(argv=None) -> int:
         return 2
     extra = ["--config", args.config] if args.config else []
     return run_session(Path(args.session), start=args.start, extra=extra,
-                       dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync))
+                       dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync),
+                       rehearsal=args.rehearsal)
 
 
 if __name__ == "__main__":

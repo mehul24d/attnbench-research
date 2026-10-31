@@ -24,7 +24,7 @@ import t227_shakedown as sh  # noqa: E402
 import t228_steps as st  # noqa: E402
 from test_t227_shakedown import fake_runner  # noqa: E402
 
-STEPS = ("nvml", "t216", "t213", "t212", "t22")
+STEPS = ("nvml", "t216", "t213", "density", "t212", "t22", "queue")
 CFG = st._config()
 
 
@@ -57,7 +57,7 @@ def test_resuming_after_a_failure_needs_the_earlier_steps_to_have_passed(tmp_pat
     ran = []
     assert sh.run_session(tmp_path, start="t213", extra=[], dry_run=False, sync=False,
                           runner=fake_runner({}, ran), config=CFG) == 0
-    assert ran == ["t213", "t212", "t22"]
+    assert ran == ["t213", "density", "t212", "t22", "queue"]
     assert any(p.name.startswith("03_t213.failed.") for p in tmp_path.iterdir())
 
 
@@ -183,7 +183,7 @@ def test_check_control_is_read_against_t216s_record(tmp_path, monkeypatch):
 
 # --- the card steps: skipped on a CPU, refused when real ----------------------------------
 
-@pytest.mark.parametrize("step", ["nvml", "t216", "t212", "t22"])
+@pytest.mark.parametrize("step", ["nvml", "t216", "density", "t212", "t22"])
 def test_the_card_steps_skip_a_cpu_dry_run_and_fail_a_real_one(tmp_path, step, monkeypatch):
     monkeypatch.setattr(st, "_cuda", lambda: False)
     monkeypatch.setattr("t227_steps._cuda", lambda: False)
@@ -421,3 +421,154 @@ def test_t22_profiles_the_tape_and_reads_the_builders_32768_row_against_the_plan
 def test_t22_fails_when_the_builder_profile_is_not_written(tmp_path, card, monkeypatch):
     _t22_rig(monkeypatch, builder_rc=2)
     assert st.run_step("t22", _live(_args(tmp_path, "t22")), st.STEP_FUNCS) == 1
+
+
+# --- the density probe -------------------------------------------------------------------
+
+def test_the_density_step_runs_one_process_per_compile_setting_and_fails_with_any(
+        tmp_path, card, monkeypatch):
+    from t31_steps import working_values
+    groups = list(working_values()[0]["gt_groups"])
+    ran = []
+
+    def fake_run(cmd):
+        g = cmd[cmd.index("--group") + 1]
+        ran.append(g)
+        d = Path(cmd[cmd.index("--out") + 1])
+        st._write_json(d / "densities.json", [{"arm": "x", "problems": []}])
+        return 1 if g == fail[0] else 0
+    monkeypatch.setattr(st, "_run", fake_run)
+    fail = [None]
+    a = _live(_args(tmp_path, "density"))
+    assert st.run_step("density", a, st.STEP_FUNCS) == 0
+    assert ran == groups and len(groups) == 3
+    f = json.loads((tmp_path / "result.json").read_text())["findings"]
+    assert f["values"].startswith("rehearsal") and len(f["values_sha256"]) == 64
+    fail[0], ran[:] = "compiled_default", []
+    assert st.run_step("density", _live(_args(tmp_path / "b", "density")), st.STEP_FUNCS) == 1
+    assert ran == groups                                  # every group is still probed
+
+
+def test_the_density_arms_are_the_working_values_at_batch_1():
+    from t31_steps import working_values
+    vals = working_values()[0]
+    names, dens = st.density_arms(vals, "eager")
+    assert names == ["dense", "oracle", "oracle", "meanpool", "meanpool", "xattention",
+                     "xattention_noassert"]
+    assert dens == [None, 0.25, 0.5, 0.25, 0.5, None, None]
+    assert st.density_arms(vals, "compiled_capture") == (
+        ["dense", "meanpool", "meanpool", "xattention"], [None, 0.25, 0.5, None])
+
+
+@pytest.fixture
+def density_rig(monkeypatch):
+    """`density_one` against a fake harness: real `ground_truth.Arm`s, a
+    stand-in for `CompiledBackend` (the real one claims its setting for the
+    whole process), a fake probe that refuses `refuse`."""
+    import torch
+    from attnbench import ground_truth as gt
+    from attnbench.backends import compiled
+    seen = {}
+    refuse = set()
+
+    class Compiled:
+        def __init__(self, arm, setting):
+            self.arm, self.setting = arm, setting
+    monkeypatch.setattr(compiled, "CompiledBackend", Compiled)
+
+    class Be:
+        def __init__(self, name):
+            self.name = name
+
+    class H:
+        def _backend(self, spec):
+            return Be(spec.name)
+
+        def timing_arms(self, names, length, *, densities, backends, compile_settings):
+            seen.update(names=names, densities=densities, settings=compile_settings,
+                        backends=backends)
+            arms = []
+            for n, d, be, cs in zip(names, densities, backends, compile_settings):
+                kind = gt.DENSE if n == "dense" else gt.IN_BACKEND
+                label = n if d is None else f"{n}@{d:g}"
+                arms.append(gt.Arm(label + ("" if cs is None else f"@compile-{cs}"), kind,
+                                   be or Be("dense"), None, compile_setting=cs,
+                                   builder_kind=None if n == "dense" else "gpu"))
+            return SimpleNamespace(run_measured=lambda *a, **k: None), torch.zeros(1, 8), "p", arms, {}
+
+        def unwrap(self):
+            pass
+
+    def probe(arm, run):
+        run()
+        if arm.kind == gt.DENSE:
+            return {"mask_density": None, "executed_density": 1.0}
+        if arm.name in refuse:
+            raise RuntimeError(f"{arm.name}'s backend keeps no per-layer mask density")
+        return {"mask_density": 0.3, "executed_density": 0.31}
+    monkeypatch.setattr(st, "_harness", lambda args: H())
+    monkeypatch.setattr(gt, "kernel_densities", probe)
+    monkeypatch.setattr(gt, "untimed_setup", lambda *a, **k: {})
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    yield seen, refuse, Compiled
+    gt.reset_process_compile_setting()
+
+
+def test_density_one_probes_every_arm_of_a_compiled_group_under_its_setting(
+        tmp_path, density_rig):
+    seen, _, compiled = density_rig
+    a = _args(tmp_path, "density-one", group="compiled_default", dry_run=False)
+    assert st.density_one(a) == 0
+    assert seen["settings"] == [None, "default", "default", "default"]
+    assert all(isinstance(b, compiled) and b.setting == "default"
+               for b in seen["backends"][1:])
+    rows = json.loads((tmp_path / "densities.json").read_text())
+    assert [r["problems"] for r in rows] == [[]] * 4
+    assert rows[1]["mask_minus_nominal"] == pytest.approx(0.3 - 0.25)
+    assert "mask_minus_nominal" not in rows[3]               # XAttention sets its own
+
+
+def test_density_one_fails_a_backend_that_keeps_no_mask_density(tmp_path, density_rig):
+    _, refuse, _ = density_rig
+    refuse.add("meanpool@0.5")
+    assert st.density_one(_args(tmp_path, "density-one", group="eager", dry_run=False)) == 1
+    rows = {r["arm"]: r for r in json.loads((tmp_path / "densities.json").read_text())}
+    assert "no per-layer mask density" in rows["meanpool@0.5"]["problems"][0]
+    assert rows["meanpool@0.25"]["problems"] == []
+
+
+# --- the launch queue ----------------------------------------------------------------------
+
+def _queue_args(tmp_path):
+    return _args(tmp_path, "queue")
+
+
+def test_the_queue_step_records_the_adds_q_and_bound_in_every_setting(tmp_path):
+    assert st.run_step("queue", _queue_args(tmp_path), st.STEP_FUNCS) == 0
+    f = json.loads((tmp_path / "result.json").read_text())["findings"]
+    assert list(f["settings"]) == [s["name"] for s in st.QUEUE_SETTINGS]
+    assert f["settings"]["cold_2s_0.25"]["warm_launch"] is False          # the row's own record
+    assert all(v["warm_launch"] for n, v in f["settings"].items() if n != "cold_2s_0.25")
+    assert f["add"]["agreed_values"] == [64] and f["add"]["lower_bound"] == 64
+    assert all(f["add"]["same_as_null_kernel"].values())
+
+
+def test_the_queue_step_fails_only_on_the_null_kernel_in_shakedown_1s_setting(
+        tmp_path, monkeypatch):
+    import pandas as pd
+
+    def fake_run(cmd, null_q=None):
+        d = Path(cmd[cmd.index("--out") + 1])
+        d.mkdir(parents=True)
+        cold = "--warm" not in cmd
+        pd.DataFrame([{"sleep0_q": null_q[0] if cold else 1022, "sleep0_q_trials": "x",
+                       "sleep0_q_lower_bound": 1, "add_q": None, "add_q_trials": "1,1022",
+                       "add_q_lower_bound": 1}]).to_parquet(d / "launch_queue.parquet")
+        return 0
+    null_q = [1022]
+    monkeypatch.setattr(st, "_run", lambda cmd: fake_run(cmd, null_q))
+    assert st.run_step("queue", _queue_args(tmp_path / "a"), st.STEP_FUNCS) == 0
+    f = json.loads((tmp_path / "a" / "result.json").read_text())["findings"]
+    assert f["add"]["agreed_values"] == [] and f["add"]["lower_bound"] == 1   # a finding
+    null_q[0] = None
+    assert st.run_step("queue", _queue_args(tmp_path / "b"), st.STEP_FUNCS) == 1
