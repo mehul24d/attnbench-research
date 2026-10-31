@@ -45,6 +45,25 @@ To measure the fresh-clone count on a machine that has the RULER data and the
 tokenizer, point `ATTNBENCH_RULER_DATA` and `HF_HOME` at empty directories. An empty string is not the same
 as unset.
 
+## The CPU-boundary rehearsal
+
+Before a shakedown is launched, the T3.1 rehearsal (steps 1 to 8) runs on a
+CPU with the real arms, backends, recorder, null pass, replay and pricing,
+on the two-layer random model, behind `attnbench/cpu_boundary.py`, which
+stubs only what needs a GPU and lists each stub. It needs the x-attention
+clone outside the repo, and runs best under the L4's transformers (4.46.0)
+in a venv over the system torch:
+
+```bash
+export ATTNBENCH_XATTN_DIR=/path/to/x-attention       # at XATTN_COMMIT
+python3 scripts/t31_session.py --cpu-boundary --session /tmp/t31_cpu
+python3 scripts/t228_steps.py density --cpu-boundary --out /tmp/density --length 1024
+```
+
+`t227_steps.py` and `t228_steps.py` take `--cpu-boundary` for one step.
+`tests/test_shakedown3_cpu.py` holds Shakedown 3's failures, reproduced on
+the real classes.
+
 ## Earlier work in this repository
 
 The repository started as a benchmark of sparse attention speedups at matched
