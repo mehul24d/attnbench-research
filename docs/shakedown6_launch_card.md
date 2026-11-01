@@ -129,7 +129,30 @@ python3 scripts/t228_steps.py pricing_zoo --cpu-boundary --out /tmp/s6_zoo --len
 
 ## The CPU dry run (1 Nov 2026)
 
-(Filled in after the dry run below completes.)
+On the Mac, behind `attnbench/cpu_boundary.py` (transformers 4.46.0,
+x-attention at `XATTN_COMMIT`), at the launch branch's head:
+- all eight rehearsal steps passed in one run over 15 cells (five arms at
+  2048 and 4096, plus dense at batch 2 at 4096). In step 5 every cell was
+  bare-priced (704 signatures timed in the process, at 3 repetitions, which
+  only the boundary allows), every cell passed the chain gate, and none fell
+  back;
+- `density` passed both compiled groups: each compiled arm made 0 compile
+  events in 4 prefills after its warm-up, and carries its declared breaks
+  (XAttention's kernel interface under both settings; mean-pool's two
+  library breaks under the default settings);
+- `pricing_zoo` passed: its three entries and all five arms, with the
+  oracle's gate re-evaluated and no fallback.
+
+The CPU's timings, ratios and gate shares mean nothing: a bare CPU call runs
+its compute, which the null pass skips.
+
+Three things were found and fixed on the way, each with a test. The child
+recorder had seen the parent call itself, so every call looked like a
+composite whose chain equalled its direct time; the parent is now
+redispatched below the Python key. A call that launches beside its children
+(`addmm`) had a chain far below its own time; it is now priced as a leaf.
+And a number in a Tensor argument cannot be redispatched boxed; that call
+runs as a leaf.
 
 ## Known before launch
 
