@@ -122,6 +122,11 @@ class BlockSparseAttention(AttentionBackend):
                 f"is ({cfg.seq_len}, block {cfg.block_size}) -- a mismatch "
                 f"would measure a different sparsity pattern")
 
+        # Absent library: refused here, before any setup, as before the
+        # kernel call moved to `kernel_interface` (the timed-region test
+        # reads a backend that cannot run as not exercised).
+        import block_sparse_attn  # noqa: F401
+
         k_, v_ = _expand_kv(k, v, cfg)   # kernel wants n_heads_k == n_heads_q here
 
         b, h, s, d = q.shape
