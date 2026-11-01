@@ -296,6 +296,8 @@ class NullDeviceMode(TorchDispatchMode):
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
         name = aten_name(func)
+        if name not in self.launching and (name, self.state.layer) not in self.isolated:
+            return func(*args, **kwargs)     # before the arguments are scanned (Shakedown 6)
         how = self._device_call(func, args, kwargs)
         if (name, self.state.layer) in self.isolated and how is not None:
             t0 = self.clock()      # priced by the isolated replay: no launch, out of the gap
