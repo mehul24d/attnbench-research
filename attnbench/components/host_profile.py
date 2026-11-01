@@ -142,6 +142,7 @@ builds the real one.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import json
 import statistics
@@ -331,37 +332,71 @@ def _meta_like(t):
     return t
 
 
+def _leaf_key(x):
+    if isinstance(x, torch.Tensor):
+        return ("tensor", tuple(x.shape), tuple(x.stride()), str(x.dtype), x.device.type)
+    if x is None or isinstance(x, (bool, int, float, str)):
+        return x
+    if isinstance(x, (torch.dtype, torch.device, torch.memory_format, torch.layout)):
+        return str(x)
+    return type(x).__name__
+
+
+def signature(name, args, kwargs) -> tuple:
+    """A call's operator, the structure of its arguments, each tensor's
+    shape, stride, dtype and device, and every other argument's value: what
+    its output's shape follows from, and what a bare price is cached on."""
+    leaves, spec = pytree.tree_flatten((args, kwargs))
+    return (name, str(spec), tuple(_leaf_key(x) for x in leaves))
+
+
+# A launching call's output, as shapes, by signature (`_null_outputs`): the
+# meta run is the pass's own instrument work, most of its wall time, and the
+# layers repeat their calls.
+_OUTPUT_SPECS: dict = {}
+
+
 def _null_outputs(func, args, kwargs, device_type: str):
     """What the call would return, allocated and uninitialised. Shapes come
-    from running the call on meta tensors; an output that is one of the
+    from running the call on meta tensors, once per signature (`signature`;
+    the result kept in `_OUTPUT_SPECS`); an output that is one of the
     inputs (an in-place call, `out=`) is that input. A new output goes to the
     device the call's `device` argument names, else to its device input's."""
     real = [t for t in pytree.tree_leaves((args, kwargs)) if isinstance(t, torch.Tensor)]
-    metas = {id(t): _meta_like(t) for t in real}
-    margs, mkwargs = pytree.tree_map(
-        lambda t: metas[id(t)] if isinstance(t, torch.Tensor) else t, (args, kwargs))
     named = _named_device(func, kwargs, real)
-    if named is not None:
-        mkwargs = {**mkwargs, "device": torch.device("meta")}
-        mkwargs.pop("pin_memory", None)
-    try:
-        mout = func(*margs, **mkwargs)
-    except Exception as e:
-        raise NullPassError(
-            f"{aten_name(func)} has no output on meta tensors ({e!r}); its output "
-            f"shape cannot be given without running it") from e
-    by_meta = {id(m): t for t, m in zip(real, (metas[id(t)] for t in real))}
     dev = named if named is not None else \
         next((t.device for t in real if t.device.type == device_type), None)
+    key = (func, signature(None, args, kwargs))
+    spec = _OUTPUT_SPECS.get(key)
+    if spec is None:
+        metas = {id(t): _meta_like(t) for t in real}
+        margs, mkwargs = pytree.tree_map(
+            lambda t: metas[id(t)] if isinstance(t, torch.Tensor) else t, (args, kwargs))
+        if named is not None:
+            mkwargs = {**mkwargs, "device": torch.device("meta")}
+            mkwargs.pop("pin_memory", None)
+        try:
+            mout = func(*margs, **mkwargs)
+        except Exception as e:
+            raise NullPassError(
+                f"{aten_name(func)} has no output on meta tensors ({e!r}); its output "
+                f"shape cannot be given without running it") from e
+        input_of = {id(metas[id(t)]): k for k, t in enumerate(real)}
+        leaves, tree = pytree.tree_flatten(mout)
+        spec = (tree, tuple(
+            ("input", input_of[id(m)]) if isinstance(m, torch.Tensor) and id(m) in input_of
+            else ("new", tuple(m.shape), tuple(m.stride()), m.dtype)
+            if isinstance(m, torch.Tensor) else ("value", m) for m in leaves))
+        _OUTPUT_SPECS[key] = spec
+    tree, leaves = spec
 
-    def alloc(m):
-        if not isinstance(m, torch.Tensor):
-            return m
-        if id(m) in by_meta:
-            return by_meta[id(m)]
-        return torch.empty_strided(tuple(m.shape), tuple(m.stride()), dtype=m.dtype,
-                                   device=dev)
-    return pytree.tree_map(alloc, mout)
+    def alloc(s):
+        if s[0] == "input":
+            return real[s[1]]
+        if s[0] == "new":
+            return torch.empty_strided(s[1], s[2], dtype=s[3], device=dev)
+        return s[1]
+    return pytree.tree_unflatten([alloc(s) for s in leaves], tree)
 
 
 class _State:
@@ -847,6 +882,43 @@ def profile(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, *,
         met_at={i: met[i] for i in sorted(priced)}, empty_calls=empty)
 
 
+class _Flushes:
+    """The isolation flushes on the replay's thread, in start order, with the
+    running sum of their durations, so whether a flush holds an event and how
+    much flush time lies inside an interval are found by bisection. A linear
+    scan per launch took the oracle's 8192-token trace (242 MB) past 27
+    minutes in Shakedown 6. Flushes run one after another; overlapping ones,
+    which the bisection cannot read, are refused."""
+
+    def __init__(self, flushes: Sequence):
+        self.items = sorted(flushes, key=lambda f: (f.ts, f.end))
+        for a, b in zip(self.items, self.items[1:]):
+            if b.ts < a.end - op_sequence._EPS:
+                raise ProfileMismatch("two isolation flushes overlap in the isolated trace")
+        self.starts = [f.ts for f in self.items]
+        self.ends = [f.end for f in self.items]
+        self.cum = [0.0]
+        for f in self.items:
+            self.cum.append(self.cum[-1] + (f.end - f.ts))
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def holds(self, e) -> bool:
+        """Whether a flush contains `e` (the one that started last before it)."""
+        k = bisect.bisect_right(self.starts, e.ts + op_sequence._EPS) - 1
+        return k >= 0 and e.end <= self.items[k].end + op_sequence._EPS
+
+    def within(self, t0: float, t1: float) -> float:
+        """The summed duration of the flushes wholly inside [t0, t1]."""
+        lo = bisect.bisect_left(self.starts, t0 - op_sequence._EPS)
+        hi = bisect.bisect_right(self.ends, t1 + op_sequence._EPS)
+        return self.cum[hi] - self.cum[lo] if hi > lo else 0.0
+
+
 @dataclass(frozen=True)
 class _Isolated:
     """An isolated replay's trace, read against a sequence: `launch[i]` is the
@@ -855,7 +927,7 @@ class _Isolated:
 
     launch: dict
     calls: dict
-    flushes: list
+    flushes: _Flushes
 
 
 def _read_isolated(trace, seq: OpSequence) -> _Isolated:
@@ -867,11 +939,11 @@ def _read_isolated(trace, seq: OpSequence) -> _Isolated:
     reg = regions[0]
     thread = (reg.pid, reg.tid)
     on_thread = [e for e in events if (e.pid, e.tid) == thread]
-    flushes = [e for e in on_thread if e.cat == "user_annotation" and e.name == FLUSH]
+    flushes = _Flushes([e for e in on_thread if e.cat == "user_annotation" and e.name == FLUSH])
     inside = lambda e, c: c.ts - op_sequence._EPS <= e.ts and e.end <= c.end + op_sequence._EPS
     launches = sorted((e for e in on_thread if e.cat in op_sequence._HOST_CATS
                        and op_sequence.api_class(e.name) == "launch" and inside(e, reg)
-                       and not any(inside(e, f) for f in flushes)), key=lambda e: e.ts)
+                       and not flushes.holds(e)), key=lambda e: e.ts)
     kernels = [i for i, op in enumerate(seq.ops) if op.kind is SeqKind.KERNEL]
     if len(launches) != len(kernels):
         raise ProfileMismatch(f"the isolated replay launched {len(launches)} kernels and the "
@@ -881,8 +953,7 @@ def _read_isolated(trace, seq: OpSequence) -> _Isolated:
 
 
 def _flushed(iso: _Isolated, t0: float, t1: float) -> float:
-    return sum(f.end - f.ts for f in iso.flushes
-               if t0 - op_sequence._EPS <= f.ts and f.end <= t1 + op_sequence._EPS)
+    return iso.flushes.within(t0, t1)
 
 
 def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[int, float]:

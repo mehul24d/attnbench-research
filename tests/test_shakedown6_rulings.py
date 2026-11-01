@@ -361,3 +361,64 @@ def test_spans_are_taken_between_each_layers_hooks_with_a_write_timed_after_a_sy
     assert spans.setitems == {0: (0, 0, 0), 1: (1, 1, 1)}
     assert spans.device_cum_s is None
     assert log.count("sync") == 4 * 2        # per run: before the write, and at its end
+
+
+# --- the isolated trace read by bisection (null pass speed-up) -------------------------------
+
+def test_the_flush_bisection_is_the_linear_rule():
+    import random
+    from attnbench.components.op_sequence import _EPS, _Ev
+    rng = random.Random(6)
+    t, flushes = 0.0, []
+    for k in range(400):                        # flushes one after another
+        t += rng.uniform(0.5, 5.0)
+        d = rng.uniform(0.1, 3.0)
+        flushes.append(_Ev(k, "user_annotation", "flush", 1, 1, t, t + d, {}))
+        t += d
+    f = hp._Flushes(list(reversed(flushes)))   # any order in
+    inside = lambda e, c: c.ts - _EPS <= e.ts and e.end <= c.end + _EPS
+    for _ in range(3000):
+        a = rng.uniform(0, t)
+        e = _Ev(0, "cuda_runtime", "cudaLaunchKernel", 1, 1, a, a + rng.uniform(0, 1.0), {})
+        assert f.holds(e) == any(inside(e, x) for x in flushes)
+        b = a + rng.uniform(0, 60)
+        linear = sum(x.end - x.ts for x in flushes if a - _EPS <= x.ts and x.end <= b + _EPS)
+        assert f.within(a, b) == pytest.approx(linear, abs=1e-9)
+    # an edge exactly at a flush's bounds
+    x = flushes[10]
+    assert f.within(x.ts, x.end) == pytest.approx(x.end - x.ts)
+    assert f.holds(_Ev(0, "c", "l", 1, 1, x.ts, x.end, {}))
+
+
+def test_overlapping_flushes_are_refused():
+    from attnbench.components.op_sequence import _Ev
+    with pytest.raises(hp.ProfileMismatch, match="overlap"):
+        hp._Flushes([_Ev(0, "u", "f", 1, 1, 0.0, 5.0, {}), _Ev(1, "u", "f", 1, 1, 4.0, 6.0, {})])
+
+
+def test_a_cached_output_shape_is_the_meta_runs_and_the_meta_run_is_made_once(monkeypatch):
+    import torch
+    aten = torch.ops.aten
+    a, b = torch.randn(4, 3), torch.randn(4, 3)
+    calls = [(aten.add.Tensor, (a, b), {}), (aten.add_.Tensor, (a, b), {}),
+             (aten.sort.default, (a,), {}), (aten.t.default, (a,), {}),
+             (aten.arange.start, (0, 7), {"device": "cpu", "dtype": torch.int64}),
+             (aten.mm.default, (a, b.t().contiguous()), {})]
+    runs = []
+    meta = hp._meta_like
+    monkeypatch.setattr(hp, "_meta_like", lambda t: runs.append(1) or meta(t))
+    monkeypatch.setattr(hp, "_OUTPUT_SPECS", {})
+
+    def shape(out, inputs):
+        return [("input", next(k for k, t in enumerate(inputs) if t is o))
+                if any(t is o for t in inputs) else (tuple(o.shape), tuple(o.stride()), o.dtype)
+                for o in torch.utils._pytree.tree_leaves(out) if isinstance(o, torch.Tensor)]
+    first = [shape(hp._null_outputs(f, x, k, "cpu"), x) for f, x, k in calls]
+    n = len(runs)
+    again = [shape(hp._null_outputs(f, x, k, "cpu"), x) for f, x, k in calls]
+    assert again == first and len(runs) == n                    # no meta run the second time
+    assert first[1] == [("input", 0)]                           # in place: the input itself
+    assert first[2] == [((4, 3), (3, 1), torch.float32), ((4, 3), (3, 1), torch.int64)]
+    # a different shape is another signature
+    hp._null_outputs(aten.add.Tensor, (torch.randn(2, 3), torch.randn(2, 3)), {}, "cpu")
+    assert len(runs) > n

@@ -864,16 +864,21 @@ def step_host_components(args, cfg) -> dict:
     for arm, d, L, b in cells(cfg):
         cd = cell_dir(out, arm, d, L, b)
         a = ready_cell(h, arm, d, L, b)
+        seconds, t0 = {}, time.time()
         rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording", code_path=a.code_path,
                                           context_length=a.length, batch=b,
                                           prompt_id=a.prompt_id, layers=a.layers)
+        seconds["record"], t0 = time.time() - t0, time.time()
         entries = () if arm == "dense" else (hp.block_sparse_entry(),)
         prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
                                         tolerance=cfg["chain_check_tolerance"])
+        seconds["isolated_and_null_pass"], t0 = time.time() - t0, time.time()
         bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
                                          tolerance=cfg["chain_check_tolerance"])
+        seconds["bare_pass"], t0 = time.time() - t0, time.time()
         priced, resid = residual_cell(a, rec, cd, bare, prof,
                                       tolerance=cfg["residual_spread_tolerance"])
+        seconds["residual"] = time.time() - t0
         realised = d
         if d is None:
             per_layer = list(getattr(a.backend, "last_layer_density", None) or ())
@@ -889,6 +894,7 @@ def step_host_components(args, cfg) -> dict:
                       "host_total_bare_ms": bare.total_s * 1e3,
                       "host_total_null_pass_ms": prof.total_s * 1e3,
                       "layer_residual": lr.summary(resid),
+                      "seconds": {k: round(v, 1) for k, v in seconds.items()},
                       "host_cost_sources": prof.sources(),
                       "price_routes": record["routes"],
                       "chain_gate": bt.gate_summary(record),

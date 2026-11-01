@@ -80,7 +80,7 @@ from torch.utils._python_dispatch import TorchDispatchMode, _disable_current_mod
 from .host_profile import (ISOLATED_OUTSIDE_LAYERS, ISOLATED_REPLAY, NULL_PASS, HostProfile,
                            NullDevice, NullEntry, ProfileMismatch, _isolated_origins, _layer_hooks,
                            _State, align_calls, all_empty, aten_name, device_call,
-                           isolated_positions, launching_names, met_at)
+                           isolated_positions, launching_names, met_at, signature)
 from .op_sequence import OpSequence, SeqKind
 from .sync_tape import SyncTape, TapeReplayer
 
@@ -129,22 +129,6 @@ def time_bare(fn: Callable[[], object], *, reps: int, overhead_ns: float,
         xs.append(t1 - t0)
     sync()
     return max(float(statistics.median(xs)) - overhead_ns, 0.0) * 1e-9
-
-
-def _leaf_key(x):
-    if isinstance(x, torch.Tensor):
-        return ("tensor", tuple(x.shape), tuple(x.stride()), str(x.dtype), x.device.type)
-    if x is None or isinstance(x, (bool, int, float, str)):
-        return x
-    if isinstance(x, (torch.dtype, torch.device, torch.memory_format, torch.layout)):
-        return str(x)
-    return type(x).__name__
-
-
-def signature(name: Optional[str], args, kwargs) -> tuple:
-    """What a cached price is keyed on (module docstring)."""
-    leaves, spec = pytree.tree_flatten((args, kwargs))
-    return (name, str(spec), tuple(_leaf_key(x) for x in leaves))
 
 
 def _clone(tree):
