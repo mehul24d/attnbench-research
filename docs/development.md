@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 5554 passed, 127 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 5580 passed, 128 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -21,7 +21,7 @@ architecture-gated, and the harness must import on a machine where a kernel is
 unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
 learned baseline (T2.10); without it one more test skips.
 
-The 127 skips are the honest part, and they split six ways: **38** need CUDA
+The 128 skips are the honest part, and they split six ways: **39** need CUDA
 or the GPU image's x-attention and block-sparse-attn, **65** read banked result
 files that `results/` keeps out of git, **9** are scripts
 `test_script_call_sites.py` has nothing to check because they import nothing
@@ -33,11 +33,11 @@ Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 5623 passed, 58 skipped**, because
+**With `results/` present the suite reads 5649 passed, 59 skipped**, because
 the 65 banked-file tests run instead of skipping (all but two do) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 5619 passed, 62 skipped). All three
-totals are 5681, which is
+present and those two hidden it reads 5645 passed, 63 skipped). All three
+totals are 5708, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 
@@ -66,6 +66,15 @@ the real classes, and the rulings of 1 Nov 2026 tested on them. Behind the
 boundary the replay runs on `cpu_boundary.GraphLikeBackend`, whose capture
 writes nothing, as a CUDA graph's does; and the chain check is recorded but
 not gated, because a CPU kernel runs inside its call.
+`tests/test_shakedown4_cpu.py` holds Shakedown 4's failures and the later
+rulings of 1 Nov 2026: the empty-slice `fill_`, alignment by call instance,
+the stand-in's shape-read prediction and the GPU session's `launch_check`
+against it, and compiled XAttention's mask as an output of its compiled
+function. Behind the boundary every profiler records shapes, which the
+stand-in reads. It cannot tell a host tensor from a device one, since it
+keeps every tensor on the CPU, so host-side work outside a host-compute
+region gets kernels here that the L4 never launches. A GPU recording checks
+the prediction and names any such difference.
 
 ## Earlier work in this repository
 

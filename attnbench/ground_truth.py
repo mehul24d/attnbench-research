@@ -450,8 +450,10 @@ def kernel_densities(arm: Arm, run: Callable[..., None]) -> dict:
     Shakedown 2 is why: the oracle and mean-pool backends keep no record, a
     recorder inside `compiled_default` read an overwritten CUDA-graph
     output, and compiled XAttention thresholds a slightly different mask
-    (0.66582 against 0.66688 eager). A dense arm has no mask and executes
-    every block. UNRUN on a GPU."""
+    (0.66582 against 0.66688 eager). Shakedown 4 is why the twin pass reads
+    a compiled arm's mask as an output of its compiled function, cloned at
+    once (`CompiledBackend`, ruling of 1 Nov 2026). A dense arm has no mask
+    and executes every block. UNRUN on a GPU."""
     from . import densities as D
     if arm.kind == DENSE:
         return dict(D.DENSE_FIELDS)
@@ -465,7 +467,10 @@ def kernel_densities(arm: Arm, run: Callable[..., None]) -> dict:
         tap = D.MaskTap(backend)
         if hasattr(backend, "reset_density"):
             backend.reset_density()
-        with D.KernelInputRecorder() as rec:
+        # A compiled arm's twin pass (`CompiledBackend.twin_pass`): each
+        # forward a new CUDA-graph step, its mask output cloned at once.
+        twin = backend.twin_pass() if hasattr(backend, "twin_pass") else contextlib.nullcontext()
+        with D.KernelInputRecorder() as rec, twin:
             run(backend=tap)
         return tap, rec
 

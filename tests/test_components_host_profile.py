@@ -9,6 +9,8 @@ between two launching calls, a launch is what the fake launch advances.
 
 from __future__ import annotations
 
+import itertools
+import json
 from dataclasses import replace
 
 import pytest
@@ -46,9 +48,15 @@ def device(clock, launch=LAUNCH):
     return d
 
 
-def k(aten, layer=None):
+_CALLS = itertools.count(1000)
+
+
+def k(aten, layer=None, call=None):
+    """A recorded kernel; `call` names its call instance (a fresh one by
+    default: one call per kernel)."""
     return SeqOp(SeqKind.KERNEL, layer=layer, aten_op=aten, api="cudaLaunchKernel",
-                 kernels=("k",))
+                 kernels=("k",), chain=(aten,) if aten else (),
+                 calls=(next(_CALLS) if call is None else call,))
 
 
 def sync(layer=None):
@@ -154,42 +162,67 @@ def test_a_call_that_launches_two_kernels_prices_the_second_at_the_launch_floor(
         clock.advance(3.0)
         torch.mm(W, W)
 
-    sq = seq(k("aten::mm"), k("aten::mm"))           # one call, two kernels
+    sq = seq(k("aten::mm", call=1), k("aten::mm", call=1))      # one call, two kernels
     log = run_pass(prefill, sq, clock)
     assert H.assign(sq, log) == {0: 4.0, 1: 1.0}     # gap 3 + launch 1; floor 1
 
 
-def test_two_calls_in_a_run_of_four_operations_split_evenly():
+def test_calls_that_launch_different_numbers_of_kernels_are_aligned_by_instance():
+    # Shakedown 4's t22 pass: three addmm calls launched 2, 2 and 1 kernels
+    # (a cuBLAS memset beside two of the GEMMs). By instance each call's
+    # kernels are its own; an even split of 5 over 3 was refused outright.
     clock = Clock()
 
     def prefill():
-        clock.advance(3.0)
-        torch.mm(W, W)
-        clock.advance(7.0)
-        torch.mm(W, W)
+        for gap in (3.0, 7.0, 5.0):
+            clock.advance(gap)
+            torch.mm(W, W)
 
-    sq = seq(*[k("aten::mm")] * 4)
-    assert H.assign(sq, run_pass(prefill, sq, clock)) == {0: 4.0, 1: 1.0, 2: 8.0, 3: 1.0}
+    sq = seq(k("aten::mm", call=1), k("aten::mm", call=1), k("aten::mm", call=2),
+             k("aten::mm", call=2), k("aten::mm", call=3))
+    assert H.assign(sq, run_pass(prefill, sq, clock)) == \
+        {0: 4.0, 1: 1.0, 2: 8.0, 3: 1.0, 4: 6.0}
+    # The same five kernels split 1, 2, 2: the costs follow the instances.
+    sq2 = seq(k("aten::mm", call=1), k("aten::mm", call=2), k("aten::mm", call=2),
+              k("aten::mm", call=3), k("aten::mm", call=3))
+    assert H.assign(sq2, run_pass(prefill, sq2, clock)) == \
+        {0: 4.0, 1: 8.0, 2: 1.0, 3: 6.0, 4: 1.0}
 
 
-def test_a_run_that_is_not_a_multiple_of_the_calls_is_a_mismatch():
+def test_more_recorded_calls_than_launching_calls_is_a_mismatch():
     clock = Clock()
 
     def prefill():
         torch.mm(W, W)
         torch.mm(W, W)
 
-    sq = seq(*[k("aten::mm")] * 3)
-    with pytest.raises(H.ProfileMismatch, match="3 is not a multiple of 2"):
+    sq = seq(k("aten::mm"), k("aten::mm"), k("aten::mm"))      # three calls recorded
+    with pytest.raises(H.ProfileMismatch, match="made no launching call there"):
         H.assign(sq, run_pass(prefill, sq, clock))
+
+
+def test_a_position_with_no_recorded_call_instance_is_refused():
+    clock = Clock()
+    sq = seq(replace(k("aten::mm"), calls=()))
+    with pytest.raises(H.ProfileMismatch, match="records no call instance.*not divided evenly"):
+        H.assign(sq, run_pass(lambda: torch.mm(W, W), sq, clock))
+    # Nor one whose instances do not match its chain.
+    sq = seq(replace(k("aten::mm"), chain=("aten::linear", "aten::mm"), calls=(1,)))
+    with pytest.raises(H.ProfileMismatch, match="records no call instance"):
+        H.assign(sq, run_pass(lambda: torch.mm(W, W), sq, clock))
 
 
 def test_a_recorded_operation_the_pass_never_launched_is_a_mismatch():
     # e.g. a Triton kernel called from Python that was not registered as an
     # entry: it would have run for real, and the pass made no launching call.
     clock = Clock()
-    sq = seq(k("aten::mm"), k(None))
-    with pytest.raises(H.ProfileMismatch, match="an entry point.*no launching call"):
+    sq = seq(k("aten::mm"), k("aten::add"))
+    with pytest.raises(H.ProfileMismatch, match="aten::add in layer None.*no launching call"):
+        H.assign(sq, run_pass(lambda: torch.mm(W, W), sq, clock))
+    # A launch with no operator around it whose Python call was not recorded
+    # either is refused rather than taken as one call.
+    sq = seq(k("aten::mm"), replace(k(None), calls=()))
+    with pytest.raises(H.ProfileMismatch, match="records no call instance"):
         H.assign(sq, run_pass(lambda: torch.mm(W, W), sq, clock))
 
 
@@ -201,8 +234,8 @@ def test_a_launching_call_the_recording_does_not_have_is_a_mismatch():
         torch.mm(W, W)
 
     sq = seq(k("aten::mm"))
-    # Inside the run: one recorded operation, two launching calls.
-    with pytest.raises(H.ProfileMismatch, match="1 is not a multiple of 2"):
+    # One recorded call, two launching calls.
+    with pytest.raises(H.ProfileMismatch, match="1 launching call.*after the recorded"):
         H.assign(sq, run_pass(prefill, sq, clock))
     # After the sequence ends: mm, add, then another mm.
     def extra():
@@ -231,7 +264,7 @@ def test_calls_in_another_order_than_the_recording_are_a_mismatch():
         torch.mm(W, W)
 
     sq = seq(k("aten::mm"), k("aten::add"))
-    with pytest.raises(H.ProfileMismatch, match="made no launching call there"):
+    with pytest.raises(H.ProfileMismatch, match="call 0 is to aten::mm.*was to aten::add"):
         H.assign(sq, run_pass(prefill, sq, clock))
 
 
@@ -259,7 +292,7 @@ def test_the_same_operator_in_another_layer_is_another_run():
         H.assign(sq, run_pass(prefill, sq, clock))
 
 
-def test_a_synchronisation_ends_a_run_but_identical_neighbours_are_divided_together():
+def test_a_synchronisation_between_two_calls_has_no_cost_and_one_inside_a_call_splits_nothing():
     clock = Clock()
     tape = SyncTape("cpu")
 
@@ -273,6 +306,10 @@ def test_a_synchronisation_ends_a_run_but_identical_neighbours_are_divided_toget
     host = H.assign(sq, run_pass(prefill, sq, clock, tape=tape))
     assert host == {0: 4.0, 2: 5.0}                  # no cost at the synchronisation
     assert 1 not in host
+    # One call whose kernels fall either side of its own synchronisation (an
+    # index_put_ that reads its indices back) is still one call.
+    sq = seq(k("aten::mm", call=1), sync(), k("aten::mm", call=1), k("aten::mm", call=2))
+    assert H.assign(sq, run_pass(prefill, sq, clock, tape=tape)) == {0: 4.0, 2: 1.0, 3: 5.0}
 
 
 # --------------------------------------------------------------------------
@@ -542,7 +579,7 @@ def test_the_launch_floor_is_the_median_not_the_slowest_launch():
         torch.add(W, 1)
         torch.mul(W, 2)
 
-    sq = seq(k("aten::mm"), k("aten::mm"), k("aten::add"), k("aten::mul"))
+    sq = seq(k("aten::mm", call=7), k("aten::mm", call=7), k("aten::add"), k("aten::mul"))
     log = H.null_pass(prefill, SyncTape("cpu"), seq(k("aten::mm"), k("aten::add"),
                                                     k("aten::mul")),
                       device=dev, clock=clock)
@@ -721,7 +758,7 @@ def test_a_gather_inside_a_layer_with_no_recorded_chain_falls_back_to_the_isolat
 
 def test_a_gather_inside_a_layer_with_its_chain_is_met_at_the_embedding():
     clock = Clock()
-    g = replace(gathered(layer=0), chain=("aten::embedding", "aten::gather"))
+    g = replace(gathered(layer=0), chain=("aten::embedding", "aten::gather"), calls=(1, 2))
     sq = seq(g, k("aten::mm", layer=0))
     assert H.isolated_positions(sq) == ()
     layer = Layer(embed_then_mm(clock))
@@ -749,9 +786,13 @@ def test_a_composite_whose_origin_the_dispatcher_never_shows_is_refused():
 # Composite and factory calls (researcher's ruling, 1 Nov 2026)
 # --------------------------------------------------------------------------
 
-def chained(*chain, layer=None):
+def chained(*chain, layer=None, call=None):
+    """A kernel under `chain`, outermost first; kernels given one `call` came
+    from one call of every operator in it."""
+    calls = tuple(next(_CALLS) for _ in chain) if call is None else \
+        tuple(call * 100 + j for j in range(len(chain)))
     return SeqOp(SeqKind.KERNEL, layer=layer, aten_op=chain[-1], origin=chain[0],
-                 chain=tuple(chain), api="cudaLaunchKernel", kernels=("k",))
+                 chain=tuple(chain), calls=calls, api="cudaLaunchKernel", kernels=("k",))
 
 
 def test_a_copy_is_met_at_the_composite_the_dispatcher_shows():
@@ -778,8 +819,8 @@ def test_one_composite_call_over_two_different_kernels_takes_one_gap_and_the_flo
     def prefill():
         clock.advance(2.0)
         x.mean(-1)                          # sum's fill_, then div_'s copy_
-    sq = seq(chained("aten::mean", "aten::sum", "aten::fill_"),
-             chained("aten::mean", "aten::div_", "aten::copy_"))
+    sq = seq(chained("aten::mean", "aten::sum", "aten::fill_", call=5),
+             chained("aten::mean", "aten::div_", "aten::copy_", call=5))
     p = H.profile(prefill, SyncTape("cpu"), sq, device=device(clock), reps=1, clock=clock,
                   warmup=0)
     assert p.host_s == {0: 2.0 + LAUNCH, 1: LAUNCH}     # the floor is the median launch
@@ -947,31 +988,46 @@ def test_a_composite_s_direct_time_runs_from_the_last_call_s_end_less_the_flushe
     p = check_profile(sq, {0: 9e-6, 1: 30e-6, 2: 25e-6, 3: 1e-6},
                       {1: H.CHAIN, 2: H.CHAIN, 3: H.CHAIN},
                       {1: "aten::_to_copy", 2: "aten::mean", 3: "aten::mean"})
-    c = H.chain_check(chain_trace(flush_between=6), sq, p, rel_tol=0.1, abs_tol_s=1e-6)
+    c = H.chain_check(chain_trace(flush_between=6), sq, p, aggregate_tol=0.1)
     to, mean = c["operators"]["aten::_to_copy"], c["operators"]["aten::mean"]
     assert to["calls"] == 1 and to["direct_s"] == pytest.approx((150 - 110 - 6 - 4) * 1e-6)
     assert to["sources"] == [H.CHAIN]
     assert to["chain_s"] == pytest.approx(30e-6)
     assert mean["calls"] == 1 and mean["chain_s"] == pytest.approx(26e-6)   # both positions
     assert mean["direct_s"] == pytest.approx((190 - 150 - 5) * 1e-6)
-    assert to["allowed_s"] == pytest.approx(0.1 * 30e-6 + 1e-6) and to["passed"]
-    assert not mean["passed"] and c["failed"] == ["aten::mean"] and not c["passed"]
+    assert mean["ratio"] == pytest.approx(26 / 35)
+    assert [(r["operator"], r["position"]) for r in c["calls"]] == \
+        [("aten::_to_copy", 1), ("aten::mean", 2)]
+    assert c["calls"][1]["ratio"] == pytest.approx(26 / 35)
     assert c["checked_calls"] == 2 and c["unchecked_calls"] == 0
 
 
-def test_a_composite_within_the_tolerance_passes_and_one_outside_fails():
+def test_the_gate_is_the_summed_difference_against_the_whole_host_time():
+    # Ruling of 1 Nov 2026: in aggregate, not per call. _to_copy: 30 against
+    # 36 us; mean: 35 both ways. |diff| summed is 6 us of the profile's 74.
     sq = chain_seq()
     base = {0: 9e-6, 1: 30e-6, 2: 34e-6, 3: 1e-6}
     srcs = {1: H.CHAIN, 2: H.CHAIN, 3: H.CHAIN}
     met = {1: "aten::_to_copy", 2: "aten::mean", 3: "aten::mean"}
-    c = H.chain_check(chain_trace(), sq, check_profile(sq, base, srcs, met),
-                      rel_tol=0.0, abs_tol_s=0.0)
-    assert c["operators"]["aten::mean"]["passed"]                # 35 us both ways
-    assert not c["operators"]["aten::_to_copy"]["passed"]        # 30 against 36
-    assert c["failed"] == ["aten::_to_copy"]
-    c = H.chain_check(chain_trace(), sq, check_profile(sq, base, srcs, met),
-                      rel_tol=0.0, abs_tol_s=6e-6)
-    assert c["passed"]                                           # 6 us allowed per call
+    p = check_profile(sq, base, srcs, met)
+    c = H.chain_check(chain_trace(), sq, p, aggregate_tol=0.10)
+    assert c["abs_diff_s"] == pytest.approx(6e-6) and c["host_s"] == pytest.approx(74e-6)
+    assert c["share"] == pytest.approx(6 / 74) and c["passed"]
+    assert not H.chain_check(chain_trace(), sq, p, aggregate_tol=0.08)["passed"]
+    # Differences of opposite sign do not cancel: +6 and -6 are 12 us.
+    over = check_profile(sq, {**base, 2: 40e-6}, srcs, met)
+    c = H.chain_check(chain_trace(), sq, over, aggregate_tol=1.0)
+    assert c["abs_diff_s"] == pytest.approx(12e-6)
+
+
+def test_a_check_over_no_call_does_not_pass():
+    sq = seq(k("aten::mm"), sync(), chained("aten::to", "aten::_to_copy", "aten::copy_"))
+    t = IsoTrace()
+    t.call(["aten::mm"], 100, 10)
+    t.call(["aten::to", "aten::_to_copy", "aten::copy_"], 130, 20, flush=4)
+    c = H.chain_check(t.trace(), sq, check_profile(sq, {0: 9e-6, 2: 30e-6}, {2: H.CHAIN},
+                                                   {2: "aten::_to_copy"}), aggregate_tol=1.0)
+    assert c["checked_calls"] == 0 and not c["passed"]
 
 
 def test_a_composite_after_a_kept_out_call_or_first_in_line_is_unchecked():
@@ -982,7 +1038,7 @@ def test_a_composite_after_a_kept_out_call_or_first_in_line_is_unchecked():
                       {1: "aten::_to_copy", 2: "aten::mean", 3: "aten::mean"})
     p = replace(p, cost_source={**p.cost_source, 0: H.ISOLATED_REPLAY})
     sq0 = replace(sq, ops=(replace(sq.ops[0], origin="aten::mm"),) + sq.ops[1:])
-    c = H.chain_check(chain_trace(), sq0, p, rel_tol=1.0, abs_tol_s=0.0)
+    c = H.chain_check(chain_trace(), sq0, p, aggregate_tol=1.0)
     assert c["unchecked_calls"] == 1 and set(c["operators"]) == {"aten::mean"}
     assert c["operators"]["aten::mean"]["sources"] == [H.DEVICE_ARGUMENT]
     tail = seq(*sq.ops[1:])                                      # the composite first in line
@@ -991,7 +1047,7 @@ def test_a_composite_after_a_kept_out_call_or_first_in_line_is_unchecked():
                                         {0: H.CHAIN, 1: H.CHAIN, 2: H.CHAIN},
                                         {0: "aten::_to_copy", 1: "aten::mean",
                                          2: "aten::mean"}),
-                          rel_tol=1.0, abs_tol_s=0.0)
+                          aggregate_tol=1.0)
     assert first["unchecked_calls"] == 1 and set(first["operators"]) == {"aten::mean"}
 
 
@@ -1002,8 +1058,8 @@ def test_a_sync_between_two_calls_leaves_the_second_unchecked():
     t.call(["aten::to", "aten::_to_copy", "aten::copy_"], 130, 20, flush=4)
     c = H.chain_check(t.trace(), sq, check_profile(sq, {0: 9e-6, 2: 30e-6}, {2: H.CHAIN},
                                                    {2: "aten::_to_copy"}),
-                      rel_tol=1.0, abs_tol_s=0.0)
-    assert c["checked_calls"] == 0 and c["unchecked_calls"] == 1 and c["passed"]
+                      aggregate_tol=1.0)
+    assert c["checked_calls"] == 0 and c["unchecked_calls"] == 1
 
 
 def test_a_chain_priced_call_the_isolated_replay_does_not_make_is_refused():
@@ -1014,7 +1070,7 @@ def test_a_chain_priced_call_the_isolated_replay_does_not_make_is_refused():
     with pytest.raises(H.ProfileMismatch, match="no call to aten::_to_copy"):
         H.chain_check(t.trace(), sq, check_profile(sq, {0: 9e-6, 1: 30e-6}, {1: H.CHAIN},
                                                    {1: "aten::_to_copy"}),
-                      rel_tol=1.0, abs_tol_s=0.0)
+                      aggregate_tol=1.0)
 
 
 def test_an_operator_with_no_device_argument_is_no_factory():
@@ -1030,3 +1086,113 @@ def test_the_met_at_operator_is_the_outermost_the_pass_issued():
     sq = seq(chained("aten::mean", "aten::div_", "aten::to", "aten::_to_copy", "aten::copy_"))
     assert H.met_at(sq, ["aten::copy_", "aten::_to_copy", "aten::mean"]) == {0: "aten::mean"}
     assert H.met_at(sq, ["aten::copy_", "aten::_to_copy"]) == {0: "aten::_to_copy"}
+
+
+# --------------------------------------------------------------------------
+# Empty calls and the boolean assignment (researcher's ruling, 1 Nov 2026)
+# --------------------------------------------------------------------------
+
+def test_a_call_on_an_empty_target_launches_nothing_and_its_dispatch_stays_in_the_next_gap():
+    # Shakedown 4: `causal_mask[:, :, :, chunk_end:] = -inf` with chunk_end at
+    # the end is a fill_ on an empty slice; CUDA launches nothing for it.
+    clock = Clock()
+    x = torch.ones(2, 4)
+
+    def prefill():
+        x.fill_(0.0)                        # recorded: fill_ launches
+        clock.advance(3.0)
+        x[:, 4:].fill_(1.0)                 # empty: no launch, no position
+        clock.advance(2.0)
+        torch.mm(W, W)
+
+    sq = seq(k("aten::fill_"), k("aten::mm"))
+    log = run_pass(prefill, sq, clock, tape=None)
+    assert [i.name for i in log.issues] == ["aten::fill_", "aten::mm"]
+    assert log.empty == [("aten::fill_", None, 1)]
+    assert H.assign(sq, log) == {0: LAUNCH, 1: 3.0 + 2.0 + LAUNCH}   # its dispatch: in mm's gap
+    p = H.profile(prefill, SyncTape("cpu"), sq, device=device(clock), reps=2, clock=clock)
+    assert p.empty_calls == ({"operator": "aten::fill_", "layer": None, "position": 1},)
+    assert H.from_record(json.loads(H.dumps(p))).empty_calls == p.empty_calls
+
+
+def test_an_empty_call_s_own_instrument_time_is_not_in_the_gap(monkeypatch):
+    clock = Clock()
+    real = H._null_outputs
+
+    def slow(*a, **kw):
+        clock.advance(50.0)                 # the instrument's shape inference
+        return real(*a, **kw)
+    monkeypatch.setattr(H, "_null_outputs", slow)
+    x = torch.ones(0, 3)
+
+    def prefill():
+        x.fill_(1.0)                        # empty
+        clock.advance(2.0)
+        torch.mm(W, W)
+    sq = seq(k("aten::mm"))
+    log = H.null_pass(prefill, SyncTape("cpu"), seq(k("aten::fill_"), k("aten::mm")),
+                      device=device(clock), clock=clock)
+    assert [i.name for i in log.issues] == ["aten::mm"] and log.issues[0].gap_s == 2.0
+    assert H.assign(sq, log) == {0: 2.0 + LAUNCH}
+
+
+def test_a_call_with_one_non_empty_output_still_launches():
+    clock = Clock()
+    x = torch.ones(3, 0)
+
+    def prefill():
+        torch.cat([x, torch.ones(3, 2)], dim=1)      # inputs empty and not, output not
+    log = run_pass(prefill, seq(k("aten::cat")), clock)
+    assert [i.name for i in log.issues] == ["aten::cat"] and log.empty == []
+    assert H.all_empty((torch.ones(0), torch.ones(0, 2))) and \
+        not H.all_empty((torch.ones(0), torch.ones(1))) and not H.all_empty((None, 3))
+
+
+def test_the_pass_runs_a_boolean_assignment_as_written_and_nulls_its_index_put():
+    # The tape's stand-in for `x[mask] = v` (nonzero_static, unbind, a device
+    # fill) ran for real in Shakedown 4's pass and was charged to the arm's
+    # index_put_ (365 us against 40 recorded). The pass takes the tape entry
+    # and lets the null mode meet the index_put_ the assignment reaches.
+    clock = Clock()
+    x = torch.zeros(4, 3)
+
+    def prefill():
+        m = x > -1                           # all True: the stand-in would need a count
+        clock.advance(2.0)
+        x[m] = 5.0
+    with TapeRecorder("cpu") as rec:
+        prefill()
+    assert [e.kind for e in rec.tape.entries] == ["bool_setitem"]
+    x.zero_()
+    calls = []
+
+    class Watch(torch.utils._python_dispatch.TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            calls.append(H.aten_name(func))
+            return func(*args, **(kwargs or {}))
+    sq = seq(k("aten::gt"), chained("aten::index_put_", "aten::_index_put_impl_",
+                                    "aten::masked_fill_"))
+    with Watch():
+        log = run_pass(prefill, sq, clock, tape=rec.tape)
+    assert [i.name for i in log.issues] == ["aten::gt", "aten::index_put_"]
+    assert "aten::nonzero_static" not in calls and torch.equal(x, torch.zeros(4, 3))
+    assert H.assign(sq, log)[1] == 2.0 + LAUNCH
+
+
+def test_the_instance_is_taken_at_the_operator_the_pass_met_not_the_outermost():
+    # The dispatcher never shows the pass `aten::linear` (CompositeImplicit),
+    # so it meets these kernels at `mm`; their `mm` instances differ, so they
+    # are two calls even though the chain says one `linear` above both.
+    clock = Clock()
+
+    def prefill():
+        clock.advance(3.0)
+        torch.mm(W, W)
+        clock.advance(4.0)
+        torch.mm(W, W)
+    a = replace(chained("aten::linear", "aten::mm"), calls=(1, 10))
+    b = replace(chained("aten::linear", "aten::mm"), calls=(1, 11))
+    sq = seq(a, b)
+    assert H.assign(sq, run_pass(prefill, sq, clock)) == {0: 4.0, 1: 5.0}
+    assert H.call_instance(a, "aten::mm") == 10 and H.call_instance(a, "aten::linear") == 1
+    assert H.call_instance(a, "aten::add") is None

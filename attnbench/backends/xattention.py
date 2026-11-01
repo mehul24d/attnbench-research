@@ -251,6 +251,22 @@ class XAttentionBackend(AttentionBackend):
         return simple_mask
 
     def forward(self, q, k, v, cfg: AttnConfig, mask=None):
+        out, block_mask = self.forward_and_mask(q, k, v, cfg, mask=mask)
+        nb = block_mask.shape[-1]
+        # Kept on the device: a .item() here would sync the stream once per
+        # layer inside the timed prefill. Read after the timer stops
+        # (generation.generate_one).
+        self.last_layer_density.append(density_tensor(block_mask, nb, nb))
+        return out
+
+    def forward_and_mask(self, q, k, v, cfg: AttnConfig, mask=None):
+        """The layer's output and the block mask its kernel ran, (1, H, nb,
+        nb). A compiled variant compiles this, so the mask is an output of
+        the compiled function in the timed graph and in its untimed twin
+        alike, and its density is read outside the graph (researcher's
+        ruling, 1 Nov 2026: Shakedown 4's compiled density read a CUDA-graph
+        output a later replay had overwritten, `last_layer_density` inside
+        the graph)."""
         if mask is not None:
             raise UnsupportedConfig("xattention selects its own blocks; got an external mask")
         if cfg.mask != "causal":
@@ -265,10 +281,6 @@ class XAttentionBackend(AttentionBackend):
 
         _, h, s, d = q.shape
         nb = -(-s // XATTN_BLOCK_SIZE)
-        # Kept on the device: a .item() here would sync the stream once per
-        # layer inside the timed prefill. Read after the timer stops
-        # (generation.generate_one).
-        self.last_layer_density.append(density_tensor(simple_mask, nb, nb))
 
         # From here to the return: Xattention_prefill's own kernel call, same
         # arguments, same order. Bitwise equality with it is a CUDA test.
@@ -288,11 +300,12 @@ class XAttentionBackend(AttentionBackend):
         k_cu_seq_lens = torch.tensor([0, s], dtype=torch.int32, device=q.device)
         head_mask_type = torch.tensor(
             [1 for _ in range(h)], device=q.device, dtype=torch.int32)
+        block_mask = simple_mask[:, :, :nb, :nb].contiguous()    # where upstream makes it
         out = block_sparse_attn_func(
             qf, kf, vf, q_cu_seq_lens, k_cu_seq_lens, head_mask_type, None,
-            simple_mask[:, :, :nb, :nb].contiguous(), s, s,
+            block_mask, s, s,
             p_dropout=0.0, deterministic=True, is_causal=True)
-        return out.view(1, s, h, d).transpose(1, 2)
+        return out.view(1, s, h, d).transpose(1, 2), block_mask
 
 
 # ---- the method's own threshold profiler -----------------------------------

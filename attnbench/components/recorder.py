@@ -14,7 +14,11 @@ directory:
     sequence;
   - `tape.pt`: every host-device interaction of the prefill (`sync_tape`),
     from a second, untraced pass, which the CUDA-graph replay needs;
-  - `recording.json`: what was recorded, with the sha256 of each file.
+  - `recording.json`: what was recorded, with the sha256 of each file;
+  - on a GPU, `launch_check.json`: the CPU stand-in's predicted launches
+    against the trace's (`cpu_boundary.launch_check`, researcher's ruling,
+    1 Nov 2026). Any disagreement is refused, after the check is written:
+    the CPU dry run would have tested a different sequence.
 
 The second pass also captures the masks again, this time as copies taken
 at each kernel call. The traced run keeps references, not copies, so as to
@@ -126,7 +130,8 @@ def record_arm_prefill(run_prefill: Callable[[], None], out_dir, *, code_path: C
                        layers: Sequence[torch.nn.Module] = (), warmup: int = 1,
                        cuda: Optional[bool] = None, kernel_module=None,
                        parse=op_sequence.parse_trace,
-                       record_trace=record_prefill_trace) -> Recording:
+                       record_trace=record_prefill_trace,
+                       launch_check: Optional[bool] = None) -> Recording:
     """Trace, sequence, masks of the traced run, and tape (module docstring).
 
     `parse` and `record_trace` are T2.3's functions; they are parameters so
@@ -151,6 +156,15 @@ def record_arm_prefill(run_prefill: Callable[[], None], out_dir, *, code_path: C
         raise RecordingError(f"the recorder ran the prefill {n['calls']} times, "
                              f"expected {profiled}")
     seq = parse(trace_path, code_path, context_length=context_length, batch=batch)
+    from .. import cpu_boundary
+    if cuda and not cpu_boundary.active() if launch_check is None else launch_check:
+        check = cpu_boundary.launch_check(trace_path)
+        (out / "launch_check.json").write_text(json.dumps(check, indent=1, default=str))
+        if not check["passed"]:
+            raise RecordingError(
+                f"the CPU stand-in predicted other launches than the trace records "
+                f"({check['mismatches']} of {check['checked_calls']} calls: "
+                f"{check['by_operator']}); see launch_check.json")
     seq_path = out / "sequence.json"
     record = op_sequence.to_record(seq)
     seq_path.write_text(json.dumps({**record, "sha256": op_sequence.record_sha256(record)},

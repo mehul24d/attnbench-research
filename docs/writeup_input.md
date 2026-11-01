@@ -322,7 +322,7 @@ Pareto-optimal against 45+ models claiming greater efficiency.
 | **Regime** | **batch 1**, inference only, no backward pass |
 | **n** | 300 per arm per (band, task) on the three-task grid at 2048–8192; 100 for `niah_single` at 2048–16384; 50 at 32768 |
 | **Masks** | Oracle: importance derived from a full dense attention pass (`score_source=dense_softmax_fp32` on every row) |
-| **Cost** | ₹10,802 itemised across 60 priced sessions in `docs/spend_ledger.md` (≈ US$120), summed from the ledger's table. *(This row read "≈₹6,000 (~US$70) … ₹2,413 itemised" until 2026-10-01, a figure the README had withdrawn on 2026-09-19.)* |
+| **Cost** | ₹10,885 itemised across 61 priced sessions in `docs/spend_ledger.md` (≈ US$120), summed from the ledger's table. *(This row read "≈₹6,000 (~US$70) … ₹2,413 itemised" until 2026-10-01, a figure the README had withdrawn on 2026-09-19.)* |
 
 Eight stages. Stages 0–1 gate capability and correctness against a float64
 reference; Stage 2 is kernel microbenchmarks on synthetic tensors with

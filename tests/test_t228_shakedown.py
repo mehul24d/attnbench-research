@@ -24,7 +24,7 @@ import t227_shakedown as sh  # noqa: E402
 import t228_steps as st  # noqa: E402
 from test_t227_shakedown import fake_runner  # noqa: E402
 
-STEPS = ("nvml", "t216", "t213", "density", "t212", "t22", "queue")
+STEPS = ("nvml", "t216", "t213", "density", "mask_ab", "t212", "t22", "queue")
 CFG = st._config()
 
 
@@ -57,7 +57,7 @@ def test_resuming_after_a_failure_needs_the_earlier_steps_to_have_passed(tmp_pat
     ran = []
     assert sh.run_session(tmp_path, start="t213", extra=[], dry_run=False, sync=False,
                           runner=fake_runner({}, ran), config=CFG) == 0
-    assert ran == ["t213", "density", "t212", "t22", "queue"]
+    assert ran == ["t213", "density", "mask_ab", "t212", "t22", "queue"]
     assert any(p.name.startswith("03_t213.failed.") for p in tmp_path.iterdir())
 
 
@@ -183,7 +183,7 @@ def test_check_control_is_read_against_t216s_record(tmp_path, monkeypatch):
 
 # --- the card steps: skipped on a CPU, refused when real ----------------------------------
 
-@pytest.mark.parametrize("step", ["nvml", "t216", "density", "t212", "t22"])
+@pytest.mark.parametrize("step", ["nvml", "t216", "density", "mask_ab", "t212", "t22"])
 def test_the_card_steps_skip_a_cpu_dry_run_and_fail_a_real_one(tmp_path, step, monkeypatch):
     monkeypatch.setattr(st, "_cuda", lambda: False)
     monkeypatch.setattr("t227_steps._cuda", lambda: False)
@@ -421,8 +421,7 @@ def _t22_rig(monkeypatch, *, builder_rc=0):
     monkeypatch.setattr(replay, "isolated_replay", lambda *a, **k: "iso_trace")
     monkeypatch.setattr(hp, "isolated_host_s", lambda *a, **k: {})
     monkeypatch.setattr(hp, "chain_check", lambda *a, **k: {
-        "passed": False, "failed": ["aten::mean"], "rel_tol": k["rel_tol"],
-        "abs_tol_s": k["abs_tol_s"]})
+        "passed": False, "share": 0.2, "aggregate_tol": k["aggregate_tol"]})
 
     def run(cmd, **kw):
         out = Path(cmd[cmd.index("--out") + 1])
@@ -444,8 +443,8 @@ def test_t22_profiles_the_tape_and_reads_the_builders_32768_row_against_the_plan
     f = json.loads((tmp_path / "result.json").read_text())["findings"]
     assert got["entries"] == ("entry",) and got["reps"] == 5          # a sparse arm: its entry point nulled
     assert f["positions"] == 2 and (tmp_path / "host_profile.json").exists()
-    assert f["chain_check"]["failed"] == ["aten::mean"]          # a finding: t22 does not gate
-    assert (f["chain_check"]["rel_tol"], f["chain_check"]["abs_tol_s"]) == pytest.approx((0.25, 5e-6))
+    assert f["chain_check"]["passed"] is False                   # a finding: t22 does not gate
+    assert f["chain_check"]["aggregate_tol"] == pytest.approx(0.10)
     c = f["against_the_plans_94pct"]
     assert c["seq_len"] == 32768 and c["plan_figure"] == 0.94
     assert (c["cprofile"], c["torch_profiler"], c["lower_bound"]) == (0.9, 0.5, 0.3)
@@ -605,3 +604,32 @@ def test_the_queue_step_fails_only_on_the_null_kernel_in_shakedown_1s_setting(
     assert f["add"]["agreed_values"] == [] and f["add"]["lower_bound"] == 1   # a finding
     null_q[0] = None
     assert st.run_step("queue", _queue_args(tmp_path / "b"), st.STEP_FUNCS) == 1
+
+
+# --- the mask-output A/B (ruling, 1 Nov 2026) ------------------------------------------------
+
+def test_the_a_b_summary_is_b_minus_a_with_the_wider_spread():
+    got = st.ab_summary({"with_mask_output": [0.0102, 0.0100, 0.0101, 0.0103],
+                         "without_mask_output": [0.0100, 0.0099, 0.0100, 0.0098]})
+    assert got["arms"]["with_mask_output"]["median_ms"] == pytest.approx(10.15)
+    assert got["arms"]["without_mask_output"]["median_ms"] == pytest.approx(9.95)
+    assert got["b_minus_a_ms"] == pytest.approx(0.2)
+    assert got["b_minus_a_pct"] == pytest.approx(100 * 0.2 / 9.95)
+    assert got["spread_ms"] == max(r["iqr_ms"] for r in got["arms"].values())
+
+
+def test_the_a_b_step_runs_its_child_and_fails_when_the_child_does(tmp_path, monkeypatch):
+    monkeypatch.setattr(st, "_need_cuda", lambda args, what: None)
+    seen = []
+
+    def run(cmd):
+        seen.append(cmd)
+        (tmp_path / "mask_ab.json").write_text(json.dumps({"b_minus_a_ms": 0.1}))
+        return 0
+    monkeypatch.setattr(st, "_run", run)
+    found = st.step_mask_ab(_args(tmp_path, "mask_ab", dry_run=False))
+    assert found == {"b_minus_a_ms": 0.1} and "mask-ab-one" in seen[0]
+    monkeypatch.setattr(st, "_run", lambda cmd: 1)
+    (tmp_path / "mask_ab.json").unlink()
+    with pytest.raises(st.StepFailed, match="A/B failed"):
+        st.step_mask_ab(_args(tmp_path, "mask_ab", dry_run=False))

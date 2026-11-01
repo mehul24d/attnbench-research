@@ -35,19 +35,30 @@ launch itself. The instrument's own work (shape inference, allocating the
 output) lies between the call's start and its end and is in neither.
 
 **Which position gets which cost.** A recorded call can launch several
-kernels (a sort, a library GEMM with a split-K reduce). Its first operation
+kernels (a sort, a library GEMM with a cuBLAS memset). Its first operation
 carries gap + launch; each further operation of the same call carries one
-launch, priced at the pass's median null launch (`launch_floor_s`). The
-recorded sequence does not say which operations came from one call, so calls
-are matched by *runs*: the maximal stretch of consecutive issued operations
-with one aten operator in one layer. A run of r operations met by c launching
-calls gives k = r / c operations per call, and r must be a multiple of c. A
-run that is not (a call that launched no kernel this time, an entry that was
-not nulled, a path that differs from the recording) is a `ProfileMismatch`,
-and no cost is given to a different sequence. When the calls of a run launch
-different numbers of kernels the division spreads them evenly; the run's
-total is right and the split inside it is not, and that is the one thing this
-alignment cannot see.
+launch, priced at the pass's median null launch (`launch_floor_s`). Which
+operations came from one call is recorded (researcher's ruling, 1 Nov 2026):
+each operation keeps the call instance of every operator around its launch
+(`SeqOp.calls`; the launch's correlation ties it to its kernel, the calls
+around it on the host thread are its instance; an entry point's is its
+Python call), and the operations the pass
+met at one call instance are that call's. The pass's launching calls are
+matched in order to those calls, one to one, by operator and layer. A call
+the pass did not make, or made where the recording has none (an entry that
+was not nulled, a path that differs from the recording), is a
+`ProfileMismatch`, and no cost is given to a different sequence. A position
+with no recorded call instance is refused: positions are never divided
+evenly among calls (Shakedown 4's t22 pass: three `addmm` calls launched 2,
+2 and 1 kernels).
+
+**Empty calls** (researcher's ruling, 1 Nov 2026). A call whose outputs, or
+whose in-place target, are all empty (numel 0) launches nothing on a CUDA
+build (Shakedown 4: `fill_` on an empty slice, `Xattention.py:221`). The pass
+makes no launch for it and gives it no position; its dispatch up to the call
+stays in the next launching call's gap, so its host cost is priced there with
+no device cost, and the profile flags that position (`HostProfile.
+empty_calls`).
 
 **Host-side compute** (`attnbench::host_compute`, `trace_recording.
 host_compute()`) is measured directly in the same pass: the time between the
@@ -90,8 +101,8 @@ from before 1 Nov 2026: `aten_op` and `origin` differ and `chain` is empty)
 is priced by the isolated replay at its `origin`, like the embedding, and is
 refused only where neither route reaches it. `chain_check` holds the
 composites' costs against their host time measured directly in the isolated
-replay, within the T4.1 tolerance. Any other position the pass does not meet
-is refused, as before.
+replay, in aggregate within a T4.1 lock value (ruling, 1 Nov 2026). Any
+other position the pass does not meet is refused, as before.
 
 **What this does not cover**, refused rather than approximated: a CUDA-graph
 launch in the sequence (a compiled arm's pass has its own null form, T2.21),
@@ -180,6 +191,7 @@ class Issue:
 class PassLog:
     issues: list = field(default_factory=list)
     markers: list = field(default_factory=list)       # host-compute durations, in order
+    empty: list = field(default_factory=list)         # (operator, layer, issues before it)
     launches: list = field(default_factory=list)      # every null launch, in order
     isolated: list = field(default_factory=list)      # calls priced by the isolated replay
 
@@ -271,8 +283,21 @@ class NullDeviceMode(TorchDispatchMode):
             return func(*args, **kwargs)
         entry = self.clock()      # after the instrument's own classification
         out = _null_outputs(func, args, kwargs, self.device.device_type)
+        if all_empty(out):
+            # No launch, no position; its dispatch stays in the next gap and
+            # the instrument's own time is taken out (module docstring).
+            self.state.marker_s += self.clock() - entry
+            self.log.empty.append((name, self.state.layer, len(self.log.issues)))
+            return out
         self.state.issue(self.log, name, entry, self.device, self.clock, device_argument=how)
         return out
+
+
+def all_empty(out) -> bool:
+    """Whether a call's outputs (for an in-place call, its target) are all
+    empty tensors: at least one tensor, and none with an element."""
+    ts = [t for t in pytree.tree_leaves(out) if isinstance(t, torch.Tensor)]
+    return bool(ts) and all(t.numel() == 0 for t in ts)
 
 
 def _meta_like(t):
@@ -482,7 +507,7 @@ def null_pass(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, 
     log = PassLog()
     state = _State(clock, clock())
     mode = NullDeviceMode(device, launching, log, state, clock, isolated=origins)
-    rep = TapeReplayer(tape, staged)
+    rep = TapeReplayer(tape, staged, serve_setitem=False)
     with rep, _entries(entries, device, log, state, clock), \
             _host_compute_regions(log, state, clock), _layer_hooks(layers, state), mode:
         run_prefill()
@@ -572,6 +597,47 @@ def assign(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> di
     return align(seq, log, isolated=isolated)[0]
 
 
+def call_instance(op, met: Optional[str]) -> Optional[int]:
+    """The recorded call instance of the operator the pass met `op` at: the
+    outermost in its chain with that name, else the outermost in-place one
+    whose out-of-place form it is (`met_at`); for a launch with no operator
+    around it (an entry point), the Python call recorded as its instance.
+    None when no instance is recorded."""
+    if not op.chain and len(op.calls) == 1 and met is None:
+        return op.calls[0]
+    if len(op.calls) != len(op.chain) or not op.calls:
+        return None
+    for n, c in zip(op.chain, op.calls):
+        if n == met:
+            return c
+    for n, c in zip(op.chain, op.calls):
+        if out_of_place(n) == met:
+            return c
+    return None
+
+
+def recorded_calls(seq: OpSequence, met: Mapping[int, Optional[str]],
+                   skip: Iterable[int] = ()) -> list[tuple[Optional[str], Optional[int], tuple]]:
+    """(operator met at, layer, positions) per recorded call the pass meets,
+    in order of the call's first position: the positions met at one call
+    instance (module docstring). Refuses a position with no recorded
+    instance."""
+    skip = frozenset(skip)
+    calls: dict = {}
+    for i, op in enumerate(seq.ops):
+        if i in skip or not _is_issue(op):
+            continue
+        _refuse_graph(op)
+        c = call_instance(op, met[i])
+        if c is None:
+            raise ProfileMismatch(
+                f"position {i} ({op.aten_op or op.api} in layer {op.layer}) records no call "
+                f"instance, so the pass's calls cannot be aligned to it; positions are not "
+                f"divided evenly among calls (ruling, 1 Nov 2026). Re-record the sequence")
+        calls.setdefault((met[i], c), (met[i], op.layer, []))[2].append(i)
+    return [(n, layer, tuple(pos)) for n, layer, pos in calls.values()]
+
+
 def align(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tuple[dict, dict, dict]:
     """(host seconds, cost source, operator met at) per position, for one
     pass (`assign`)."""
@@ -585,47 +651,38 @@ def align(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tup
             f"the pass kept out {len(log.isolated)} call(s) for {len(isolated)} position(s) "
             f"priced by the isolated replay")
     met = met_at(seq, (e.name for e in log.issues), skip=isolated)
-    runs = _merge_equal_neighbours(runs_of(seq, skip=isolated, met=met))
+    calls = recorded_calls(seq, met, skip=isolated)
     floor = statistics.median(log.launches) if log.launches else 0.0
     host: dict[int, float] = {}
     source: dict[int, str] = {}
     issues = log.issues
-    j = 0
-    for run in runs:
-        c = 0
-        while j + c < len(issues) and (issues[j + c].name, issues[j + c].layer) == \
-                (run.name, run.layer):
-            c += 1
-        r = len(run.positions)
-        where = f"{run.name or 'an entry point'} in layer {run.layer}"
-        if c == 0:
+    for n, (name, layer, pos) in enumerate(calls):
+        where = f"{name or 'an entry point'} in layer {layer}"
+        if n >= len(issues):
             raise ProfileMismatch(
-                f"the recording issues {r} operation(s) under {where}, and the pass "
-                f"made no launching call there (next seen: "
-                f"{issues[j].name if j < len(issues) else 'nothing'} in layer "
-                f"{issues[j].layer if j < len(issues) else None}); an entry point "
-                f"that was not nulled would have run for real")
-        if r % c:
+                f"the recording issues {len(pos)} operation(s) from a call to {where} "
+                f"(position {pos[0]}), and the pass made no launching call there (it made "
+                f"{len(issues)} in all); an entry point that was not nulled would have run "
+                f"for real")
+        ev = issues[n]
+        if (ev.name, ev.layer) != (name, layer):
             raise ProfileMismatch(
-                f"the recording issues {r} operation(s) under {where} and the pass "
-                f"made {c} launching call(s); {r} is not a multiple of {c}")
-        k = r // c
-        for n in range(c):
-            ev = issues[j + n]
-            first, *rest = run.positions[n * k:(n + 1) * k]
-            host[first] = ev.gap_s + ev.launch_s
-            for p in rest:
-                host[p] = floor
-            for p in (first, *rest):
-                source[p] = DEVICE_ARGUMENT if ev.device_argument else \
-                    NULL_PASS if met[p] == seq.ops[p].aten_op else \
-                    CHAIN if met[p] in chain_of(seq.ops[p]) else OUT_OF_PLACE
-        j += c
-    if j != len(issues):
+                f"the recording's call {n} is to {where} (position {pos[0]}, "
+                f"{len(pos)} operation(s)), and the pass's launching call {n} was to "
+                f"{ev.name or 'an entry point'} in layer {ev.layer}")
+        first, *rest = pos
+        host[first] = ev.gap_s + ev.launch_s
+        for p in rest:
+            host[p] = floor
+        for p in pos:
+            source[p] = DEVICE_ARGUMENT if ev.device_argument else \
+                NULL_PASS if met[p] == seq.ops[p].aten_op else \
+                CHAIN if met[p] in chain_of(seq.ops[p]) else OUT_OF_PLACE
+    if len(issues) > len(calls):
+        extra = issues[len(calls)]
         raise ProfileMismatch(
-            f"the pass made {len(issues) - j} launching call(s) after the "
-            f"recorded sequence ended (first: {issues[j].name} in layer "
-            f"{issues[j].layer})")
+            f"the pass made {len(issues) - len(calls)} launching call(s) after the "
+            f"recorded sequence ended (first: {extra.name} in layer {extra.layer})")
     marks = [i for i, op in enumerate(seq.ops) if op.kind is SeqKind.HOST_COMPUTE]
     if len(marks) != len(log.markers):
         raise ProfileMismatch(
@@ -635,6 +692,17 @@ def align(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tup
         host[i] = d
         source[i] = NULL_PASS
     return host, source, {p: met[p] for p in source if p in met}
+
+
+def empty_at(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tuple:
+    """The pass's empty calls (module docstring), each with the position
+    whose gap holds its dispatch: the first position of the next launching
+    call, or None after the last one."""
+    met = met_at(seq, (e.name for e in log.issues), skip=isolated)
+    firsts = [pos[0] for _, _, pos in recorded_calls(seq, met, skip=isolated)]
+    return tuple({"operator": name, "layer": layer,
+                  "position": firsts[n] if n < len(firsts) else None}
+                 for name, layer, n in log.empty)
 
 
 # --- the profile -----------------------------------------------------------------------
@@ -650,6 +718,7 @@ class HostProfile:
     sequence_sha256: str
     cost_source: Mapping[int, str] = field(default_factory=dict)   # absent: NULL_PASS
     met_at: Mapping[int, str] = field(default_factory=dict)       # every source but NULL_PASS
+    empty_calls: tuple = ()       # {operator, layer, position whose gap holds it}
 
     def source(self, i: int) -> str:
         return self.cost_source.get(i, NULL_PASS)
@@ -688,16 +757,17 @@ def profile(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, *,
     for _ in range(reps):
         log = null_pass(run_prefill, tape, seq, device=device, **kw)
         h, src, met = align(seq, log, isolated=iso)
-        if how is not None and how != (src, met):
+        empty = empty_at(seq, log, isolated=iso)
+        if how is not None and how != (src, met, empty):
             raise ProfileMismatch("two passes met the sequence at different calls")
-        how = (src, met)
+        how = (src, met, empty)
         per.append(h)
         launches.extend(log.launches)
     keys = set(per[0])
     for h in per[1:]:
         if set(h) != keys:
             raise ProfileMismatch("two passes gave costs for different positions")
-    src, met = how
+    src, met, empty = how
     priced = {i: s for i, s in src.items() if s != NULL_PASS}
     reps_s = {i: tuple(h[i] for h in per) for i in sorted(keys)}
     host_s = {i: float(statistics.median(v)) for i, v in reps_s.items()}
@@ -708,7 +778,7 @@ def profile(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, *,
         reps=reps,
         sequence_sha256=op_sequence.record_sha256(op_sequence.to_record(seq)),
         cost_source=dict(sorted({**priced, **{i: ISOLATED_REPLAY for i in iso}}.items())),
-        met_at={i: met[i] for i in sorted(priced)})
+        met_at={i: met[i] for i in sorted(priced)}, empty_calls=empty)
 
 
 @dataclass(frozen=True)
@@ -777,8 +847,7 @@ def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[in
     return out
 
 
-def chain_check(trace, seq: OpSequence, p: HostProfile, *, rel_tol: float,
-                abs_tol_s: float) -> dict:
+def chain_check(trace, seq: OpSequence, p: HostProfile, *, aggregate_tol: float) -> dict:
     """The ruling's validation (1 Nov 2026): for every call the pass met at a
     composite or by its device argument (`CHAIN`, `DEVICE_ARGUMENT`; not
     `OUT_OF_PLACE`, whose call the isolated replay makes in place), the sum
@@ -793,9 +862,13 @@ def chain_check(trace, seq: OpSequence, p: HostProfile, *, rel_tol: float,
     and the composite's whole body with its launches. A call is checked when
     its positions and the previous call's are kernels with nothing between
     them in the sequence and the previous call was not kept out of the pass
-    (`ISOLATED_REPLAY`); the rest are counted as unchecked. Per operator met
-    at, over its checked calls, |chain - direct| must be within
-    `rel_tol` x direct + `abs_tol_s` x calls (T4.1 lock values)."""
+    (`ISOLATED_REPLAY`); the rest are counted as unchecked.
+
+    The gate is in aggregate (researcher's ruling, 1 Nov 2026, after
+    Shakedown 4's first GPU figures): the sum over checked calls of |chain -
+    direct| must be at most `aggregate_tol` (a T4.1 lock value, working 10%)
+    of the profile's whole host time. Each call's ratio chain / direct is
+    reported (`calls`), and each operator's sums; neither is a gate."""
     iso = _read_isolated(trace, seq)
 
     def call_of(i: int):
@@ -820,6 +893,7 @@ def chain_check(trace, seq: OpSequence, p: HostProfile, *, rel_tol: float,
         else:
             groups.append([c, [i]])
     per: dict = {}
+    each: list = []
     unchecked = 0
     for prev, (c, pos) in zip([[None, []]] + groups, groups):
         src = p.source(pos[0])
@@ -831,19 +905,26 @@ def chain_check(trace, seq: OpSequence, p: HostProfile, *, rel_tol: float,
         direct = max(c.end - prev[0].end - _flushed(iso, prev[0].end, c.end), 0.0) * 1e-6
         row = per.setdefault(p.met_at[pos[0]], {"calls": 0, "chain_s": 0.0, "direct_s": 0.0,
                                                 "sources": set()})
+        chain = sum(p.host_s[j] for j in pos)
         row["calls"] += 1
-        row["chain_s"] += sum(p.host_s[j] for j in pos)
+        row["chain_s"] += chain
         row["direct_s"] += direct
+        row["abs_diff_s"] = row.get("abs_diff_s", 0.0) + abs(chain - direct)
         row["sources"].add(src)
+        each.append({"position": pos[0], "operator": p.met_at[pos[0]], "chain_s": chain,
+                     "direct_s": direct, "ratio": chain / direct if direct > 0 else None})
     for name, row in per.items():
         row["sources"] = sorted(row["sources"])
-        row["allowed_s"] = rel_tol * row["direct_s"] + abs_tol_s * row["calls"]
-        row["passed"] = abs(row["chain_s"] - row["direct_s"]) <= row["allowed_s"]
-    return {"rel_tol": rel_tol, "abs_tol_s": abs_tol_s,
+        row["ratio"] = row["chain_s"] / row["direct_s"] if row["direct_s"] > 0 else None
+    diff = sum(r["abs_diff_s"] for r in per.values())
+    host = p.total_s
+    share = diff / host if host > 0 else None
+    return {"aggregate_tol": aggregate_tol,
             "checked_calls": sum(r["calls"] for r in per.values()),
             "unchecked_calls": unchecked, "operators": dict(sorted(per.items())),
-            "failed": sorted(n for n, r in per.items() if not r["passed"]),
-            "passed": all(r["passed"] for r in per.values())}
+            "calls": each, "abs_diff_s": diff, "host_s": host, "share": share,
+            # Over no checked call the gate would pass by comparing nothing.
+            "passed": bool(each) and share is not None and share <= aggregate_tol}
 
 
 def host_costs(p: HostProfile, seq: OpSequence) -> dict[int, float]:
@@ -860,7 +941,8 @@ def to_record(p: HostProfile) -> dict:
             "host_s": {str(i): v for i, v in sorted(p.host_s.items())},
             "reps_s": {str(i): list(v) for i, v in sorted(p.reps_s.items())},
             "cost_source": {str(i): v for i, v in sorted(p.cost_source.items())},
-            "met_at": {str(i): v for i, v in sorted(p.met_at.items())}}
+            "met_at": {str(i): v for i, v in sorted(p.met_at.items())},
+            "empty_calls": [dict(e) for e in p.empty_calls]}
 
 
 def from_record(rec: Mapping) -> HostProfile:
@@ -872,7 +954,8 @@ def from_record(rec: Mapping) -> HostProfile:
         launch_floor_s=float(rec["launch_floor_s"]), reps=int(rec["reps"]),
         sequence_sha256=rec["sequence_sha256"],
         cost_source={int(i): str(v) for i, v in (rec.get("cost_source") or {}).items()},
-        met_at={int(i): str(v) for i, v in (rec.get("met_at") or {}).items()})
+        met_at={int(i): str(v) for i, v in (rec.get("met_at") or {}).items()},
+        empty_calls=tuple(dict(e) for e in rec.get("empty_calls") or ()))
 
 
 def dumps(p: HostProfile) -> str:

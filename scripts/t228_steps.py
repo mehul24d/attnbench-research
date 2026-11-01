@@ -22,6 +22,9 @@ Steps, in the runner's order:
           record
   density each arm's backend through the density probe at the working,
           pre-lock densities, one process per compile setting (rehearsal)
+  mask_ab compiled XAttention timed with and without its mask as an output
+          of the compiled function, at `--length` (ruling, 1 Nov 2026): the
+          timing effect of the extra outputs, a finding
   t212    T2.12: each source arm's masks recorded, replayed through
           `PrecomputedMaskBackend` with the real block-sparse kernel, compared
           with the source arm's logits, and timed against it
@@ -56,13 +59,14 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from t227_steps import (EXIT, PASSED, Skip, StepFailed, _cuda, _harness,  # noqa: E402,F401
                         _jsonable, _need_cuda, _py, _run, _write_json, run_step)
 
-STEPS = ("nvml", "t216", "t213", "density", "t212", "t22", "queue")
+STEPS = ("nvml", "t216", "t213", "density", "mask_ab", "t212", "t22", "queue")
 
 CHECKLIST = {
     "nvml": "the real NVML reader and the sampler process on a card",
     "t216": "T2.16 dense-baseline selection (K2), recorded first",
     "t213": "T2.13 dry run: harness, strict stamp, sampler cost, check_control",
     "density": "each arm's backend through the density probe, every compile setting",
+    "mask_ab": "compiled XAttention with and without the mask output, one length",
     "t212": "T2.12 precomputed replay with the real kernel",
     "t22": "T2.2 null-kernel and reference-builder profile on the target host",
     "queue": "T2.6 Q for both kinds: the add's Q, its lower bound and their sensitivity",
@@ -609,6 +613,86 @@ def density_one(args) -> int:
     return 1 if failed else 0
 
 
+# --- the mask-output A/B -------------------------------------------------------------------
+
+def step_mask_ab(args) -> dict:
+    """Compiled XAttention (`compiled_default`) timed with its mask as an
+    output of the compiled function (B, how T3.1 times it, so the timed graph
+    is its density twin's) and without (A, the output alone), interleaved, at
+    `--length` (researcher's ruling, 1 Nov 2026). In a process of its own,
+    as every compiled setting runs. A finding: if the difference is
+    material, compiled rows take their density from the eager twin, labelled
+    `compiled.EAGER_TWIN_LABEL`; the researcher rules on it."""
+    _need_cuda(args, "the compiled arm's CUDA graphs")
+    out = Path(args.out)
+    rc = _run(_py("t228_steps.py", "mask-ab-one", "--out", str(out), "--length",
+                  str(args.length), "--reps", str(args.reps), "--warmup", str(args.warmup),
+                  *(["--dry-run"] if args.dry_run else []),
+                  *(["--cpu-boundary"] if getattr(args, "cpu_boundary", False) else [])))
+    path = out / "mask_ab.json"
+    found = json.loads(path.read_text()) if path.exists() else {"rc": rc}
+    if rc:
+        raise StepFailed("the mask-output A/B failed; see its log", found)
+    return found
+
+
+def ab_summary(times: dict) -> dict:
+    """Medians, spreads and the difference of the A/B's rounds (seconds)."""
+    def q(xs, f):
+        xs = sorted(xs)
+        return xs[min(len(xs) - 1, int(f * (len(xs) - 1) + 0.5))]
+    rows = {k: {"rounds": len(v), "median_ms": statistics.median(v) * 1e3,
+                "iqr_ms": (q(v, 0.75) - q(v, 0.25)) * 1e3} for k, v in times.items()}
+    a, b = rows["without_mask_output"]["median_ms"], rows["with_mask_output"]["median_ms"]
+    return {"arms": rows, "b_minus_a_ms": b - a, "b_minus_a_pct": 100.0 * (b - a) / a,
+            "spread_ms": max(r["iqr_ms"] for r in rows.values())}
+
+
+def mask_ab_one(args) -> int:
+    import torch
+    from attnbench import cpu_boundary
+    from attnbench import ground_truth as gt
+    from attnbench.backends.compiled import EAGER_TWIN_LABEL, CompiledBackend
+    from attnbench.components.shakedown_arms import ARMS
+    h = _harness(args)
+    eager = h._backend(ARMS["xattention"])
+    kw = cpu_boundary.compile_kwargs()
+    sides = {"with_mask_output": CompiledBackend(eager, "default", **kw),
+             "without_mask_output": CompiledBackend(eager, "default", mask_output=False, **kw)}
+    wrapped, ids, prompt_id, arms, score_kwargs = h.timing_arms(
+        ["dense", "xattention"], args.length, densities=[None, None],
+        backends=[None, sides["with_mask_output"]], compile_settings=[None, "default"])
+    a = arms[1]
+    setup = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
+    sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
+
+    def once(backend) -> float:
+        sync()
+        t0 = time.perf_counter()
+        wrapped.run_measured(ids, backend, cfg=a.cfg, logits_to_keep=1, **setup)
+        sync()
+        return time.perf_counter() - t0
+    for be in sides.values():
+        for _ in range(args.warmup):                    # each side compiles here
+            once(be)
+    times: dict = {k: [] for k in sides}
+    for r in range(args.reps):
+        order = list(sides) if r % 2 == 0 else list(reversed(sides))
+        for k in order:
+            times[k].append(once(sides[k]))
+    h.unwrap()
+    found = {"arm": "xattention", "compile_setting": "default", "length": int(ids.shape[-1]),
+             "prompt_id": prompt_id, "reps": args.reps, "warmup": args.warmup,
+             "recompiles": {k: be.recompiles for k, be in sides.items()},
+             **ab_summary(times), "rounds_s": times,
+             "if_material": f"compiled rows' density from the eager twin, labelled "
+                            f"{EAGER_TWIN_LABEL!r}"}
+    _write_json(Path(args.out) / "mask_ab.json", found)
+    print(f"  mask output: B - A = {found['b_minus_a_ms']:+.3f} ms "
+          f"({found['b_minus_a_pct']:+.2f}%), spread {found['spread_ms']:.3f} ms", flush=True)
+    return 0
+
+
 # --- the launch queue --------------------------------------------------------------------
 
 # Shakedown 1's row (cold, blocker 2 s, fraction 0.25) first, then the same
@@ -667,7 +751,7 @@ def step_queue(args) -> dict:
 # --- entry points ----------------------------------------------------------------------------
 
 STEP_FUNCS = {"nvml": step_nvml, "t216": step_t216, "t213": step_t213, "density": step_density,
-              "t212": step_t212, "t22": step_t22, "queue": step_queue}
+              "mask_ab": step_mask_ab, "t212": step_t212, "t22": step_t22, "queue": step_queue}
 if tuple(STEP_FUNCS) != STEPS or tuple(CHECKLIST) != STEPS:   # not `assert`: T2.17
     raise RuntimeError("STEP_FUNCS, CHECKLIST and STEPS disagree")
 
@@ -675,7 +759,7 @@ if tuple(STEP_FUNCS) != STEPS or tuple(CHECKLIST) != STEPS:   # not `assert`: T2
 def parser() -> argparse.ArgumentParser:
     from attnbench.components.shakedown_arms import ARMS
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("step", choices=STEPS + ("run", "density-one"))
+    ap.add_argument("step", choices=STEPS + ("run", "density-one", "mask-ab-one"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--cpu-boundary", action="store_true",
@@ -714,12 +798,13 @@ def main(argv=None) -> int:
         from t227_shakedown import main as run_main
         return run_main(argv[1:], config=_config())
     args = parser().parse_args(argv)
+    children = {"density-one": density_one, "mask-ab-one": mask_ab_one}
     if args.cpu_boundary:
         from t227_steps import boundary_main
-        return boundary_main(args, lambda: density_one(args) if args.step == "density-one"
+        return boundary_main(args, lambda: children[args.step](args) if args.step in children
                              else run_step(args.step, args, STEP_FUNCS))
-    if args.step == "density-one":
-        return density_one(args)
+    if args.step in children:
+        return children[args.step](args)
     return run_step(args.step, args, STEP_FUNCS)
 
 

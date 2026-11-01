@@ -33,12 +33,16 @@ from .op_sequence import (HOST_COMPUTE, REGION, OpSequence, SeqKind, SeqOp,
 def profiler_kwargs(cuda: bool) -> dict:
     """The profiler settings every recorded trace uses.
 
-    Shapes and memory are not recorded (the sequence does not need them, and
-    they slow the host); Python frames are, so each operation names the
-    function that issued it.
+    Python frames are recorded, so each operation names the function that
+    issued it, and so are shapes: the CPU stand-in reads them to predict
+    which calls launch (a call on an empty tensor launches nothing), and a
+    GPU session checks that prediction against the launches it records
+    (`cpu_boundary.launch_check`; researcher's ruling, 1 Nov 2026). Shapes
+    slow the host a little; the recording's host times price nothing (the
+    null pass does). Memory is not recorded.
     """
     activities = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if cuda else [])
-    return dict(activities=activities, record_shapes=False, with_stack=True,
+    return dict(activities=activities, record_shapes=True, with_stack=True,
                 profile_memory=False)
 
 
