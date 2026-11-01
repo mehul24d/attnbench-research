@@ -169,6 +169,43 @@ environments, the deadline, the sanitizer's choice and placement, D's
 prefills and synchronises, E's guard and the layer watch. Three mutations
 were each watched to fail.
 
+## Results (1 Nov 2026 UTC, `attnbench-l4-xadiag-20261102-0131`, 43 min, ₹78)
+
+Run from `09f2c11` with `--sanitize-a-anyway`, as approved, and banked in
+`results/t31_xa_diag/`. Observed under our harness, with x-attention at
+`e379887` and block-sparse-attn 0.0.2. The cause is under investigation,
+and the kernel source has not yet been read.
+
+| Case | Outcome |
+|---|---|
+| C | Reproduced at recording 24, XAttention's first full recording (1951 tokens), layer 8. With `CUDA_LAUNCH_BLOCKING=1` the error is raised in block-sparse-attn's `fwd_block` (`block_sparse_attn_func`), not in `find_blocks_chunked` |
+| B | Clean (8 of 8) |
+| A | Clean (3 of 3) |
+| D | Reproduced at the same recording, with no profiler (layer 9 entered: the error is reported at the next launch) |
+| E | Reproduced at the same recording, with the hook held off |
+| memcheck on A | 130 errors. Every printed one is an invalid 4-byte global read in `flash_fwd_block_kernel` (head dim 128, 64×64 tiles), in grid block (30, 0, 11), the last 64-row query tile of head 11, the last head. Each is just past the end of a 12,288-byte allocation, the size of the library's int32 row block mask for this call, (1, 12, 16, 16) |
+
+**Two fits with the banked masks:**
+- **A full last row.** `convert_blockmask_row_reverse` lists each row's
+  selected key blocks and pads with `-1`. A row with all 16 blocks selected
+  has no `-1` after it, so one read past the row leaves the buffer at the
+  last head.
+- **Layer 8.** In A's and B's masks, layer 8 is the first layer whose last
+  head has its last row fully selected (also layers 16, 18, 19, 20, 26 and
+  27). Layer 8 is where C faulted.
+
+The read faults only when the address past the buffer is unmapped. That
+depends on the allocator's layout, which the earlier arms' 32768 work sets:
+A and B do not fault, and C, D and E do.
+
+**Open:**
+- **Whether the value read is used.** For heads 0 to 10 the same read lands
+  in the next head's first row, inside the buffer, where memcheck cannot see
+  it. If the kernel uses that value, it would add a block to the last query
+  tile. This also bears on mean-pool and the oracle, which call the same
+  kernel.
+- **The kernel source**, to confirm the read.
+
 ## Fallback (researcher's ruling, 2 Nov 2026)
 
 If there is no root cause by 4 Nov, T3.1 runs with XAttention quarantined as
