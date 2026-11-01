@@ -321,3 +321,58 @@ def test_the_real_fa3_build_constants_are_fingerprinted():
     from attnbench.backends import fa3
     for path, name in BUILD_CONSTANTS["fa3"]:
         assert path == "attnbench/backends/fa3.py" and hasattr(fa3, name)
+
+
+# --- the block-sparse kernel path (bsa_contract, 2 Nov 2026) ---------------------------
+
+BS = "attnbench/backends/block_sparse.py"
+CONTRACT = "attnbench/bsa_contract.py"
+
+
+def _bs(call_body: str = "return 1") -> str:
+    return textwrap.dedent(f"""
+        def kernel_interface(*a, **k):
+            return _call(*a, **k)
+
+        def _call(*a, **k):
+            {call_body}
+
+        class BlockSparseAttention:
+            def forward(self, q, k, v, cfg, mask=None):
+                return kernel_interface(q)
+    """)
+
+
+def _contract(tail: int = 1, fix: str = "row-mask-tail-1") -> str:
+    return (f"BSA_COMMIT = 'abc'\nINTERFACE_SHA256 = 'def'\nTAIL_ROWS = {tail}\n"
+            f"ROW_MASK_FIX = {fix!r}\n"
+            "def row_blockmask(m, causal=False):\n    return m\n"
+            "def install():\n    return None\n")
+
+
+def test_the_mask_buffer_fix_is_part_of_the_block_sparse_arms_fingerprints(tmp_path):
+    """Rows before the fix ran the library's own buffer: a join across the fix
+    names the kernel path as moved, for every arm that calls the kernel."""
+    repo, shas = _repo(tmp_path, [
+        {BS: _bs(), TIMING: _timing()},                                    # before the fix
+        {BS: _bs("install(); return 1"), CONTRACT: _contract(), TIMING: _timing()},
+        {BS: _bs("install(); return 1"), CONTRACT: _contract(tail=2), TIMING: _timing()},
+        {BS: _bs("install(); return 1"), CONTRACT: "# note\n" + _contract(tail=2),
+         TIMING: _timing()},
+    ])
+    fp = fingerprint(repo, shas[1], "block_sparse")
+    assert {f"{CONTRACT}:row_blockmask", f"{CONTRACT}:TAIL_ROWS", f"{CONTRACT}:ROW_MASK_FIX",
+            f"{BS}:_call", f"{BS}:kernel_interface"} <= set(fp.parts)
+    drifts = backends_with_drift(_frame([("block_sparse", s) for s in shas[:2]]), repo=repo)
+    assert f"{BS}:_call" in drifts[0].methods and f"{CONTRACT}:row_blockmask" in drifts[0].methods
+    drifts = backends_with_drift(_frame([("block_sparse", s) for s in shas[1:3]]), repo=repo)
+    assert [d.methods for d in drifts] == [(f"{CONTRACT}:TAIL_ROWS",)]
+    assert fingerprint(repo, shas[2], "block_sparse").digest == \
+        fingerprint(repo, shas[3], "block_sparse").digest
+
+
+def test_the_real_kernel_path_names_exist():
+    from attnbench.analysis.code_identity import KERNEL_PATH, _top_level
+    for backend in ("block_sparse", "xattention", "xattention_noassert"):
+        for path, name in KERNEL_PATH[backend]:
+            assert _top_level((REPO / path).read_text(), name) is not None, (path, name)

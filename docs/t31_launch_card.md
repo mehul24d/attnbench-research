@@ -1,8 +1,9 @@
 # Launch card: T3.1, the P1 session
 
 Prepared 28 Oct 2026; rewritten 1 Nov 2026 after Shakedown 6 and the
-researcher's rulings that followed it. Deploys from `main` at the merge of
-`shakedown6-fixes-2026-11-01` or later. Launchable only on the researcher's
+researcher's rulings that followed it; updated 2 Nov 2026 after the first
+session's crash and its diagnostic. Deploys from `main` at the merge of
+`kernel-contract-2026-11-02` or later. Launchable only on the researcher's
 yes; nothing here runs on its own. **Stop at the first failure:** the session
 runs once, the runner stops at the first step that fails, and the instance
 is torn down. Nothing is fixed and resumed inside this session; a fix and a
@@ -31,7 +32,7 @@ a GPU, so their minutes are the least certain.
 
 | # | Step | Task | Minutes |
 |---|---|---|---|
-| 1 | `preflight` | T2.1 probe `start`, T2.20 fields, config of record | 1 / 1 / 1 |
+| 1 | `preflight` | T2.1 probe `start`, T2.20 fields, config of record; the kernel contract | 2 / 3 / 5 |
 | 2 | `link` | T2.5 row, T2.6 Q, mechanism table per length | 5 / 5 / 5 |
 | 3 | `dense_select` | T2.16 record per (length, batch); the session floor | 6 / 6 / 6 |
 | 4 | `probe` | T2.18, every arm, at every grid length (durations discarded) | 19 / 19 / 19 |
@@ -46,6 +47,44 @@ a GPU, so their minutes are the least certain.
 Step 5's minutes, central: recording 4, isolated replay 4, null passes 11,
 bare pass 23, residual 7. The bare pass is mostly device time: at least
 1000 repetitions of each signature, after a synchronise.
+
+## What changed since the first session (2 Nov 2026)
+
+The first session (1 Nov 2026, `results/t31_p1/`, ₹53) passed steps 1 to 3
+and stopped in step 4 at XAttention's first full recording at 2048 with a
+CUDA illegal memory access. The diagnostic (`docs/t31_xa_diag_card.md`,
+₹78) located it in Block-Sparse-Attention's forward kernel:
+- **The read.** The kernel reads its int32 row mask one entry past any fully
+  selected row, and for the last row of the last head one entry past the
+  buffer. In the source (`flash_blockmask.h` at the pinned `49d6c39`), the
+  value read is discarded. The read faults only when the address past the
+  buffer is unmapped.
+- **Exposure.** XAttention reaches the read in every banked prefill, at
+  layers 8, 16, 18 and 19 at least; no banked mean-pool or oracle mask does
+  (`scripts/bsa_row_exposure.py`).
+- **The fix, in the adapter.** The library is unchanged. Every kernel call
+  now gets a buffer with a row of -1 after it (`attnbench/bsa_contract.py`,
+  `row-mask-tail-1`). That adds one fill kernel of one row per call, for the
+  oracle, mean-pool and XAttention alike. Rows record the library's version,
+  its interface file's sha256 and the fix.
+- **The kernel contract, in step 1**, before any arm runs. Any failure
+  refuses the session. It checks:
+  - **the pinned library:** version 0.0.2 and the interface file's sha256;
+  - **the conversion:** the fix's rows equal the library's;
+  - **the output:** the kernel against a reference masked attention (fp32,
+    tolerance 0.02), at 1951 and 4096 tokens on 12 heads, with every head's
+    last row and one middle row fully selected;
+  - **that the tolerance can see one block** removed from the mask;
+  - **that the value past a row is unused:** the output is bitwise unchanged
+    when the row after the buffer holds 0 or the last block instead of -1;
+  - **that the padding changes nothing:** the output is bitwise unchanged
+    between the library's buffer and the fixed one, on a mask whose stray
+    reads stay inside the buffer, as the banked results' did for heads 0
+    to 10 (`padded_vs_unpadded`, the number the earlier results rest on);
+  - **memcheck:** one kernel call at 1951 under `compute-sanitizer` with
+    PyTorch's caching allocator off. With the fix it must report no errors.
+    With the library's buffer it must report some: a check that cannot see
+    the read proves nothing.
 
 ## What changed since Shakedown 6
 
@@ -92,9 +131,9 @@ While this VM exists, the H100 retry loop running on the Mac skips its rounds
 | | Hours | ₹ at 108.64/h |
 |---|---|---|
 | Setup: launch, deploy, preflight, write gate, bootstrap (Shakedown 6: 6 min) | 0.1 | 11 |
-| Steps 1 to 11, central (low 2.3 h, high 4.3 h) | 2.9 | 312 |
+| Steps 1 to 11, central (low 2.3 h, high 4.4 h) | 2.9 | 315 |
 | Teardown: results pull, delete, cleanup check | 0.13 | 14 |
-| **Expected, central** (low 2.5 h ₹274, high 4.6 h ₹495) | **3.1** | **336** |
+| **Expected, central** (low 2.5 h ₹276, high 4.6 h ₹502) | **3.1** | **340** |
 | In-guest halt (`GCP_HALT_MINUTES=420`): GPU billing stops | 7.0 | 760 |
 | Hard delete (`GCP_MAX_RUN=7h30m`) | 7.5 | disk only after the halt |
 
@@ -131,7 +170,7 @@ Back on the Mac, when it ends (passed or stopped):
 
 ```bash
 bash scripts/gcp_session_elapsed.sh "$NAME" "$ZONE" 108.64
-bash scripts/gcp_teardown_session.sh "$NAME" "$ZONE" results/t31_p1
+bash scripts/gcp_teardown_session.sh "$NAME" "$ZONE" results/t31_p1_s2   # the first session is results/t31_p1
 bash scripts/gcp_cleanup_check.sh
 ```
 
@@ -163,6 +202,23 @@ python3 scripts/t228_steps.py pricing_zoo --cpu-boundary --out /tmp/zoo --length
 python3 scripts/t227_steps.py graph-breaks-one --cpu-boundary --arms meanpool --setting default --out /tmp/gb --gb-length 1024
 python3 scripts/t31_projection.py
 ```
+
+## The CPU dry run (2 Nov 2026)
+
+At the launch branch's head, behind the CPU boundary, the rehearsal (steps 1
+to 8) passed in 7.3 minutes. Step 1 ran the kernel contract, whose CPU parts
+behave as follows:
+- **The walk emulation.** With the library's layout it reads past the buffer
+  (the positive control); with the fix it does not.
+- **The output parts.** They ran against the stub kernel, which ignores the
+  row buffer, so they only exercise the code. Kernel against the reference:
+  0.008. One block removed changes the reference by 1.29, well outside the
+  0.02 tolerance. Tail-value effect and padded against unpadded are both 0.
+- **memcheck** is not run: there is no CUDA device.
+
+Every recording's code path names the fix (`bsa_row_mask_fix`). The kernel
+itself, the tolerance on the L4 and memcheck are the GPU's to check, in step
+1 of the session.
 
 ## The CPU dry run (1 Nov 2026)
 
@@ -207,5 +263,13 @@ its compute.
   at 32768.
 - **The density figures and the floor are working, pre-lock values**, and
   the rows are P1's pre-lock data (plan Section 5.3).
-- **The H100 loop** on the Mac is Flex only (it was started from an older
-  checkout) and skips its rounds while this VM exists.
+- **The H100 loop** on the Mac skips its rounds while this VM exists. It is
+  restarted from `main` with Spot on only on the researcher's own yes;
+  until then the old Flex-only loop runs.
+- **XAttention again.** If the contract passes and XAttention still fails in
+  the session, the session stops there (first failure). The fallback ruled on
+  2 Nov 2026 then applies: T3.1 runs with XAttention quarantined, "not run,
+  crash under investigation".
+- **Teardown waits for the home logs** (step 2b): it refuses to delete until
+  every `~/*.log` is pulled. A VM whose SSH is dead needs
+  `TEARDOWN_DELETE_WITHOUT_HOME_LOGS='<why>'`.

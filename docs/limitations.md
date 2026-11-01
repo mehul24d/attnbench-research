@@ -2978,3 +2978,60 @@ per-(layer, head) thresholds with the method's own profiler, on the
 authors' profiling set (the arm that may claim) and on held-out RULER
 examples (descriptive only). It is declared the last XAttention
 configuration tested on this model.*
+
+## Results banked before 2 Nov 2026 ran the block-sparse kernel's boundary read (2026-11-02)
+
+**What it is.** At the pinned Block-Sparse-Attention commit (`49d6c39`), the
+forward kernel reads its int32 row mask one entry past any row whose key
+blocks are all selected. The library writes each row as its selected blocks in
+descending order, then -1. The kernel walks a row until it reads -1 or its
+index reaches the row's block count. But `fwdBlockmask::mask_val` reads the
+entry at that index before the bound stops the walk, because its guard is `>`
+rather than `>=`. A row with no -1 is therefore read one entry past its end:
+- for every row but the last, the read lands on the next row's first entry,
+  inside the buffer;
+- for the last row of the last head, it lands one entry past the buffer.
+
+In the source, the value read is discarded. `is_last_block` is set from the
+bound in the same statement, and nothing after it uses the value. So the
+output should not depend on it. The read past the buffer faults only when that
+address is unmapped, which depends on the allocator's layout. That is the
+crash in T3.1's first session (1 Nov 2026). In the diagnostic, memcheck found
+the same read at 4 bytes past the 12,288-byte buffer
+(`docs/t31_xa_diag_card.md`, `results/t31_xa_diag/`).
+
+**How often the banked masks reach it.** `scripts/bsa_row_exposure.py` reads
+every banked mask bank. There are 19 distinct recorded prefills, all
+`qa_1` prompt 0, from 1951 to 32700 tokens:
+- **XAttention** (7 prefills): every one has (layer, head) pairs whose last
+  row is fully selected, 30 to 84 of 336 per prefill. Every one also reaches
+  the read past the buffer, at layers 8, 16, 18 and 19 at least. XAttention's
+  masks also select future blocks, so 366 to 420 rows per prefill are fully
+  selected and each is read one entry past.
+- **Mean-pool and the oracle** (6 prefills each): none.
+
+**What it affects, and what was done.**
+- **Accuracy.** Every banked accuracy result that ran XAttention through the
+  kernel ran with the read: T1.1's `qa_1` cells (69 vs 68 at 16384, 50 vs 46
+  at 32768), the threshold tables, and the T4 pilots. The sparse arms that
+  call the same kernel (the oracle, mean-pool and the era-3 block-sparse rows)
+  reach it wherever a row is fully selected. None of their banked masks is,
+  but the masks of their accuracy runs were not banked.
+  The source says the value is discarded, so these results should be
+  unaffected. That reading is a hypothesis until a GPU check confirms it.
+- **The GPU check.** T3.1's preflight measures the output difference between
+  the library's own buffer and the fixed one, on masks whose stray reads stay
+  inside the buffer, as the banked results' did for heads other than the last
+  (`padded_vs_unpadded`, `attnbench/bsa_contract.py`). Any non-zero difference
+  refuses the session.
+- **Re-check queued.** A small T1.1 `qa_1` subset is re-run after T3.1, in a
+  gap between L4 sessions (Appendix A, 2 Nov 2026).
+- **Timing.** The read itself costs nothing measurable. But any timed run of
+  the library's own buffer could fault, so the fix comes before every
+  confirmatory run.
+- **The fix.** The adapter, not the library, now hands the kernel a buffer
+  with one row of -1 after it (`row-mask-tail-1`). Rows from 2 Nov 2026 record
+  the library's version, the sha256 of its interface file and the fix
+  (`block_sparse_attn`, `bsa_interface_sha256`, `bsa_row_mask_fix`). Each
+  block-sparse arm's code identity includes the kernel path and the fix.
+  Earlier rows lack these columns: they ran the library's own buffer.

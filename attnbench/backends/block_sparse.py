@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import torch
 
+from .. import bsa_contract
 from ..config import AttnConfig
 from ..masks import BlockSparseMask
 from .base import AttentionBackend, Capability, UnsupportedConfig, register
@@ -78,6 +79,9 @@ def kernel_interface(*args, unsupported: bool = False, **kwargs):
 
 def _call(*args, unsupported: bool, **kwargs):
     from block_sparse_attn import block_sparse_attn_func
+    # The library's mask buffer with a -1 row after it: its kernel reads one
+    # entry past a fully selected row (`bsa_contract`; 2 Nov 2026).
+    bsa_contract.install()
     if not unsupported:
         return block_sparse_attn_func(*args, **kwargs)
     try:

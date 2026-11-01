@@ -69,6 +69,8 @@ def bsa_prefill(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.T
     _check(q, k, v, mask)
     if kernel is None:
         from block_sparse_attn import block_sparse_attn_func as kernel
+        from . import bsa_contract
+        bsa_contract.install()     # the kernel's boundary read (bsa_contract; 2 Nov 2026)
     _, h, s, d = q.shape
     q_ = q.transpose(1, 2).reshape(s, h, d)
     k_ = k.transpose(1, 2).reshape(s, h, d)

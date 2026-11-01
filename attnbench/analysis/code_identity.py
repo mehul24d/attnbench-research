@@ -102,6 +102,26 @@ BUILD_CONSTANTS: dict[str, tuple[tuple[str, str], ...]] = {
             ("attnbench/backends/fa3.py", "BUILT_HEAD_DIMS")),
 }
 
+# The kernel call each block-sparse arm makes outside its class
+# (`block_sparse.kernel_interface`, 1 Nov 2026), and the adapter's fix to the
+# library's mask buffer with the library it was checked against (`bsa_contract`,
+# 2 Nov 2026): row-name -> ((file, top-level name), ...). Fingerprinted where
+# the name exists at a commit and left out where it does not, so a join across
+# the fix (or across the move of the call) reports these as moved, and toy
+# repositories without the files are unaffected.
+_BSA_KERNEL_PATH = (
+    ("attnbench/backends/block_sparse.py", "kernel_interface"),
+    ("attnbench/backends/block_sparse.py", "_call"),
+    ("attnbench/bsa_contract.py", "row_blockmask"),
+    ("attnbench/bsa_contract.py", "install"),
+    ("attnbench/bsa_contract.py", "TAIL_ROWS"),
+    ("attnbench/bsa_contract.py", "ROW_MASK_FIX"),
+    ("attnbench/bsa_contract.py", "BSA_COMMIT"),
+    ("attnbench/bsa_contract.py", "INTERFACE_SHA256"),
+)
+KERNEL_PATH: dict[str, tuple[tuple[str, str], ...]] = {
+    b: _BSA_KERNEL_PATH for b in ("block_sparse", "xattention", "xattention_noassert")}
+
 # The measurement loop itself, shared by every backend.
 SHARED_FUNCTIONS: tuple[tuple[str, str], ...] = (("attnbench/timing.py", "_do_bench"),)
 
@@ -168,6 +188,20 @@ def _timed_methods(src: str, class_name: str) -> Optional[dict[str, ast.Function
     return None
 
 
+def _top_level(src: Optional[str], name: str) -> Optional[ast.AST]:
+    """A module's function `name`, or the value assigned to it, or None."""
+    for node in ast.parse(src or "").body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return node.value
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id == name and node.value is not None:
+            return node.value
+    return None
+
+
 def fingerprint(repo: Path | str, commit: str, backend: str) -> BackendFingerprint:
     """AST fingerprint of one backend's timed region at one commit."""
     repo = Path(repo)
@@ -203,6 +237,11 @@ def fingerprint(repo: Path | str, commit: str, backend: str) -> BackendFingerpri
                 f"build constant {const_name} not found once in {const_path} at "
                 f"{commit[:12]}: {backend}'s build is not identified at that commit")
         parts[f"{const_path}:{const_name}"] = _ast_digest(nodes[0].value)
+
+    for kp_path, name in KERNEL_PATH.get(backend, ()):
+        node = _top_level(_git_show(repo, commit, kp_path), name)
+        if node is not None:
+            parts[f"{kp_path}:{name}"] = _ast_digest(node)
 
     for shared_path, func_name in SHARED_FUNCTIONS:
         shared_src = _git_show(repo, commit, shared_path)
@@ -253,8 +292,8 @@ def backends_with_drift(df: pd.DataFrame, *, repo: Path | str,
         prints = [fingerprint(repo, c, str(backend)) for c in commits]
         if len({p.digest for p in prints}) == 1:
             continue
-        moved = sorted({name for name in prints[0].parts
-                        if len({p.parts.get(name) for p in prints}) > 1})
+        moved = sorted({name for p in prints for name in p.parts
+                        if len({q.parts.get(name) for q in prints}) > 1})
         drifts.append(BackendDrift(backend=str(backend), commits=tuple(commits),
                                    methods=tuple(moved)))
     return drifts

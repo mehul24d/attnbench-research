@@ -175,9 +175,20 @@ def _modules() -> dict:
     bsa = types.ModuleType("block_sparse_attn")
     bsa.__version__ = "cpu-stub"
     bsa.block_sparse_attn_func = block_sparse_attn_func
+    # The interface module the adapter's fix patches (`bsa_contract.install`).
+    # Its conversion is the library's layout; the stub kernel does not read it.
+    iface = types.ModuleType("block_sparse_attn.block_sparse_attn_interface")
+    iface.convert_blockmask_row_reverse = _shipped_row_layout
+    bsa.block_sparse_attn_interface = iface
     ext = types.ModuleType("block_sparse_attn_cuda")
     ext.fwd_block = _fwd_block
-    return {"block_sparse_attn": bsa, "block_sparse_attn_cuda": ext}
+    return {"block_sparse_attn": bsa, "block_sparse_attn.block_sparse_attn_interface": iface,
+            "block_sparse_attn_cuda": ext}
+
+
+def _shipped_row_layout(base_blockmask, causal=False):
+    from .bsa_contract import row_blockmask
+    return row_blockmask(base_blockmask, causal, tail_rows=0)
 
 
 def _import_xattn() -> None:
