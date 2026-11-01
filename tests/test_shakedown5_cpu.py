@@ -150,3 +150,35 @@ def test_an_arm_without_cached_state_is_compiled_as_before():
         assert torch.equal(c.forward(q, q, q, None), q * 2)
     finally:
         compiled.reset_compiled_state()
+
+
+def test_compiled_xattention_calls_the_kernel_interface_outside_dynamo(monkeypatch):
+    # Shakedown 5: traced, the interface's resume frame recompiled on every
+    # call and a timed loop reached the recompile limit. A stand-in module
+    # records whether Dynamo was tracing when the interface ran.
+    import sys
+    import types
+    from attnbench.backends import compiled
+    from attnbench.backends.xattention import XAttentionBackend
+    from attnbench.config import AttnConfig
+    tracing = []
+
+    def block_sparse_attn_func(q, k, v, *args, **kwargs):
+        tracing.append(torch.compiler.is_compiling())
+        return q.clone()
+
+    monkeypatch.setitem(sys.modules, "block_sparse_attn",
+                        types.SimpleNamespace(block_sparse_attn_func=block_sparse_attn_func))
+    arm = XAttentionBackend()
+    monkeypatch.setattr(arm, "estimate", lambda q, k: torch.ones(
+        1, q.shape[1], 1, 1, dtype=torch.bool))
+    compiled.reset_compiled_state()
+    try:
+        c = compiled.CompiledBackend(arm, "default", mode=None, dynamo_backend="eager")
+        q = torch.zeros(1, 2, 8, 4)
+        cfg = AttnConfig(seq_len=8, batch=1, n_heads_q=2, n_heads_kv=2, head_dim=4)
+        for _ in range(3):
+            assert c.forward(q, q, q, cfg).shape == q.shape
+        assert tracing == [False, False, False]
+    finally:
+        compiled.reset_compiled_state()

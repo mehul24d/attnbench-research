@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 5585 passed, 128 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 5586 passed, 128 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -33,11 +33,11 @@ Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 5654 passed, 59 skipped**, because
+**With `results/` present the suite reads 5655 passed, 59 skipped**, because
 the 65 banked-file tests run instead of skipping (all but two do) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 5650 passed, 63 skipped). All three
-totals are 5713, which is
+present and those two hidden it reads 5651 passed, 63 skipped). All three
+totals are 5714, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 
@@ -78,7 +78,8 @@ the prediction and names any such difference.
 `tests/test_shakedown5_cpu.py` holds Shakedown 5's: the boolean
 `index_put_` that launches beside its children in XAttention's chunked
 path, the launch check's attribution against a brute-force one, and
-XAttention's threshold row built outside a compiled graph.
+XAttention's threshold row built outside a compiled graph, and its kernel
+interface called outside Dynamo (pending a ruling).
 
 ## Earlier work in this repository
 
