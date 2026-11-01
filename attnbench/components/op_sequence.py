@@ -259,8 +259,16 @@ class SeqOp:
     `chain` is every aten operator around the CUDA call, outermost first
     (`origin` to `aten_op`): the null pass meets the operation at the one
     of them the dispatcher shows it (`host_profile`). It is in the artifact
-    and not in an operation's identity. `correlation` ties the operation
-    back to its trace and is not part of the artifact.
+    and not in an operation's identity. `calls` numbers the call instance
+    of each operator in `chain` (parallel to it): two operations with one
+    number at the same place in their chains were issued by one call, which
+    is how the null pass's calls are aligned to positions (`host_profile`,
+    researcher's ruling, 1 Nov 2026). The numbers count the region's
+    operator calls in order of first launch; the runtime call's correlation
+    ties a launch to its device activity, and the calls around it on the
+    host thread are its instance. In the artifact, not in the identity.
+    `correlation` ties the operation back to its trace and is not part of
+    the artifact.
     """
 
     kind: SeqKind
@@ -280,6 +288,7 @@ class SeqOp:
     frame: Optional[str] = None
     no_device_record: bool = False
     chain: tuple[str, ...] = field(default=(), compare=False)
+    calls: tuple[int, ...] = field(default=(), compare=False)
     correlation: Optional[int] = field(default=None, compare=False)
 
     @property
@@ -583,6 +592,10 @@ def parse_trace(trace: Union[str, Path, Mapping], code_path: CodePath, *,
         return dict(layer=layer_of(p), aten_op=ops[-1].name if ops else None,
                     origin=ops[0].name if ops else None,
                     chain=tuple(a.name for a in ops),
+                    # With no operator around the launch (an extension called
+                    # from Python), the innermost Python call is its instance.
+                    calls=tuple(a.idx for a in ops) if ops else
+                    ((fr[-1].idx,) if fr else ()),
                     frame=named[-1] if named else None)
 
     drafts: list[tuple[SeqOp, dict]] = []   # (op, bookkeeping)
@@ -673,6 +686,7 @@ def parse_trace(trace: Union[str, Path, Mapping], code_path: CodePath, *,
         drafts.append((op, book))
 
     _check_device_side(events, by_corr, all_corr, region_corr, reg, drafts)
+    drafts = _number_calls(drafts)
     ops = _mark_composites(drafts)
     ops = _mark_loaded(ops)
     streams = sorted({_int_arg(a.args, "stream") for c in region_corr
@@ -723,6 +737,18 @@ def _check_gpu(trace, code_path: CodePath, by_corr, region_corr, gpus) -> None:
     if name != code_path.gpu:
         raise SequenceError(
             f"the trace ran on {name!r}, and the code path says {code_path.gpu!r}")
+
+
+def _number_calls(drafts):
+    """Trace event indices in `calls` -> 0, 1, 2, ... in order of first
+    appearance, so the artifact does not depend on the trace file's order."""
+    number: dict = {}
+    out = []
+    for op, book in drafts:
+        if op.calls:
+            op = replace(op, calls=tuple(number.setdefault(c, len(number)) for c in op.calls))
+        out.append((op, book))
+    return out
 
 
 def _mark_composites(drafts) -> list[SeqOp]:
@@ -1135,10 +1161,10 @@ def device_durations(trace: Union[str, Path, Mapping], seq: OpSequence) -> dict[
 
 _OP_FIELDS = ("kind", "layer", "api", "aten_op", "origin", "kernels", "direction",
               "src_mem", "dst_mem", "payload_bytes", "mechanism", "composite",
-              "loaded", "stream", "frame", "no_device_record", "chain")
+              "loaded", "stream", "frame", "no_device_record", "chain", "calls")
 # Records written before 31 Oct 2026 have no `no_device_record`; it reads
 # False. Records written before 1 Nov 2026 have no `chain`; it reads empty.
-_OPTIONAL_FIELDS = {"no_device_record": False, "chain": ()}
+_OPTIONAL_FIELDS = {"no_device_record": False, "chain": (), "calls": ()}
 
 
 def to_record(seq: OpSequence) -> dict:
@@ -1150,6 +1176,7 @@ def to_record(seq: OpSequence) -> dict:
         d["kind"] = op.kind.value
         d["kernels"] = list(op.kernels)
         d["chain"] = list(op.chain)
+        d["calls"] = list(op.calls)
         ops.append(d)
     return {"schema": SCHEMA,
             "code_path": {"arm": cp.arm, "gpu": cp.gpu,
@@ -1180,7 +1207,8 @@ def from_record(record: Mapping) -> OpSequence:
         if set(d) != set(_OP_FIELDS):
             raise SequenceError(f"operation fields {sorted(d)}")
         ops.append(SeqOp(**{**d, "kind": SeqKind(d["kind"]),
-                            "kernels": tuple(d["kernels"]), "chain": tuple(d["chain"])}))
+                            "kernels": tuple(d["kernels"]), "chain": tuple(d["chain"]),
+                            "calls": tuple(d["calls"])}))
     seq = OpSequence(code_path=cp, context_length=int(record["context_length"]),
                      batch=int(record["batch"]), ops=tuple(ops),
                      streams=tuple(record["streams"]),

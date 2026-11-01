@@ -96,7 +96,8 @@ def test_profiler_settings():
     assert cpu["activities"] == [torch.profiler.ProfilerActivity.CPU]
     assert cuda["activities"] == [torch.profiler.ProfilerActivity.CPU,
                                   torch.profiler.ProfilerActivity.CUDA]
-    assert cpu["with_stack"] and not cpu["record_shapes"] and not cpu["profile_memory"]
+    assert cpu["with_stack"] and cpu["record_shapes"] and not cpu["profile_memory"]
+    assert cuda["record_shapes"]          # the GPU session's launch check reads them
 
 
 def test_negative_warmup_is_refused(tmp_path):

@@ -66,6 +66,15 @@ the real classes, and the rulings of 1 Nov 2026 tested on them. Behind the
 boundary the replay runs on `cpu_boundary.GraphLikeBackend`, whose capture
 writes nothing, as a CUDA graph's does; and the chain check is recorded but
 not gated, because a CPU kernel runs inside its call.
+`tests/test_shakedown4_cpu.py` holds Shakedown 4's failures and the later
+rulings of 1 Nov 2026: the empty-slice `fill_`, alignment by call instance,
+the stand-in's shape-read prediction and the GPU session's `launch_check`
+against it, and compiled XAttention's mask as an output of its compiled
+function. Behind the boundary every profiler records shapes, which the
+stand-in reads. It cannot tell a host tensor from a device one, since it
+keeps every tensor on the CPU, so host-side work outside a host-compute
+region gets kernels here that the L4 never launches. A GPU recording checks
+the prediction and names any such difference.
 
 ## Earlier work in this repository
 

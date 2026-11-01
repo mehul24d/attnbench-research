@@ -35,7 +35,7 @@ One row per T4.1 item (32). "Plan default" is what the plan or code already stat
 | 29 | Compiled-versus-eager density flag tolerance | ±0.01 absolute, working (31 Oct 2026 ruling) | Shakedown 2: XAttention 0.66582 compiled, 0.66688 eager (−0.00106) | Keep ±0.01 unless Shakedown 3's compiled rows show a wider spread |
 | 30 | Probe-length rule (T2.18) | three lengths at or below 32768 with distinct chunk counts of at least two, else two plus a full recording at 32768 (31 Oct 2026 ruling) | XAttention: 20480, 28672, full at 32768 | As ruled |
 | 31 | Flagged-memset sensitivity bound (T2.3) | each memset with no device record priced at the memset zoo's duration for its size (31 Oct 2026 ruling) | Shakedown 2: 84 flagged memsets per XAttention prefill | As ruled; the paper reports the count and the shift |
-| 32 | Chain-check tolerance (T2.2) | per operator met at a composite or by its device argument, \|sum of the chain-priced costs - sum of the direct host times in the isolated replay\| within rel x direct + abs x calls (1 Nov 2026 ruling) | none on a GPU; on the CPU boundary the direct time holds the compute (not gated) | Working: rel 0.25, abs 5 us per call; set from Shakedown 4's `chain_check.json` |
+| 32 | Chain-validator aggregate gate (T2.2) | over every checked call met at a composite or by its device argument, the sum of \|chain-priced cost - direct host time in the isolated replay\| at most this share of the profile's whole host time; per-call ratios reported, not gated (ruling, 1 Nov 2026, after Shakedown 4; replaces the per-operator rel + abs tolerance of the same day) | Shakedown 4 (L4, 2048): chain/direct 0.58-0.85 per operator, leaf calls 0.77-0.80 alike; `index_put_` 2.0-2.6 from the tape's stand-in (fixed) | Working: 10%; to be set from T3.1 data |
 
 Also blank in `configs/t31/p1_session.json`: densities (row 3), ground-truth groups, repeats, dense rounds and the sampler interval, all filled for T3.1 from the block below; the resolution floor (row 16) and the rerun budget (row 23), which stay null as inputs.
 
@@ -50,7 +50,7 @@ T3.1 is pre-lock P1 data. It takes the values below, marked "working, pre-lock",
 | Repeats | 10 clean rounds per cell | Enough for a median and p90 at P1 |
 | Dense rounds (K2) | 5 | Interleaved candidate rounds per cell |
 | Sampler interval | 0.1 s | The sampler process's 10 Hz |
-| Chain-check tolerance (row 32) | 0.25 of the direct time plus 5 us per call, per operator | A guess before any GPU figure: the null pass skips a composite's C++ body (an allocation, the inner dispatch, a few us), and the isolated replay's profiler adds about 1 us per inner call. Shakedown 4's `chain_check.json` gives the distribution; a rehearsal records the check and does not stop on it |
+| Chain-validator aggregate gate (row 32) | 10% of the profile's host time | The researcher's working value (1 Nov 2026), to be set from T3.1 data. A rehearsal records the check and does not stop on it |
 
 ```json t31-working-values
 {
@@ -64,6 +64,6 @@ T3.1 is pre-lock P1 data. It takes the values below, marked "working, pre-lock",
  "reps": 10,
  "dense_rounds": 5,
  "sampler_interval_s": 0.1,
- "chain_check_tolerance": {"rel": 0.25, "abs_us": 5.0}
+ "chain_check_tolerance": {"aggregate": 0.10}
 }
 ```

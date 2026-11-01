@@ -291,7 +291,7 @@ def test_the_chain_check_holds_the_composites_against_the_isolated_replay(harnes
     p = hp.profile(a.run_prefill, rec.tape, rec.sequence,
                    device=hp.NullDevice(launch=lambda: None, device_type="cpu"), reps=1,
                    layers=a.layers, isolated=iso, isolated_ops=ops)
-    c = hp.chain_check(trace, rec.sequence, p, rel_tol=0.25, abs_tol_s=5e-6)
+    c = hp.chain_check(trace, rec.sequence, p, aggregate_tol=0.10)
     priced = [i for i in p.cost_source if p.source(i) in (hp.CHAIN, hp.DEVICE_ARGUMENT)]
     calls = len({(p.met_at[i], i) for i in priced})
     assert c["checked_calls"] + c["unchecked_calls"] <= calls and c["checked_calls"] > 0
@@ -300,7 +300,8 @@ def test_the_chain_check_holds_the_composites_against_the_isolated_replay(harnes
     assert c["operators"]["aten::mean"]["sources"] == [hp.CHAIN]
     for row in c["operators"].values():
         assert 0 < row["chain_s"] < row["direct_s"]      # the CPU's compute is in the call
-    assert not c["passed"] and c["failed"]
+    assert not c["passed"] and c["share"] > 0.10
+    assert len(c["calls"]) == c["checked_calls"]
 
 
 # --- the replay and T2.12: diagnosis by arm and layer (findings, no gate) -----------------

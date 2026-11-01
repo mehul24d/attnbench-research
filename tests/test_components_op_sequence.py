@@ -1090,3 +1090,41 @@ def test_containment_on_a_real_profiler_trace(tmp_path):
     assert [(o.aten_op, o.layer) for o in seq.ops] == [("aten::mm", 0), ("aten::add", 1)]
     assert all(o.frame and o.frame.startswith("test_components_op_sequence.py(")
                and o.frame.endswith(": fn") for o in seq.ops)
+
+
+def test_each_operation_records_the_call_instance_of_every_operator_in_its_chain():
+    # Ruling of 1 Nov 2026: the null pass's calls are aligned by recorded call
+    # instance, never by an even split (Shakedown 4: addmm launched 2, 2, 1).
+    tb = TB()
+    with tb.region():
+        with tb.cpu("aten::addmm"):
+            tb.memset()                            # 0: cuBLAS's memset
+            tb.launch("gemm")                      # 1
+        with tb.cpu("aten::addmm"):
+            tb.launch("gemm")                      # 2: the next call
+        nonzero(tb, before=1, after=1, outer="aten::index")   # 3 kernel, 4 sync, 5 kernel
+        with tb.py("ext.py(1): call_extension"):
+            tb.launch("ext_kernel")                # 6: no operator, a Python call
+    seq = parse(tb)
+    calls = [op.calls for op in seq.ops]
+    assert [op.chain for op in seq.ops][:3] == [("aten::addmm",)] * 3
+    assert calls[0] == calls[1] == (0,) and calls[2] == (1,)
+    assert calls[3] == calls[5] and calls[3][0] == calls[4][0] == 2   # one index call
+    assert seq.ops[6].chain == () and len(calls[6]) == 1 and calls[6][0] > calls[5][-1]
+    back = S.from_record(json.loads(json.dumps(S.to_record(seq))))
+    assert [op.calls for op in back.ops] == calls
+    # Not in an operation's identity: two recordings of one path compare equal.
+    other = replace(seq, ops=tuple(replace(op, calls=()) for op in seq.ops))
+    assert other == seq
+
+
+def test_call_numbers_do_not_depend_on_the_trace_file_s_event_order():
+    tb = TB()
+    with tb.region():
+        kernel(tb)
+        kernel(tb, "aten::add")
+    a = parse(tb)
+    t = tb.trace()
+    t["traceEvents"] = list(reversed(t["traceEvents"]))
+    b = S.parse_trace(t, CP, context_length=2048, batch=1)
+    assert [op.calls for op in a.ops] == [op.calls for op in b.ops] == [(0,), (1,)]

@@ -39,6 +39,25 @@ arm runs. XAttention's estimator moves its inputs to "cuda" itself (upstream
 `xattn_estimate`), so its report needs a CUDA device; dense SDPA (math) and
 the block-masked kernel run on a CPU.
 
+**The density record of a compiled arm** (researcher's ruling, 1 Nov
+2026). An arm that builds its own mask (XAttention) records its density per
+layer. Inside a compiled function that record is a CUDA-graph output, and
+the graph reuses its buffers within a replay, so a later layer's replay can
+overwrite it before it is read: Shakedown 4's density probe failed so in
+both compiled groups. So the wrapper compiles the arm's `forward_and_mask`,
+which returns the layer's output and the block mask its kernel ran: the mask
+is an output of the compiled function wherever it runs, the timed graph and
+its untimed twin are one graph, and the density is read outside it. In the
+untimed twin pass (`twin_pass()`) each forward starts with
+`torch.compiler.cudagraph_mark_step_begin()` and its mask is cloned as soon
+as the forward returns, before another replay can reuse the buffer; the
+density is taken from the clone. A timed forward reads nothing. Whether the
+extra outputs change the timing is Shakedown 5's A/B at one length
+(`mask_output=False` compiles the output alone); if it does, compiled rows
+take their density from the eager twin, labelled so (`EAGER_TWIN_LABEL`).
+A CPU test cannot show a CUDA graph reusing a buffer; the GPU session is the
+proof.
+
 **Mask agreement** (`MaskAgreement`) compares the compiled estimator's mask
 with the eager one in every layer of every recorded prompt. A variant whose
 masks differ on any prompt is reported as a different arm, with its share of
@@ -75,6 +94,9 @@ SETTINGS: dict[str, dict[str, bool]] = {
 # The eager arm's density record, which a wrapper forwards only if the arm
 # keeps one (`hasattr` is how the harness asks).
 DENSITY_RECORD = ("reset_density", "last_layer_density")
+# The label a compiled row's density carries if it is taken from the eager
+# twin (module docstring), with the +-0.01 flag of `densities.versus_eager`.
+EAGER_TWIN_LABEL = "eager twin, not the executed mask"
 
 
 class CompiledVariantError(RuntimeError):
@@ -143,7 +165,7 @@ class CompiledBackend:
     """An arm's layer forward under `torch.compile` (module docstring)."""
 
     def __init__(self, arm, setting: str, *, mode: Optional[str] = MODE,
-                 dynamo_backend: str = "inductor"):
+                 dynamo_backend: str = "inductor", mask_output: bool = True):
         if setting not in SETTINGS:
             raise ValueError(f"setting {setting!r}; expected one of {sorted(SETTINGS)}")
         if isinstance(arm, CompiledBackend):
@@ -154,7 +176,19 @@ class CompiledBackend:
         self.name = variant_name(arm.capability.name, setting)
         self.layer_idx: Optional[int] = None
         self.events: list[CompileEvent] = []
-        self._forward = _compile(arm.forward, mode, dynamo_backend)
+        # An arm with its own mask: the mask is an output of the compiled
+        # function (module docstring); `mask_output=False` is the A/B's other
+        # side, the output alone, and keeps no density record.
+        self.mask_output = hasattr(arm, "forward_and_mask") and mask_output
+        self._own_mask = hasattr(arm, "forward_and_mask")
+        self._twin = False
+        self._density: list = []
+        if self._own_mask:
+            fn = arm.forward_and_mask if mask_output else \
+                (lambda q, k, v, cfg, mask=None: arm.forward_and_mask(q, k, v, cfg, mask=mask)[0])
+            self._forward = _compile(fn, mode, dynamo_backend)
+        else:
+            self._forward = _compile(arm.forward, mode, dynamo_backend)
 
     # The model wrapper's hooks, passed to the eager arm.
     def set_layer(self, layer_idx: int) -> None:
@@ -163,14 +197,30 @@ class CompiledBackend:
             self.arm.set_layer(layer_idx)
 
     def __getattr__(self, name):
-        """`reset_density` and `last_layer_density` are the arm's, and only
-        where the arm keeps a density record (XAttention). Shakedown 3: the
-        wrapper always had them, so `hasattr(backend, "reset_density")` was
-        true for compiled mean-pool and the call reached a
-        `BlockSparseAttention` that keeps none."""
-        if name in DENSITY_RECORD and "arm" in self.__dict__:
-            return getattr(self.__dict__["arm"], name)
+        """`reset_density` and `last_layer_density` exist only where the arm
+        keeps a density record (XAttention). Shakedown 3: the wrapper always
+        had them, so `hasattr(backend, "reset_density")` was true for
+        compiled mean-pool and the call reached a `BlockSparseAttention` that
+        keeps none. For an arm whose mask is a compiled output the record is
+        the wrapper's own, taken in the twin pass (module docstring)."""
+        d = self.__dict__
+        if name in DENSITY_RECORD and "arm" in d and d.get("mask_output"):
+            if name == "last_layer_density":
+                return d["_density"]
+            return lambda: d["_density"].clear()
+        if name in DENSITY_RECORD and "arm" in d and not d.get("_own_mask"):
+            return getattr(d["arm"], name)
         raise AttributeError(f"{type(self).__name__} has no attribute {name!r}")
+
+    @contextlib.contextmanager
+    def twin_pass(self) -> Iterator[None]:
+        """The untimed twin pass (module docstring): each forward marks a new
+        CUDA-graph step and its mask is cloned at once."""
+        self._twin = True
+        try:
+            yield
+        finally:
+            self._twin = False
 
     def _call(self, fn: Callable, *args, **kwargs):
         before = graphs_compiled()
@@ -186,7 +236,16 @@ class CompiledBackend:
         return out
 
     def forward(self, q, k, v, cfg: AttnConfig, mask=None):
-        return self._call(self._forward, q, k, v, cfg, mask=mask)
+        if not self.mask_output:
+            return self._call(self._forward, q, k, v, cfg, mask=mask)
+        if self._twin:
+            torch.compiler.cudagraph_mark_step_begin()
+        out, block_mask = self._call(self._forward, q, k, v, cfg, mask=mask)
+        if self._twin:
+            from .xattention import density_tensor
+            m = block_mask.clone()                    # before any replay reuses it
+            self._density.append(density_tensor(m, m.shape[-2], m.shape[-1]))
+        return out
 
     @property
     def compile_seconds(self) -> float:

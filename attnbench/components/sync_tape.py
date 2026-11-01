@@ -322,11 +322,21 @@ class TapeRecorder(TorchFunctionMode):
 
 
 class TapeReplayer(TorchFunctionMode):
-    """Serve the tape's answers in order; refuse any departure from it."""
+    """Serve the tape's answers in order; refuse any departure from it.
 
-    def __init__(self, tape: SyncTape, staged: Optional[dict[int, torch.Tensor]] = None):
+    With `serve_setitem=False` a boolean-mask assignment takes its entry
+    and then runs as written, with no stand-in: the null pass, whose dispatch
+    mode nulls the `index_put_` it reaches, so nothing waits on the mask.
+    The stand-in (`nonzero_static`, `unbind`, a device fill, all run for
+    real) is for a capture and a real replay; in the null pass its host work
+    was charged to the arm's `index_put_` (Shakedown 4: 365 us against the
+    recorded 40 us, the 2.0-2.6x of the chain check)."""
+
+    def __init__(self, tape: SyncTape, staged: Optional[dict[int, torch.Tensor]] = None,
+                 *, serve_setitem: bool = True):
         super().__init__()
         self.tape = tape
+        self.serve_setitem = serve_setitem
         self.staged = staged if staged is not None else {}
         self.pos = 0
         self._sync = _Patched(self._synchronize)
@@ -388,6 +398,8 @@ class TapeReplayer(TorchFunctionMode):
         if kind in ("nonzero", "nonzero_tuple"):
             idx = torch.nonzero_static(args[0], size=e.value)
             return tuple(idx.unbind(1)) if kind == "nonzero_tuple" else idx
+        if kind == "bool_setitem" and not self.serve_setitem:
+            return func(*args, **kwargs)
         mask = _single_bool_index(args[1], dt)
         idx = tuple(torch.nonzero_static(mask, size=e.value).unbind(1))
         if kind == "bool_index":

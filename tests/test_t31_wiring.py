@@ -181,10 +181,11 @@ def _grid():
     return {"pairing": "P1", "card": "NVIDIA L4", "model": "m", "lengths": [2048],
             "batches": {}, "arms": ["dense", "meanpool", "xattention"],
             "densities": {"dense": [1.0], "meanpool": [0.25], "xattention": ["calibrated"]},
-            "chain_check_tolerance": {"rel": 0.25, "abs_us": 5.0}}
+            "chain_check_tolerance": {"aggregate": 0.10}}
 
 
-CHECK = {"passed": True, "failed": [], "checked_calls": 3, "unchecked_calls": 1}
+CHECK = {"passed": True, "share": 0.04, "aggregate_tol": 0.10, "checked_calls": 3,
+         "unchecked_calls": 1}
 
 
 def _components(monkeypatch, h, check=CHECK):
@@ -245,8 +246,8 @@ def test_host_then_device_components_give_the_cells_the_prediction_reads(tmp_pat
                                "libraries": [["torch", "2.9.1"]], "python_optimize": 0}
     d = st.step_device_components(args("device_components"), cfg)
     assert d["cells"] == 3
-    assert xa["chain_check"] == {"passed": True, "gated": True, "failed": [],
-                                 "checked_calls": 3, "unchecked_calls": 1}
+    assert xa["chain_check"] == {"passed": True, "gated": True, "share": 0.04,
+                                 "aggregate_tol": 0.10, "checked_calls": 3, "unchecked_calls": 1}
     dev = json.loads((st.step_dir(session, "device_components") / "cells.json").read_text())
     assert dev["fake"] is False and all(c["ops"] for c in dev["cells"])
     # the prediction's grid check reads the cell's setting, not the measured density
@@ -261,7 +262,7 @@ def test_host_then_device_components_give_the_cells_the_prediction_reads(tmp_pat
     assert rec is not None
 
 
-FAILED_CHECK = {"passed": False, "failed": ["aten::_to_copy"], "checked_calls": 3,
+FAILED_CHECK = {"passed": False, "share": 0.25, "aggregate_tol": 0.10, "checked_calls": 3,
                 "unchecked_calls": 0}
 
 
@@ -270,7 +271,8 @@ def test_a_failed_chain_check_stops_a_real_session(tmp_path, monkeypatch):
     session = _session(tmp_path)
     args = SimpleNamespace(dry_run=False, session=str(session),
                            out=str(st.step_dir(session, "host_components")))
-    with pytest.raises(st.StepFailed, match=r"chain check failed for \['aten::_to_copy'\]"):
+    with pytest.raises(st.StepFailed, match=r"chain check failed.*3 composite call.*25\.0% "
+                                            r"of the profile's host time, against 10%"):
         st.step_host_components(args, _grid())
 
 
@@ -283,8 +285,7 @@ def test_a_rehearsal_records_a_failed_chain_check_and_goes_on(tmp_path, monkeypa
     assert r["cells"] == 3 and len(r["chain_check_failed_cells"]) == 3
     cell = json.loads((out / "cells_index.json").read_text())["cells"][0]
     assert cell["chain_check"]["passed"] is False and cell["chain_check"]["gated"] is True
-    assert json.loads((out / cell["dir"] / "chain_check.json").read_text())["failed"] == \
-        ["aten::_to_copy"]
+    assert json.loads((out / cell["dir"] / "chain_check.json").read_text())["share"] == 0.25
 
 
 def test_a_cell_the_replay_cannot_price_stops_the_step(tmp_path, monkeypatch):

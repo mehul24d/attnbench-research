@@ -112,11 +112,9 @@ CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), 
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
 # oracle's scoring pass and the mean-pool estimator, which refuse a batch
 # above one as built (found by the CPU-boundary rehearsal, 31 Oct 2026). The
-# batch-4 cells hold the dense control only: accepted as a default (ruling,
-# 1 Nov 2026) on the condition that the plan promises no sparse arm above
-# batch 1, and it does (Section 5.4 "Batch", H6 and Section 5.9 choose a
-# sparse arm per batch), so the conflict is flagged and open; no scope line
-# is written until it is decided.
+# batch-4 cells hold the dense control only: the scope is narrowed (ruling,
+# 1 Nov 2026: sparse arms evaluated at batch 1, batch above 1 future work;
+# plan Sections 5.4, 5.9, H6 and `docs/limitations.md` say so).
 BATCH1_ONLY = ("xattention", "xattention_noassert", "oracle", "meanpool")
 HOST_PROFILE_REPS = 5
 
@@ -357,9 +355,10 @@ def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=
     behind the CPU boundary its embedding kernel,
     `cpu_boundary.EMBEDDING_KERNEL_OP`) and any composite whose chain is not
     recorded, and is what `chain_check` holds the calls met at a composite or
-    by their device argument against (ruling of 1 Nov 2026), within
-    `tolerance` ({"rel", "abs_us"}, T4.1 row 32). Returns (profile, check)
-    and writes the check to `chain_check.json`."""
+    by their device argument against (ruling of 1 Nov 2026), in aggregate
+    within `tolerance` ({"aggregate"}: the summed |chain - direct| as a share
+    of the profile's host time, T4.1 row 32, working 10%). Returns (profile,
+    check) and writes the check to `chain_check.json`."""
     from attnbench import cpu_boundary
     from attnbench.components import host_profile as hp
     from attnbench.components import replay
@@ -371,8 +370,8 @@ def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=
     iso = hp.isolated_host_s(trace, rec.sequence, pos)
     prof = hp.profile(a.run_prefill, rec.tape, rec.sequence, device=_null_device(), reps=reps,
                       entries=entries, layers=a.layers, isolated=iso, isolated_ops=ops)
-    check = hp.chain_check(trace, rec.sequence, prof, rel_tol=float(tolerance["rel"]),
-                           abs_tol_s=float(tolerance["abs_us"]) * 1e-6)
+    check = hp.chain_check(trace, rec.sequence, prof,
+                           aggregate_tol=float(tolerance["aggregate"]))
     check["gated"] = not _boundary()
     if not check["gated"]:
         check["why_not_gated"] = ("behind the CPU boundary a kernel runs inside its call, so "
@@ -387,8 +386,11 @@ def chain_check_failure(cfg, check) -> "str | None":
     is a working value the rehearsal measures), as does the CPU boundary."""
     if check["passed"] or not check["gated"] or cfg.get("rehearsal"):
         return None
-    return (f"the chain check failed for {check['failed']}: a composite's chain-priced cost "
-            f"is outside the tolerance of its directly measured host time")
+    share = check["share"]
+    return (f"the chain check failed: the summed |chain - direct| over "
+            f"{check['checked_calls']} composite call(s) is "
+            f"{'no share' if share is None else f'{share:.1%}'} of the profile's host time, "
+            f"against {check['aggregate_tol']:.0%}")
 
 
 def code_path_definition(cp) -> dict:
@@ -818,8 +820,9 @@ def step_host_components(args, cfg) -> dict:
                       "code_path": code_path_definition(a.code_path),
                       "host_total_ms": prof.total_s * 1e3,
                       "host_cost_sources": prof.sources(),
-                      "chain_check": {k: check[k] for k in ("passed", "gated", "failed",
-                                                            "checked_calls", "unchecked_calls")}})
+                      "chain_check": {k: check[k] for k in ("passed", "gated", "share",
+                                                            "aggregate_tol", "checked_calls",
+                                                            "unchecked_calls")}})
     h.unwrap()
     _write_json(out / "cells_index.json", {"cells": index})
     failed = [f"{c['arm']}@{c['context_length']}x{c['batch']}" for c in index

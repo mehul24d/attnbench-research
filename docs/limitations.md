@@ -38,6 +38,21 @@ scope it sets is the first thing a reader needs.
 
 ---
 
+## SCOPE, third: sparse arms are evaluated at batch 1
+
+Sparse arms evaluated at batch 1; batch above 1 is future work (researcher's
+ruling, 1 Nov 2026). The oracle, mean-pool and XAttention arms run at batch 1
+only, as built (XAttention's `Xattention_prefill` asserts batch 1; the
+precomputed-mask arm's one kernel call is batch 1). Batch 4 keeps its dense
+rows, so the dense baseline is measured there, but no sparse configuration
+is, and the dispatcher's choice above batch 1 is dense by construction and
+is not scored (plan Sections 5.4, 5.9, H6). No claim about a sparse arm,
+its host overhead or the dispatcher extends beyond batch 1. The confirmatory
+grid is batch 1 because that is where host overhead is the largest share of
+the prefill.
+
+---
+
 ## SCOPE, second: every speedup in this study names a card, or it is wrong
 
 Added 2026-09-16, after Stage 5 ran on a second architecture and the sign

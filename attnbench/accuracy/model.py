@@ -407,6 +407,23 @@ def pool_scores_to_block_size(scores_finest: torch.Tensor, *,
     return pooled.mean(dim=(2, 4))
 
 
+
+def _mask_from_scores(state, layer_idx: int, cfg):
+    """The two-pass path's mask for one layer, from the scores the scoring
+    pass banked: on host tensors when they are on the host. One named
+    function so `cpu_boundary.launch_check` can leave its calls out
+    (`HOST_SIDE_FUNCTIONS`); no behaviour of its own."""
+    finest = state.scores[layer_idx]
+    pooled = pool_scores_to_block_size(
+        finest, finest_block_size=state.finest_block_size,
+        target_block_size=cfg.block_size)
+    # mean over KV heads -> the single (n_blocks, n_blocks)
+    # ranking masks.mask_for expects (no per-head masks: this
+    # study never varies the sparsity pattern per head, matching
+    # masks.py's own stated convention).
+    importance = pooled.mean(dim=0)
+    return masks.mask_for(cfg, importance_scores=importance)
+
 class SwappedAttention(nn.Module):
     """Replaces one decoder layer's self_attn. Reuses the original
     q_proj/k_proj/v_proj/o_proj and the caller-supplied apply_rotary_pos_emb
@@ -514,16 +531,7 @@ class SwappedAttention(nn.Module):
                     layer_scores.mean(dim=0), causal=True,
                     identity_seed=masks._mask_identity_key(cfg))
             elif cfg.mask == "block_sparse":
-                finest = state.scores[self.layer_idx]
-                pooled = pool_scores_to_block_size(
-                    finest, finest_block_size=state.finest_block_size,
-                    target_block_size=cfg.block_size)
-                # mean over KV heads -> the single (n_blocks, n_blocks)
-                # ranking masks.mask_for expects (no per-head masks: this
-                # study never varies the sparsity pattern per head, matching
-                # masks.py's own stated convention).
-                importance = pooled.mean(dim=0)
-                mask = masks.mask_for(cfg, importance_scores=importance)
+                mask = _mask_from_scores(state, self.layer_idx, cfg)
             # Backends whose setting differs per layer (XAttention with a
             # calibrated per-(layer, head) threshold table, and the
             # threshold profiler) are told which layer this is; the rest

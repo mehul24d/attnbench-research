@@ -45,9 +45,11 @@ replaced is listed here, so nothing else can be stubbed by accident:
   - **The profiler's device activity.** On a CPU the profiler records host
     operators only. `synthesize_device` rewrites an exported trace into the
     form CUPTI gives: one `cudaLaunchKernel` and one kernel per launching
-    operator (a leaf operator that is not a view, an allocation, a
-    metadata read or wholly CompositeImplicitAutograd, or a custom kernel
-    operator whatever its children), and
+    operator (`predict`: a leaf operator that is not a view, an allocation,
+    a metadata read or wholly CompositeImplicitAutograd and whose output is
+    not empty, read from the shapes every profiler records behind the
+    boundary; an operator that launches beside its children; a custom
+    kernel operator whatever its children), and
     for a scalar read (`_local_scalar_dense`) a device-to-host copy and a
     stream synchronisation, with correlation ids and the stub device. Durations are the CPU's; nothing timed here is a result.
   - **The CUDA graph.** `GraphLikeBackend` keeps the one property of a graph
@@ -60,8 +62,12 @@ replaced is listed here, so nothing else can be stubbed by accident:
 What a CPU dry run cannot test, and the L4 must: the CUDA graph's own
 replay (the stand-in reruns the Python), the device's own timings, CUPTI's records
 (memsets with no device record), the library's Python around the kernel,
-and which operators a CUDA build lowers to (on a CPU `embedding` reaches
-`index_select`, on the L4 `gather`).
+which operators a CUDA build lowers to (on a CPU `embedding` reaches
+`index_select`, on the L4 `gather`), and which tensors are on the host (the
+boundary keeps every tensor on the CPU, so host-side work outside a
+host-compute region is given kernels here that the L4 never launches). A
+GPU session checks the stand-in's prediction against its own trace
+(`launch_check`) so the next difference is found there and named.
 """
 
 from __future__ import annotations
@@ -75,6 +81,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Iterator, Optional, Union
 
 import torch
@@ -277,6 +284,25 @@ def composite_implicit(name: str) -> bool:
 
 def _may_launch(name: str) -> bool:
     return name not in NO_LAUNCH and not composite_implicit(name)
+
+
+# Operators that launch a kernel of their own beside a child that prepares
+# their input (a `sort` copies its input, then sorts; an `index` with a
+# boolean mask runs `nonzero`, then gathers): found by `launch_check` on
+# Shakedown 4's L4 traces, 1 Nov 2026. Only beside the preparing children
+# named here, and not when a child is the same operator (a `sum` that
+# redispatches to its `out` form): a CPU build's own children (the `fill_`
+# with which a CPU `sum` starts) are not the L4's.
+LAUNCHES_BESIDE_CHILDREN = frozenset({"aten::cumsum", "aten::index", "aten::sort", "aten::sum"})
+PREPARING_CHILDREN = frozenset({"aten::to", "aten::_to_copy", "aten::copy_", "aten::clone",
+                                "aten::contiguous", "aten::nonzero", "aten::arange"})
+# Functions that work on host tensors on the L4 outside a host-compute
+# region, which the boundary cannot tell from device work (it keeps every
+# tensor on the CPU): their calls are left out of `launch_check`. The
+# two-pass oracle's mask from banked scores (`accuracy.model.
+# _mask_from_scores`, with `masks.importance_block_mask` inside it) is one:
+# 2,800 of Shakedown 4's oracle calls per prefill.
+HOST_SIDE_FUNCTIONS = (("model.py", "_mask_from_scores"), ("masks.py", "importance_block_mask"))
 CUSTOM_KERNELS = (KERNEL_OP,)
 _STREAM = 7
 
@@ -286,15 +312,36 @@ def _device_properties() -> list:
              "computeMajor": 8, "computeMinor": 9}]
 
 
-def synthesize_device(trace: Union[str, Path, dict]) -> dict:
-    """The CPU trace with the device activity a CUDA build would record
-    (module docstring). Writes the file back when given a path."""
-    path = None if isinstance(trace, dict) else Path(trace)
-    doc = trace if path is None else json.loads(path.read_text())
-    events = doc.get("traceEvents", [])
-    ops = sorted((e for e in events if e.get("ph") == "X" and e.get("cat") == "cpu_op"),
-                 key=lambda e: (e["pid"], e["tid"], e["ts"], -e.get("dur", 0)))
-    # Nesting per thread: parent pointers by a stack sweep.
+def empty_call(e: dict) -> bool:
+    """Whether a recorded call's output or in-place target is empty (numel
+    0), read from the shapes the profiler records (`Input Dims`): an
+    in-place operator's first input, or every sized input of an out-of-place
+    one. A CUDA build launches nothing for it (researcher's ruling, 1 Nov
+    2026: Shakedown 4's `fill_` on an empty slice, `Xattention.py:221`).
+    False when the trace has no shapes."""
+    dims = (e.get("args") or {}).get("Input Dims")
+    if not isinstance(dims, list) or not dims:
+        return False
+    sized = lambda d: isinstance(d, list) and d and all(isinstance(x, int) for x in d)
+    empty = lambda d: sized(d) and 0 in d
+    name = e.get("name", "")
+    if name.endswith("_") and not name.endswith("__"):
+        return empty(dims[0])
+    have = [d for d in dims if sized(d)]
+    return bool(have) and all(empty(d) for d in have)
+
+
+@dataclass(frozen=True)
+class Predicted:
+    """What the stand-in predicts a recorded call issues: "kernel" (one
+    launch), "sync" (a scalar read), or None (nothing of its own)."""
+
+    event: dict
+    issues: Optional[str]
+
+
+def _nesting(ops: list) -> tuple[dict, dict]:
+    """Parent and children per operator, by a stack sweep per thread."""
     parent: dict = {}
     children: dict = {}
     stack: list = []
@@ -307,11 +354,29 @@ def synthesize_device(trace: Union[str, Path, dict]) -> dict:
             parent[id(e)] = stack[-1]
             children.setdefault(id(stack[-1]), []).append(e)
         stack.append(e)
+    return parent, children
+
+
+def _cpu_ops(events) -> list:
+    return sorted((e for e in events if e.get("ph") == "X" and e.get("cat") == "cpu_op"),
+                  key=lambda e: (e["pid"], e["tid"], e["ts"], -e.get("dur", 0)))
+
+
+def predict(events, custom: tuple = CUSTOM_KERNELS) -> list[Predicted]:
+    """Every host operator in `events` with the device work the stand-in
+    gives it (module docstring): a leaf operator that may launch and whose
+    output is not empty (`empty_call`; a call that resizes its `out=`
+    tensor is not), each custom kernel operator (and
+    nothing below it), and a scalar read. An operator above an empty leaf
+    launches nothing either: its device work was the leaf's. An operator in
+    `LAUNCHES_BESIDE_CHILDREN` launches whatever its children do."""
+    ops = _cpu_ops(events)
+    parent, children = _nesting(ops)
 
     def inside_custom(e) -> bool:
         p = parent.get(id(e))
         while p is not None:
-            if p["name"] in CUSTOM_KERNELS:
+            if p["name"] in custom:
                 return True
             p = parent.get(id(p))
         return False
@@ -328,8 +393,111 @@ def synthesize_device(trace: Union[str, Path, dict]) -> dict:
         return below[id(e)]
 
     def launches(e) -> bool:
-        return _may_launch(e["name"]) and \
-            not any(subtree(c) for c in children.get(id(e), ()))
+        kids = children.get(id(e), ())
+        beside = e["name"] in LAUNCHES_BESIDE_CHILDREN and \
+            any(c["name"] in PREPARING_CHILDREN for c in kids) and \
+            not any(c["name"] == e["name"] for c in kids)    # not a redispatch to itself
+        # An `out=` call is given an empty output and resizes it (`arange`).
+        empty = empty_call(e) and not any(c["name"] == "aten::resize_" for c in kids)
+        return _may_launch(e["name"]) and not empty and (
+            beside or not any(subtree(c) for c in kids))
+
+    out = []
+    for e in ops:
+        if inside_custom(e):
+            out.append(Predicted(e, None))
+        elif e["name"] in custom:
+            out.append(Predicted(e, "kernel"))
+        elif e["name"] in SYNC_OPS:
+            out.append(Predicted(e, "sync"))
+        else:
+            out.append(Predicted(e, "kernel" if launches(e) else None))
+    return out
+
+
+class LaunchMismatch(RuntimeError):
+    """The stand-in's predicted launches are not the device's recorded ones."""
+
+
+# The block-sparse kernel's operator in the pinned CUDA build, the GPU's
+# counterpart of `KERNEL_OP`.
+GPU_CUSTOM_KERNELS = ("flash_attn::_block_sparse_attn_forward",)
+
+
+def launch_check(trace: Union[str, Path, dict], *, region: Optional[str] = None) -> dict:
+    """In a GPU session: the stand-in's prediction (`predict`) over the
+    recorded trace against the launches the trace records (researcher's
+    ruling, 1 Nov 2026). Per host operator in the prefill region, outside
+    any host-compute region and any of `HOST_SIDE_FUNCTIONS`, the prediction
+    says whether the operator issues
+    device work itself, and the trace whether a launch, copy or memset call
+    lies inside it and inside none of its child operators. Scalar reads are
+    left out (the tape and the sequence check those), and so is everything
+    below a custom kernel operator. Every disagreement is counted by
+    operator; `passed` is False on any. Needs the trace's shapes, which
+    `trace_recording.profiler_kwargs` records."""
+    from .components import op_sequence as S
+    doc = S.load_trace(trace)
+    xs = [e for e in doc.get("traceEvents", ()) if e.get("ph") == "X"
+          and isinstance(e.get("ts"), (int, float))]
+    reg = [e for e in xs if e.get("cat") == "user_annotation"
+           and e.get("name") == (region or S.REGION)]
+    if len(reg) != 1:
+        raise LaunchMismatch(f"{len(reg)} prefill regions in the trace, expected one")
+    reg = reg[0]
+    end = lambda e: e["ts"] + e.get("dur", 0)
+    within = lambda e, r: r["ts"] - S._EPS <= e["ts"] and end(e) <= end(r) + S._EPS
+    host = [e for e in xs if (e["pid"], e["tid"]) == (reg["pid"], reg["tid"])
+            and within(e, reg)]
+    if not any("Input Dims" in (e.get("args") or {}) for e in host if e.get("cat") == "cpu_op"):
+        raise LaunchMismatch("the trace records no shapes; the prediction reads them")
+    custom = tuple(CUSTOM_KERNELS) + GPU_CUSTOM_KERNELS
+    hc = [e for e in host if e.get("cat") == "user_annotation" and e["name"] == S.HOST_COMPUTE]
+    hc += [e for e in host if e.get("cat") == "python_function" and any(
+        f"{f}(" in e["name"] and e["name"].endswith(f": {fn}") for f, fn in HOST_SIDE_FUNCTIONS)]
+    pred = predict(host, custom)
+    ops = [p.event for p in pred]
+    parent, _ = _nesting(ops)
+    own: dict = {}
+    for c in host:
+        if c.get("cat") in S._HOST_CATS and \
+                S.api_class(c["name"]) in ("launch", "memset", "memcpy", "memcpy_blocking"):
+            inner = [e for e in ops if within(c, e)]
+            if inner:
+                k = id(max(inner, key=lambda e: (e["ts"], -e.get("dur", 0))))
+                own[k] = own.get(k, 0) + 1
+    checked, rows = 0, []
+    for p in pred:
+        e = p.event
+        if p.issues == "sync" or any(within(e, h) for h in hc):
+            continue
+        anc = parent.get(id(e))
+        while anc is not None and anc["name"] not in custom:
+            anc = parent.get(id(anc))
+        if anc is not None:
+            continue
+        checked += 1
+        got = own.get(id(e), 0)
+        if (p.issues == "kernel") != (got > 0):
+            rows.append({"operator": e["name"], "predicted": p.issues or "nothing",
+                         "recorded_calls": got,
+                         "input_dims": (e.get("args") or {}).get("Input Dims")})
+    by_op: dict = {}
+    for r in rows:
+        k = f"{r['operator']}: predicted {r['predicted']}, recorded {r['recorded_calls']} call(s)"
+        by_op[k] = by_op.get(k, 0) + 1
+    return {"checked_calls": checked, "mismatches": len(rows),
+            "by_operator": dict(sorted(by_op.items())), "first": rows[:20],
+            "passed": not rows}
+
+
+def synthesize_device(trace: Union[str, Path, dict]) -> dict:
+    """The CPU trace with the device activity a CUDA build would record
+    (module docstring). Writes the file back when given a path."""
+    path = None if isinstance(trace, dict) else Path(trace)
+    doc = trace if path is None else json.loads(path.read_text())
+    events = doc.get("traceEvents", [])
+    _, children = _nesting(_cpu_ops(events))
 
     def gap(e) -> tuple[float, float]:
         """(start, length) of the widest stretch of `e` no child covers, so
@@ -346,18 +514,21 @@ def synthesize_device(trace: Union[str, Path, dict]) -> dict:
 
     corr = 10_000_000
     added = []
-    for e in ops:
-        name = e["name"]
-        if inside_custom(e):
+    for p in predict(events):
+        if p.issues is None:
             continue
-        custom = name in CUSTOM_KERNELS
-        sync = name in SYNC_OPS
-        if not (custom or sync or launches(e)):
-            continue
-        ts, dur = gap(e)
+        e, name = p.event, p.event["name"]
+        kids = children.get(id(e), ())
+        if p.issues == "kernel" and kids and name in LAUNCHES_BESIDE_CHILDREN:
+            # After its children, as on the L4 (a sort copies, then sorts), and
+            # never by the widest gap, whose side varies with timing.
+            lo = max(c["ts"] + c.get("dur", 0.0) for c in kids)
+            ts, dur = lo, max(float(e["ts"]) + float(e.get("dur", 0.0)) - lo, 0.0)
+        else:
+            ts, dur = gap(e)
         host = {"ph": "X", "pid": e["pid"], "tid": e["tid"]}
         dev = {"ph": "X", "pid": 0, "tid": _STREAM}
-        if sync:
+        if p.issues == "sync":
             corr += 1
             added.append({**host, "cat": "cuda_runtime", "name": "cudaMemcpyAsync",
                           "ts": ts + dur * 0.1, "dur": dur * 0.3,
@@ -455,6 +626,7 @@ def installed(xattn_path: Optional[Union[str, Path]] = None, *,
         "props": torch.cuda.get_device_properties, "current": torch.cuda.current_device,
         "sync": torch.cuda.synchronize, "name": torch.cuda.get_device_name,
         "export": torch.profiler.profile.export_chrome_trace,
+        "profile_init": torch.profiler.profile.__init__,
         "as_device": sync_tape._as_device,
     }
     props = types.SimpleNamespace(name=STUB_DEVICE_NAME, major=8, minor=9,
@@ -464,6 +636,10 @@ def installed(xattn_path: Optional[Union[str, Path]] = None, *,
     def export(self, path):
         saved["export"](self, path)
         synthesize_device(path)
+
+    def profile_init(self, *a, **kw):
+        kw["record_shapes"] = True          # the stand-in reads them (`predict`)
+        saved["profile_init"](self, *a, **kw)
 
     def as_device(d):
         if _is_cuda(d) or (isinstance(d, int) and not isinstance(d, bool)):
@@ -480,6 +656,7 @@ def installed(xattn_path: Optional[Union[str, Path]] = None, *,
         torch.cuda.synchronize = lambda *a, **k: None
         torch.cuda.get_device_name = lambda *a, **k: STUB_DEVICE_NAME
         torch.profiler.profile.export_chrome_trace = export
+        torch.profiler.profile.__init__ = profile_init
         sync_tape._as_device = as_device
         if root is not None:
             _import_xattn()
@@ -493,6 +670,7 @@ def installed(xattn_path: Optional[Union[str, Path]] = None, *,
         torch.cuda.synchronize = saved["sync"]
         torch.cuda.get_device_name = saved["name"]
         torch.profiler.profile.export_chrome_trace = saved["export"]
+        torch.profiler.profile.__init__ = saved["profile_init"]
         sync_tape._as_device = saved["as_device"]
         for n, m in saved_mods.items():
             if m is None:
