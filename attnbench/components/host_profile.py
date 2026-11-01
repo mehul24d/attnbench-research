@@ -782,6 +782,9 @@ class HostProfile:
     # price route (`bare_timer.PRICE_ROUTES`).
     pricing: str = NULL_PASS
     price_route: Mapping[int, str] = field(default_factory=dict)
+    # The per-layer residual added to each position (`layer_residual`,
+    # ruling of 1 Nov 2026 after Shakedown 6): already in `host_s`.
+    residual_s: Mapping[int, float] = field(default_factory=dict)
 
     def source(self, i: int) -> str:
         return self.cost_source.get(i, NULL_PASS)
@@ -1007,7 +1010,8 @@ def to_record(p: HostProfile) -> dict:
             "met_at": {str(i): v for i, v in sorted(p.met_at.items())},
             "empty_calls": [dict(e) for e in p.empty_calls],
             "pricing": p.pricing,
-            "price_route": {str(i): v for i, v in sorted(p.price_route.items())}}
+            "price_route": {str(i): v for i, v in sorted(p.price_route.items())},
+            "residual_s": {str(i): v for i, v in sorted(p.residual_s.items())}}
 
 
 def from_record(rec: Mapping) -> HostProfile:
@@ -1022,7 +1026,8 @@ def from_record(rec: Mapping) -> HostProfile:
         met_at={int(i): str(v) for i, v in (rec.get("met_at") or {}).items()},
         empty_calls=tuple(dict(e) for e in rec.get("empty_calls") or ()),
         pricing=str(rec.get("pricing") or NULL_PASS),
-        price_route={int(i): str(v) for i, v in (rec.get("price_route") or {}).items()})
+        price_route={int(i): str(v) for i, v in (rec.get("price_route") or {}).items()},
+        residual_s={int(i): float(v) for i, v in (rec.get("residual_s") or {}).items()})
 
 
 def dumps(p: HostProfile) -> str:
