@@ -980,6 +980,8 @@ def boundary_main(args, run) -> int:
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     if getattr(args, "cpu_boundary", False):
+        if args.step == "graph-breaks-one":
+            return boundary_main(args, lambda: cmd_graph_breaks_one(args))
         return boundary_main(args, lambda: run_step(args.step, args))
     if args.step == "arm-pass":
         return cmd_arm_pass(args)

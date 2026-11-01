@@ -284,7 +284,7 @@ class XAttentionBackend(AttentionBackend):
         k_rep, v_rep = _expand_kv(k, v, cfg)
         simple_mask = self.estimate(q, k_rep)
 
-        from block_sparse_attn import block_sparse_attn_func
+        from .block_sparse import kernel_interface
 
         _, h, s, d = q.shape
         nb = -(-s // XATTN_BLOCK_SIZE)
@@ -308,12 +308,9 @@ class XAttentionBackend(AttentionBackend):
         head_mask_type = torch.tensor(
             [1 for _ in range(h)], device=q.device, dtype=torch.int32)
         block_mask = simple_mask[:, :, :nb, :nb].contiguous()    # where upstream makes it
-        # Outside Dynamo when compiled (no effect eagerly): traced, the
-        # interface's graph break left a resume frame whose guard held a
-        # tensor that died after every call, so the frame recompiled per
-        # layer and a timed loop reached the recompile limit (256) at about
-        # the ninth prefill (Shakedown 5, 1 Nov 2026).
-        out = torch.compiler.disable(block_sparse_attn_func)(
+        # Outside Dynamo when compiled, as every arm's kernel call is
+        # (`block_sparse.kernel_interface`; Shakedown 5 and 6, 1 Nov 2026).
+        out = kernel_interface(
             qf, kf, vf, q_cu_seq_lens, k_cu_seq_lens, head_mask_type, None,
             block_mask, s, s,
             p_dropout=0.0, deterministic=True, is_causal=True)

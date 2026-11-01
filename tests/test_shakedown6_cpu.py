@@ -264,11 +264,11 @@ from attnbench.backends import compiled as C  # noqa: E402
 XAttentionBackend = type("XAttentionBackend", (), {})
 BlockSparseAttention = type("BlockSparseAttention", (), {})
 KERNEL = C.GraphBreak("Attempted to call function marked as skipped",
-                      ("xattention.py:316 in forward_and_mask",))
+                      ("xattention.py:313 in forward_and_mask", "block_sparse.py:76 in kernel_interface"))
 
 
 def test_a_declared_break_is_matched_by_reason_file_and_function_not_by_line():
-    moved = C.GraphBreak(KERNEL.reason, ("xattention.py:401 in forward_and_mask",))
+    moved = C.GraphBreak(KERNEL.reason, ("block_sparse.py:401 in kernel_interface",))
     C.check_declared([C.LayerBreaks(0, 3, (KERNEL,)), C.LayerBreaks(1, 3, (moved,))],
                      XAttentionBackend(), "default")
     C.check_declared([C.LayerBreaks(0, 3, (KERNEL,))], XAttentionBackend(), "capture")
@@ -279,7 +279,7 @@ def test_a_declared_break_is_matched_by_reason_file_and_function_not_by_line():
     ((KERNEL, C.GraphBreak("Dynamic shape operator",
                            ("block_sparse_attn_interface.py:111 in replace_ones_with_count",))),
      "undeclared break 'Dynamic shape operator'"),
-    ((C.GraphBreak(KERNEL.reason, ("xattention.py:9 in forward",)),), "undeclared break"),
+    ((C.GraphBreak(KERNEL.reason, ("xattention.py:9 in forward_and_mask",)),), "undeclared break"),
 ])
 def test_a_report_that_is_not_the_declared_code_path_is_refused(breaks, why):
     with pytest.raises(C.CompiledVariantError, match=why):
@@ -291,13 +291,22 @@ def test_an_empty_report_shows_no_code_path():
         C.check_declared([], XAttentionBackend(), "default")
 
 
-def test_the_declared_breaks_are_per_setting_and_inherited():
+def test_the_declared_breaks_are_one_kernel_exclusion_for_every_arm_and_setting():
+    # Ruling, 1 Nov 2026, after Shakedown 6: the oracle and mean-pool
+    # (`BlockSparseAttention`, and a subclass inherits it) and XAttention
+    # each declare only the kernel interface outside Dynamo, in both settings.
     sub = type("Sub", (BlockSparseAttention,), {})()
-    assert [d.function for d in C.declared_breaks(sub, "default")] == \
-        ["forward", "replace_ones_with_count"]
-    assert C.declared_breaks(sub, "capture") == ()          # L4: no break under capture
+    for arm in (sub, XAttentionBackend()):
+        for setting in ("default", "capture"):
+            assert [(d.file, d.function) for d in C.declared_breaks(arm, setting)] == \
+                [("block_sparse.py", "kernel_interface")]
+            C.check_declared([C.LayerBreaks(0, 2, (KERNEL,))], arm, setting)
+    # the library's own breaks, which a traced call showed, are not declared
+    library = C.GraphBreak("Dynamic shape operator",
+                           ("block_sparse_attn_interface.py:111 in replace_ones_with_count",))
     with pytest.raises(C.CompiledVariantError, match="undeclared"):
-        C.check_declared([C.LayerBreaks(0, 2, (KERNEL,))], sub, "capture")
+        C.check_declared([C.LayerBreaks(0, 2, (KERNEL, library))], sub, "default")
+    assert C.declared_breaks(type("DenseSDPA", (), {})(), "default") == ()
 
 
 class _Arm:

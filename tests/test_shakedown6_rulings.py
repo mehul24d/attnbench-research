@@ -1,5 +1,10 @@
 """The researcher's rulings of 1 Nov 2026 after Shakedown 6.
 
+The kernel interface outside Dynamo for every arm that calls it
+(`block_sparse.kernel_interface`): mean-pool and the oracle carry the one
+declared break under both settings, and a traced interface is refused as
+another code path (behind the CPU boundary).
+
 Once-only host pricing (`host_profile.align_calls`), on Shakedown 6's own
 sequence: XAttention at 2048 tokens on the L4, recorded on the instance
 during the diagnosis (`results/shakedown6_l4_20261101/results/s6_diag/
@@ -166,3 +171,79 @@ def test_the_stand_in_gives_scalar_tensor_its_launch():
     # On the L4 every scalar_tensor (140 per XAttention prefill) was under a
     # where, with a fill_ child: a launch. On a CPU it is a leaf.
     assert cb._may_launch("aten::scalar_tensor")
+
+
+# --- the kernel interface outside Dynamo, for every arm (ruling 1) ---------------------------
+
+def _block_sparse_layers(n=2, s=256):
+    import torch
+    from attnbench.config import AttnConfig
+    from attnbench.masks import BlockSparseMask
+    cfg = AttnConfig(seq_len=s, batch=1, n_heads_q=2, n_heads_kv=2, head_dim=16,
+                     dtype="float32", mask="block_sparse", sparsity=0.5, block_size=128,
+                     mask_source="importance")
+    nb = s // 128
+    act = torch.tril(torch.ones(nb, nb, dtype=torch.bool))
+    mask = BlockSparseMask(seq_len=s, block_size=128, active=act, seed=0,
+                           source="importance", causal=True)
+    g = torch.Generator().manual_seed(0)
+    qkv = lambda: torch.randn(1, 2, s, 16, generator=g)
+    return [(i, (qkv(), qkv(), qkv(), mask), cfg) for i in range(n)]
+
+
+@pytest.mark.parametrize("setting", ["default", "capture"])
+def test_mean_pool_and_the_oracle_carry_only_the_declared_kernel_exclusion(setting):
+    import torch
+    if torch.cuda.is_available():
+        pytest.skip("the CPU boundary is for a machine without CUDA")
+    from attnbench.backends import compiled as C
+    from attnbench.backends.block_sparse import BlockSparseAttention
+    with cb.installed(xattn=False):
+        arm = BlockSparseAttention()
+        report = C.graph_break_report(arm, _block_sparse_layers(), setting)
+    assert [len(r.breaks) for r in report] == [1, 1]
+    C.check_declared(report, arm, setting)
+
+
+@pytest.mark.parametrize("setting", ["default", "capture"])
+def test_a_traced_kernel_interface_is_another_code_path(setting, monkeypatch):
+    # The behaviour before the ruling: the interface traced. Behind the
+    # boundary the stub sizes a tensor from its data, as the library does, so
+    # the default settings show that break; neither setting shows the
+    # declared exclusion.
+    import torch
+    if torch.cuda.is_available():
+        pytest.skip("the CPU boundary is for a machine without CUDA")
+    from attnbench.backends import block_sparse as B
+    from attnbench.backends import compiled as C
+    monkeypatch.setattr(B, "kernel_interface",
+                        lambda *a, unsupported=False, **kw: B._call(*a, unsupported=unsupported,
+                                                                     **kw))
+    with cb.installed(xattn=False):
+        arm = B.BlockSparseAttention()
+        report = C.graph_break_report(arm, _block_sparse_layers(), setting)
+    with pytest.raises(C.CompiledVariantError, match="declared break missing"):
+        C.check_declared(report, arm, setting)
+    if setting == "default":
+        assert any(b.reason.startswith("Dynamic shape operator") for r in report for b in r.breaks)
+
+
+def test_the_kernel_interface_is_the_librarys_own_call_eagerly(monkeypatch):
+    from attnbench.backends import block_sparse as B
+    from attnbench.backends.base import UnsupportedConfig
+    import types, sys
+    seen = []
+
+    def func(*a, **kw):
+        seen.append((a, kw))
+        if kw.get("fail"):
+            raise RuntimeError("no kernel for this")
+        return "out"
+    monkeypatch.setitem(sys.modules, "block_sparse_attn",
+                        types.SimpleNamespace(block_sparse_attn_func=func))
+    assert B.kernel_interface(1, 2, is_causal=True) == "out"
+    assert seen == [((1, 2), {"is_causal": True})]       # `unsupported` is not passed on
+    with pytest.raises(RuntimeError, match="no kernel"):
+        B.kernel_interface(fail=True)
+    with pytest.raises(UnsupportedConfig, match="block_sparse: no kernel"):
+        B.kernel_interface(fail=True, unsupported=True)
