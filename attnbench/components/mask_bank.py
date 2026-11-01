@@ -97,13 +97,18 @@ class MaskCapture:
     clones each mask at the call instead of keeping a reference; it adds a
     device copy per call, so it is for untraced passes only. `optional`
     makes a missing kernel module a capture of nothing (a dense arm on a
-    machine without the library), instead of an ImportError.
+    machine without the library), instead of an ImportError. `into` is one
+    buffer per expected call: call i's live mask is copied into into[i] (an
+    operation of the call, so a CUDA graph writes it at a replay, not at the
+    capture), and that buffer is what the call keeps as its live mask.
     """
 
     def __init__(self, module=None, substitute: Optional[Sequence[torch.Tensor]] = None,
-                 copy: bool = False, optional: bool = False):
+                 copy: bool = False, optional: bool = False,
+                 into: Optional[Sequence[torch.Tensor]] = None):
         self._module = module
         self._copy = copy
+        self.into = list(into) if into is not None else None
         self._optional = optional
         self._original = None
         self.substitute = list(substitute) if substitute is not None else None
@@ -143,6 +148,13 @@ class MaskCapture:
                 args, kwargs = _with_arg(args, kwargs, "base_blockmask",
                                          _BASE_BLOCKMASK_ARG, mask)
             kept, kept_live = (mask.clone(), live.clone()) if self._copy else (mask, live)
+            if self.into is not None:
+                i = len(self.calls)
+                if i >= len(self.into) or self.into[i].shape != live.shape:
+                    raise MaskBankError(f"kernel call {i} has no live-mask buffer of shape "
+                                        f"{tuple(live.shape)}")
+                self.into[i].copy_(live)
+                kept_live = self.into[i]
             self.calls.append(CapturedCall(kept, kept_live,
                                            bool(kwargs.get("is_causal", False)), hmt))
             return original(*args, **kwargs)
@@ -310,7 +322,12 @@ def load(path) -> MaskRecord:
 
 
 def agreement(a: Sequence[torch.Tensor], b: Sequence[torch.Tensor]) -> dict:
-    """Per-call bitwise agreement of two mask lists (shape-checked)."""
+    """Per-call bitwise agreement of two mask lists (shape-checked). Refused
+    over no masks: an agreement of nothing is not an agreement (ruling,
+    1 Nov 2026)."""
+    if not a or not b:
+        raise MaskBankError(f"{len(a)} masks against {len(b)}: the agreement would compare "
+                            f"nothing")
     if len(a) != len(b):
         raise MaskBankError(f"{len(a)} masks against {len(b)}")
     per_call = []

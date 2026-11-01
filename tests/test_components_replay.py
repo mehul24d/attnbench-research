@@ -66,7 +66,8 @@ def test_capture_and_replay_run_on_the_banked_masks():
     be = EagerBackend()
     cap = RP.capture(arm, tape, device="cpu", masks=bank, backend=be, kernel_module=arm.mod)
     cap.replay()
-    assert be.replays == 1 and len(arm.mod.seen) == 3 * 2       # warmup, capture, replay
+    # warmup, the check graph's capture and replay, the capture, the replay
+    assert be.replays == 2 and len(arm.mod.seen) == 5 * 2
     assert all(torch.equal(s, b) for s, b in zip(arm.mod.seen[-2:], bank.tensors()))
     assert RP.mask_agreement(cap)["identical"] is True
 

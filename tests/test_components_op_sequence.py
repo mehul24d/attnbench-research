@@ -906,6 +906,27 @@ def test_the_record_round_trips_and_holds_no_durations():
     assert '"ts"' not in text and '"dur"' not in text and "correlation" not in text
 
 
+def test_every_aten_operator_around_a_call_is_kept_as_its_chain():
+    # The null pass meets an operation at whichever of these the dispatcher
+    # shows it (host_profile, ruling of 1 Nov 2026).
+    seq = parse(mixed())
+    for op in seq.ops:
+        if op.aten_op is not None:
+            assert op.chain[0] == op.origin and op.chain[-1] == op.aten_op
+    back = S.from_record(json.loads(json.dumps(S.to_record(seq))))
+    assert [op.chain for op in back.ops] == [op.chain for op in seq.ops]
+    assert any(len(op.chain) > 1 for op in seq.ops)
+
+
+def test_a_record_from_before_the_chain_reads_an_empty_one_and_the_chain_is_not_identity():
+    seq = parse(mixed())
+    rec = json.loads(json.dumps(S.to_record(seq)))
+    for d in rec["ops"]:
+        del d["chain"]
+    old = S.from_record(rec)
+    assert all(op.chain == () for op in old.ops) and old == seq
+
+
 def test_the_record_hash_is_stable_and_sees_a_change():
     a = S.to_record(parse(mixed()))
     b = S.to_record(parse(mixed()))

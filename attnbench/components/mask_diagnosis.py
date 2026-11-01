@@ -15,9 +15,11 @@ Shakedown 3 failed two mask checks:
   - live/live: two eager runs of the arm;
   - live/bank: an eager run against the recording's bank;
   - tape/bank: the replay's own path without a graph (`EagerBackend`);
-  - on a GPU, the graph's live masks read before any replay (as the T2.4
-    step and T3.1's device step read them), after one replay, and a copy
-    taken inside the graph, after one replay.
+  - with a graph backend, the check graph's live-mask buffers
+    (`replay.check_masks`) read after the capture alone, as the T2.4 step
+    and T3.1's device step read the live masks until the ruling of 1 Nov
+    2026 (they hold `replay.NEVER_WRITTEN` and count as unwritten), and
+    after one replay.
 
 `t212_diagnosis` does the same for T2.12: the source arm's handed masks
 twice (live/live), against its recorded mask set (live/bank), the
@@ -59,6 +61,7 @@ def per_layer(a: Sequence[torch.Tensor], b: Sequence[torch.Tensor]) -> list[dict
         return [{"error": f"{len(a)} masks against {len(b)}"}]
     rows = []
     for i, (x, y) in enumerate(zip(a, b)):
+        unwritten = x.dtype == torch.uint8 and bool((x == replay.NEVER_WRITTEN).any())
         x, y = x.detach().cpu().bool(), y.detach().cpu().bool()
         if x.shape != y.shape:
             try:
@@ -66,7 +69,7 @@ def per_layer(a: Sequence[torch.Tensor], b: Sequence[torch.Tensor]) -> list[dict
             except RuntimeError:
                 rows.append({"layer": i, "error": f"shapes {tuple(x.shape)} and {tuple(y.shape)}"})
                 continue
-        rows.append({"layer": i, "identical": bool(torch.equal(x, y)),
+        rows.append({"layer": i, "identical": bool(torch.equal(x, y)), "unwritten": unwritten,
                      "agreement": float((x == y).float().mean()),
                      "kept_a": int(x.sum()), "kept_b": int(y.sum())})
     return rows
@@ -77,6 +80,7 @@ def summary(rows: Sequence[dict]) -> dict:
     return {"layers": len(rows), "identical_layers": sum(r["identical"] for r in ok),
             "errors": [r["error"] for r in rows if "error" in r],
             "a_all_false_layers": sum(r["kept_a"] == 0 for r in ok),
+            "a_unwritten_layers": sum(r["unwritten"] for r in ok),
             "min_agreement": min((r["agreement"] for r in ok), default=None)}
 
 
@@ -104,20 +108,11 @@ def replay_diagnosis(run_prefill: Callable[[], None], rec, *, device,
                          backend=replay.EagerBackend(), kernel_module=kernel_module)
     out["tape_eager_bank"] = _both(per_layer(cap.live_masks, bank))
     if graph_backend is not None:
-        cap = replay.capture(run_prefill, rec.tape, device=device, masks=rec.masks,
-                             backend=graph_backend, kernel_module=kernel_module)
-        cap.backend.synchronize()
-        before = [m.detach().clone() for m in cap.live_masks]
-        cap.replay()
-        cap.backend.synchronize()
-        out["graph_before_replay_bank"] = _both(per_layer(before, bank))
-        out["graph_after_replay_bank"] = _both(per_layer(cap.live_masks, bank))
-        cap = replay.capture(run_prefill, rec.tape, device=device, masks=rec.masks,
-                             backend=graph_backend, kernel_module=kernel_module,
-                             copy_live=True)
-        cap.replay()
-        cap.backend.synchronize()
-        out["graph_copy_after_replay_bank"] = _both(per_layer(cap.live_masks, bank))
+        staged = rec.tape.stage(device)
+        for n, key in ((0, "graph_capture_only_bank"), (1, "graph_after_replay_bank")):
+            _, buffers = replay.check_masks(run_prefill, rec.tape, staged, bank, graph_backend,
+                                            kernel_module=kernel_module, replays=n)
+            out[key] = _both(per_layer(buffers, bank))
     return out
 
 

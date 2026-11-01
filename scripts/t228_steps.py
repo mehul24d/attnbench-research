@@ -351,10 +351,14 @@ def step_t212(args) -> dict:
     difference is the estimator's compute, synchronisations and mask build.
     The plan expects a bitwise match for XAttention and does not know it for
     mean-pool, so a mean-pool mismatch is a finding and an XAttention one
-    fails the step. Executed density must equal the source's."""
+    fails the step. Executed density must equal the source's: both are the
+    kernel-input recorder's (`densities.KernelInputRecorder`, ruling of
+    1 Nov 2026), which sees the mask the kernel received for any arm, and a
+    comparison over no layers on either side is refused."""
     _need_cuda(args, "the block-sparse kernel")
     import torch
     from attnbench import clock_sampling as cs  # noqa: F401
+    from attnbench import densities as D
     from attnbench import ground_truth as gt
     from attnbench import precomputed_masks as pm
     from attnbench.components.shakedown_arms import ARMS
@@ -382,22 +386,29 @@ def step_t212(args) -> dict:
         mset.save(out / f"masks_{a.name}")
         if hasattr(a.backend, "reset_density"):
             a.backend.reset_density()
-        ref = wrapped.run_measured(ids, a.backend, cfg=a.cfg, logits_to_keep=1, **kw)
-        src_density = list(getattr(a.backend, "last_layer_density", []))
+        with D.KernelInputRecorder() as src_rec:
+            ref = wrapped.run_measured(ids, a.backend, cfg=a.cfg, logits_to_keep=1, **kw)
+        src_density = src_rec.per_call_density()
         pre = pm.PrecomputedMaskBackend(mset, ids, device="cuda")
         pre.reset_density()
-        got = wrapped.run_measured(ids, pre, cfg=dense.cfg, logits_to_keep=1)
+        with D.KernelInputRecorder() as pre_rec:
+            got = wrapped.run_measured(ids, pre, cfg=dense.cfg, logits_to_keep=1)
+        pre_density = pre_rec.per_call_density()
         torch.cuda.synchronize()
         bitwise = bool(torch.equal(got.logits, ref.logits))
         diff = float((got.logits.float() - ref.logits.float()).abs().max())
-        same_density = (len(src_density) == len(pre.last_layer_density)
-                        and all(abs(x - y) < 1e-9 for x, y in zip(src_density, pre.last_layer_density)))
+        try:
+            same_density = D.same_per_layer(f"{a.name}'s executed density", src_density,
+                                            pre_density, names=("source", "precomputed"))
+        except D.DensityMismatch as e:
+            raise StepFailed(str(e), findings)
         findings["arms"][a.name] = {
             "layers_recorded": len(mset.masks), "mask_density": mset.mask_density(),
             "bitwise_equal_logits": bitwise, "max_abs_logit_diff": diff,
             "executed_density_equal": same_density,
             "density_record_layers": {"source": len(src_density),           # what was compared
-                                      "precomputed": len(pre.last_layer_density)},
+                                      "precomputed": len(pre_density)},
+            "density_source": "kernel-input recorder",
             "expected_bitwise": bool(spec.xattention)}
         if not same_density:
             failures.append(f"{a.name}: the replay's executed density differs from its source's")
@@ -461,12 +472,13 @@ def step_t22(args) -> dict:
                                       code_path=arm.code_path, context_length=args.length,
                                       batch=1, prompt_id=arm.prompt_id, layers=arm.layers)
     entries = () if arm.spec.name == "dense" else (hp.block_sparse_entry(),)
-    from t31_steps import host_profile_cell
-    prof = host_profile_cell(arm, rec, out, reps=args.profile_reps, entries=entries)
+    from t31_steps import host_profile_cell, working_values
+    prof, check = host_profile_cell(arm, rec, out, reps=args.profile_reps, entries=entries,
+                                    tolerance=working_values()[0]["chain_check_tolerance"])
     (out / "host_profile.json").write_text(hp.dumps(prof))
     findings: dict = {
         "arm": arm.name, "length": args.length, "positions": len(prof.host_s),
-        "cost_sources": prof.sources(),
+        "cost_sources": prof.sources(), "chain_check": check,
         "host_total_ms": prof.total_s * 1e3, "launch_floor_us": prof.launch_floor_s * 1e6,
         "reps": prof.reps, "sequence_sha256": prof.sequence_sha256}
     h.unwrap()

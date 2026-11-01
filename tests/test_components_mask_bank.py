@@ -204,3 +204,9 @@ def test_the_packed_form_is_np_packbits():
     m = masks(1, shape=(1, 1, 3, 3))[0]
     rec = record_of([m])
     assert np.array_equal(rec.masks[0].packed, np.packbits(m.numpy().reshape(-1)))
+
+
+@pytest.mark.parametrize("a, b", [([], []), ([torch.ones(2, 2, dtype=torch.bool)], [])])
+def test_an_agreement_of_no_masks_is_refused(a, b):
+    with pytest.raises(B.MaskBankError, match="would compare nothing"):
+        B.agreement(a, b)

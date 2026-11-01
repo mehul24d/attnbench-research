@@ -66,8 +66,32 @@ original operators (`isolated_host_s`: the host time of the call that
 issued it, run alone after a synchronise, the flush taken out), and its cost
 source is flagged `ISOLATED_REPLAY` (`HostProfile.cost_source`); every other
 position keeps the null pass's. In the pass that call is replaced with no
-launch, and its own time is kept out of the next gap. Any other position the
-pass does not meet is refused, as before.
+launch, and its own time is kept out of the next gap.
+
+**Composite and factory calls** (researcher's ruling, 1 Nov 2026). The
+dispatcher shows the pass one call where the recording names the kernels
+below it: `aten::_to_copy` where the recording has `aten::copy_`, `aten::mean`
+where it has `aten::fill_` and `aten::copy_`. The recording keeps every aten
+operator around each launch (`SeqOp.chain`, outermost first), so the pass
+nulls any call whose name is in a recorded chain, and a position is met at
+the outermost operator of its chain the pass issued (`met_at`). The call's
+gap and launch go to the first of its positions and the launch floor to each
+further one, as for a call that launches several kernels; such a position's
+cost source is `CHAIN`. A call that names the device only by its `device`
+argument (a factory such as `aten::arange`; a copy to the device) is a launch
+when that argument is the device and host-only otherwise; its positions'
+source is `DEVICE_ARGUMENT`. Under any dispatch mode PyTorch's own
+composites take the out-of-place form of an in-place call
+(`areAnyTensorSubclassLike`: SDPA's math path adds its mask with `aten::add`,
+not the recorded `aten::add_`), so the pass's mode changes the call it meets;
+a recorded in-place operator met at its out-of-place form is priced as met
+there and flagged `OUT_OF_PLACE`. A composite whose chain is not recorded (a record
+from before 1 Nov 2026: `aten_op` and `origin` differ and `chain` is empty)
+is priced by the isolated replay at its `origin`, like the embedding, and is
+refused only where neither route reaches it. `chain_check` holds the
+composites' costs against their host time measured directly in the isolated
+replay, within the T4.1 tolerance. Any other position the pass does not meet
+is refused, as before.
 
 **What this does not cover**, refused rather than approximated: a CUDA-graph
 launch in the sequence (a compiled arm's pass has its own null form, T2.21),
@@ -105,6 +129,8 @@ from .sync_tape import SyncTape, TapeReplayer
 
 SCHEMA = "attnbench.host_profile/1"
 NULL_PASS, ISOLATED_REPLAY = "null_pass", "isolated_replay"
+CHAIN, DEVICE_ARGUMENT, OUT_OF_PLACE = "chain", "device_argument", "out_of_place"
+SOURCES = (NULL_PASS, CHAIN, DEVICE_ARGUMENT, OUT_OF_PLACE, ISOLATED_REPLAY)
 # Operators outside the layers priced by the isolated replay (module
 # docstring): the embedding lookup's gather on the L4.
 ISOLATED_OUTSIDE_LAYERS = frozenset({"aten::gather"})
@@ -147,6 +173,7 @@ class Issue:
     layer: Optional[int]
     gap_s: float
     launch_s: float
+    device_argument: bool = False   # met by its `device` argument alone
 
 
 @dataclass
@@ -193,41 +220,58 @@ def block_sparse_entry(module=None) -> NullEntry:
                      lambda q, *a, **kw: (torch.empty_like(q), None, None, None))
 
 
+def _named_device(func, kwargs, tensors) -> Optional[torch.device]:
+    """The device a call's `device` argument names; for a factory call with
+    none, the default device. None for an operator with no `device` argument
+    (`aten::promote_types` takes no tensor and makes none)."""
+    if not any(a.name == "device" for a in func._schema.arguments):
+        return None
+    dev = kwargs.get("device")
+    if dev is None and not tensors:
+        return torch.get_default_device()
+    return None if dev is None else torch.device(dev)
+
+
 class NullDeviceMode(TorchDispatchMode):
     """Replace every launching aten call by one null launch (module
-    docstring). `launching` is the set of aten operator names the recorded
-    sequence launches device work under; a call outside it, or one that touches
-    no device tensor, runs for real."""
+    docstring). `launching` is the set of aten operator names in the recorded
+    sequence's chains; a call outside it, or one that touches no device, runs
+    for real. `isolated` holds the (operator, layer) pairs priced by the
+    isolated replay."""
 
     def __init__(self, device: NullDevice, launching: Iterable[str], log: PassLog,
                  state: "_State", clock: Callable[[], float],
-                 isolated: Iterable[str] = ()):
+                 isolated: Iterable[tuple] = ()):
         super().__init__()
         self.device, self.launching = device, frozenset(launching)
         self.isolated = frozenset(isolated)
         self.log, self.state, self.clock = log, state, clock
 
-    def _touches_device(self, args, kwargs) -> bool:
-        leaves = pytree.tree_leaves((args, kwargs))
-        return any(isinstance(t, torch.Tensor) and t.device.type == self.device.device_type
-                   for t in leaves)
+    def _device_call(self, func, args, kwargs) -> Optional[bool]:
+        """None if the call touches no device; else whether only its `device`
+        argument names the device (module docstring)."""
+        tensors = [t for t in pytree.tree_leaves((args, kwargs)) if isinstance(t, torch.Tensor)]
+        if any(t.device.type == self.device.device_type for t in tensors):
+            return False
+        dev = _named_device(func, kwargs, tensors)
+        return True if dev is not None and dev.type == self.device.device_type else None
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
         name = aten_name(func)
-        if name in self.isolated and self.state.layer is None and \
-                self._touches_device(args, kwargs):
+        how = self._device_call(func, args, kwargs)
+        if (name, self.state.layer) in self.isolated and how is not None:
             t0 = self.clock()      # priced by the isolated replay: no launch, out of the gap
             out = _null_outputs(func, args, kwargs, self.device.device_type)
             d = self.clock() - t0
             self.state.marker_s += d
             self.log.isolated.append(d)
             return out
-        if name not in self.launching or not self._touches_device(args, kwargs):
+        if name not in self.launching or how is None:
             return func(*args, **kwargs)
         entry = self.clock()      # after the instrument's own classification
         out = _null_outputs(func, args, kwargs, self.device.device_type)
-        self.state.issue(self.log, name, entry, self.device, self.clock)
+        self.state.issue(self.log, name, entry, self.device, self.clock, device_argument=how)
         return out
 
 
@@ -241,11 +285,16 @@ def _meta_like(t):
 def _null_outputs(func, args, kwargs, device_type: str):
     """What the call would return, allocated and uninitialised. Shapes come
     from running the call on meta tensors; an output that is one of the
-    inputs (an in-place call, `out=`) is that input."""
+    inputs (an in-place call, `out=`) is that input. A new output goes to the
+    device the call's `device` argument names, else to its device input's."""
     real = [t for t in pytree.tree_leaves((args, kwargs)) if isinstance(t, torch.Tensor)]
     metas = {id(t): _meta_like(t) for t in real}
     margs, mkwargs = pytree.tree_map(
         lambda t: metas[id(t)] if isinstance(t, torch.Tensor) else t, (args, kwargs))
+    named = _named_device(func, kwargs, real)
+    if named is not None:
+        mkwargs = {**mkwargs, "device": torch.device("meta")}
+        mkwargs.pop("pin_memory", None)
     try:
         mout = func(*margs, **mkwargs)
     except Exception as e:
@@ -253,7 +302,8 @@ def _null_outputs(func, args, kwargs, device_type: str):
             f"{aten_name(func)} has no output on meta tensors ({e!r}); its output "
             f"shape cannot be given without running it") from e
     by_meta = {id(m): t for t, m in zip(real, (metas[id(t)] for t in real))}
-    dev = next((t.device for t in real if t.device.type == device_type), None)
+    dev = named if named is not None else \
+        next((t.device for t in real if t.device.type == device_type), None)
 
     def alloc(m):
         if not isinstance(m, torch.Tensor):
@@ -275,13 +325,14 @@ class _State:
         self.layer: Optional[int] = None
         self.clock = clock
 
-    def issue(self, log: PassLog, name, entry: float, device: NullDevice, clock) -> None:
+    def issue(self, log: PassLog, name, entry: float, device: NullDevice, clock, *,
+              device_argument: bool = False) -> None:
         gap = entry - self.last_exit - self.marker_s
         t0 = clock()
         device.launch()
         launch = clock() - t0
         log.issues.append(Issue(name=name, layer=self.layer, gap_s=max(gap, 0.0),
-                                launch_s=launch))
+                                launch_s=launch, device_argument=device_argument))
         log.launches.append(launch)
         self.marker_s = 0.0
         self.last_exit = clock()
@@ -356,14 +407,24 @@ def _layer_hooks(layers: Sequence[torch.nn.Module], state: _State):
             h.remove()
 
 
-def launching_names(seq: OpSequence) -> frozenset:
-    """The aten operators the recorded sequence issues device work under."""
+def chain_of(op) -> tuple:
+    """The operators the pass may meet `op` at, outermost first: its recorded
+    chain, or for a record without one its `aten_op`."""
+    return op.chain or (op.aten_op,)
+
+
+def launching_names(seq: OpSequence, skip: Iterable[int] = ()) -> frozenset:
+    """Every aten operator in the chains of the recorded sequence's issued
+    operations, and the out-of-place form of each in-place one, but those at
+    `skip` (priced by the isolated replay)."""
     names = set()
-    for op in seq.ops:
+    skip = frozenset(skip)
+    for i, op in enumerate(seq.ops):
         if _is_issue(op):
             _refuse_graph(op)
-            if op.aten_op is not None:
-                names.add(op.aten_op)
+            if i not in skip:
+                names.update(n for n in chain_of(op) if n is not None)
+                names.update(filter(None, map(out_of_place, chain_of(op))))
     return frozenset(names)
 
 
@@ -378,22 +439,31 @@ def _refuse_graph(op) -> None:
             "does not measure (a compiled arm has its own form, T2.21)")
 
 
+def unrecorded_composite(op) -> bool:
+    """A composite whose chain the record does not keep (module docstring)."""
+    return not op.chain and op.aten_op is not None and op.origin is not None \
+        and op.origin != op.aten_op
+
+
 def isolated_positions(seq: OpSequence,
                        ops: Iterable[str] = ISOLATED_OUTSIDE_LAYERS) -> tuple[int, ...]:
     """Positions priced by the isolated replay: an issued operation outside
-    the layers whose operator is in `ops` (module docstring)."""
+    the layers whose operator is in `ops`, and a composite whose chain is not
+    recorded (module docstring)."""
     ops = frozenset(ops)
     return tuple(i for i, op in enumerate(seq.ops)
-                 if _is_issue(op) and op.layer is None and op.aten_op in ops)
+                 if _is_issue(op) and ((op.layer is None and op.aten_op in ops)
+                                       or unrecorded_composite(op)))
 
 
 def _isolated_origins(seq: OpSequence, positions: Sequence[int]) -> frozenset:
+    """The (issuing operator, layer) pairs the pass keeps out."""
     out = set()
     for i in positions:
         if seq.ops[i].origin is None:
             raise ProfileMismatch(f"position {i} ({seq.ops[i].aten_op}) names no issuing call; "
                                   f"the pass cannot tell which call to keep out")
-        out.add(seq.ops[i].origin)
+        out.add((seq.ops[i].origin, seq.ops[i].layer))
     return frozenset(out)
 
 
@@ -404,8 +474,9 @@ def null_pass(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, 
               clock: Callable[[], float] = time.perf_counter,
               isolated_ops: Iterable[str] = ISOLATED_OUTSIDE_LAYERS) -> PassLog:
     """One null-kernel pass of the arm's prefill (module docstring)."""
-    launching = launching_names(seq)
-    origins = _isolated_origins(seq, isolated_positions(seq, isolated_ops))
+    iso = isolated_positions(seq, isolated_ops)
+    launching = launching_names(seq, skip=iso)
+    origins = _isolated_origins(seq, iso)
     staged = tape.stage(staged_device) if staged_device is not None else tape.stage(
         torch.device(device.device_type))
     log = PassLog()
@@ -428,11 +499,35 @@ class Run:
     positions: tuple[int, ...]
 
 
-def runs_of(seq: OpSequence, skip: Iterable[int] = ()) -> list[Run]:
-    """Maximal stretches of consecutive issued operations with one aten
-    operator in one layer. A synchronisation or a host-compute marker ends a
-    run (it is a different host event). Positions in `skip` (priced by the
-    isolated replay) are passed over."""
+def out_of_place(name: Optional[str]) -> Optional[str]:
+    """'aten::add' for 'aten::add_'; None for an operator that is not in-place."""
+    if name and name.endswith("_") and not name.endswith("__"):
+        return name[:-1]
+    return None
+
+
+def met_at(seq: OpSequence, issued: Iterable[Optional[str]],
+           skip: Iterable[int] = ()) -> dict[int, Optional[str]]:
+    """Position -> the operator the pass met it at: the outermost of its chain
+    that the pass issued (`issued`, the names of its launching calls), else the
+    out-of-place form of the outermost in-place one it issued, else its
+    `aten_op` (module docstring)."""
+    issued, skip = set(issued), frozenset(skip)
+
+    def one(op):
+        chain = chain_of(op)
+        return next((n for n in chain if n in issued),
+                    next((out_of_place(n) for n in chain if out_of_place(n) in issued),
+                         op.aten_op))
+    return {i: one(op) for i, op in enumerate(seq.ops) if _is_issue(op) and i not in skip}
+
+
+def runs_of(seq: OpSequence, skip: Iterable[int] = (),
+            met: Optional[Mapping[int, Optional[str]]] = None) -> list[Run]:
+    """Maximal stretches of consecutive issued operations met at one aten
+    operator (`met`; by default their own) in one layer. A synchronisation or
+    a host-compute marker ends a run (it is a different host event).
+    Positions in `skip` (priced by the isolated replay) are passed over."""
     out: list[Run] = []
     cur: Optional[tuple] = None
     pos: list[int] = []
@@ -446,7 +541,7 @@ def runs_of(seq: OpSequence, skip: Iterable[int] = ()) -> list[Run]:
                 cur, pos = None, []
             continue
         _refuse_graph(op)
-        key = (op.aten_op, op.layer)
+        key = (met[i] if met is not None else op.aten_op, op.layer)
         if key != cur:
             if cur is not None:
                 out.append(Run(cur[0], cur[1], tuple(pos)))
@@ -474,6 +569,12 @@ def assign(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> di
     """Position -> host seconds for one pass: every issued operation but the
     `isolated` ones, and every host-compute marker. Raises `ProfileMismatch`
     where the pass did not meet the sequence exactly (module docstring)."""
+    return align(seq, log, isolated=isolated)[0]
+
+
+def align(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tuple[dict, dict, dict]:
+    """(host seconds, cost source, operator met at) per position, for one
+    pass (`assign`)."""
     if isolated and not log.isolated:
         raise ProfileMismatch(
             f"the recording issues {len(isolated)} operation(s) priced by the isolated replay "
@@ -483,9 +584,11 @@ def assign(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> di
         raise ProfileMismatch(
             f"the pass kept out {len(log.isolated)} call(s) for {len(isolated)} position(s) "
             f"priced by the isolated replay")
-    runs = _merge_equal_neighbours(runs_of(seq, skip=isolated))
+    met = met_at(seq, (e.name for e in log.issues), skip=isolated)
+    runs = _merge_equal_neighbours(runs_of(seq, skip=isolated, met=met))
     floor = statistics.median(log.launches) if log.launches else 0.0
     host: dict[int, float] = {}
+    source: dict[int, str] = {}
     issues = log.issues
     j = 0
     for run in runs:
@@ -513,6 +616,10 @@ def assign(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> di
             host[first] = ev.gap_s + ev.launch_s
             for p in rest:
                 host[p] = floor
+            for p in (first, *rest):
+                source[p] = DEVICE_ARGUMENT if ev.device_argument else \
+                    NULL_PASS if met[p] == seq.ops[p].aten_op else \
+                    CHAIN if met[p] in chain_of(seq.ops[p]) else OUT_OF_PLACE
         j += c
     if j != len(issues):
         raise ProfileMismatch(
@@ -526,7 +633,8 @@ def assign(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> di
             f"timed {len(log.markers)}")
     for i, d in zip(marks, log.markers):
         host[i] = d
-    return host
+        source[i] = NULL_PASS
+    return host, source, {p: met[p] for p in source if p in met}
 
 
 # --- the profile -----------------------------------------------------------------------
@@ -541,12 +649,13 @@ class HostProfile:
     reps: int
     sequence_sha256: str
     cost_source: Mapping[int, str] = field(default_factory=dict)   # absent: NULL_PASS
+    met_at: Mapping[int, str] = field(default_factory=dict)       # every source but NULL_PASS
 
     def source(self, i: int) -> str:
         return self.cost_source.get(i, NULL_PASS)
 
     def sources(self) -> dict[str, int]:
-        out = {NULL_PASS: 0, ISOLATED_REPLAY: 0}
+        out = dict.fromkeys(SOURCES, 0)
         for i in self.host_s:
             out[self.source(i)] += 1
         return out
@@ -575,15 +684,21 @@ def profile(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, *,
     kw = dict(kw, isolated_ops=isolated_ops)
     for _ in range(warmup):
         assign(seq, null_pass(run_prefill, tape, seq, device=device, **kw), isolated=iso)
-    per, launches = [], []
+    per, launches, how = [], [], None
     for _ in range(reps):
         log = null_pass(run_prefill, tape, seq, device=device, **kw)
-        per.append(assign(seq, log, isolated=iso))
+        h, src, met = align(seq, log, isolated=iso)
+        if how is not None and how != (src, met):
+            raise ProfileMismatch("two passes met the sequence at different calls")
+        how = (src, met)
+        per.append(h)
         launches.extend(log.launches)
     keys = set(per[0])
     for h in per[1:]:
         if set(h) != keys:
             raise ProfileMismatch("two passes gave costs for different positions")
+    src, met = how
+    priced = {i: s for i, s in src.items() if s != NULL_PASS}
     reps_s = {i: tuple(h[i] for h in per) for i in sorted(keys)}
     host_s = {i: float(statistics.median(v)) for i, v in reps_s.items()}
     host_s.update({i: float(isolated[i]) for i in iso})
@@ -592,17 +707,22 @@ def profile(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, *,
         reps_s=reps_s, launch_floor_s=float(statistics.median(launches)) if launches else 0.0,
         reps=reps,
         sequence_sha256=op_sequence.record_sha256(op_sequence.to_record(seq)),
-        cost_source={i: ISOLATED_REPLAY for i in iso})
+        cost_source=dict(sorted({**priced, **{i: ISOLATED_REPLAY for i in iso}}.items())),
+        met_at={i: met[i] for i in sorted(priced)})
 
 
-def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[int, float]:
-    """Host seconds for `positions` from an isolated replay of the original
-    operators (`replay.isolated_replay(..., substitute=False)`): the kernel
-    launches in its region, flushes left out, are the sequence's kernel
-    positions in order; a position's cost is the duration of the innermost
-    call to its issuing operator (`origin`) around its launch, less any
-    flush inside it. Refused where the replay's launches are not the
-    recording's."""
+@dataclass(frozen=True)
+class _Isolated:
+    """An isolated replay's trace, read against a sequence: `launch[i]` is the
+    launch of kernel position i, `calls[e.idx]` the aten calls around launch
+    e (outermost first), `flushes` the isolation flushes."""
+
+    launch: dict
+    calls: dict
+    flushes: list
+
+
+def _read_isolated(trace, seq: OpSequence) -> _Isolated:
     from .replay import FLUSH, REPLAY_REGION
     events = op_sequence._events(op_sequence.load_trace(trace))
     regions = [e for e in events if e.cat == "user_annotation" and e.name == REPLAY_REGION]
@@ -621,13 +741,30 @@ def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[in
         raise ProfileMismatch(f"the isolated replay launched {len(launches)} kernels and the "
                               f"recording has {len(kernels)}; not the recorded path")
     calls = op_sequence._containers([e for e in on_thread if e.cat == "cpu_op"], launches)
+    return _Isolated(dict(zip(kernels, launches)), calls, flushes)
+
+
+def _flushed(iso: _Isolated, t0: float, t1: float) -> float:
+    return sum(f.end - f.ts for f in iso.flushes
+               if t0 - op_sequence._EPS <= f.ts and f.end <= t1 + op_sequence._EPS)
+
+
+def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[int, float]:
+    """Host seconds for `positions` from an isolated replay of the original
+    operators (`replay.isolated_replay(..., substitute=False)`): the kernel
+    launches in its region, flushes left out, are the sequence's kernel
+    positions in order; a position's cost is the duration of the innermost
+    call to its issuing operator (`origin`) around its launch, less any
+    flush inside it. Refused where the replay's launches are not the
+    recording's."""
+    iso = _read_isolated(trace, seq)
     out = {}
     for i in positions:
         op = seq.ops[i]
         if op.kind is not SeqKind.KERNEL:
             raise ProfileMismatch(f"position {i} is a {op.kind.value}, not a kernel")
-        ev = launches[kernels.index(i)]
-        chain = calls.get(ev.idx, [])
+        ev = iso.launch[i]
+        chain = iso.calls.get(ev.idx, [])
         if not chain or chain[-1].name != op.aten_op:
             raise ProfileMismatch(
                 f"position {i}: the isolated replay's launch is under "
@@ -636,9 +773,77 @@ def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[in
         if not issuing:
             raise ProfileMismatch(f"position {i}: no call to {op.origin} around its launch")
         c = issuing[-1]
-        flushed = sum(f.end - f.ts for f in flushes if inside(f, c))
-        out[i] = max(c.end - c.ts - flushed, 0.0) * 1e-6
+        out[i] = max(c.end - c.ts - _flushed(iso, c.ts, c.end), 0.0) * 1e-6
     return out
+
+
+def chain_check(trace, seq: OpSequence, p: HostProfile, *, rel_tol: float,
+                abs_tol_s: float) -> dict:
+    """The ruling's validation (1 Nov 2026): for every call the pass met at a
+    composite or by its device argument (`CHAIN`, `DEVICE_ARGUMENT`; not
+    `OUT_OF_PLACE`, whose call the isolated replay makes in place), the sum
+    of the costs it gave the call's positions against the call's host time
+    measured directly in the isolated replay of the original operators
+    (`replay.isolated_replay(..., substitute=False)`, the trace
+    `isolated_host_s` reads).
+
+    Like for like with the pass's gap and launch, the direct time of a call
+    runs from the end of the previous issuing call to the end of this one, the
+    isolation flushes in between taken out: the arm's Python, the dispatcher
+    and the composite's whole body with its launches. A call is checked when
+    its positions and the previous call's are kernels with nothing between
+    them in the sequence and the previous call was not kept out of the pass
+    (`ISOLATED_REPLAY`); the rest are counted as unchecked. Per operator met
+    at, over its checked calls, |chain - direct| must be within
+    `rel_tol` x direct + `abs_tol_s` x calls (T4.1 lock values)."""
+    iso = _read_isolated(trace, seq)
+
+    def call_of(i: int):
+        op = seq.ops[i]
+        name = op.origin if p.source(i) == ISOLATED_REPLAY else p.met_at.get(i, op.aten_op)
+        hit = [c for c in iso.calls.get(iso.launch[i].idx, []) if c.name == name]
+        if not hit and p.source(i) in (CHAIN, DEVICE_ARGUMENT):
+            raise ProfileMismatch(f"position {i}: no call to {name} around its launch in the "
+                                  f"isolated replay")
+        return hit[0] if hit else None      # the outermost: the one the pass meets
+
+    groups: list = []                       # [call event or None, positions]
+    for i, op in enumerate(seq.ops):
+        if op.kind is not SeqKind.KERNEL or i not in p.host_s:
+            groups.append([None, [i]])
+            continue
+        c = call_of(i)
+        if c is None:
+            groups.append([None, [i]])
+        elif groups and groups[-1][0] is not None and groups[-1][0].idx == c.idx:
+            groups[-1][1].append(i)
+        else:
+            groups.append([c, [i]])
+    per: dict = {}
+    unchecked = 0
+    for prev, (c, pos) in zip([[None, []]] + groups, groups):
+        src = p.source(pos[0])
+        if c is None or src not in (CHAIN, DEVICE_ARGUMENT):
+            continue
+        if prev[0] is None or p.source(prev[1][0]) == ISOLATED_REPLAY:
+            unchecked += 1
+            continue
+        direct = max(c.end - prev[0].end - _flushed(iso, prev[0].end, c.end), 0.0) * 1e-6
+        row = per.setdefault(p.met_at[pos[0]], {"calls": 0, "chain_s": 0.0, "direct_s": 0.0,
+                                                "sources": set()})
+        row["calls"] += 1
+        row["chain_s"] += sum(p.host_s[j] for j in pos)
+        row["direct_s"] += direct
+        row["sources"].add(src)
+    for name, row in per.items():
+        row["sources"] = sorted(row["sources"])
+        row["allowed_s"] = rel_tol * row["direct_s"] + abs_tol_s * row["calls"]
+        row["passed"] = abs(row["chain_s"] - row["direct_s"]) <= row["allowed_s"]
+    return {"rel_tol": rel_tol, "abs_tol_s": abs_tol_s,
+            "checked_calls": sum(r["calls"] for r in per.values()),
+            "unchecked_calls": unchecked, "operators": dict(sorted(per.items())),
+            "failed": sorted(n for n, r in per.items() if not r["passed"]),
+            "passed": all(r["passed"] for r in per.values())}
 
 
 def host_costs(p: HostProfile, seq: OpSequence) -> dict[int, float]:
@@ -654,7 +859,8 @@ def to_record(p: HostProfile) -> dict:
             "launch_floor_s": p.launch_floor_s,
             "host_s": {str(i): v for i, v in sorted(p.host_s.items())},
             "reps_s": {str(i): list(v) for i, v in sorted(p.reps_s.items())},
-            "cost_source": {str(i): v for i, v in sorted(p.cost_source.items())}}
+            "cost_source": {str(i): v for i, v in sorted(p.cost_source.items())},
+            "met_at": {str(i): v for i, v in sorted(p.met_at.items())}}
 
 
 def from_record(rec: Mapping) -> HostProfile:
@@ -665,7 +871,8 @@ def from_record(rec: Mapping) -> HostProfile:
         reps_s={int(i): tuple(float(x) for x in v) for i, v in rec["reps_s"].items()},
         launch_floor_s=float(rec["launch_floor_s"]), reps=int(rec["reps"]),
         sequence_sha256=rec["sequence_sha256"],
-        cost_source={int(i): str(v) for i, v in (rec.get("cost_source") or {}).items()})
+        cost_source={int(i): str(v) for i, v in (rec.get("cost_source") or {}).items()},
+        met_at={int(i): str(v) for i, v in (rec.get("met_at") or {}).items()})
 
 
 def dumps(p: HostProfile) -> str:

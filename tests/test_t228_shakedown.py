@@ -289,7 +289,27 @@ class _Logits:
 
     def run_measured(self, ids, backend, *, cfg, logits_to_keep, **kw):
         import torch
+        _RUNS.append(backend)
         return SimpleNamespace(logits=torch.ones(1, 4) * self.shift.get(type(backend).__name__, 0.0))
+
+
+_RUNS: list = []
+
+
+class _KernelInputs:
+    """The kernel-input recorder's stand-in: the densities of the masks the
+    run's backend handed the kernel (its `dens`, else its record)."""
+
+    def __enter__(self):
+        self.start = len(_RUNS)
+        return self
+
+    def __exit__(self, *exc):
+        (be,) = _RUNS[self.start:]
+        self.per_call = list(getattr(be, "dens", None) or be.last_layer_density)
+
+    def per_call_density(self):
+        return self.per_call
 
 
 def _t212_rig(monkeypatch, tmp_path, *, shift):
@@ -323,8 +343,10 @@ def _t212_rig(monkeypatch, tmp_path, *, shift):
             return SimpleNamespace(masks={0: 1, 1: 1}, mask_density=lambda: 0.5,  # a method
                                    prompt_digest="d", save=lambda d: None)
 
+    from attnbench import densities as D
     monkeypatch.setattr(pm, "MaskRecorder", Rec)
     monkeypatch.setattr(pm, "PrecomputedMaskBackend", Pre)
+    monkeypatch.setattr(D, "KernelInputRecorder", _KernelInputs)
     cfg = SimpleNamespace(n_heads_q=4)
     arms = [gt.Arm("dense", gt.DENSE, object(), cfg),
             gt.Arm("meanpool", gt.INLINE, Source(), cfg, inline_estimator="x", builder_kind="gpu"),
@@ -395,6 +417,12 @@ def _t22_rig(monkeypatch, *, builder_rc=0):
     monkeypatch.setattr(hp, "profile", profile)
     monkeypatch.setattr(hp, "block_sparse_entry", lambda: "entry")
     monkeypatch.setattr(hp, "cuda_device", lambda: "device")
+    from attnbench.components import replay
+    monkeypatch.setattr(replay, "isolated_replay", lambda *a, **k: "iso_trace")
+    monkeypatch.setattr(hp, "isolated_host_s", lambda *a, **k: {})
+    monkeypatch.setattr(hp, "chain_check", lambda *a, **k: {
+        "passed": False, "failed": ["aten::mean"], "rel_tol": k["rel_tol"],
+        "abs_tol_s": k["abs_tol_s"]})
 
     def run(cmd, **kw):
         out = Path(cmd[cmd.index("--out") + 1])
@@ -416,6 +444,8 @@ def test_t22_profiles_the_tape_and_reads_the_builders_32768_row_against_the_plan
     f = json.loads((tmp_path / "result.json").read_text())["findings"]
     assert got["entries"] == ("entry",) and got["reps"] == 5          # a sparse arm: its entry point nulled
     assert f["positions"] == 2 and (tmp_path / "host_profile.json").exists()
+    assert f["chain_check"]["failed"] == ["aten::mean"]          # a finding: t22 does not gate
+    assert (f["chain_check"]["rel_tol"], f["chain_check"]["abs_tol_s"]) == pytest.approx((0.25, 5e-6))
     c = f["against_the_plans_94pct"]
     assert c["seq_len"] == 32768 and c["plan_figure"] == 0.94
     assert (c["cprofile"], c["torch_profiler"], c["lower_bound"]) == (0.9, 0.5, 0.3)

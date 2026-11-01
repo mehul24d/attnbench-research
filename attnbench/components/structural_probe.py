@@ -50,6 +50,18 @@ the plan says so. The lengths sit mid-band because a real prompt lands at
 or below its budget: the probe keys each sequence by its recorded context
 length and checks the counts there.
 
+**The extension test** (researcher's ruling, 1 Nov 2026). A chunked arm's
+probe is extended only where Ops(L) = base + chunks(L) x body holds in every
+layer at every probe length, with the third point checking the fit, *and*
+the operations repeat in one periodic order (`extend_checked`). `count_fit`
+reports base, body and chunk counts either way; where the test fails, the
+arm's structure is its full-length recording per grid cell. On the CPU
+boundary XAttention fails it: layer 0 holds 240, 301 and 294 operations at
+20480, 28672 and 32768 (3, 4 and 4 chunks), so base 57 and body 61 from the
+first two predict 301 at 32768. The 7 missing there are the padding of a
+partial last chunk (`aten::pad`; 32768 is four whole chunks of 8192), and
+the last chunk's body differs from the others.
+
 **What two short contexts cannot check, and is refused:**
 
   - a target whose chunk count differs from the probe's when both short
@@ -373,6 +385,43 @@ def extend_checked(seqs: Mapping[int, OpSequence], rule: ChunkingRule,
     return replace(ext, chunks=counts, checked_at=l3,
                    reason=f"{ext.reason}; checked at {l3} ({counts[l3]})" if ext.extended
                    else ext.reason)
+
+
+def count_fit(seqs: Mapping[int, OpSequence], rule: ChunkingRule) -> dict:
+    """The ruling's count test (module docstring): per region in the layers,
+    the operations at each probe length, base and body from the two shortest
+    lengths with distinct chunk counts, and each other length's count against
+    base + chunks x body. Reported whatever the verdict."""
+    lengths = sorted(seqs)
+    chunks = {L: rule.chunks(L) for L in lengths}
+    per_len = {L: [r for r in regions(seqs[L].ops) if r.kind == IN_LAYERS] for L in lengths}
+    if len({len(v) for v in per_len.values()}) != 1:
+        return {"chunks": chunks, "fits": False, "regions": [],
+                "reason": "the probe lengths differ in their layer structure"}
+    pair = next(((a, b) for i, a in enumerate(lengths) for b in lengths[i + 1:]
+                 if chunks[a] != chunks[b]), None)
+    rows = []
+    for k in range(len(per_len[lengths[0]])):
+        ops = {L: len(per_len[L][k].positions) for L in lengths}
+        row = {"region": per_len[lengths[0]][k].label, "ops": ops}
+        if pair is None:
+            row.update(base=None, body=None, fits=False,
+                       reason="no two probe lengths with distinct chunk counts")
+        else:
+            a, b = pair
+            d_ops, d_c = ops[b] - ops[a], chunks[b] - chunks[a]
+            body = d_ops / d_c
+            base = ops[a] - chunks[a] * body
+            predicted = {L: base + chunks[L] * body for L in lengths}
+            misses = {L: ops[L] for L in lengths if predicted[L] != ops[L]}
+            row.update(base=base, body=body, predicted=predicted,
+                       fits=body > 0 and body == int(body) and base == int(base) and not misses,
+                       reason=("" if not misses else
+                               "; ".join(f"{L}: {predicted[L]:g} predicted, {n} recorded"
+                                         for L, n in misses.items())))
+        rows.append(row)
+    return {"chunks": chunks, "fit_from": list(pair) if pair else None, "regions": rows,
+            "fits": bool(rows) and all(r["fits"] for r in rows)}
 
 
 def check_against_full(ext: Extension, full: OpSequence) -> Comparison:
