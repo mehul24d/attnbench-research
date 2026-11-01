@@ -93,8 +93,11 @@ FIRST_CLOCKED = "ground_truth"
 REHEARSAL_LAST = "hold"
 REHEARSAL_PREFIX = "predictions/P1-rehearsal"
 # Any values will do for a rehearsal (researcher, 31 Oct 2026); a short grid
-# that still has a batch above 1 keeps Shakedown 2 inside its halt.
-REHEARSAL_GRID = {"lengths": [2048, 16384], "batches": {"16384": [1, 4]}}
+# that still has a batch above 1 keeps a shakedown inside its halt. The batch
+# above 1 is at 2048 since Shakedown 6 (1 Nov 2026): the bare timer runs each
+# call's device work at least 1000 times, which at batch 4 and 16384 tokens
+# is about 11 minutes of the L4 for one dense cell.
+REHEARSAL_GRID = {"lengths": [2048, 16384], "batches": {"2048": [1, 4]}}
 if STEPS.index(REHEARSAL_LAST) >= STEPS.index(FIRST_CLOCKED):
     raise RuntimeError("a rehearsal must stop before ground truth")
 

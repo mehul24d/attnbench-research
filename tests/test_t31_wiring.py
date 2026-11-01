@@ -188,8 +188,25 @@ CHECK = {"passed": True, "share": 0.04, "aggregate_tol": 0.10, "checked_calls": 
          "unchecked_calls": 1}
 
 
-def _components(monkeypatch, h, check=CHECK):
+def _bare(monkeypatch, gate_ok: bool):
+    """The bare timer's pass and profile, faked: the gate passes or fails."""
+    from attnbench.components import bare_timer as bt
+    monkeypatch.setattr(bt, "bare_pass", lambda *a, **k: "bare pass")
+
+    def bare_profile(seq, bp, null, *, aggregate_tol):
+        assert bp == "bare pass"
+        return replace(null, pricing=bt.BARE_TIMER), {
+            "routes": {bt.LEAF: 3}, "calls": [],
+            "chain_gate": {"aggregate_tol": aggregate_tol, "composite_calls": 3,
+                           "abs_diff_s": 0.0, "host_s": 1.0, "share": 0.04 if gate_ok else 0.25,
+                           "passed": gate_ok, "fallback": None if gate_ok else bt.FALLBACK_LABEL},
+            "instrumented_over_bare": {"instrumented_s": 2.0, "bare_s": 1.0, "ratio": 2.0}}
+    monkeypatch.setattr(bt, "bare_profile", bare_profile)
+
+
+def _components(monkeypatch, h, check=CHECK, gate_ok=True):
     from attnbench.components import recorder, replay
+    _bare(monkeypatch, gate_ok)
     monkeypatch.setattr(st, "_cuda", lambda: True)
     monkeypatch.setattr(st, "_harness", lambda args: h)
     sha = ops.record_sha256(ops.to_record(SEQ))
@@ -246,8 +263,19 @@ def test_host_then_device_components_give_the_cells_the_prediction_reads(tmp_pat
                                "libraries": [["torch", "2.9.1"]], "python_optimize": 0}
     d = st.step_device_components(args("device_components"), cfg)
     assert d["cells"] == 3
-    assert xa["chain_check"] == {"passed": True, "gated": True, "share": 0.04,
-                                 "aggregate_tol": 0.10, "checked_calls": 3, "unchecked_calls": 1}
+    # the instrumented check is recorded, never gated; the bare gate is the cell's
+    assert xa["chain_check_instrumented"] == {"passed": True, "gated": False, "share": 0.04,
+                                              "aggregate_tol": 0.10, "checked_calls": 3,
+                                              "unchecked_calls": 1}
+    assert xa["chain_gate"] == {"pricing": "bare_timer", "passed": True, "share": 0.04,
+                                "aggregate_tol": 0.10, "composite_calls": 3, "fallback": None,
+                                "instrumented_over_bare": 2.0}
+    host_dir = st.step_dir(session, "host_components") / xa["dir"]
+    assert hp.from_record(json.loads((host_dir / "host_profile.json").read_text())).pricing == \
+        "bare_timer"                                    # what the device step reads
+    assert hp.from_record(json.loads(
+        (host_dir / "host_profile_null_pass.json").read_text())).pricing == "null_pass"
+    assert json.loads((host_dir / "bare_prices.json").read_text())["chain_gate"]["passed"]
     dev = json.loads((st.step_dir(session, "device_components") / "cells.json").read_text())
     assert dev["fake"] is False and all(c["ops"] for c in dev["cells"])
     # the prediction's grid check reads the cell's setting, not the measured density
@@ -266,26 +294,25 @@ FAILED_CHECK = {"passed": False, "share": 0.25, "aggregate_tol": 0.10, "checked_
                 "unchecked_calls": 0}
 
 
-def test_a_failed_chain_check_stops_a_real_session(tmp_path, monkeypatch):
-    _components(monkeypatch, FakeHarness(), check=FAILED_CHECK)
-    session = _session(tmp_path)
-    args = SimpleNamespace(dry_run=False, session=str(session),
-                           out=str(st.step_dir(session, "host_components")))
-    with pytest.raises(st.StepFailed, match=r"chain check failed.*3 composite call.*25\.0% "
-                                            r"of the profile's host time, against 10%"):
-        st.step_host_components(args, _grid())
-
-
-def test_a_rehearsal_records_a_failed_chain_check_and_goes_on(tmp_path, monkeypatch):
-    _components(monkeypatch, FakeHarness(), check=FAILED_CHECK)
+@pytest.mark.parametrize("rehearsal", [False, True])
+def test_a_failed_chain_gate_is_labelled_with_its_fallback_and_never_stops_a_session(
+        tmp_path, monkeypatch, rehearsal):
+    # Oracle re-evaluation and fallback labelling (ruling, 1 Nov 2026, after
+    # Shakedown 5): a real session no longer stops on the gate.
+    from attnbench.components import bare_timer as bt
+    _components(monkeypatch, FakeHarness(), check=FAILED_CHECK, gate_ok=False)
     session = _session(tmp_path)
     out = st.step_dir(session, "host_components")
     args = SimpleNamespace(dry_run=False, session=str(session), out=str(out))
-    r = st.step_host_components(args, dict(_grid(), rehearsal=True))
-    assert r["cells"] == 3 and len(r["chain_check_failed_cells"]) == 3
+    r = st.step_host_components(args, dict(_grid(), rehearsal=rehearsal))
+    assert r["cells"] == 3 and len(r["chain_gate_fallback_cells"]) == 3
+    assert set(r["instrumented_over_bare"].values()) == {2.0}
     cell = json.loads((out / "cells_index.json").read_text())["cells"][0]
-    assert cell["chain_check"]["passed"] is False and cell["chain_check"]["gated"] is True
-    assert json.loads((out / cell["dir"] / "chain_check.json").read_text())["share"] == 0.25
+    assert cell["chain_gate"]["passed"] is False
+    assert cell["chain_gate"]["fallback"] == bt.FALLBACK_LABEL
+    check = json.loads((out / cell["dir"] / "chain_check.json").read_text())
+    assert check["share"] == 0.25 and check["gated"] is False and "bare timer" in \
+        check["why_not_gated"]
 
 
 def test_a_cell_the_replay_cannot_price_stops_the_step(tmp_path, monkeypatch):

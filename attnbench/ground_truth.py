@@ -559,6 +559,8 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
                         synchronize, clock)
                 if a is control:
                     dense_warmup_ms.append(took * 1e3)
+        if hasattr(a.backend, "mark_warm"):     # the recompile gate counts from here (T2.21)
+            a.backend.mark_warm()
     reference_ms = statistics.median(dense_warmup_ms[1:])
 
     samples = {a.name: [] for a in arms}       # (round, ms), every round
@@ -597,6 +599,10 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
 
     for a in arms:
         check_timed_region(logs[a.name], a, list(range(r)))
+    # Before the untimed twin pass: a compiled arm that recompiled after its
+    # warm-up is refused (ruling, 1 Nov 2026, after Shakedown 5).
+    recompiles = {a.name: a.backend.check_recompiles() for a in arms
+                  if hasattr(a.backend, "check_recompiles")}
     densities = {}
     for a in arms:          # untimed: after every block, outside the probe and the tracer
         def run(backend=None, a=a):
@@ -628,6 +634,8 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
             "score_calls_timed": sum(e.kind == "score" for e in ev),
             "mask_builds_timed": sum(e.kind == "mask_build" for e in ev),
             "context_length": length, "batch": batch, "builder_kind": a.builder_kind,
+            **({"recompiles_after_warmup": recompiles[a.name],
+                "code_path_identity": a.backend.identity} if a.name in recompiles else {}),
             **{k: densities[a.name][k] for k in ("mask_density", "executed_density",
                                                   "eager_mask_density", "density_vs_eager",
                                                   "density_vs_eager_flagged")

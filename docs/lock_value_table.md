@@ -1,6 +1,6 @@
 # T4.1 lock values still blank (1 Nov 2026)
 
-One row per T4.1 item (32). "Plan default" is what the plan or code already states; "pilot value" is what banked data or a shakedown gives; "proposal" is Claude's, for the researcher to accept or change. A dash means nothing is stated yet. Nothing here is a decision.
+One row per T4.1 item (33). "Plan default" is what the plan or code already states; "pilot value" is what banked data or a shakedown gives; "proposal" is Claude's, for the researcher to accept or change. A dash means nothing is stated yet. Nothing here is a decision.
 
 | # | Value | Plan default | Pilot value | Proposal |
 |---|---|---|---|---|
@@ -35,7 +35,8 @@ One row per T4.1 item (32). "Plan default" is what the plan or code already stat
 | 29 | Compiled-versus-eager density flag tolerance | ±0.01 absolute, working (31 Oct 2026 ruling) | Shakedown 2: XAttention 0.66582 compiled, 0.66688 eager (−0.00106) | Keep ±0.01 unless Shakedown 3's compiled rows show a wider spread |
 | 30 | Probe-length rule (T2.18) | three lengths at or below 32768 with distinct chunk counts of at least two, else two plus a full recording at 32768 (31 Oct 2026 ruling) | XAttention: 20480, 28672, full at 32768 | As ruled |
 | 31 | Flagged-memset sensitivity bound (T2.3) | each memset with no device record priced at the memset zoo's duration for its size (31 Oct 2026 ruling) | Shakedown 2: 84 flagged memsets per XAttention prefill | As ruled; the paper reports the count and the shift |
-| 32 | Chain-validator aggregate gate (T2.2) | over every checked call met at a composite or by its device argument, the sum of \|chain-priced cost - direct host time in the isolated replay\| at most this share of the profile's whole host time; per-call ratios reported, not gated (ruling, 1 Nov 2026, after Shakedown 4; replaces the per-operator rel + abs tolerance of the same day) | Shakedown 4 (L4, 2048): chain/direct 0.58-0.85 per operator, leaf calls 0.77-0.80 alike; `index_put_` 2.0-2.6 from the tape's stand-in (fixed) | Working: 10%; to be set from T3.1 data |
+| 32 | Chain-validator aggregate gate (T2.2) | over every composite the bare timer prices (every position launched by a child), the sum of \|chain - direct\|, the children's summed bare times against the composite's own, at most this share of the cell's bare host time; a cell that fails takes each composite's own time, labelled, and is not refused; per-call ratios reported (rulings, 1 Nov 2026, after Shakedowns 4 and 5; the instrumented check against the isolated replay is recorded, not gated) | Shakedown 4 (L4, 2048), instrumented: chain/direct 0.58-0.85 per operator, oracle 22-26% in aggregate; the bare form has no L4 value yet (Shakedown 6) | Working: 10%; to be set from T3.1 data |
+| 33 | Recompile gate (T2.21) | compile events a compiled arm may make after its warm-up, in the ground truth and the density probe; above it the cell is refused (ruling, 1 Nov 2026, after Shakedown 5) | Shakedown 5: compiled XAttention recompiled per call until its kernel interface ran outside Dynamo | Working: 0 |
 
 Also blank in `configs/t31/p1_session.json`: densities (row 3), ground-truth groups, repeats, dense rounds and the sampler interval, all filled for T3.1 from the block below; the resolution floor (row 16) and the rerun budget (row 23), which stay null as inputs.
 
@@ -50,7 +51,8 @@ T3.1 is pre-lock P1 data. It takes the values below, marked "working, pre-lock",
 | Repeats | 10 clean rounds per cell | Enough for a median and p90 at P1 |
 | Dense rounds (K2) | 5 | Interleaved candidate rounds per cell |
 | Sampler interval | 0.1 s | The sampler process's 10 Hz |
-| Chain-validator aggregate gate (row 32) | 10% of the profile's host time | The researcher's working value (1 Nov 2026), to be set from T3.1 data. A rehearsal records the check and does not stop on it |
+| Chain-validator aggregate gate (row 32) | 10% of the cell's bare host time | The researcher's working value (1 Nov 2026), to be set from T3.1 data. No session stops on it: a cell that fails is labelled with its fallback (ruling, 1 Nov 2026, after Shakedown 5) |
+| Recompile gate (row 33) | 0 compile events after warm-up | The researcher's ruling (1 Nov 2026, after Shakedown 5); `compiled.RECOMPILE_GATE` |
 
 ```json t31-working-values
 {

@@ -58,6 +58,20 @@ take their density from the eager twin, labelled so (`EAGER_TWIN_LABEL`).
 A CPU test cannot show a CUDA graph reusing a buffer; the GPU session is the
 proof.
 
+**Declared breaks and the recompile gate** (researcher's ruling, 1 Nov 2026,
+after Shakedown 5). Compiled XAttention calls its block-sparse kernel
+interface outside Dynamo (`torch.compiler.disable` in `forward_and_mask`):
+traced, the interface's own break left a resume frame that recompiled per
+call and reached the recompile limit at about the ninth prefill. That break
+is declared (`DECLARED_BREAKS`) and is part of the variant's code-path
+identity (`code_path_identity`): a report whose breaks are not exactly the
+declared ones, matched by reason, file and function and never by line, in
+every layer, is another code path and is refused (`check_declared`). And a
+compiled arm's compile events are counted from the end of its warm-up
+(`mark_warm`): more than `RECOMPILE_GATE` after it (working 0, a T4.1 lock
+value) refuses the cell (`check_recompiles`), so a variant that recompiles
+per call can no longer pass as warm.
+
 **Mask agreement** (`MaskAgreement`) compares the compiled estimator's mask
 with the eager one in every layer of every recorded prompt. A variant whose
 masks differ on any prompt is reported as a different arm, with its share of
@@ -97,6 +111,9 @@ DENSITY_RECORD = ("reset_density", "last_layer_density")
 # The label a compiled row's density carries if it is taken from the eager
 # twin (module docstring), with the +-0.01 flag of `densities.versus_eager`.
 EAGER_TWIN_LABEL = "eager twin, not the executed mask"
+# Compile events allowed after a compiled arm's warm-up (module docstring):
+# T4.1 lock table row 33, working value.
+RECOMPILE_GATE = 0
 
 
 class CompiledVariantError(RuntimeError):
@@ -176,6 +193,7 @@ class CompiledBackend:
         self.name = variant_name(arm.capability.name, setting)
         self.layer_idx: Optional[int] = None
         self.events: list[CompileEvent] = []
+        self._warm_at: Optional[int] = None
         # An arm with its own mask: the mask is an output of the compiled
         # function (module docstring); `mask_output=False` is the A/B's other
         # side, the output alone, and keeps no density record.
@@ -259,6 +277,30 @@ class CompiledBackend:
         """Compile events after the first."""
         return max(0, len(self.events) - 1)
 
+    def mark_warm(self) -> None:
+        """The end of the arm's warm-up: compile events are counted from here."""
+        self._warm_at = len(self.events)
+
+    @property
+    def recompiles_after_warmup(self) -> int:
+        if self._warm_at is None:
+            raise CompiledVariantError(f"{self.name}: mark_warm() was never called")
+        return len(self.events) - self._warm_at
+
+    def check_recompiles(self, gate: int = RECOMPILE_GATE) -> int:
+        """The recompile gate (module docstring): the count after warm-up, or
+        `CompiledVariantError` above `gate`."""
+        n = self.recompiles_after_warmup
+        if n > gate:
+            raise CompiledVariantError(
+                f"{self.name} compiled {n} time(s) after its warm-up (gate {gate}): its "
+                f"timed calls were not all one warm compiled code path")
+        return n
+
+    @property
+    def identity(self) -> dict:
+        return code_path_identity(self.arm, self.setting)
+
     @contextlib.contextmanager
     def timed_block(self) -> Iterator[TimedBlock]:
         """Wrap a timed block; `flagged` if any graph compiled inside it."""
@@ -316,6 +358,79 @@ def graph_break_report(arm, layers: Sequence[tuple[int, tuple, AttnConfig]],
     finally:
         torch._dynamo.reset()
     return tuple(out)
+
+
+@dataclass(frozen=True)
+class DeclaredBreak:
+    """A graph break that is part of a variant's code path (module docstring):
+    the reason's first line starts with `reason`, and the innermost frame is
+    `function` in `file`."""
+    reason: str
+    file: str
+    function: str
+    why: str
+
+    def matches(self, b: GraphBreak) -> bool:
+        if not b.reason.startswith(self.reason) or not b.where:
+            return False
+        file, _, function = b.where[-1].partition(" in ")
+        return file.split(":")[0] == self.file and function == self.function
+
+    def label(self) -> str:
+        return f"{self.file} in {self.function}: {self.reason}"
+
+
+_KERNEL_OUTSIDE_DYNAMO = DeclaredBreak(
+    "Attempted to call function marked as skipped", "xattention.py", "forward_and_mask",
+    "the block-sparse kernel interface runs outside Dynamo (ruling, 1 Nov 2026, after "
+    "Shakedown 5)")
+_BLOCK_SPARSE_DEFAULT = (
+    DeclaredBreak("step_unsupported", "block_sparse.py", "forward",
+                  "the try around the kernel call (L4 report, Shakedown 2, 31 Oct 2026)"),
+    DeclaredBreak("Dynamic shape operator", "block_sparse_attn_interface.py",
+                  "replace_ones_with_count",
+                  "the library's mask conversion sizes a tensor from its data (the same "
+                  "report)"))
+# Keyed by (backend class, setting); a subclass inherits its parent's. What a
+# variant's report must show in every layer: the L4 reports of Shakedown 2
+# (31 Oct 2026), with XAttention's kernel interface outside Dynamo since
+# Shakedown 5. Every arm showed no break under the capture options.
+DECLARED_BREAKS: dict[tuple[str, str], tuple[DeclaredBreak, ...]] = {
+    ("XAttentionBackend", "default"): (_KERNEL_OUTSIDE_DYNAMO,),
+    ("XAttentionBackend", "capture"): (_KERNEL_OUTSIDE_DYNAMO,),
+    ("BlockSparseAttention", "default"): _BLOCK_SPARSE_DEFAULT,
+}
+
+
+def declared_breaks(arm, setting: str) -> tuple[DeclaredBreak, ...]:
+    for cls in type(arm).__mro__:
+        if (cls.__name__, setting) in DECLARED_BREAKS:
+            return DECLARED_BREAKS[(cls.__name__, setting)]
+    return ()
+
+
+def code_path_identity(arm, setting: str) -> dict:
+    """The compiled variant's code path: its name and its declared breaks."""
+    return {"variant": variant_name(arm.capability.name, setting),
+            "declared_breaks": [d.label() for d in declared_breaks(arm, setting)]}
+
+
+def check_declared(report: Sequence[LayerBreaks], arm, setting: str) -> None:
+    """Refuses a report that is not the declared code path: in every layer,
+    each break matches a declared one and each declared one occurs."""
+    declared = declared_breaks(arm, setting)
+    problems = []
+    for lb in report:
+        extra = [b for b in lb.breaks if not any(d.matches(b) for d in declared)]
+        missing = [d for d in declared if not any(d.matches(b) for b in lb.breaks)]
+        problems += [f"layer {lb.layer}: undeclared break {b.reason!r} at "
+                     f"{b.where[-1] if b.where else 'no frame'}" for b in extra]
+        problems += [f"layer {lb.layer}: declared break missing ({d.label()})" for d in missing]
+    if not report:
+        problems.append("the report has no layer, so it shows no code path")
+    if problems:
+        raise CompiledVariantError(
+            f"{type(arm).__name__} is not its declared compiled code path: " + "; ".join(problems))
 
 
 def same_report(a: Sequence[LayerBreaks], b: Sequence[LayerBreaks]) -> bool:

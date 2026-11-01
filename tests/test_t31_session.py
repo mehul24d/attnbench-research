@@ -382,7 +382,7 @@ def test_the_rehearsal_config_has_its_own_prefix_and_is_written_once(tmp_path):
     cfg = json.loads(p.read_text())
     assert cfg["rehearsal"] is True and cfg["prediction_prefix"] == sess.REHEARSAL_PREFIX
     assert cfg["pairing"] == "P1"                 # the working values are P1's
-    assert cfg["lengths"] == [2048, 16384] and cfg["batches"] == {"16384": [1, 4]}
+    assert cfg["lengths"] == [2048, 16384] and cfg["batches"] == {"2048": [1, 4]}
     assert st.prediction_dir(cfg, tmp_path).startswith("predictions/P1-rehearsal/")
     p.write_text(json.dumps({**cfg, "marker": 1}))
     assert json.loads(sess.rehearsal_config(tmp_path, None).read_text())["marker"] == 1

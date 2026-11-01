@@ -26,9 +26,16 @@
 # deletes it server-side at cap / rate minutes after RUNNING, whether or not
 # this Mac is still awake. At the Flex rate (Rs 463.47/h, the higher of the
 # two regions) that is 32 minutes, so the in-guest halt (GCP_HALT_MINUTES,
-# 40) is a second line that the delete comes before. No Spot planning rate is
-# on record: H100_SPOT=1 needs H100_SPOT_RATE_INR_HR, and Spot is refused
-# when the cap buys fewer than H100_GATE_MINUTES (30) at that rate.
+# 40) is a second line that the delete comes before. H100_SPOT=1 needs
+# H100_SPOT_RATE_INR_HR (plan Section 5.2: Rs 668.04/h, the higher region).
+#
+# The Spot cap (researcher's rule, 1 Nov 2026, after Shakedown 5): Spot's
+# hard delete is H100_SPOT_DELETE_MINUTES (40) after RUNNING, never fewer
+# than 40, so it never comes before the in-guest halt, and its cap is what
+# those minutes cost at the Spot rate, at most H100_SPOT_CAP_MAX_INR (350).
+# Spot is refused when 40 minutes cost more than that: at the planning
+# rates (Rs 629.94/h and Rs 668.04/h) they cost Rs 420 and Rs 446, so the
+# rule allows Spot only at Rs 525/h or less.
 #
 # Stops: on a grant (after the gate and teardown), on a launcher error, after
 # H100_MAX_ROUNDS rounds (48, a day), or on Ctrl-C (the launcher cancels a
@@ -49,6 +56,8 @@ CAP_INR="${H100_CAP_INR:-250}"
 HALT_MINUTES="${GCP_HALT_MINUTES:-40}"
 MAX_ROUNDS="${H100_MAX_ROUNDS:-48}"
 GATE_MINUTES="${H100_GATE_MINUTES:-30}"
+SPOT_DELETE_MINUTES="${H100_SPOT_DELETE_MINUTES:-40}"
+SPOT_CAP_MAX="${H100_SPOT_CAP_MAX_INR:-350}"
 FLEX_RATE="463.47"            # plan Section 5.2, 20 Oct 2026: the higher of us-central1 and asia-southeast1
 SPOT_RATE="${H100_SPOT_RATE_INR_HR:-}"
 export GCP_IMAGE="${GCP_IMAGE:-attnbench-env-v6-20260917}"
@@ -73,9 +82,15 @@ if [[ "$SPOT" == 1 ]]; then
   if [[ ! "$SPOT_RATE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     die "H100_SPOT=1 needs H100_SPOT_RATE_INR_HR (no Spot planning rate is on record), or set H100_SPOT=0"
   fi
-  SPOT_MAX=$(cap_minutes "$SPOT_RATE")
-  if (( SPOT_MAX < GATE_MINUTES )); then
-    say "Spot refused: Rs $CAP_INR buys $SPOT_MAX min at Rs ${SPOT_RATE}/h; the gate needs $GATE_MINUTES"
+  (( SPOT_DELETE_MINUTES >= 40 )) \
+    || die "H100_SPOT_DELETE_MINUTES=$SPOT_DELETE_MINUTES: Spot's hard delete is never under 40 min"
+  (( SPOT_CAP_MAX <= 350 )) \
+    || die "H100_SPOT_CAP_MAX_INR=$SPOT_CAP_MAX: the Spot cap is at most Rs 350"
+  SPOT_MAX="$SPOT_DELETE_MINUTES"
+  SPOT_CAP=$(awk -v r="$SPOT_RATE" -v m="$SPOT_MAX" \
+    'BEGIN { c = r * m / 60; printf "%d", (c == int(c)) ? c : int(c) + 1 }')
+  if (( SPOT_CAP > SPOT_CAP_MAX )); then
+    say "Spot refused: $SPOT_MAX min at Rs ${SPOT_RATE}/h cost Rs $SPOT_CAP, above the Rs $SPOT_CAP_MAX Spot maximum"
     SPOT=0
   fi
 fi
@@ -86,7 +101,7 @@ echo "  zones        : $ZONES (in order)"
 echo "  each round   : FLEX_START, ${FLEX_WAIT_S}s per zone$([[ "$SPOT" == 1 ]] && echo ", then SPOT")"
 echo "  polling      : a round every ${POLL_MINUTES} min, start to start, at most $MAX_ROUNDS rounds"
 echo "  before each  : skipped while any attnbench GPU VM exists in the project"
-echo "  cap          : Rs $CAP_INR = hard delete after $FLEX_MAX min on Flex (Rs ${FLEX_RATE}/h)$([[ "$SPOT" == 1 ]] && echo ", $SPOT_MAX min on Spot (Rs ${SPOT_RATE}/h)")"
+echo "  cap          : Rs $CAP_INR = hard delete after $FLEX_MAX min on Flex (Rs ${FLEX_RATE}/h)$([[ "$SPOT" == 1 ]] && echo "; Spot Rs $SPOT_CAP = hard delete after $SPOT_MAX min (Rs ${SPOT_RATE}/h, at most Rs $SPOT_CAP_MAX)")"
 echo "  in-guest halt: +${HALT_MINUTES} min"
 echo "  on a grant   : the loop stops; the gate runs (gate only, nothing timed); teardown on any exit"
 echo "  image        : $GCP_IMAGE"

@@ -147,17 +147,36 @@ def test_the_cap_is_the_hard_delete_at_each_models_rate(tmp_path):
     assert lp.run().returncode == 0
     flex, spot = lp.called("gcp_launch_h100.sh")
     assert _env(flex, "GCP_MAX_RUN") == "32m" and _env(flex, "GCP_RATE_INR_HR") == "463.47"
-    assert _env(spot, "GCP_MAX_RUN") == "37m" and _env(spot, "GCP_RATE_INR_HR") == "400"
+    # Spot's hard delete is 40 min, whatever its rate (rule, 1 Nov 2026)
+    assert _env(spot, "GCP_MAX_RUN") == "40m" and _env(spot, "GCP_RATE_INR_HR") == "400"
     assert "400" in lp.called("gcp_session_elapsed.sh")[0]          # costed at the Spot rate
 
 
-def test_spot_is_refused_when_the_cap_cannot_buy_a_gate(tmp_path):
-    lp = Loop(tmp_path, ["4", "0:us-central1-a"], H100_SPOT_RATE_INR_HR="719")
+@pytest.mark.parametrize("rate, cap", [("668.04", 446), ("629.94", 420), ("525.01", 351)])
+def test_spot_is_refused_where_forty_minutes_cost_more_than_350(tmp_path, rate, cap):
+    lp = Loop(tmp_path, ["4", "0:us-central1-a"], H100_SPOT_RATE_INR_HR=rate)
     p = lp.run()
     assert p.returncode == 0
-    assert "Spot refused: Rs 250 buys 20 min" in p.stdout
+    assert (f"Spot refused: 40 min at Rs {rate}/h cost Rs {cap}, above the Rs 350 "
+            f"Spot maximum") in p.stdout
     assert [_env(c, "GCP_H100_PROVISIONING") for c in lp.called("gcp_launch_h100.sh")] == \
         ["FLEX_START", "FLEX_START"]
+
+
+def test_spot_at_525_costs_350_and_is_allowed(tmp_path):
+    lp = Loop(tmp_path, ["4", "0:us-central1-a"], H100_SPOT_RATE_INR_HR="525")
+    p = lp.run()
+    assert p.returncode == 0
+    assert "Spot Rs 350 = hard delete after 40 min" in p.stdout
+    assert [_env(c, "GCP_H100_PROVISIONING") for c in lp.called("gcp_launch_h100.sh")] == \
+        ["FLEX_START", "SPOT"]
+
+
+@pytest.mark.parametrize("env, why", [({"H100_SPOT_DELETE_MINUTES": "39"}, "never under 40"),
+                                      ({"H100_SPOT_CAP_MAX_INR": "351"}, "at most Rs 350")])
+def test_the_spot_rule_cannot_be_loosened(tmp_path, env, why):
+    p = Loop(tmp_path, ["0:us-central1-a"], **env).run()
+    assert p.returncode != 0 and why in p.stdout
 
 
 def test_spot_off_is_flex_only(tmp_path):

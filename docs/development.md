@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 5586 passed, 128 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 5624 passed, 128 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -33,11 +33,11 @@ Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 5655 passed, 59 skipped**, because
+**With `results/` present the suite reads 5693 passed, 59 skipped**, because
 the 65 banked-file tests run instead of skipping (all but two do) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 5651 passed, 63 skipped). All three
-totals are 5714, which is
+present and those two hidden it reads 5689 passed, 63 skipped). All three
+totals are 5752, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 
@@ -79,7 +79,14 @@ the prediction and names any such difference.
 `index_put_` that launches beside its children in XAttention's chunked
 path, the launch check's attribution against a brute-force one, and
 XAttention's threshold row built outside a compiled graph, and its kernel
-interface called outside Dynamo (pending a ruling).
+interface called outside Dynamo.
+`tests/test_shakedown6_cpu.py` holds the rulings after Shakedown 5: the
+bare timer (`attnbench/components/bare_timer.py`) on a recording behind the
+boundary, its chain gate and fallback label, the declared breaks as a
+compiled variant's code path, and the recompile gate. Behind the boundary a
+bare call runs its CPU compute, which the null pass skips, so the CPU's
+instrumented/bare ratios mean nothing; `pricing_zoo` takes
+`--cpu-boundary` for the same reason it is a dry run, not a measurement.
 
 ## Earlier work in this repository
 

@@ -701,7 +701,10 @@ def step_graph_breaks(args) -> dict:
             if rc or not p.exists():
                 failed.append(f"{name}@{setting}")
                 continue
-            reports[setting] = json.loads(p.read_text())["layers"]
+            got = json.loads(p.read_text())
+            reports[setting] = got["layers"]
+            if got.get("declared_problem"):         # not its declared code path (T2.21)
+                failed.append(f"{name}@{setting}: {got['declared_problem']}")
         r = {s: {"graphs": sum(l["graphs"] for l in rep),
                  "breaks": sum(len(l["breaks"]) for l in rep),
                  "reasons": sorted({b["reason"] for l in rep for b in l["breaks"]})}
@@ -731,9 +734,16 @@ def cmd_graph_breaks_one(args) -> int:
         layers = [l for l in layers if l[0] in keep]
     t0 = time.time()
     report = compiled.graph_break_report(inner, layers, args.setting)
+    try:        # the declared breaks are the variant's code path (ruling, 1 Nov 2026)
+        compiled.check_declared(report, inner, args.setting)
+        problem = None
+    except compiled.CompiledVariantError as e:
+        problem = str(e)
     _write_json(out / "graph_breaks.json", {
         "arm": name, "setting": args.setting, "length": arm.length, "budget": args.gb_length,
         "variant": compiled.variant_name(name, args.setting), "seconds": time.time() - t0,
+        "code_path_identity": compiled.code_path_identity(inner, args.setting),
+        "declared_problem": problem,
         "layers": [{"layer": l.layer, "graphs": l.graphs,
                     "breaks": [{"reason": b.reason, "where": list(b.where)} for b in l.breaks]}
                    for l in report]})

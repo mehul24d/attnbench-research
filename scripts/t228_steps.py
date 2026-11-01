@@ -59,7 +59,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from t227_steps import (EXIT, PASSED, Skip, StepFailed, _cuda, _harness,  # noqa: E402,F401
                         _jsonable, _need_cuda, _py, _run, _write_json, run_step)
 
-STEPS = ("nvml", "t216", "t213", "density", "mask_ab", "t212", "t22", "queue")
+STEPS = ("nvml", "t216", "t213", "density", "mask_ab", "t212", "t22", "queue", "pricing_zoo")
 
 CHECKLIST = {
     "nvml": "the real NVML reader and the sampler process on a card",
@@ -70,6 +70,7 @@ CHECKLIST = {
     "t212": "T2.12 precomputed replay with the real kernel",
     "t22": "T2.2 null-kernel and reference-builder profile on the target host",
     "queue": "T2.6 Q for both kinds: the add's Q, its lower bound and their sensitivity",
+    "pricing_zoo": "T2.2 bare-timer prices: composites, index_put_, SDPA flash, every arm",
 }
 
 
@@ -544,7 +545,9 @@ def step_density(args) -> dict:
     for group in vals["gt_groups"]:
         d = out / group
         rc = _run(_py("t228_steps.py", "density-one", "--group", group, "--out", str(d),
-                      "--length", str(args.length), *(["--dry-run"] if args.dry_run else []),
+                      "--length", str(args.length), "--warmup", str(args.warmup),
+                      "--recompile-prefills", str(args.recompile_prefills),
+                      *(["--dry-run"] if args.dry_run else []),
                       *(["--cpu-boundary"] if getattr(args, "cpu_boundary", False) else [])))
         path = d / "densities.json"
         found["groups"][group] = {"rc": rc,
@@ -589,17 +592,33 @@ def density_one(args) -> int:
         def run(backend=None, a=a, kw=kw):
             wrapped.run_measured(ids, backend if backend is not None else a.backend,
                                  cfg=a.cfg, logits_to_keep=1, **kw)
-        run()                                    # warm: a compiled arm compiles here
+        for _ in range(max(args.warmup, 1)):    # warm: a compiled arm compiles here
+            run()
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         row = {"arm": a.name, "compile_setting": a.compile_setting, "nominal_density": nominal,
                "prompt_id": prompt_id, "length": int(ids.shape[-1])}
+        gate = []
+        if hasattr(a.backend, "check_recompiles"):
+            # The recompile gate (ruling, 1 Nov 2026, after Shakedown 5) over more
+            # prefills than took Shakedown 5's per-call recompiles to the limit.
+            from attnbench.backends.compiled import CompiledVariantError
+            a.backend.mark_warm()
+            for _ in range(args.recompile_prefills):
+                run()
+            row["recompile_prefills"] = args.recompile_prefills
+            row["recompiles_after_warmup"] = a.backend.recompiles_after_warmup
+            row["code_path_identity"] = a.backend.identity
+            try:
+                a.backend.check_recompiles()
+            except CompiledVariantError as e:
+                gate.append(str(e))
         try:
             row.update(gt.kernel_densities(a, run))
         except RuntimeError as e:
-            row["problems"] = [str(e)]
+            row["problems"] = [str(e)] + gate
         else:
-            row["problems"] = D.density_problems(row, dense=a.kind == gt.DENSE)
+            row["problems"] = D.density_problems(row, dense=a.kind == gt.DENSE) + gate
             if nominal is not None and row["mask_density"] is not None:
                 row["mask_minus_nominal"] = row["mask_density"] - nominal
         if row["problems"]:
@@ -769,10 +788,121 @@ def step_queue(args) -> dict:
     return found
 
 
+# --- the pricing zoo ----------------------------------------------------------------------------
+
+# The operators the zoo reports whatever their route (researcher's scope for
+# Shakedown 6, 1 Nov 2026), beside every composite.
+ZOO_OPERATORS = ("aten::index_put_", "aten::_index_put_impl_",
+                 "aten::_scaled_dot_product_flash_attention", "aten::_flash_attention_forward")
+
+
+def zoo_entries(h, length: int, device) -> dict:
+    """The zoo's own entries at the model's shapes and `length` tokens: SDPA
+    forced to its flash kernel (causal), a boolean `index_put_` (`x[m] = 0`,
+    the form XAttention's chunked path takes), and a `_to_copy`."""
+    import torch
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    g = h.geometry
+    dt = getattr(torch, str(g.dtype).replace("torch.", ""))
+    gen = torch.Generator(device="cpu").manual_seed(0)
+
+    def rand(*shape):
+        return torch.randn(*shape, generator=gen, dtype=torch.float32).to(device=device, dtype=dt)
+    q = rand(1, g.n_heads_q, length, g.head_dim)
+    k, v = rand(1, g.n_heads_q, length, g.head_dim), rand(1, g.n_heads_q, length, g.head_dim)
+    x = rand(length, g.n_heads_q * g.head_dim)
+
+    def sdpa_flash():
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            return torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
+
+    def bool_index_put():
+        y = x.clone()
+        y[y > 0] = 0.0
+        return y
+
+    return {"sdpa_flash": sdpa_flash, "bool_index_put": bool_index_put,
+            "to_copy": lambda: x.to(torch.float64 if dt == torch.float32 else torch.float32)}
+
+
+def _zoo_ops(record: dict) -> dict:
+    return {n: o for n, o in record["operators"].items()
+            if o["composite"] or n in ZOO_OPERATORS}
+
+
+def step_pricing_zoo(args) -> dict:
+    """The bare timer (ruling, 1 Nov 2026, after Shakedown 5) on this host: the
+    zoo's own entries (`zoo_entries`: SDPA flash, a boolean `index_put_`, a
+    `_to_copy`), each call with its direct and chain bare time; then every
+    arm in `--zoo-arms` (the oracle included: its re-evaluation) at
+    `--length`, at its first working density: recorded, the null pass, the
+    bare prices, the chain gate in the zoo with its fallback label, and the
+    instrumented/bare ratio per operator. Fails where an arm cannot be priced
+    (a pass refused, a call the timer cannot re-issue); a failed gate is a
+    finding, labelled, as in T3.1. The values are findings."""
+    _need_cuda(args, "the bare timer on the card")
+    from attnbench.components import bare_timer as bt
+    from attnbench.components import recorder
+    from attnbench.components import host_profile as hp
+    from t31_steps import (bare_pricer, bare_profile_cell, host_profile_cell, nominal_density,
+                           ready_cell, working_values, HOST_PROFILE_REPS, _device)
+    vals, sha = working_values()
+    out = Path(args.out)
+    h = _harness(args)
+    pricer = bare_pricer()
+    found: dict = {"values": "rehearsal (working, pre-lock)", "values_sha256": sha,
+                   "length": args.length, "reps": pricer.reps,
+                   "timer_overhead_ns": pricer.overhead_ns, "entries": {}, "arms": {}}
+    device = _device()
+    for name, fn in zoo_entries(h, args.length, device).items():
+        calls = bt.price_closure(fn, pricer, device)
+        found["entries"][name] = [
+            {"operator": c.name, "direct_us": c.direct_s * 1e6,
+             "chain_us": None if c.chain_s is None else c.chain_s * 1e6,
+             "children": list(c.children),
+             "chain_over_direct": (c.chain_s / c.direct_s
+                                   if c.chain_s is not None and c.direct_s > 0 else None)}
+            for c in calls]
+    failed = []
+    for arm in [a for a in args.zoo_arms.split(",") if a]:
+        d = nominal_density(vals["densities"][arm][0])
+        cd = out / arm
+        try:
+            a = ready_cell(h, arm, d, args.length, 1)
+            rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording",
+                                              code_path=a.code_path, context_length=a.length,
+                                              batch=1, prompt_id=a.prompt_id, layers=a.layers)
+            entries = () if arm == "dense" else (hp.block_sparse_entry(),)
+            null, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
+                                            tolerance=vals["chain_check_tolerance"])
+            bare, record = bare_profile_cell(a, rec, cd, null, pricer=pricer, entries=entries,
+                                             tolerance=vals["chain_check_tolerance"])
+        except (hp.ProfileMismatch, hp.NullPassError, bt.BareTimerError) as e:
+            failed.append(arm)
+            found["arms"][arm] = {"error": f"{type(e).__name__}: {e}"}
+            continue
+        found["arms"][arm] = {
+            "density": d, "context_length": a.length,
+            "chain_gate": bt.gate_summary(record), "routes": record["routes"],
+            "host_total_ms": bare.total_s * 1e3, "host_total_null_pass_ms": null.total_s * 1e3,
+            "chain_check_instrumented_share": check["share"],
+            "operators": _zoo_ops(record)}
+    h.unwrap()
+    found["signatures_timed"] = len(pricer.prices)
+    found["fallback_arms"] = [n for n, r in found["arms"].items()
+                              if r.get("chain_gate", {}).get("fallback")]
+    if "oracle" in found["arms"]:
+        found["oracle_reevaluation"] = found["arms"]["oracle"].get("chain_gate")
+    if failed:
+        raise StepFailed(f"the bare timer could not price {failed}", found)
+    return found
+
+
 # --- entry points ----------------------------------------------------------------------------
 
 STEP_FUNCS = {"nvml": step_nvml, "t216": step_t216, "t213": step_t213, "density": step_density,
-              "mask_ab": step_mask_ab, "t212": step_t212, "t22": step_t22, "queue": step_queue}
+              "mask_ab": step_mask_ab, "t212": step_t212, "t22": step_t22, "queue": step_queue,
+              "pricing_zoo": step_pricing_zoo}
 if tuple(STEP_FUNCS) != STEPS or tuple(CHECKLIST) != STEPS:   # not `assert`: T2.17
     raise RuntimeError("STEP_FUNCS, CHECKLIST and STEPS disagree")
 
@@ -801,9 +931,14 @@ def parser() -> argparse.ArgumentParser:
                     help="t212: comma-separated source arms")
     ap.add_argument("--profile-arm", default="meanpool", choices=sorted(ARMS))
     ap.add_argument("--profile-reps", type=int, default=5)
+    ap.add_argument("--zoo-arms", default="dense,oracle,meanpool,xattention,xattention_noassert",
+                    help="pricing_zoo: the arms priced at --length")
     ap.add_argument("--builder-lengths", default="2048,4096,8192,16384,32768")
     ap.add_argument("--builder-reps", type=int, default=10)
     ap.add_argument("--group", default=None, help="density-one: the ground-truth group")
+    ap.add_argument("--recompile-prefills", type=int, default=12,
+                    help="density-one: prefills after a compiled arm's warm-up, for the "
+                         "recompile gate (Shakedown 5 hit the limit at about the ninth)")
     ap.add_argument("--side", default=None, help="mask-ab-one: the A/B side")
     ap.add_argument("--part", type=int, default=0, help="mask-ab-one: the process's place in AB_ORDER")
     return ap
