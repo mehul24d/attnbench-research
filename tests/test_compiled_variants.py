@@ -315,11 +315,14 @@ def test_the_xattention_report_runs_through_the_arms_own_forward(fake_xattn):
     # The stand-in's asserts are the plain and try/except forms, which the
     # banked check found do not split; nothing else in the path reads back.
     # The one break is the kernel interface, kept out of Dynamo on purpose
-    # (Shakedown 5, pending a ruling): the code before and after it compiles.
-    kernel = C.GraphBreak("Attempted to call function marked as skipped",
-                          ("xattention.py:316 in forward_and_mask",))
-    assert [(r.layer, r.graphs, r.breaks) for r in report] == [
-        (0, 3, (kernel,)), (1, 3, (kernel,))]
+    # (rulings, 1 Nov 2026): the code before and after it compiles.
+    assert [(r.layer, r.graphs, len(r.breaks)) for r in report] == [(0, 3, 1), (1, 3, 1)]
+    for r in report:
+        (b,) = r.breaks
+        assert b.reason == "Attempted to call function marked as skipped"
+        assert b.where[-1].startswith("block_sparse.py:") and \
+            b.where[-1].endswith(" in kernel_interface")
+    C.check_declared(report, arm, "default")
 
 
 def test_compiled_masks_agree_with_eager_on_every_prompt_and_layer(fake_xattn):

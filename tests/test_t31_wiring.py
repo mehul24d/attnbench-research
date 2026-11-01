@@ -181,7 +181,7 @@ def _grid():
     return {"pairing": "P1", "card": "NVIDIA L4", "model": "m", "lengths": [2048],
             "batches": {}, "arms": ["dense", "meanpool", "xattention"],
             "densities": {"dense": [1.0], "meanpool": [0.25], "xattention": ["calibrated"]},
-            "chain_check_tolerance": {"aggregate": 0.10}}
+            "chain_check_tolerance": {"aggregate": 0.10}, "residual_spread_tolerance": 0.10}
 
 
 CHECK = {"passed": True, "share": 0.04, "aggregate_tol": 0.10, "checked_calls": 3,
@@ -205,8 +205,16 @@ def _bare(monkeypatch, gate_ok: bool):
 
 
 def _components(monkeypatch, h, check=CHECK, gate_ok=True):
+    from attnbench.components import layer_residual as lr
     from attnbench.components import recorder, replay
     _bare(monkeypatch, gate_ok)
+    # each layer's uninstrumented span: 10 us above its bare prices (1 us each)
+    per_layer: dict = {}
+    for op in SEQ.ops:
+        if op.layer is not None and op.kind is not ops.SeqKind.SYNC:
+            per_layer[op.layer] = per_layer.get(op.layer, 0.0) + 1e-6
+    monkeypatch.setattr(lr, "tape_spans", lambda *a, **k: lr.Spans(
+        spans_s={l: (v + 10e-6,) * 3 for l, v in per_layer.items()}))
     monkeypatch.setattr(st, "_cuda", lambda: True)
     monkeypatch.setattr(st, "_harness", lambda args: h)
     sha = ops.record_sha256(ops.to_record(SEQ))
@@ -249,6 +257,7 @@ def _session(tmp_path):
 
 
 def test_host_then_device_components_give_the_cells_the_prediction_reads(tmp_path, monkeypatch):
+    from attnbench.components import layer_residual as lr
     h = FakeHarness()
     _components(monkeypatch, h)
     session, cfg = _session(tmp_path), _grid()
@@ -271,8 +280,16 @@ def test_host_then_device_components_give_the_cells_the_prediction_reads(tmp_pat
                                 "aggregate_tol": 0.10, "composite_calls": 3, "fallback": None,
                                 "instrumented_over_bare": 2.0}
     host_dir = st.step_dir(session, "host_components") / xa["dir"]
-    assert hp.from_record(json.loads((host_dir / "host_profile.json").read_text())).pricing == \
-        "bare_timer"                                    # what the device step reads
+    read = hp.from_record(json.loads((host_dir / "host_profile.json").read_text()))
+    assert read.pricing == "bare_timer"                 # what the device step reads
+    # with each layer's residual added (ruling, 1 Nov 2026, after Shakedown 6)
+    bare = hp.from_record(json.loads((host_dir / "host_profile_bare.json").read_text()))
+    layers = {op.layer for op in SEQ.ops if op.layer is not None}
+    assert read.total_s == pytest.approx(bare.total_s + 10e-6 * len(layers))
+    assert sum(read.residual_s.values()) == pytest.approx(10e-6 * len(layers))
+    assert xa["layer_residual"]["labels"] == [] and \
+        xa["host_total_ms"] == pytest.approx(xa["host_total_bare_ms"] + 1e-2 * len(layers))
+    assert json.loads((host_dir / "layer_residual.json").read_text())["schema"] == lr.SCHEMA
     assert hp.from_record(json.loads(
         (host_dir / "host_profile_null_pass.json").read_text())).pricing == "null_pass"
     assert json.loads((host_dir / "bare_prices.json").read_text())["chain_gate"]["passed"]

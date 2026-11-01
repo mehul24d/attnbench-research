@@ -142,38 +142,52 @@ def test_the_zones_are_all_three_and_each_flex_request_waits_five_minutes(tmp_pa
     assert _env(launch, "GCP_IMAGE") == "attnbench-env-v6-20260917"
 
 
-def test_the_cap_is_the_hard_delete_at_each_models_rate(tmp_path):
+def test_each_models_cap_and_delete_at_its_rate(tmp_path):
     lp = Loop(tmp_path, ["4", "0:us-central1-a"])
     assert lp.run().returncode == 0
     flex, spot = lp.called("gcp_launch_h100.sh")
+    # Flex: the cap is the server-side delete; the in-guest halt is a second line
     assert _env(flex, "GCP_MAX_RUN") == "32m" and _env(flex, "GCP_RATE_INR_HR") == "463.47"
-    # Spot's hard delete is 40 min, whatever its rate (rule, 1 Nov 2026)
+    assert _env(flex, "GCP_HALT_MINUTES") == "40"
+    # Spot: the delete is 40 min whatever the rate; the cap is the in-guest
+    # halt, at the minutes Rs 350 buys, never after the delete (rules, 1 Nov 2026)
     assert _env(spot, "GCP_MAX_RUN") == "40m" and _env(spot, "GCP_RATE_INR_HR") == "400"
+    assert _env(spot, "GCP_HALT_MINUTES") == "40"                   # Rs 350 buys 52 min at 400
     assert "400" in lp.called("gcp_session_elapsed.sh")[0]          # costed at the Spot rate
 
 
-@pytest.mark.parametrize("rate, cap", [("668.04", 446), ("629.94", 420), ("525.01", 351)])
-def test_spot_is_refused_where_forty_minutes_cost_more_than_350(tmp_path, rate, cap):
+@pytest.mark.parametrize("rate, halt, cap, worst", [("668.04", 31, 346, 446),
+                                                     ("629.94", 33, 347, 420)])
+def test_spot_at_the_planning_rates_halts_inside_rs_350_and_after_the_gates_expected_time(
+        tmp_path, rate, halt, cap, worst):
+    lp = Loop(tmp_path, ["4", "0:us-central1-a"], H100_SPOT_RATE_INR_HR=rate)
+    p = lp.run()
+    assert p.returncode == 0, p.stdout[-2000:]
+    assert (f"Spot cap     : Rs {cap} = in-guest halt after {halt} min (Rs {rate}/h, at most "
+            f"Rs 350); hard delete after 40 min (Rs {worst} if the halt failed)") in p.stdout
+    assert "gate         : expected 30 min" in p.stdout
+    flex, spot = lp.called("gcp_launch_h100.sh")
+    assert _env(spot, "GCP_H100_PROVISIONING") == "SPOT"
+    assert _env(spot, "GCP_HALT_MINUTES") == str(halt) and _env(spot, "GCP_MAX_RUN") == "40m"
+    assert _env(flex, "GCP_HALT_MINUTES") == "40"
+
+
+@pytest.mark.parametrize("rate, minutes", [("700.01", 29), ("1000", 21)])
+def test_spot_is_refused_where_rs_350_buys_less_than_the_gates_expected_time(
+        tmp_path, rate, minutes):
     lp = Loop(tmp_path, ["4", "0:us-central1-a"], H100_SPOT_RATE_INR_HR=rate)
     p = lp.run()
     assert p.returncode == 0
-    assert (f"Spot refused: 40 min at Rs {rate}/h cost Rs {cap}, above the Rs 350 "
-            f"Spot maximum") in p.stdout
+    assert (f"Spot refused: Rs 350 buys {minutes} min at Rs {rate}/h, under the gate's "
+            f"expected 30 min") in p.stdout
+    assert "Spot         : off" in p.stdout
     assert [_env(c, "GCP_H100_PROVISIONING") for c in lp.called("gcp_launch_h100.sh")] == \
         ["FLEX_START", "FLEX_START"]
 
 
-def test_spot_at_525_costs_350_and_is_allowed(tmp_path):
-    lp = Loop(tmp_path, ["4", "0:us-central1-a"], H100_SPOT_RATE_INR_HR="525")
-    p = lp.run()
-    assert p.returncode == 0
-    assert "Spot Rs 350 = hard delete after 40 min" in p.stdout
-    assert [_env(c, "GCP_H100_PROVISIONING") for c in lp.called("gcp_launch_h100.sh")] == \
-        ["FLEX_START", "SPOT"]
-
-
 @pytest.mark.parametrize("env, why", [({"H100_SPOT_DELETE_MINUTES": "39"}, "never under 40"),
-                                      ({"H100_SPOT_CAP_MAX_INR": "351"}, "at most Rs 350")])
+                                      ({"H100_SPOT_CAP_MAX_INR": "351"}, "at most Rs 350"),
+                                      ({"H100_GATE_MINUTES": "29"}, "never taken under 30")])
 def test_the_spot_rule_cannot_be_loosened(tmp_path, env, why):
     p = Loop(tmp_path, ["0:us-central1-a"], **env).run()
     assert p.returncode != 0 and why in p.stdout

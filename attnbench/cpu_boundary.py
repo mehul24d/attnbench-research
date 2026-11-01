@@ -18,7 +18,11 @@ replaced is listed here, so nothing else can be stubbed by accident:
     is. The library's own Python around the kernel
     (`replace_ones_with_count`, `convert_blockmask_row_reverse`, and their
     synchronisations) is not reproduced: the dry run's sequences have none
-    of those waits. `block_sparse_attn_cuda.fwd_block` exists so
+    of those waits. While Dynamo traces it, the stub sizes one tensor from
+    its data, as the library's mask conversion does, so a compiled arm that
+    traced the interface shows that break (it calls the interface outside
+    Dynamo, `block_sparse.kernel_interface`); the per-call recompile it
+    caused on the L4 is not reproduced, and is the GPU's to show. `block_sparse_attn_cuda.fwd_block` exists so
     `host_profile.block_sparse_entry` has an extension call to null.
   - **Triton.** `triton` and `triton.language` are import-only modules
     while the authors' `xattn.src.kernels` is imported (and its assert-free
@@ -151,6 +155,13 @@ def block_sparse_attn_func(q, k, v, cu_seqlens_q, cu_seqlens_k, head_mask_type,
     """`block_sparse_attn.block_sparse_attn_func`'s signature, on the CPU."""
     if p_dropout:
         raise ValueError("the CPU stub has no dropout")
+    # The library sizes a tensor from its data before the kernel (its mask
+    # conversion, `replace_ones_with_count`): traced, that is a break whose
+    # resume frame recompiled per call (Shakedowns 5 and 6). Not its code
+    # (rule 8): one boolean-mask read with the same property, made only
+    # while Dynamo traces, so an eager recording has no extra operation.
+    if torch.compiler.is_compiling():
+        _ = head_mask_type[head_mask_type == 1]
     scale = softmax_scale if softmax_scale is not None else q.shape[-1] ** -0.5
     return _bsa_forward(q, k, v, base_blockmask, int(max_seqlen_q_), int(max_seqlen_k_),
                         float(scale), bool(is_causal))
@@ -248,7 +259,11 @@ NO_LAUNCH = frozenset({
     "aten::unflatten", "aten::flatten", "aten::view_as", "aten::contiguous", "aten::to",
     "aten::_to_copy", "aten::item", "aten::is_nonzero", "aten::size", "aten::stride",
     "aten::numel", "aten::dim", "aten::result_type", "aten::set_", "aten::_has_compatible_shallow_copy_type",
-    "aten::is_same_size", "aten::_local_scalar_dense", "aten::scalar_tensor",
+    "aten::is_same_size", "aten::_local_scalar_dense",
+    # Not `aten::scalar_tensor`: on the L4 `torch.where` with a Python number
+    # makes one on the device, a `fill_` (Shakedown 6, 140 calls per
+    # XAttention prefill, every one under `aten::where`); on a CPU it is a
+    # leaf, so the stand-in gives it the launch.
     "aten::unfold", "aten::movedim", "aten::swapaxes", "aten::diagonal",
     "aten::resolve_conj", "aten::resolve_neg", "aten::conj",
     # Operators that make no tensor (found by the null pass, 1 Nov 2026):

@@ -29,13 +29,20 @@
 # 40) is a second line that the delete comes before. H100_SPOT=1 needs
 # H100_SPOT_RATE_INR_HR (plan Section 5.2: Rs 668.04/h, the higher region).
 #
-# The Spot cap (researcher's rule, 1 Nov 2026, after Shakedown 5): Spot's
-# hard delete is H100_SPOT_DELETE_MINUTES (40) after RUNNING, never fewer
-# than 40, so it never comes before the in-guest halt, and its cap is what
-# those minutes cost at the Spot rate, at most H100_SPOT_CAP_MAX_INR (350).
-# Spot is refused when 40 minutes cost more than that: at the planning
-# rates (Rs 629.94/h and Rs 668.04/h) they cost Rs 420 and Rs 446, so the
-# rule allows Spot only at Rs 525/h or less.
+# The Spot cap (researcher's rules, 1 Nov 2026, after Shakedowns 5 and 6).
+# Spot's hard delete is H100_SPOT_DELETE_MINUTES (40) after RUNNING, never
+# fewer than 40, and the cap, at most H100_SPOT_CAP_MAX_INR (350), is held by
+# the in-guest halt, as on every other card: the halt comes at the minutes
+# Rs 350 buys at the Spot rate (never after the delete), and the gate ends
+# with its own `halt` step well before then. Spot is refused when those
+# minutes are fewer than the gate's expected duration, H100_GATE_MINUTES
+# (30, never fewer: boot to the gate's halt step, 20 min for boot, deploy,
+# preflight, write gate and bootstrap and 10 for the four steps, the T6.4
+# card; Shakedown 6's L4 took 5.6 min from launch to its first step). At the
+# planning rates the halt is at 31 min (Rs 668.04/h, Rs 346) and 33 min
+# (Rs 629.94/h, Rs 347); if the in-guest halt failed, the delete at 40 min
+# would bill Rs 446 or Rs 420. Before this rule the cap was the delete's 40
+# minutes, which refused Spot at both rates.
 #
 # Stops: on a grant (after the gate and teardown), on a launcher error, after
 # H100_MAX_ROUNDS rounds (48, a day), or on Ctrl-C (the launcher cancels a
@@ -77,7 +84,10 @@ cap_minutes() { awk -v c="$CAP_INR" -v r="$1" 'BEGIN { printf "%d", c / r * 60 }
 FLEX_MAX=$(cap_minutes "$FLEX_RATE")
 (( FLEX_MAX >= GATE_MINUTES )) \
   || die "Rs $CAP_INR buys $FLEX_MAX min at the Flex rate; the gate needs $GATE_MINUTES"
+(( GATE_MINUTES >= 30 )) \
+  || die "H100_GATE_MINUTES=$GATE_MINUTES: the gate's expected duration is never taken under 30 min"
 SPOT_MAX=0
+SPOT_HALT=0
 if [[ "$SPOT" == 1 ]]; then
   if [[ ! "$SPOT_RATE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     die "H100_SPOT=1 needs H100_SPOT_RATE_INR_HR (no Spot planning rate is on record), or set H100_SPOT=0"
@@ -87,10 +97,14 @@ if [[ "$SPOT" == 1 ]]; then
   (( SPOT_CAP_MAX <= 350 )) \
     || die "H100_SPOT_CAP_MAX_INR=$SPOT_CAP_MAX: the Spot cap is at most Rs 350"
   SPOT_MAX="$SPOT_DELETE_MINUTES"
-  SPOT_CAP=$(awk -v r="$SPOT_RATE" -v m="$SPOT_MAX" \
+  SPOT_HALT=$(awk -v c="$SPOT_CAP_MAX" -v r="$SPOT_RATE" -v d="$SPOT_MAX" \
+    'BEGIN { m = int(c / r * 60); printf "%d", (m < d) ? m : d }')
+  SPOT_CAP=$(awk -v r="$SPOT_RATE" -v m="$SPOT_HALT" \
     'BEGIN { c = r * m / 60; printf "%d", (c == int(c)) ? c : int(c) + 1 }')
-  if (( SPOT_CAP > SPOT_CAP_MAX )); then
-    say "Spot refused: $SPOT_MAX min at Rs ${SPOT_RATE}/h cost Rs $SPOT_CAP, above the Rs $SPOT_CAP_MAX Spot maximum"
+  SPOT_WORST=$(awk -v r="$SPOT_RATE" -v m="$SPOT_MAX" \
+    'BEGIN { c = r * m / 60; printf "%d", (c == int(c)) ? c : int(c) + 1 }')
+  if (( SPOT_HALT < GATE_MINUTES )); then
+    say "Spot refused: Rs $SPOT_CAP_MAX buys $SPOT_HALT min at Rs ${SPOT_RATE}/h, under the gate's expected $GATE_MINUTES min"
     SPOT=0
   fi
 fi
@@ -101,8 +115,13 @@ echo "  zones        : $ZONES (in order)"
 echo "  each round   : FLEX_START, ${FLEX_WAIT_S}s per zone$([[ "$SPOT" == 1 ]] && echo ", then SPOT")"
 echo "  polling      : a round every ${POLL_MINUTES} min, start to start, at most $MAX_ROUNDS rounds"
 echo "  before each  : skipped while any attnbench GPU VM exists in the project"
-echo "  cap          : Rs $CAP_INR = hard delete after $FLEX_MAX min on Flex (Rs ${FLEX_RATE}/h)$([[ "$SPOT" == 1 ]] && echo "; Spot Rs $SPOT_CAP = hard delete after $SPOT_MAX min (Rs ${SPOT_RATE}/h, at most Rs $SPOT_CAP_MAX)")"
-echo "  in-guest halt: +${HALT_MINUTES} min"
+echo "  gate         : expected $GATE_MINUTES min, boot to its halt step"
+echo "  Flex cap     : Rs $CAP_INR = hard delete after $FLEX_MAX min (Rs ${FLEX_RATE}/h); in-guest halt +${HALT_MINUTES} min"
+if [[ "$SPOT" == 1 ]]; then
+  echo "  Spot cap     : Rs $SPOT_CAP = in-guest halt after $SPOT_HALT min (Rs ${SPOT_RATE}/h, at most Rs $SPOT_CAP_MAX); hard delete after $SPOT_MAX min (Rs $SPOT_WORST if the halt failed)"
+else
+  echo "  Spot         : off"
+fi
 echo "  on a grant   : the loop stops; the gate runs (gate only, nothing timed); teardown on any exit"
 echo "  image        : $GCP_IMAGE"
 echo
@@ -116,12 +135,12 @@ gpu_vms() {
 
 # One walk over the zones on one model. Sets GRANT_ZONE on a grant.
 # Returns 0 granted, 4 no capacity anywhere, anything else an error.
-walk() {   # model max_minutes rate
+walk() {   # model max_minutes rate halt_minutes
   local out rc=0
   out="$(mktemp)"
   # pipefail: the pipeline's status is the launcher's (tee succeeds).
   GCP_H100_PROVISIONING="$1" GCP_ZONE_FALLBACKS="$ZONES" GCP_ZONE="${ZONES%% *}" \
-  GCP_CANCEL_AFTER_SECONDS="$FLEX_WAIT_S" GCP_MAX_RUN="${2}m" GCP_HALT_MINUTES="$HALT_MINUTES" \
+  GCP_CANCEL_AFTER_SECONDS="$FLEX_WAIT_S" GCP_MAX_RUN="${2}m" GCP_HALT_MINUTES="$4" \
   GCP_RATE_INR_HR="$3" bash "$HERE/gcp_launch_h100.sh" "$NAME" 2>&1 \
     | gcp_redact | tee -a "$LOG" | tee "$out" || rc=$?
   GRANT_ZONE="$(sed -n 's/^Granted in \([a-z0-9-]*\) .*/\1/p' "$out" | tail -1)"
@@ -142,11 +161,11 @@ while :; do
     say "round $ROUND: skipped; an attnbench GPU VM exists: $(echo "$others" | tr '\n' ';')"
   else
     say "round $ROUND: $NAME, FLEX_START over $ZONES"
-    rc=0; walk FLEX_START "$FLEX_MAX" "$FLEX_RATE" || rc=$?
+    rc=0; walk FLEX_START "$FLEX_MAX" "$FLEX_RATE" "$HALT_MINUTES" || rc=$?
     MODEL=FLEX_START; RATE="$FLEX_RATE"
     if (( rc == 4 )) && [[ "$SPOT" == 1 ]]; then
       say "round $ROUND: no Flex capacity; SPOT over $ZONES"
-      rc=0; walk SPOT "$SPOT_MAX" "$SPOT_RATE" || rc=$?
+      rc=0; walk SPOT "$SPOT_MAX" "$SPOT_RATE" "$SPOT_HALT" || rc=$?
       MODEL=SPOT; RATE="$SPOT_RATE"
     fi
     case "$rc" in

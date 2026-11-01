@@ -52,6 +52,42 @@ from .base import AttentionBackend, Capability, UnsupportedConfig, register
 from .impls import _expand_kv
 
 
+def kernel_interface(*args, unsupported: bool = False, **kwargs):
+    """The library's `block_sparse_attn_func`, called outside Dynamo when
+    compiled. Every arm that runs the block-sparse kernel calls it through
+    here: the oracle and mean-pool (`BlockSparseAttention`) and XAttention
+    (researcher's ruling, 1 Nov 2026, after Shakedown 6: one exclusion of the
+    kernel interface for every arm, held by the recompile gate). Traced, the
+    interface's own break (`replace_ones_with_count` sizes a tensor from its
+    data) left a resume frame whose guard held a tensor that died after every
+    call, so the frame recompiled per layer: XAttention in Shakedown 5, and
+    mean-pool under the default settings in Shakedown 6, reached the
+    recompile limit (256). Under Dynamo the call goes through
+    `torch.compiler.disable`, a break at this function in every arm and
+    setting (`compiled.DECLARED_BREAKS`); eagerly it is the library's own
+    call, after one `is_compiling` check (about 0.1 us).
+
+    `unsupported`: a `RuntimeError` from the kernel is an `UnsupportedConfig`
+    (the oracle and mean-pool backend's rule). The `try` is inside the
+    excluded call: a break inside a `try` in a traced frame is a break of its
+    own (`step_unsupported`, the L4 report of Shakedown 2)."""
+    if torch.compiler.is_compiling():
+        return torch.compiler.disable(_call)(*args, unsupported=unsupported, **kwargs)
+    return _call(*args, unsupported=unsupported, **kwargs)
+
+
+def _call(*args, unsupported: bool, **kwargs):
+    from block_sparse_attn import block_sparse_attn_func
+    if not unsupported:
+        return block_sparse_attn_func(*args, **kwargs)
+    try:
+        return block_sparse_attn_func(*args, **kwargs)
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except RuntimeError as e:
+        raise UnsupportedConfig(f"block_sparse: {e}") from e
+
+
 @register
 class BlockSparseAttention(AttentionBackend):
     capability = Capability(
@@ -86,7 +122,10 @@ class BlockSparseAttention(AttentionBackend):
                 f"is ({cfg.seq_len}, block {cfg.block_size}) -- a mismatch "
                 f"would measure a different sparsity pattern")
 
-        from block_sparse_attn import block_sparse_attn_func
+        # Absent library: refused here, before any setup, as before the
+        # kernel call moved to `kernel_interface` (the timed-region test
+        # reads a backend that cannot run as not exercised).
+        import block_sparse_attn  # noqa: F401
 
         k_, v_ = _expand_kv(k, v, cfg)   # kernel wants n_heads_k == n_heads_q here
 
@@ -103,17 +142,13 @@ class BlockSparseAttention(AttentionBackend):
         head_mask_type = torch.ones(h, dtype=torch.int32, device=q.device)
         base_blockmask = mask.to_block_sparse_attn_mask(b, h, device=q.device)
 
-        try:
-            out = block_sparse_attn_func(
-                q_, k_, v_, cu_seqlens, cu_seqlens,
-                head_mask_type, None, base_blockmask,
-                s, s, 0.0,
-                is_causal=mask.causal,
-                exact_streaming=False,
-            )
-        except torch.cuda.OutOfMemoryError:
-            raise
-        except RuntimeError as e:
-            raise UnsupportedConfig(f"block_sparse: {e}") from e
+        out = kernel_interface(
+            q_, k_, v_, cu_seqlens, cu_seqlens,
+            head_mask_type, None, base_blockmask,
+            s, s, 0.0,
+            is_causal=mask.causal,
+            exact_streaming=False,
+            unsupported=True,
+        )
 
         return out.reshape(b, s, h, d).transpose(1, 2)   # back to (B, H, S, D)

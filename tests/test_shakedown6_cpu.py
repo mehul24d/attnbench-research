@@ -220,11 +220,11 @@ def test_a_gate_over_no_composite_has_no_verdict(tmp_path):
 def test_a_bare_pass_that_met_other_calls_is_refused(tmp_path):
     rec, null, bp = _recorded(tmp_path)
     bp.calls[1] = dataclasses.replace(bp.calls[1], name="aten::sub")
-    with pytest.raises(hp.ProfileMismatch, match="bare pass's was to aten::sub"):
+    with pytest.raises(hp.ProfileMismatch, match="bare pass's launching call 1 was to aten::sub"):
         bt.bare_profile(rec.sequence, bp, null, aggregate_tol=0.10)
     rec, null, bp = _recorded(tmp_path / "again")
     bp.calls.pop()
-    with pytest.raises(hp.ProfileMismatch, match="launching calls"):
+    with pytest.raises(hp.ProfileMismatch, match="the bare pass made no launching call there"):
         bt.bare_profile(rec.sequence, bp, null, aggregate_tol=0.10)
 
 
@@ -232,6 +232,28 @@ def test_the_floor_goes_to_each_further_position_and_the_rest_to_the_first():
     assert bt._spread(10.0, [3, 4, 5], 1.0) == {3: 8.0, 4: 1.0, 5: 1.0}
     assert bt._spread(1.0, [3, 4], 5.0) == {3: 0.5, 4: 0.5}         # never above an equal share
     assert bt._spread(2.0, [7], 1.0) == {7: 2.0}
+
+
+def test_an_entry_point_reached_by_a_re_issue_is_not_a_call():
+    # Shakedown 6 (L4): the block-sparse custom op reaches the extension's
+    # entry point inside its own body; timing the op re-issued it 1000 times
+    # after the met call had returned, and each repetition was counted, so
+    # the bare pass made 1001 calls more than the recording (2588 to 1587).
+    import types
+    calls = []
+    mod = types.SimpleNamespace(fwd=lambda x: calls.append("ran") or x * 2)
+
+    def op(x):                          # a met call whose re-issue reaches the entry
+        return mod.fwd(x)
+    pricer = bt.Pricer(reps=4, sync=lambda: None, min_reps=1)
+    out = bt.BarePass()
+    state = hp._State(lambda: 0.0, 0.0)
+    mode = bt.BareMode(pricer, frozenset(), "cpu", state, out)
+    with bt._bare_entries([hp.NullEntry(mod, "fwd", None)], mode):
+        mod.fwd(torch.ones(2))                                  # met at top level: one call
+        pricer.entry("op", op, (torch.ones(2),), {})            # 5 re-issues reach the entry
+    assert [c.name for c in out.calls] == [None]
+    assert len(calls) == 1 + 5 + 5      # the call, its own pricing, the op's re-issues
 
 
 # --- declared breaks and the recompile gate (T2.21) ------------------------------------------
@@ -242,11 +264,11 @@ from attnbench.backends import compiled as C  # noqa: E402
 XAttentionBackend = type("XAttentionBackend", (), {})
 BlockSparseAttention = type("BlockSparseAttention", (), {})
 KERNEL = C.GraphBreak("Attempted to call function marked as skipped",
-                      ("xattention.py:316 in forward_and_mask",))
+                      ("xattention.py:313 in forward_and_mask", "block_sparse.py:76 in kernel_interface"))
 
 
 def test_a_declared_break_is_matched_by_reason_file_and_function_not_by_line():
-    moved = C.GraphBreak(KERNEL.reason, ("xattention.py:401 in forward_and_mask",))
+    moved = C.GraphBreak(KERNEL.reason, ("block_sparse.py:401 in kernel_interface",))
     C.check_declared([C.LayerBreaks(0, 3, (KERNEL,)), C.LayerBreaks(1, 3, (moved,))],
                      XAttentionBackend(), "default")
     C.check_declared([C.LayerBreaks(0, 3, (KERNEL,))], XAttentionBackend(), "capture")
@@ -257,7 +279,7 @@ def test_a_declared_break_is_matched_by_reason_file_and_function_not_by_line():
     ((KERNEL, C.GraphBreak("Dynamic shape operator",
                            ("block_sparse_attn_interface.py:111 in replace_ones_with_count",))),
      "undeclared break 'Dynamic shape operator'"),
-    ((C.GraphBreak(KERNEL.reason, ("xattention.py:9 in forward",)),), "undeclared break"),
+    ((C.GraphBreak(KERNEL.reason, ("xattention.py:9 in forward_and_mask",)),), "undeclared break"),
 ])
 def test_a_report_that_is_not_the_declared_code_path_is_refused(breaks, why):
     with pytest.raises(C.CompiledVariantError, match=why):
@@ -269,13 +291,22 @@ def test_an_empty_report_shows_no_code_path():
         C.check_declared([], XAttentionBackend(), "default")
 
 
-def test_the_declared_breaks_are_per_setting_and_inherited():
+def test_the_declared_breaks_are_one_kernel_exclusion_for_every_arm_and_setting():
+    # Ruling, 1 Nov 2026, after Shakedown 6: the oracle and mean-pool
+    # (`BlockSparseAttention`, and a subclass inherits it) and XAttention
+    # each declare only the kernel interface outside Dynamo, in both settings.
     sub = type("Sub", (BlockSparseAttention,), {})()
-    assert [d.function for d in C.declared_breaks(sub, "default")] == \
-        ["forward", "replace_ones_with_count"]
-    assert C.declared_breaks(sub, "capture") == ()          # L4: no break under capture
+    for arm in (sub, XAttentionBackend()):
+        for setting in ("default", "capture"):
+            assert [(d.file, d.function) for d in C.declared_breaks(arm, setting)] == \
+                [("block_sparse.py", "kernel_interface")]
+            C.check_declared([C.LayerBreaks(0, 2, (KERNEL,))], arm, setting)
+    # the library's own breaks, which a traced call showed, are not declared
+    library = C.GraphBreak("Dynamic shape operator",
+                           ("block_sparse_attn_interface.py:111 in replace_ones_with_count",))
     with pytest.raises(C.CompiledVariantError, match="undeclared"):
-        C.check_declared([C.LayerBreaks(0, 2, (KERNEL,))], sub, "capture")
+        C.check_declared([C.LayerBreaks(0, 2, (KERNEL, library))], sub, "default")
+    assert C.declared_breaks(type("DenseSDPA", (), {})(), "default") == ()
 
 
 class _Arm:

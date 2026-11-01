@@ -208,7 +208,11 @@ def test_the_module_names_the_kernel_every_call_site_imports():
     kernel under another name or at module load, it would miss that site."""
     from pathlib import Path
     root = Path(densities.__file__).resolve().parent
-    for rel in ("kernels.py", "backends/xattention.py", "backends/block_sparse.py"):
+    # XAttention calls the kernel through `block_sparse.kernel_interface`
+    # (ruling, 1 Nov 2026), so it imports nothing of the kernel's own.
+    xa = (root / "backends/xattention.py").read_text()
+    assert "kernel_interface(" in xa and f"import {densities.KERNEL_NAME}" not in xa
+    for rel in ("kernels.py", "backends/block_sparse.py"):
         src = (root / rel).read_text()
         assert f"from {densities.KERNEL_MODULE} import {densities.KERNEL_NAME}" in src, rel
         top = [l for l in src.splitlines()

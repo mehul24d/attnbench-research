@@ -106,7 +106,7 @@ REQUIRED = ("densities", "reps", "dense_rounds")
 WORKING_TABLE = ROOT / "docs" / "lock_value_table.md"
 WORKING_FENCE = "```json t31-working-values"
 WORKING_KEYS = ("densities", "gt_groups", "reps", "dense_rounds", "sampler_interval_s",
-                "chain_check_tolerance")
+                "chain_check_tolerance", "residual_spread_tolerance")
 WORKING_STATUS = "working, pre-lock"
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
@@ -245,8 +245,10 @@ def cpu_boundary_config(path=None) -> dict:
     vals, sha = working_values(path)
     return dict(CPU_BOUNDARY_CONFIG, densities=vals["densities"], gt_groups=vals["gt_groups"],
                 chain_check_tolerance=vals["chain_check_tolerance"],
+                residual_spread_tolerance=vals["residual_spread_tolerance"],
                 working_values={"sha256": sha, "status": WORKING_STATUS,
-                                "filled": ["densities", "gt_groups", "chain_check_tolerance"]})
+                                "filled": ["densities", "gt_groups", "chain_check_tolerance",
+                                           "residual_spread_tolerance"]})
 
 
 def load_config(path, *, dry_run: bool, cpu_boundary: bool = False) -> dict:
@@ -425,6 +427,28 @@ def bare_profile_cell(a, rec, out: Path, null, *, pricer, tolerance: dict, entri
     (out / "host_profile_null_pass.json").write_text(hp.dumps(null))
     _write_json(out / "bare_prices.json", record)
     return bare, record
+
+
+def residual_cell(a, rec, out: Path, bare, null, *, tolerance: float):
+    """The per-layer residual (`layer_residual`; ruling of 1 Nov 2026 after
+    Shakedown 6): the prefill's uninstrumented host span per layer, under the
+    tape alone, less the layer's bare prices, added back over the layer's
+    positions. Writes `host_profile.json` (the bare prices with the
+    residual: what the prediction reads), `host_profile_bare.json` and
+    `layer_residual.json`; returns (profile, record)."""
+    import torch
+    from attnbench.components import host_profile as hp
+    from attnbench.components import layer_residual as lr
+    dev = "cpu" if _boundary() else "cuda"
+    spans = lr.tape_spans(a.run_prefill, rec.tape, a.layers, device_type=dev, sync=_sync(),
+                          event=None if _boundary() else
+                          (lambda: torch.cuda.Event(enable_timing=True)))
+    prof, record = lr.residual(rec.sequence, bare, null, spans, spread_tol=float(tolerance))
+    out = Path(out)
+    (out / "host_profile_bare.json").write_text(hp.dumps(bare))
+    (out / "host_profile.json").write_text(hp.dumps(prof))
+    _write_json(out / "layer_residual.json", record)
+    return prof, record
 
 
 def code_path_definition(cp) -> dict:
@@ -818,8 +842,10 @@ def step_host_components(args, cfg) -> dict:
     """T2.2 per cell: the arm's prefill recorded at the cell (trace,
     sequence, masks, tape), the null-kernel host profile from its tape
     (`HOST_PROFILE_REPS` passes, the instrumented comparison), then the
-    bare-timer prices the prediction reads (`bare_profile_cell`; ruling of 1
-    Nov 2026 after Shakedown 5). Writes `cells_index.json`, which the device
+    bare-timer prices (`bare_profile_cell`; ruling of 1 Nov 2026 after
+    Shakedown 5) and, added to them, each layer's residual, which the
+    prediction reads (`residual_cell`; ruling of 1 Nov 2026 after Shakedown
+    6; a layer over its spread tolerance is labelled, not refused). Writes `cells_index.json`, which the device
     step reads; a calibrated arm's density is the mask density it produced
     on the cell's prompt. A cell that fails the chain gate is labelled with
     its fallback, not refused (oracle re-evaluation and fallback labelling,
@@ -829,6 +855,7 @@ def step_host_components(args, cfg) -> dict:
     _need_gpu("the null-kernel host profile")
     from attnbench.components import bare_timer as bt
     from attnbench.components import host_profile as hp
+    from attnbench.components import layer_residual as lr
     from attnbench.components import recorder
     out = Path(args.out)
     h = _harness(args)
@@ -837,14 +864,21 @@ def step_host_components(args, cfg) -> dict:
     for arm, d, L, b in cells(cfg):
         cd = cell_dir(out, arm, d, L, b)
         a = ready_cell(h, arm, d, L, b)
+        seconds, t0 = {}, time.time()
         rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording", code_path=a.code_path,
                                           context_length=a.length, batch=b,
                                           prompt_id=a.prompt_id, layers=a.layers)
+        seconds["record"], t0 = time.time() - t0, time.time()
         entries = () if arm == "dense" else (hp.block_sparse_entry(),)
         prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
                                         tolerance=cfg["chain_check_tolerance"])
+        seconds["isolated_and_null_pass"], t0 = time.time() - t0, time.time()
         bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
                                          tolerance=cfg["chain_check_tolerance"])
+        seconds["bare_pass"], t0 = time.time() - t0, time.time()
+        priced, resid = residual_cell(a, rec, cd, bare, prof,
+                                      tolerance=cfg["residual_spread_tolerance"])
+        seconds["residual"] = time.time() - t0
         realised = d
         if d is None:
             per_layer = list(getattr(a.backend, "last_layer_density", None) or ())
@@ -856,8 +890,11 @@ def step_host_components(args, cfg) -> dict:
                       "context_length": a.length, "batch": b, "prompt_id": a.prompt_id,
                       "dir": str(cd.relative_to(out)),
                       "code_path": code_path_definition(a.code_path),
-                      "host_total_ms": bare.total_s * 1e3,
+                      "host_total_ms": priced.total_s * 1e3,
+                      "host_total_bare_ms": bare.total_s * 1e3,
                       "host_total_null_pass_ms": prof.total_s * 1e3,
+                      "layer_residual": lr.summary(resid),
+                      "seconds": {k: round(v, 1) for k, v in seconds.items()},
                       "host_cost_sources": prof.sources(),
                       "price_routes": record["routes"],
                       "chain_gate": bt.gate_summary(record),
@@ -870,6 +907,10 @@ def step_host_components(args, cfg) -> dict:
     return {"cells": len(index), "signatures_timed": len(pricer.prices),
             "chain_gate_fallback_cells": [name(c) for c in index
                                           if c["chain_gate"]["fallback"]],
+            "residual_labelled_cells": {name(c): c["layer_residual"]["labels"] for c in index
+                                        if c["layer_residual"]["labels"]},
+            "residual_added_ms": {name(c): c["layer_residual"]["residual_added_s"] * 1e3
+                                  for c in index},
             "instrumented_over_bare": {name(c): c["chain_gate"]["instrumented_over_bare"]
                                        for c in index}}
 

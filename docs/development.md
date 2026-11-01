@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 5624 passed, 128 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 5652 passed, 133 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -21,11 +21,11 @@ architecture-gated, and the harness must import on a machine where a kernel is
 unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
 learned baseline (T2.10); without it one more test skips.
 
-The 128 skips are the honest part, and they split six ways: **39** need CUDA
-or the GPU image's x-attention and block-sparse-attn, **65** read banked result
-files that `results/` keeps out of git, **9** are scripts
+The 133 skips are the honest part, and they split six ways: **39** need CUDA
+or the GPU image's x-attention and block-sparse-attn, **68** read banked result
+files that `results/` keeps out of git, **10** are scripts
 `test_script_call_sites.py` has nothing to check because they import nothing
-from `attnbench`, **9** are the same scripts skipped again by
+from `attnbench`, **10** are the same scripts skipped again by
 `test_import_resolution.py`, **4** need the pinned RULER data directory
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
 `~/.cache/attnbench/ruler_data`; one of them wants a pinned build), and **2** need the pinned Llama tokenizer in the local Hugging
@@ -33,11 +33,11 @@ Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 5693 passed, 59 skipped**, because
-the 65 banked-file tests run instead of skipping (all but two do) and, on a machine with the
+**With `results/` present the suite reads 5724 passed, 61 skipped**, because
+the 68 banked-file tests run instead of skipping (all but two do) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 5689 passed, 63 skipped). All three
-totals are 5752, which is
+present and those two hidden it reads 5720 passed, 65 skipped). All three
+totals are 5785, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 
@@ -87,6 +87,15 @@ compiled variant's code path, and the recompile gate. Behind the boundary a
 bare call runs its CPU compute, which the null pass skips, so the CPU's
 instrumented/bare ratios mean nothing; `pricing_zoo` takes
 `--cpu-boundary` for the same reason it is a dry run, not a measurement.
+`tests/test_shakedown6_rulings.py` holds the rulings after Shakedown 6:
+once-only host pricing on Shakedown 6's own XAttention sequence (the
+committed fixture `tests/fixtures/s6_xattention_2048_layer0.json.gz` is its
+first 187 operations; with `results/` present the whole sequence is tested
+too), with its conservation test; the kernel interface outside Dynamo for
+every block-sparse arm, behind the boundary, where `t227_steps.py
+graph-breaks-one --cpu-boundary` now runs; the per-layer residual; and the
+null pass's speed-ups. `scripts/t31_projection.py` prints T3.1's projected
+step durations from Shakedown 6's banked anchors.
 
 ## Earlier work in this repository
 

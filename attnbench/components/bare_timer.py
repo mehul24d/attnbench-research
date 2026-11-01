@@ -35,8 +35,10 @@ call with an empty output gives no position, as in the null pass, and its
 bare time is carried into the next call's.
 
 **From calls to positions** (`bare_profile`). The pass's calls are aligned
-to the recorded call instances as the null pass's are (`recorded_calls`),
-and refused where they differ. A call's price goes to its first position,
+to the recorded call instances as the null pass's are (`align_calls`, once
+only: a call the recording nests in another, such as `scalar_tensor` in
+`where`, prices its own positions within that call), and refused where they
+differ. A call's price goes to its first position,
 less the bare launch floor (the null kernel, bare-timed) for each further
 position, which gets the floor: the call's sum is its price. A leaf is
 priced by its direct time (`bare_leaf`); a composite by its chain
@@ -77,8 +79,8 @@ from torch.utils._python_dispatch import TorchDispatchMode, _disable_current_mod
 
 from .host_profile import (ISOLATED_OUTSIDE_LAYERS, ISOLATED_REPLAY, NULL_PASS, HostProfile,
                            NullDevice, NullEntry, ProfileMismatch, _isolated_origins, _layer_hooks,
-                           _State, all_empty, aten_name, device_call, isolated_positions,
-                           launching_names, met_at, recorded_calls)
+                           _State, align_calls, all_empty, aten_name, device_call,
+                           isolated_positions, launching_names, met_at, signature)
 from .op_sequence import OpSequence, SeqKind
 from .sync_tape import SyncTape, TapeReplayer
 
@@ -129,22 +131,6 @@ def time_bare(fn: Callable[[], object], *, reps: int, overhead_ns: float,
     return max(float(statistics.median(xs)) - overhead_ns, 0.0) * 1e-9
 
 
-def _leaf_key(x):
-    if isinstance(x, torch.Tensor):
-        return ("tensor", tuple(x.shape), tuple(x.stride()), str(x.dtype), x.device.type)
-    if x is None or isinstance(x, (bool, int, float, str)):
-        return x
-    if isinstance(x, (torch.dtype, torch.device, torch.memory_format, torch.layout)):
-        return str(x)
-    return type(x).__name__
-
-
-def signature(name: Optional[str], args, kwargs) -> tuple:
-    """What a cached price is keyed on (module docstring)."""
-    leaves, spec = pytree.tree_flatten((args, kwargs))
-    return (name, str(spec), tuple(_leaf_key(x) for x in leaves))
-
-
 def _clone(tree):
     return pytree.tree_map(lambda t: t.clone() if isinstance(t, torch.Tensor) else t, tree)
 
@@ -172,9 +158,11 @@ class Pricer:
         self.reps, self.sync, self.clock = reps, sync, clock
         self.overhead_ns = timer_overhead_ns(max(reps, MIN_REPS), clock)
         self.prices: dict = {}
+        self.busy = 0         # timing a re-issue: an entry point it reaches is not a call
 
     def time(self, key: tuple, make: Callable[[], Callable[[], object]]) -> float:
         if key not in self.prices:
+            self.busy += 1
             try:
                 with _disable_current_modes(), torch._C.DisableTorchFunction():
                     self.prices[key] = time_bare(make(), reps=self.reps,
@@ -183,6 +171,8 @@ class Pricer:
             except Exception as e:
                 raise BareTimerError(f"{key[0] or 'an entry point'} could not be re-issued "
                                      f"bare: {e!r}") from e
+            finally:
+                self.busy -= 1
         return self.prices[key]
 
     def call(self, func, args, kwargs) -> float:
@@ -340,7 +330,10 @@ def _bare_entries(entries: Sequence[NullEntry], mode: BareMode):
             def bare(*args, _orig=original,
                      _name=f"{getattr(e.module, '__name__', type(e.module).__name__)}.{e.attr}",
                      **kwargs):
-                if mode.inside:
+                # Inside a met call it is the call's child; inside a re-issue
+                # it is the repetition's (Shakedown 6: a custom op's 1000
+                # repetitions each reached the entry and were counted).
+                if mode.inside or mode.pricer.busy:
                     return _orig(*args, **kwargs)
                 with _disable_current_modes():
                     out = _orig(*args, **kwargs)
@@ -409,16 +402,11 @@ def bare_profile(seq: OpSequence, bp: BarePass, null: HostProfile, *,
     price is set beside the bare one."""
     iso = tuple(i for i, s in null.cost_source.items() if s == ISOLATED_REPLAY)
     met = met_at(seq, (c.name for c in bp.calls), skip=iso)
-    calls = recorded_calls(seq, met, skip=iso)
-    if len(calls) != len(bp.calls):
-        raise ProfileMismatch(f"the bare pass made {len(bp.calls)} launching calls and the "
-                              f"recording has {len(calls)}")
-    for n, ((name, layer, pos), c) in enumerate(zip(calls, bp.calls)):
-        if (c.name, c.layer) != (name, layer):
-            raise ProfileMismatch(
-                f"the recording's call {n} is to {name or 'an entry point'} in layer {layer} "
-                f"(position {pos[0]}), and the bare pass's was to "
-                f"{c.name or 'an entry point'} in layer {c.layer}")
+    # Once-only (`host_profile.align_calls`): each bare call prices the
+    # positions it takes in the recorded call that nests it.
+    calls = [(c.name, c.layer, share) for (i, _, share), c in zip(
+        align_calls(seq, met, [(c.name, c.layer) for c in bp.calls], skip=iso,
+                    what="the bare pass"), bp.calls)]
     if len(bp.empty) != len(null.empty_calls):
         raise ProfileMismatch(f"the bare pass met {len(bp.empty)} empty call(s), the null "
                               f"pass {len(null.empty_calls)}")

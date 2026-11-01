@@ -57,6 +57,21 @@ with no recorded call instance is refused: positions are never divided
 evenly among calls (Shakedown 4's t22 pass: three `addmm` calls launched 2,
 2 and 1 kernels).
 
+**Once-only host pricing** (researcher's ruling, 1 Nov 2026, after
+Shakedown 6). The recording can nest a call inside another that the
+dispatcher shows as calls of their own: `torch.where` with a Python number
+is `aten::where` around `aten::scalar_tensor` (a `fill_` on the device) and
+an inner `aten::where` in the profiler, and the dispatcher shows the pass
+`scalar_tensor`, then `where`. Each launching call the pass makes is priced
+once, as part of the recorded call that nests it (`align_calls`): before
+the call's own operator, the pass may make calls to operators the call's
+chains nest, at most one fewer than its positions; they take its positions
+in order, each one's gap and launch going to its first position and the
+floor to the rest, and the call's own operator takes what is left. No pass
+call is used twice or left over, so the positions' costs sum to the pass's
+calls plus one floor per further kernel (the conservation test, on
+Shakedown 6's XAttention sequence).
+
 **Empty calls** (researcher's ruling, 1 Nov 2026). A call whose outputs, or
 whose in-place target, are all empty (numel 0) launches nothing on a CUDA
 build (Shakedown 4: `fill_` on an empty slice, `Xattention.py:221`). The pass
@@ -127,6 +142,7 @@ builds the real one.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import json
 import statistics
@@ -280,6 +296,8 @@ class NullDeviceMode(TorchDispatchMode):
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
         name = aten_name(func)
+        if name not in self.launching and (name, self.state.layer) not in self.isolated:
+            return func(*args, **kwargs)     # before the arguments are scanned (Shakedown 6)
         how = self._device_call(func, args, kwargs)
         if (name, self.state.layer) in self.isolated and how is not None:
             t0 = self.clock()      # priced by the isolated replay: no launch, out of the gap
@@ -316,37 +334,71 @@ def _meta_like(t):
     return t
 
 
+def _leaf_key(x):
+    if isinstance(x, torch.Tensor):
+        return ("tensor", tuple(x.shape), tuple(x.stride()), str(x.dtype), x.device.type)
+    if x is None or isinstance(x, (bool, int, float, str)):
+        return x
+    if isinstance(x, (torch.dtype, torch.device, torch.memory_format, torch.layout)):
+        return str(x)
+    return type(x).__name__
+
+
+def signature(name, args, kwargs) -> tuple:
+    """A call's operator, the structure of its arguments, each tensor's
+    shape, stride, dtype and device, and every other argument's value: what
+    its output's shape follows from, and what a bare price is cached on."""
+    leaves, spec = pytree.tree_flatten((args, kwargs))
+    return (name, str(spec), tuple(_leaf_key(x) for x in leaves))
+
+
+# A launching call's output, as shapes, by signature (`_null_outputs`): the
+# meta run is the pass's own instrument work, most of its wall time, and the
+# layers repeat their calls.
+_OUTPUT_SPECS: dict = {}
+
+
 def _null_outputs(func, args, kwargs, device_type: str):
     """What the call would return, allocated and uninitialised. Shapes come
-    from running the call on meta tensors; an output that is one of the
+    from running the call on meta tensors, once per signature (`signature`;
+    the result kept in `_OUTPUT_SPECS`); an output that is one of the
     inputs (an in-place call, `out=`) is that input. A new output goes to the
     device the call's `device` argument names, else to its device input's."""
     real = [t for t in pytree.tree_leaves((args, kwargs)) if isinstance(t, torch.Tensor)]
-    metas = {id(t): _meta_like(t) for t in real}
-    margs, mkwargs = pytree.tree_map(
-        lambda t: metas[id(t)] if isinstance(t, torch.Tensor) else t, (args, kwargs))
     named = _named_device(func, kwargs, real)
-    if named is not None:
-        mkwargs = {**mkwargs, "device": torch.device("meta")}
-        mkwargs.pop("pin_memory", None)
-    try:
-        mout = func(*margs, **mkwargs)
-    except Exception as e:
-        raise NullPassError(
-            f"{aten_name(func)} has no output on meta tensors ({e!r}); its output "
-            f"shape cannot be given without running it") from e
-    by_meta = {id(m): t for t, m in zip(real, (metas[id(t)] for t in real))}
     dev = named if named is not None else \
         next((t.device for t in real if t.device.type == device_type), None)
+    key = (func, signature(None, args, kwargs))
+    spec = _OUTPUT_SPECS.get(key)
+    if spec is None:
+        metas = {id(t): _meta_like(t) for t in real}
+        margs, mkwargs = pytree.tree_map(
+            lambda t: metas[id(t)] if isinstance(t, torch.Tensor) else t, (args, kwargs))
+        if named is not None:
+            mkwargs = {**mkwargs, "device": torch.device("meta")}
+            mkwargs.pop("pin_memory", None)
+        try:
+            mout = func(*margs, **mkwargs)
+        except Exception as e:
+            raise NullPassError(
+                f"{aten_name(func)} has no output on meta tensors ({e!r}); its output "
+                f"shape cannot be given without running it") from e
+        input_of = {id(metas[id(t)]): k for k, t in enumerate(real)}
+        leaves, tree = pytree.tree_flatten(mout)
+        spec = (tree, tuple(
+            ("input", input_of[id(m)]) if isinstance(m, torch.Tensor) and id(m) in input_of
+            else ("new", tuple(m.shape), tuple(m.stride()), m.dtype)
+            if isinstance(m, torch.Tensor) else ("value", m) for m in leaves))
+        _OUTPUT_SPECS[key] = spec
+    tree, leaves = spec
 
-    def alloc(m):
-        if not isinstance(m, torch.Tensor):
-            return m
-        if id(m) in by_meta:
-            return by_meta[id(m)]
-        return torch.empty_strided(tuple(m.shape), tuple(m.stride()), dtype=m.dtype,
-                                   device=dev)
-    return pytree.tree_map(alloc, mout)
+    def alloc(s):
+        if s[0] == "input":
+            return real[s[1]]
+        if s[0] == "new":
+            return torch.empty_strided(s[1], s[2], dtype=s[3], device=dev)
+        return s[1]
+    return pytree.tree_unflatten([alloc(s) for s in leaves], tree)
 
 
 class _State:
@@ -647,6 +699,56 @@ def recorded_calls(seq: OpSequence, met: Mapping[int, Optional[str]],
     return [(n, layer, tuple(pos)) for n, layer, pos in calls.values()]
 
 
+def align_calls(seq: OpSequence, met: Mapping[int, Optional[str]],
+                issued: Sequence[tuple], *, skip: Iterable[int] = (),
+                what: str = "the pass") -> list[tuple[int, int, tuple]]:
+    """(index of the pass's launching call, index of the recorded call it
+    belongs to, the positions it prices) for every launching call `issued`
+    ((operator, layer) each, in order), by once-only host pricing (module
+    docstring). Raises `ProfileMismatch` where the pass's calls do not
+    follow the recording."""
+    calls = recorded_calls(seq, met, skip=skip)
+    out: list[tuple[int, int, tuple]] = []
+    j = 0
+    for n, (name, layer, pos) in enumerate(calls):
+        where = f"{name or 'an entry point'} in layer {layer}"
+        nested = {x for p in pos for x in chain_of(seq.ops[p]) if x is not None} - {name}
+        start = j
+        while j < len(issued) and j - start < len(pos) - 1 and issued[j][1] == layer \
+                and issued[j][0] in nested:
+            j += 1
+        if j >= len(issued):
+            raise ProfileMismatch(
+                f"the recording issues {len(pos)} operation(s) from a call to {where} "
+                f"(position {pos[0]}), and {what} made no launching call there (it made "
+                f"{len(issued)} in all); an entry point that was not nulled would have run "
+                f"for real")
+        if tuple(issued[j]) != (name, layer):
+            got = issued[j]
+            raise ProfileMismatch(
+                f"the recording's call {n} is to {where} (position {pos[0]}, "
+                f"{len(pos)} operation(s)), and {what}'s launching call {j} was to "
+                f"{got[0] or 'an entry point'} in layer {got[1]}")
+        j += 1
+        group = range(start, j)
+        for g, i in enumerate(group):
+            share = tuple(pos[g:]) if i == j - 1 else (pos[g],)
+            op = seq.ops[share[0]]
+            if issued[i][0] is not None and issued[i][0] not in chain_of(op) and \
+                    issued[i][0] not in map(out_of_place, chain_of(op)):
+                raise ProfileMismatch(
+                    f"{what}'s launching call {i} to {issued[i][0]} in layer {layer} falls "
+                    f"in the recording's call {n} to {where}, and position {share[0]} "
+                    f"({op.aten_op}) does not nest it")
+            out.append((i, n, share))
+    if j < len(issued):
+        extra = issued[j]
+        raise ProfileMismatch(
+            f"{what} made {len(issued) - j} launching call(s) after the "
+            f"recorded sequence ended (first: {extra[0]} in layer {extra[1]})")
+    return out
+
+
 def align(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tuple[dict, dict, dict]:
     """(host seconds, cost source, operator met at) per position, for one
     pass (`assign`)."""
@@ -660,38 +762,21 @@ def align(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tup
             f"the pass kept out {len(log.isolated)} call(s) for {len(isolated)} position(s) "
             f"priced by the isolated replay")
     met = met_at(seq, (e.name for e in log.issues), skip=isolated)
-    calls = recorded_calls(seq, met, skip=isolated)
+    issues = log.issues
     floor = statistics.median(log.launches) if log.launches else 0.0
     host: dict[int, float] = {}
     source: dict[int, str] = {}
-    issues = log.issues
-    for n, (name, layer, pos) in enumerate(calls):
-        where = f"{name or 'an entry point'} in layer {layer}"
-        if n >= len(issues):
-            raise ProfileMismatch(
-                f"the recording issues {len(pos)} operation(s) from a call to {where} "
-                f"(position {pos[0]}), and the pass made no launching call there (it made "
-                f"{len(issues)} in all); an entry point that was not nulled would have run "
-                f"for real")
-        ev = issues[n]
-        if (ev.name, ev.layer) != (name, layer):
-            raise ProfileMismatch(
-                f"the recording's call {n} is to {where} (position {pos[0]}, "
-                f"{len(pos)} operation(s)), and the pass's launching call {n} was to "
-                f"{ev.name or 'an entry point'} in layer {ev.layer}")
-        first, *rest = pos
+    for i, _, share in align_calls(seq, met, [(e.name, e.layer) for e in issues],
+                                   skip=isolated):
+        ev = issues[i]
+        first, *rest = share
         host[first] = ev.gap_s + ev.launch_s
         for p in rest:
             host[p] = floor
-        for p in pos:
+        for p in share:
             source[p] = DEVICE_ARGUMENT if ev.device_argument else \
                 NULL_PASS if met[p] == seq.ops[p].aten_op else \
                 CHAIN if met[p] in chain_of(seq.ops[p]) else OUT_OF_PLACE
-    if len(issues) > len(calls):
-        extra = issues[len(calls)]
-        raise ProfileMismatch(
-            f"the pass made {len(issues) - len(calls)} launching call(s) after the "
-            f"recorded sequence ended (first: {extra.name} in layer {extra.layer})")
     marks = [i for i, op in enumerate(seq.ops) if op.kind is SeqKind.HOST_COMPUTE]
     if len(marks) != len(log.markers):
         raise ProfileMismatch(
@@ -708,7 +793,8 @@ def empty_at(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> 
     whose gap holds its dispatch: the first position of the next launching
     call, or None after the last one."""
     met = met_at(seq, (e.name for e in log.issues), skip=isolated)
-    firsts = [pos[0] for _, _, pos in recorded_calls(seq, met, skip=isolated)]
+    firsts = [share[0] for _, _, share in align_calls(
+        seq, met, [(e.name, e.layer) for e in log.issues], skip=isolated)]
     return tuple({"operator": name, "layer": layer,
                   "position": firsts[n] if n < len(firsts) else None}
                  for name, layer, n in log.empty)
@@ -733,6 +819,9 @@ class HostProfile:
     # price route (`bare_timer.PRICE_ROUTES`).
     pricing: str = NULL_PASS
     price_route: Mapping[int, str] = field(default_factory=dict)
+    # The per-layer residual added to each position (`layer_residual`,
+    # ruling of 1 Nov 2026 after Shakedown 6): already in `host_s`.
+    residual_s: Mapping[int, float] = field(default_factory=dict)
 
     def source(self, i: int) -> str:
         return self.cost_source.get(i, NULL_PASS)
@@ -795,6 +884,43 @@ def profile(run_prefill: Callable[[], None], tape: SyncTape, seq: OpSequence, *,
         met_at={i: met[i] for i in sorted(priced)}, empty_calls=empty)
 
 
+class _Flushes:
+    """The isolation flushes on the replay's thread, in start order, with the
+    running sum of their durations, so whether a flush holds an event and how
+    much flush time lies inside an interval are found by bisection. A linear
+    scan per launch took the oracle's 8192-token trace (242 MB) past 27
+    minutes in Shakedown 6. Flushes run one after another; overlapping ones,
+    which the bisection cannot read, are refused."""
+
+    def __init__(self, flushes: Sequence):
+        self.items = sorted(flushes, key=lambda f: (f.ts, f.end))
+        for a, b in zip(self.items, self.items[1:]):
+            if b.ts < a.end - op_sequence._EPS:
+                raise ProfileMismatch("two isolation flushes overlap in the isolated trace")
+        self.starts = [f.ts for f in self.items]
+        self.ends = [f.end for f in self.items]
+        self.cum = [0.0]
+        for f in self.items:
+            self.cum.append(self.cum[-1] + (f.end - f.ts))
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def holds(self, e) -> bool:
+        """Whether a flush contains `e` (the one that started last before it)."""
+        k = bisect.bisect_right(self.starts, e.ts + op_sequence._EPS) - 1
+        return k >= 0 and e.end <= self.items[k].end + op_sequence._EPS
+
+    def within(self, t0: float, t1: float) -> float:
+        """The summed duration of the flushes wholly inside [t0, t1]."""
+        lo = bisect.bisect_left(self.starts, t0 - op_sequence._EPS)
+        hi = bisect.bisect_right(self.ends, t1 + op_sequence._EPS)
+        return self.cum[hi] - self.cum[lo] if hi > lo else 0.0
+
+
 @dataclass(frozen=True)
 class _Isolated:
     """An isolated replay's trace, read against a sequence: `launch[i]` is the
@@ -803,7 +929,7 @@ class _Isolated:
 
     launch: dict
     calls: dict
-    flushes: list
+    flushes: _Flushes
 
 
 def _read_isolated(trace, seq: OpSequence) -> _Isolated:
@@ -815,11 +941,11 @@ def _read_isolated(trace, seq: OpSequence) -> _Isolated:
     reg = regions[0]
     thread = (reg.pid, reg.tid)
     on_thread = [e for e in events if (e.pid, e.tid) == thread]
-    flushes = [e for e in on_thread if e.cat == "user_annotation" and e.name == FLUSH]
+    flushes = _Flushes([e for e in on_thread if e.cat == "user_annotation" and e.name == FLUSH])
     inside = lambda e, c: c.ts - op_sequence._EPS <= e.ts and e.end <= c.end + op_sequence._EPS
     launches = sorted((e for e in on_thread if e.cat in op_sequence._HOST_CATS
                        and op_sequence.api_class(e.name) == "launch" and inside(e, reg)
-                       and not any(inside(e, f) for f in flushes)), key=lambda e: e.ts)
+                       and not flushes.holds(e)), key=lambda e: e.ts)
     kernels = [i for i, op in enumerate(seq.ops) if op.kind is SeqKind.KERNEL]
     if len(launches) != len(kernels):
         raise ProfileMismatch(f"the isolated replay launched {len(launches)} kernels and the "
@@ -829,8 +955,7 @@ def _read_isolated(trace, seq: OpSequence) -> _Isolated:
 
 
 def _flushed(iso: _Isolated, t0: float, t1: float) -> float:
-    return sum(f.end - f.ts for f in iso.flushes
-               if t0 - op_sequence._EPS <= f.ts and f.end <= t1 + op_sequence._EPS)
+    return iso.flushes.within(t0, t1)
 
 
 def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[int, float]:
@@ -958,7 +1083,8 @@ def to_record(p: HostProfile) -> dict:
             "met_at": {str(i): v for i, v in sorted(p.met_at.items())},
             "empty_calls": [dict(e) for e in p.empty_calls],
             "pricing": p.pricing,
-            "price_route": {str(i): v for i, v in sorted(p.price_route.items())}}
+            "price_route": {str(i): v for i, v in sorted(p.price_route.items())},
+            "residual_s": {str(i): v for i, v in sorted(p.residual_s.items())}}
 
 
 def from_record(rec: Mapping) -> HostProfile:
@@ -973,7 +1099,8 @@ def from_record(rec: Mapping) -> HostProfile:
         met_at={int(i): str(v) for i, v in (rec.get("met_at") or {}).items()},
         empty_calls=tuple(dict(e) for e in rec.get("empty_calls") or ()),
         pricing=str(rec.get("pricing") or NULL_PASS),
-        price_route={int(i): str(v) for i, v in (rec.get("price_route") or {}).items()})
+        price_route={int(i): str(v) for i, v in (rec.get("price_route") or {}).items()},
+        residual_s={int(i): float(v) for i, v in (rec.get("residual_s") or {}).items()})
 
 
 def dumps(p: HostProfile) -> str:

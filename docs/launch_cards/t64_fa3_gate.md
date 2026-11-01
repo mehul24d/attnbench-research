@@ -64,14 +64,27 @@ terms, then every 30 minutes, start to start:
 - on a grant, stops polling and runs the gate below end to end, with the
   teardown on any exit; on a launcher error, stops; after 48 rounds, stops.
 
-**Cap ₹250**, held by `--max-run-duration`, which deletes the VM server-side
-at cap ÷ rate: 32 minutes on Flex at ₹463.47/h. The in-guest halt is at 40
-minutes, so the delete comes first. No Spot planning rate is on record; the
-launcher header says Flex is 41% cheaper than Spot, which puts Spot near
-₹700/h, and at that rate ₹250 buys about 21 minutes. The loop refuses Spot
-when the cap buys less than 30 minutes at the declared Spot rate. Every
-attempt is a row in `logs/flex_attempts.tsv`; copy the rows into
-`h100_flex_attempts.md`.
+**Flex: cap ₹250**, held by `--max-run-duration`, which deletes the VM
+server-side at cap ÷ rate: 32 minutes at ₹463.47/h. The in-guest halt is at
+40 minutes, so the delete comes first.
+
+**Spot: cap at most ₹350, held by the in-guest halt** (researcher's rules, 1
+Nov 2026, after Shakedowns 5 and 6). The halt comes at the minutes ₹350 buys
+at the Spot rate, and the hard delete stays at 40 minutes, never fewer. Spot
+is refused when those minutes are fewer than the gate's expected duration,
+30 minutes from boot to the gate's own `halt` step (20 for setup and 10 for
+the four steps, above; Shakedown 6's L4 took 5.6 minutes from launch to its
+first step). At the Spot planning rates (plan Section 5.2):
+
+| Spot rate | In-guest halt | Cap | If the halt failed: delete at 40 min |
+|---|---|---|---|
+| ₹668.04/h (`asia-southeast1`, the loop's) | 31 min | ₹346 | ₹446 |
+| ₹629.94/h (`us-central1`) | 33 min | ₹347 | ₹420 |
+
+Every attempt is a row in `logs/flex_attempts.tsv`; copy the rows into
+`h100_flex_attempts.md`. The loop running since 1 Nov 2026 (13:38 IST) was
+started from an older checkout (`45f90af`) and is Flex only; it takes this
+rule when restarted from a commit that has it.
 
 ## The commands
 

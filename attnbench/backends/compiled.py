@@ -59,11 +59,13 @@ A CPU test cannot show a CUDA graph reusing a buffer; the GPU session is the
 proof.
 
 **Declared breaks and the recompile gate** (researcher's ruling, 1 Nov 2026,
-after Shakedown 5). Compiled XAttention calls its block-sparse kernel
-interface outside Dynamo (`torch.compiler.disable` in `forward_and_mask`):
-traced, the interface's own break left a resume frame that recompiled per
-call and reached the recompile limit at about the ninth prefill. That break
-is declared (`DECLARED_BREAKS`) and is part of the variant's code-path
+after Shakedown 5; made uniform after Shakedown 6). Every compiled arm that
+runs the block-sparse kernel (XAttention, mean-pool, the oracle) calls its
+interface outside Dynamo (`block_sparse.kernel_interface`): traced, the
+interface's own break left a resume frame that recompiled per call and
+reached the recompile limit, XAttention's at about the ninth prefill in
+Shakedown 5 and mean-pool's under the default settings in Shakedown 6. That
+break is declared (`DECLARED_BREAKS`) and is part of the variant's code-path
 identity (`code_path_identity`): a report whose breaks are not exactly the
 declared ones, matched by reason, file and function and never by line, in
 every layer, is another code path and is refused (`check_declared`). And a
@@ -381,24 +383,23 @@ class DeclaredBreak:
 
 
 _KERNEL_OUTSIDE_DYNAMO = DeclaredBreak(
-    "Attempted to call function marked as skipped", "xattention.py", "forward_and_mask",
-    "the block-sparse kernel interface runs outside Dynamo (ruling, 1 Nov 2026, after "
-    "Shakedown 5)")
-_BLOCK_SPARSE_DEFAULT = (
-    DeclaredBreak("step_unsupported", "block_sparse.py", "forward",
-                  "the try around the kernel call (L4 report, Shakedown 2, 31 Oct 2026)"),
-    DeclaredBreak("Dynamic shape operator", "block_sparse_attn_interface.py",
-                  "replace_ones_with_count",
-                  "the library's mask conversion sizes a tensor from its data (the same "
-                  "report)"))
+    "Attempted to call function marked as skipped", "block_sparse.py", "kernel_interface",
+    "the block-sparse kernel interface runs outside Dynamo, in every arm that calls it "
+    "(rulings, 1 Nov 2026, after Shakedowns 5 and 6)")
 # Keyed by (backend class, setting); a subclass inherits its parent's. What a
-# variant's report must show in every layer: the L4 reports of Shakedown 2
-# (31 Oct 2026), with XAttention's kernel interface outside Dynamo since
-# Shakedown 5. Every arm showed no break under the capture options.
+# variant's report must show in every layer: the kernel interface outside
+# Dynamo, one break at `block_sparse.kernel_interface` (ruling, 1 Nov 2026,
+# after Shakedown 6). Until then mean-pool and the oracle were traced into
+# the library and showed its two breaks under the default settings (the try
+# around the call, `step_unsupported`, and `replace_ones_with_count`'s
+# data-sized tensor; L4 reports of Shakedowns 2 and 6) and none under the
+# capture options; compiled mean-pool recompiled per call under the default
+# settings (Shakedown 6). Dense calls no block-sparse kernel and has none.
 DECLARED_BREAKS: dict[tuple[str, str], tuple[DeclaredBreak, ...]] = {
     ("XAttentionBackend", "default"): (_KERNEL_OUTSIDE_DYNAMO,),
     ("XAttentionBackend", "capture"): (_KERNEL_OUTSIDE_DYNAMO,),
-    ("BlockSparseAttention", "default"): _BLOCK_SPARSE_DEFAULT,
+    ("BlockSparseAttention", "default"): (_KERNEL_OUTSIDE_DYNAMO,),
+    ("BlockSparseAttention", "capture"): (_KERNEL_OUTSIDE_DYNAMO,),
 }
 
 
