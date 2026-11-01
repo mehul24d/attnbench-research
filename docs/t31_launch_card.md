@@ -32,7 +32,7 @@ a GPU, so their minutes are the least certain.
 
 | # | Step | Task | Minutes |
 |---|---|---|---|
-| 1 | `preflight` | T2.1 probe `start`, T2.20 fields, config of record; the kernel contract | 2 / 3 / 5 |
+| 1 | `preflight` | T2.1 probe `start`, T2.20 fields, config of record; the kernel contract | 3 / 5 / 8 |
 | 2 | `link` | T2.5 row, T2.6 Q, mechanism table per length | 5 / 5 / 5 |
 | 3 | `dense_select` | T2.16 record per (length, batch); the session floor | 6 / 6 / 6 |
 | 4 | `probe` | T2.18, every arm, at every grid length (durations discarded) | 19 / 19 / 19 |
@@ -81,6 +81,13 @@ CUDA illegal memory access. The diagnostic (`docs/t31_xa_diag_card.md`,
     between the library's buffer and the fixed one, on a mask whose stray
     reads stay inside the buffer, as the banked results' did for heads 0
     to 10 (`padded_vs_unpadded`, the number the earlier results rest on);
+  - **the same on a real prompt:** XAttention's prefill on the grid's first
+    2048 prompt (`qa_1`, 1951 tokens), in a process of its own. It runs the
+    fix twice (the two runs must be bitwise equal, or no bitwise comparison
+    holds), then with 0 and with the last block after the buffer. A second
+    process runs the library's own buffer. Every layer's output must be
+    bitwise equal to the fix's. If that second process faults, the fault is
+    the known read: it is recorded, not refused, and the result is not clean;
   - **memcheck:** one kernel call at 1951 under `compute-sanitizer` with
     PyTorch's caching allocator off. With the fix it must report no errors.
     With the library's buffer it must report some: a check that cannot see
@@ -131,9 +138,9 @@ While this VM exists, the H100 retry loop running on the Mac skips its rounds
 | | Hours | ₹ at 108.64/h |
 |---|---|---|
 | Setup: launch, deploy, preflight, write gate, bootstrap (Shakedown 6: 6 min) | 0.1 | 11 |
-| Steps 1 to 11, central (low 2.3 h, high 4.4 h) | 2.9 | 315 |
+| Steps 1 to 11, central (low 2.3 h, high 4.4 h) | 2.9 | 318 |
 | Teardown: results pull, delete, cleanup check | 0.13 | 14 |
-| **Expected, central** (low 2.5 h ₹276, high 4.6 h ₹502) | **3.1** | **340** |
+| **Expected, central** (low 2.6 h ₹278, high 4.7 h ₹508) | **3.2** | **343** |
 | In-guest halt (`GCP_HALT_MINUTES=420`): GPU billing stops | 7.0 | 760 |
 | Hard delete (`GCP_MAX_RUN=7h30m`) | 7.5 | disk only after the halt |
 
@@ -206,14 +213,18 @@ python3 scripts/t31_projection.py
 ## The CPU dry run (2 Nov 2026)
 
 At the launch branch's head, behind the CPU boundary, the rehearsal (steps 1
-to 8) passed in 7.3 minutes. Step 1 ran the kernel contract, whose CPU parts
-behave as follows:
+to 8) passed in 6.6 minutes. Step 1 ran the kernel contract in 15 s, whose
+CPU parts behave as follows:
 - **The walk emulation.** With the library's layout it reads past the buffer
   (the positive control); with the fix it does not.
 - **The output parts.** They ran against the stub kernel, which ignores the
   row buffer, so they only exercise the code. Kernel against the reference:
   0.008. One block removed changes the reference by 1.29, well outside the
   0.02 tolerance. Tail-value effect and padded against unpadded are both 0.
+- **The real prompt.** Both processes ran: the padded variants, and the
+  library's own buffer. On the CPU the model is the random two-layer stand-in
+  and the prompt is random; on the L4 it is `qa_1` at 1951 tokens. Control,
+  tail values and padded against unpadded were all 0.
 - **memcheck** is not run: there is no CUDA device.
 
 Every recording's code path names the fix (`bsa_row_mask_fix`). The kernel
@@ -266,6 +277,12 @@ its compute.
 - **The H100 loop** on the Mac skips its rounds while this VM exists. It is
   restarted from `main` with Spot on only on the researcher's own yes;
   until then the old Flex-only loop runs.
+- **What step 1 decides about earlier results** (researcher's ruling, 2 Nov
+  2026). Clean (`clean` in step 1's result) means the padding changed nothing,
+  bitwise, on every synthetic mask and on the real prompt. If clean, the
+  T1.1 `qa_1` re-check is dropped, an Appendix A line records the effect as
+  crash-only, and the limitations note takes the measured result. A
+  difference refuses the session in step 1, and the re-check stays.
 - **XAttention again.** If the contract passes and XAttention still fails in
   the session, the session stops there (first failure). The fallback ruled on
   2 Nov 2026 then applies: T3.1 runs with XAttention quarantined, "not run,

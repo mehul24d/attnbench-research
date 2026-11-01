@@ -707,7 +707,8 @@ def kernel_contract(args, out: Path) -> dict:
     except bsa_contract.ContractError as e:
         raise StepFailed(f"kernel contract: {e}",
                          json.loads((out / "kernel_contract.json").read_text())) from e
-    return {"status": rep["status"], "outputs": rep["outputs"],
+    return {"status": rep["status"], "clean": rep["clean"], "outputs": rep["outputs"],
+            "real_prompt": rep.get("real_prompt"),
             "sanitizer": {k: rep["sanitizer"].get(k) for k in ("status", "shipped", "fixed")}}
 
 

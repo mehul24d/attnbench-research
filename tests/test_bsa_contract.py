@@ -207,13 +207,15 @@ def test_the_cpu_boundary_has_the_interface_and_the_check_passes_behind_it(tmp_p
     from attnbench import cpu_boundary
     with cpu_boundary.installed(xattn=False):
         iface = sys.modules["block_sparse_attn.block_sparse_attn_interface"]
-        rep = bc.contract_check(tmp_path, sanitizer=None, lengths=(1951,), heads=4)
+        rep = bc.contract_check(tmp_path, sanitizer=None, lengths=(1951,), heads=4,
+                                real_runner=_fake_real())
         assert iface.convert_blockmask_row_reverse is bc.row_blockmask
     saved = json.loads((tmp_path / "kernel_contract.json").read_text())
     assert saved["status"] == "passed"
     assert saved["sanitizer"]["status"].startswith("not run")
     assert saved["walk"]["shipped_reads_past_buffer"] is True
     assert rep["outputs"]["padded_vs_unpadded"] == [0.0]
+    assert saved["real_prompt"]["padded_vs_unpadded"] == 0.0 and saved["clean"] is True
 
 
 # --- T3.1's preflight ------------------------------------------------------------------
@@ -232,14 +234,14 @@ def test_the_preflight_runs_the_contract_and_a_refusal_fails_the_step(tmp_path, 
 
     def check(out, *, sanitizer):
         seen.append(out)
-        return {"status": "passed", "outputs": {"vs_reference": [0.01]},
+        return {"status": "passed", "clean": True, "outputs": {"vs_reference": [0.01]},
                 "sanitizer": {"status": "ran", "shipped": {"errors": 3}, "fixed": {"errors": 0}}}
     monkeypatch.setattr(bc, "contract_check", check)
     args = types.SimpleNamespace(out=str(tmp_path), dry_run=False, cpu_boundary=True)
     cfg = st.load_config(None, dry_run=True)
     res = st.step_preflight(args, cfg)
     assert seen == [tmp_path / "kernel_contract"]
-    assert res["kernel_contract"]["status"] == "passed"
+    assert res["kernel_contract"]["status"] == "passed" and res["kernel_contract"]["clean"]
 
     def refuse(out, *, sanitizer):
         out.mkdir(parents=True, exist_ok=True)
@@ -271,7 +273,8 @@ def test_a_test_stand_in_for_the_library_is_left_alone(monkeypatch, tmp_path):
     from attnbench.backends import block_sparse
     assert block_sparse.kernel_interface() == "ran"
     with pytest.raises(bc.ContractError, match="not installed"):
-        bc.contract_check(tmp_path, sanitizer=None, lengths=(1951,), heads=2)
+        bc.contract_check(tmp_path, sanitizer=None, lengths=(1951,), heads=2,
+                          real_prompt=False)
 
 
 def test_the_exposure_count_finds_the_rows_the_kernel_reads_past():
@@ -292,3 +295,75 @@ def test_the_code_path_names_the_fix(monkeypatch):
     libs = dict(shakedown_arms.libraries())
     assert libs["block_sparse_attn"] == "0.0.2"
     assert libs["bsa_row_mask_fix"] == bc.ROW_MASK_FIX
+
+
+# --- a real XAttention prompt -------------------------------------------------------------
+
+def _fake_real(diff=None, rc=None):
+    """A runner that writes each variant's layer outputs: all equal, except
+    `diff[variant]` added to one layer, or exit `rc[variant]`."""
+    diff, rc = diff or {}, rc or {}
+
+    def runner(variants, out):
+        for v in variants:
+            if v in rc:
+                return rc[v]
+            layers = [torch.ones(1, 2, 4, 3) * i for i in range(3)]
+            layers[1] = layers[1] + diff.get(v, 0.0)
+            torch.save({"prompt_id": "qa_1_2048_0", "length": 1951, "layers": layers},
+                       Path(out) / f"real_{v}.pt")
+        return 0
+    return runner
+
+
+from pathlib import Path  # noqa: E402
+
+
+def test_the_real_prompt_check_passes_on_identical_outputs_and_is_clean(tmp_path):
+    rep = bc.real_prompt_check(tmp_path, runner=_fake_real())
+    assert rep["control"] == 0.0 and rep["tail_value_effect"] == 0.0
+    assert rep["padded_vs_unpadded"] == 0.0 and rep["unpadded"] == "compared"
+    assert rep["prompt_id"] == "qa_1_2048_0" and rep["layers"] == 3
+    clean = {"outputs": {"padded_vs_unpadded": [0.0], "tail_value_effect": [0.0]},
+             "real_prompt": rep}
+    assert bc.is_clean(clean)
+
+
+@pytest.mark.parametrize("variant,match", [("control", "control"), ("tail0", "tail_value"),
+                                           ("tail_last", "tail_value"),
+                                           ("unpadded", "padded_vs_unpadded")])
+def test_any_real_prompt_difference_refuses(tmp_path, variant, match):
+    with pytest.raises(bc.ContractError, match=match):
+        bc.real_prompt_check(tmp_path, runner=_fake_real(diff={variant: 2.0 ** -7}))
+
+
+def test_an_unpadded_fault_is_recorded_not_refused_and_is_not_clean(tmp_path):
+    rep = bc.real_prompt_check(tmp_path, runner=_fake_real(rc={"unpadded": 1}))
+    assert rep["padded_vs_unpadded"] is None and "known read" in rep["unpadded"]
+    assert not bc.is_clean({"outputs": {"padded_vs_unpadded": [0.0],
+                                        "tail_value_effect": [0.0]}, "real_prompt": rep})
+
+
+def test_a_failed_padded_run_refuses(tmp_path):
+    with pytest.raises(bc.ContractError, match="padded runs exited 1"):
+        bc.real_prompt_check(tmp_path, runner=_fake_real(rc={"fixed": 1}))
+
+
+def test_a_synthetic_difference_is_not_clean():
+    real = {"padded_vs_unpadded": 0.0, "tail_value_effect": 0.0}
+    assert not bc.is_clean({"outputs": {"padded_vs_unpadded": [0.0, 1e-3],
+                                        "tail_value_effect": [0.0]}, "real_prompt": real})
+    assert not bc.is_clean({"outputs": {"padded_vs_unpadded": [0.0],
+                                        "tail_value_effect": [0.0]}})
+
+
+def test_the_real_prompt_runner_command(monkeypatch, tmp_path):
+    seen = {}
+
+    def run(cmd, **kw):
+        seen["cmd"] = cmd
+        return types.SimpleNamespace(returncode=0)
+    monkeypatch.setattr(bc.subprocess, "run", run)
+    assert bc._real_runner(["unpadded"], tmp_path) == 0
+    assert seen["cmd"][1:5] == ["-m", "attnbench.bsa_contract", "real-prompt", "--out"]
+    assert seen["cmd"][-2:] == ["--variants", "unpadded"]

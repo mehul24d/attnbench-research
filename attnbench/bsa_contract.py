@@ -33,7 +33,9 @@ library's; the kernel's output against a reference masked attention outside
 tolerance that cannot see a one-block change; any output difference made by
 the value past a row (`tail_value_effect`) or by the padding itself
 (`padded_vs_unpadded`, on a mask whose stray reads stay inside the buffer, as
-in the results banked before the fix); a memcheck error with the fix; or no
+in the results banked before the fix, and on a real XAttention prompt, where
+the library's own buffer runs in a process of its own because its read past
+the buffer can fault); a memcheck error with the fix; or no
 memcheck error without it (a check that cannot see the read proves nothing).
 """
 from __future__ import annotations
@@ -71,6 +73,12 @@ CHECK_LENGTHS = (1951, 4096)   # 1951: the crash's prompt length (uneven tiles)
 HEADS, HEAD_DIM = 12, 128      # Qwen2.5-1.5B, the L4 model
 SANITIZER_LENGTH = 1951
 SANITIZER_TIMEOUT_S = 600
+REAL_ARM, REAL_LENGTH = "xattention", 2048   # the grid's first 2048 prompt: 1951 tokens
+REAL_TIMEOUT_S = 900
+# The real-prompt variants, each a conversion of the interface module. The
+# padded ones run in one process; `unpadded`, the library's own buffer, runs
+# in a process of its own, since its read past the buffer can fault.
+REAL_PADDED = ("fixed", "control", "tail0", "tail_last")
 BLOCK = 128
 
 
@@ -312,6 +320,111 @@ def judge_outputs(rep: dict) -> None:
                                 f"read past a row is used")
 
 
+# --- a real XAttention prompt ------------------------------------------------------------
+
+def _real_conversion(variant: str, iface):
+    if variant in ("fixed", "control"):
+        return row_blockmask
+    if variant == "tail0":
+        return functools.partial(row_blockmask, tail_value=0)
+    if variant == "tail_last":
+        return lambda m, causal=False: row_blockmask(m, causal, tail_value=m.shape[-1] - 1)
+    if variant == "unpadded":
+        return getattr(iface, SHIPPED_ATTR)
+    raise ValueError(variant)
+
+
+def real_prompt_outputs(variants, out: Path, *, cpu_boundary: bool = False) -> None:
+    """In this process: the XAttention arm's prefill on a real prompt, once
+    per variant, each layer's attention output saved to `real_<variant>.pt`."""
+    from .components.shakedown_arms import Harness
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    h = Harness(device="cpu" if cpu_boundary else "cuda", dry_run=cpu_boundary)
+    arm = h.prepare(REAL_ARM, REAL_LENGTH)
+    layers: list = []
+    orig = arm.backend.forward_and_mask
+
+    def capture(*a, **k):
+        res = orig(*a, **k)
+        layers.append(res[0].detach().to("cpu", copy=True))
+        return res
+    arm.backend.forward_and_mask = capture
+    iface = install()
+    for v in variants:
+        layers.clear()
+        with _conversion(_real_conversion(v, iface)):
+            arm.run_prefill()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        torch.save({"prompt_id": arm.prompt_id, "length": arm.length, "layers": list(layers)},
+                   out / f"real_{v}.pt")
+
+
+def _real_runner(variants, out: Path) -> int:
+    from . import cpu_boundary
+    cmd = [sys.executable, "-m", "attnbench.bsa_contract", "real-prompt", "--out", str(out),
+           "--variants", *variants, *(["--cpu-boundary"] if cpu_boundary.active() else [])]
+    log = Path(out) / f"real_{'_'.join(variants)}.log"
+    with open(log, "w") as f:
+        try:
+            return subprocess.run(cmd, cwd=Path(__file__).resolve().parents[1], stdout=f,
+                                  stderr=subprocess.STDOUT, timeout=REAL_TIMEOUT_S).returncode
+        except subprocess.TimeoutExpired:
+            return -9
+
+
+def _layers_diff(a: dict, b: dict) -> float:
+    if len(a["layers"]) != len(b["layers"]) or not a["layers"]:
+        return float("inf")
+    return max(max_abs_diff(x, y) for x, y in zip(a["layers"], b["layers"]))
+
+
+def real_prompt_check(out: Path, *, runner=_real_runner) -> dict:
+    """The padded variants against each other, then the library's own buffer
+    against the fix, on a real prompt. A run of the same fix twice that is
+    not bitwise equal, or any difference the tail or the padding makes,
+    refuses. The unpadded run faulting is the known read, recorded, not
+    refused; the comparison is then missing and the result is not clean."""
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    rc = runner(list(REAL_PADDED), out)
+    if rc != 0:
+        raise ContractError(f"real_prompt: the padded runs exited {rc}")
+    got = {v: torch.load(out / f"real_{v}.pt") for v in REAL_PADDED}
+    rep = {"arm": REAL_ARM, "prompt_id": got["fixed"]["prompt_id"],
+           "length": got["fixed"]["length"], "layers": len(got["fixed"]["layers"]),
+           "control": _layers_diff(got["fixed"], got["control"]),
+           "tail_value_effect": max(_layers_diff(got["fixed"], got[v])
+                                    for v in ("tail0", "tail_last"))}
+    if rep["control"] != 0.0:
+        raise ContractError(f"real_prompt control: the fix run twice differs by "
+                            f"{rep['control']:.3g}, so no bitwise comparison holds")
+    if rep["tail_value_effect"] != 0.0:
+        raise ContractError(f"real_prompt tail_value_effect: {rep['tail_value_effect']:.3g}")
+    rc = runner(["unpadded"], out)
+    if rc != 0:
+        rep["unpadded"] = f"not compared: the library's own buffer exited {rc} (the known read)"
+        rep["padded_vs_unpadded"] = None
+        return rep
+    rep["unpadded"] = "compared"
+    rep["padded_vs_unpadded"] = _layers_diff(got["fixed"], torch.load(out / "real_unpadded.pt"))
+    if rep["padded_vs_unpadded"] != 0.0:
+        raise ContractError(f"real_prompt padded_vs_unpadded: the output moved by "
+                            f"{rep['padded_vs_unpadded']:.3g}")
+    return rep
+
+
+def is_clean(rep: dict) -> bool:
+    """The researcher's test for dropping the qa_1 re-check (2 Nov 2026): the
+    padding changes nothing, bitwise, on every synthetic mask and on a real
+    prompt where the library's own buffer ran."""
+    o, r = rep.get("outputs") or {}, rep.get("real_prompt") or {}
+    return (bool(o.get("padded_vs_unpadded")) and max(o["padded_vs_unpadded"]) == 0.0
+            and max(o.get("tail_value_effect") or [1]) == 0.0
+            and r.get("padded_vs_unpadded") == 0.0 and r.get("tail_value_effect") == 0.0)
+
+
 # --- memcheck ---------------------------------------------------------------------------
 
 def memcheck_errors(log: str) -> Optional[int]:
@@ -373,7 +486,8 @@ def sanitize_case(variant: str) -> None:
 # --- the check ------------------------------------------------------------------------
 
 def contract_check(out: Path, *, sanitizer: Optional[str], lengths=CHECK_LENGTHS,
-                   heads: int = HEADS, head_dim: int = HEAD_DIM) -> dict:
+                   heads: int = HEADS, head_dim: int = HEAD_DIM, real_prompt: bool = True,
+                   real_runner=_real_runner) -> dict:
     """Run every part, write `kernel_contract.json` into `out`, and raise
     `ContractError` on the first refusal. Behind the CPU boundary the kernel
     is its stub, which ignores the row buffer: the identity and the sanitizer
@@ -394,6 +508,8 @@ def contract_check(out: Path, *, sanitizer: Optional[str], lengths=CHECK_LENGTHS
         rep["outputs"] = output_check(lengths=lengths, heads=heads, head_dim=head_dim,
                                       device="cuda" if cuda else "cpu")
         judge_outputs(rep["outputs"])
+        if real_prompt:
+            rep["real_prompt"] = real_prompt_check(out / "real_prompt", runner=real_runner)
         if not cuda:
             rep["sanitizer"] = {"status": "not run: no CUDA device"}
         elif sanitizer is None:
@@ -402,6 +518,7 @@ def contract_check(out: Path, *, sanitizer: Optional[str], lengths=CHECK_LENGTHS
             rep["sanitizer"] = {"status": "ran", **run_sanitizer(sanitizer, out)}
             judge_sanitizer(rep["sanitizer"])
         rep["status"] = "passed"
+        rep["clean"] = is_clean(rep)
         return rep
     except ContractError as e:
         rep["reason"] = str(e)
@@ -419,7 +536,20 @@ def main(argv=None) -> int:
     c.add_argument("--sanitizer", default=None)
     s = sub.add_parser("sanitize-case")
     s.add_argument("--variant", choices=("shipped", "fixed"), required=True)
+    r = sub.add_parser("real-prompt")
+    r.add_argument("--out", required=True)
+    r.add_argument("--variants", nargs="+", required=True,
+                   choices=(*REAL_PADDED, "unpadded"))
+    r.add_argument("--cpu-boundary", action="store_true")
     args = ap.parse_args(argv)
+    if args.cmd == "real-prompt":
+        if args.cpu_boundary:
+            from . import cpu_boundary
+            with cpu_boundary.installed():
+                real_prompt_outputs(args.variants, Path(args.out), cpu_boundary=True)
+        else:
+            real_prompt_outputs(args.variants, Path(args.out))
+        return 0
     if args.cmd == "sanitize-case":
         sanitize_case(args.variant)
         return 0

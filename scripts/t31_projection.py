@@ -78,8 +78,9 @@ UNMEASURED = {
     "compile_s_per_arm_cell": (30.0, 60.0, 120.0),        # Dynamo + inductor + CUDA graphs
     "xattention_chunk_tokens": (16384, 16384, 8192),     # kernels grow per chunk
     # step 1's kernel contract (2 Nov 2026): a few kernel calls and two one-call
-    # memcheck runs; the diagnostic's memcheck on case A ended within a minute
-    "kernel_contract_min": (1.0, 2.0, 4.0),
+    # memcheck runs, and a real prompt's prefill in two processes; the
+    # diagnostic's memcheck on case A ended within a minute
+    "kernel_contract_min": (2.0, 4.0, 7.0),   # with two model loads for the real prompt
 }
 SETUP_MIN, TEARDOWN_MIN = 6.0, 8.0                        # Shakedown 6: launch to first step; pull
 
