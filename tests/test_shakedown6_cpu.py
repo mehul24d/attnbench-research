@@ -220,11 +220,11 @@ def test_a_gate_over_no_composite_has_no_verdict(tmp_path):
 def test_a_bare_pass_that_met_other_calls_is_refused(tmp_path):
     rec, null, bp = _recorded(tmp_path)
     bp.calls[1] = dataclasses.replace(bp.calls[1], name="aten::sub")
-    with pytest.raises(hp.ProfileMismatch, match="bare pass's was to aten::sub"):
+    with pytest.raises(hp.ProfileMismatch, match="bare pass's launching call 1 was to aten::sub"):
         bt.bare_profile(rec.sequence, bp, null, aggregate_tol=0.10)
     rec, null, bp = _recorded(tmp_path / "again")
     bp.calls.pop()
-    with pytest.raises(hp.ProfileMismatch, match="launching calls"):
+    with pytest.raises(hp.ProfileMismatch, match="the bare pass made no launching call there"):
         bt.bare_profile(rec.sequence, bp, null, aggregate_tol=0.10)
 
 

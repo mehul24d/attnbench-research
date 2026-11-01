@@ -57,6 +57,21 @@ with no recorded call instance is refused: positions are never divided
 evenly among calls (Shakedown 4's t22 pass: three `addmm` calls launched 2,
 2 and 1 kernels).
 
+**Once-only host pricing** (researcher's ruling, 1 Nov 2026, after
+Shakedown 6). The recording can nest a call inside another that the
+dispatcher shows as calls of their own: `torch.where` with a Python number
+is `aten::where` around `aten::scalar_tensor` (a `fill_` on the device) and
+an inner `aten::where` in the profiler, and the dispatcher shows the pass
+`scalar_tensor`, then `where`. Each launching call the pass makes is priced
+once, as part of the recorded call that nests it (`align_calls`): before
+the call's own operator, the pass may make calls to operators the call's
+chains nest, at most one fewer than its positions; they take its positions
+in order, each one's gap and launch going to its first position and the
+floor to the rest, and the call's own operator takes what is left. No pass
+call is used twice or left over, so the positions' costs sum to the pass's
+calls plus one floor per further kernel (the conservation test, on
+Shakedown 6's XAttention sequence).
+
 **Empty calls** (researcher's ruling, 1 Nov 2026). A call whose outputs, or
 whose in-place target, are all empty (numel 0) launches nothing on a CUDA
 build (Shakedown 4: `fill_` on an empty slice, `Xattention.py:221`). The pass
@@ -647,6 +662,56 @@ def recorded_calls(seq: OpSequence, met: Mapping[int, Optional[str]],
     return [(n, layer, tuple(pos)) for n, layer, pos in calls.values()]
 
 
+def align_calls(seq: OpSequence, met: Mapping[int, Optional[str]],
+                issued: Sequence[tuple], *, skip: Iterable[int] = (),
+                what: str = "the pass") -> list[tuple[int, int, tuple]]:
+    """(index of the pass's launching call, index of the recorded call it
+    belongs to, the positions it prices) for every launching call `issued`
+    ((operator, layer) each, in order), by once-only host pricing (module
+    docstring). Raises `ProfileMismatch` where the pass's calls do not
+    follow the recording."""
+    calls = recorded_calls(seq, met, skip=skip)
+    out: list[tuple[int, int, tuple]] = []
+    j = 0
+    for n, (name, layer, pos) in enumerate(calls):
+        where = f"{name or 'an entry point'} in layer {layer}"
+        nested = {x for p in pos for x in chain_of(seq.ops[p]) if x is not None} - {name}
+        start = j
+        while j < len(issued) and j - start < len(pos) - 1 and issued[j][1] == layer \
+                and issued[j][0] in nested:
+            j += 1
+        if j >= len(issued):
+            raise ProfileMismatch(
+                f"the recording issues {len(pos)} operation(s) from a call to {where} "
+                f"(position {pos[0]}), and {what} made no launching call there (it made "
+                f"{len(issued)} in all); an entry point that was not nulled would have run "
+                f"for real")
+        if tuple(issued[j]) != (name, layer):
+            got = issued[j]
+            raise ProfileMismatch(
+                f"the recording's call {n} is to {where} (position {pos[0]}, "
+                f"{len(pos)} operation(s)), and {what}'s launching call {j} was to "
+                f"{got[0] or 'an entry point'} in layer {got[1]}")
+        j += 1
+        group = range(start, j)
+        for g, i in enumerate(group):
+            share = tuple(pos[g:]) if i == j - 1 else (pos[g],)
+            op = seq.ops[share[0]]
+            if issued[i][0] is not None and issued[i][0] not in chain_of(op) and \
+                    issued[i][0] not in map(out_of_place, chain_of(op)):
+                raise ProfileMismatch(
+                    f"{what}'s launching call {i} to {issued[i][0]} in layer {layer} falls "
+                    f"in the recording's call {n} to {where}, and position {share[0]} "
+                    f"({op.aten_op}) does not nest it")
+            out.append((i, n, share))
+    if j < len(issued):
+        extra = issued[j]
+        raise ProfileMismatch(
+            f"{what} made {len(issued) - j} launching call(s) after the "
+            f"recorded sequence ended (first: {extra[0]} in layer {extra[1]})")
+    return out
+
+
 def align(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tuple[dict, dict, dict]:
     """(host seconds, cost source, operator met at) per position, for one
     pass (`assign`)."""
@@ -660,38 +725,21 @@ def align(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> tup
             f"the pass kept out {len(log.isolated)} call(s) for {len(isolated)} position(s) "
             f"priced by the isolated replay")
     met = met_at(seq, (e.name for e in log.issues), skip=isolated)
-    calls = recorded_calls(seq, met, skip=isolated)
+    issues = log.issues
     floor = statistics.median(log.launches) if log.launches else 0.0
     host: dict[int, float] = {}
     source: dict[int, str] = {}
-    issues = log.issues
-    for n, (name, layer, pos) in enumerate(calls):
-        where = f"{name or 'an entry point'} in layer {layer}"
-        if n >= len(issues):
-            raise ProfileMismatch(
-                f"the recording issues {len(pos)} operation(s) from a call to {where} "
-                f"(position {pos[0]}), and the pass made no launching call there (it made "
-                f"{len(issues)} in all); an entry point that was not nulled would have run "
-                f"for real")
-        ev = issues[n]
-        if (ev.name, ev.layer) != (name, layer):
-            raise ProfileMismatch(
-                f"the recording's call {n} is to {where} (position {pos[0]}, "
-                f"{len(pos)} operation(s)), and the pass's launching call {n} was to "
-                f"{ev.name or 'an entry point'} in layer {ev.layer}")
-        first, *rest = pos
+    for i, _, share in align_calls(seq, met, [(e.name, e.layer) for e in issues],
+                                   skip=isolated):
+        ev = issues[i]
+        first, *rest = share
         host[first] = ev.gap_s + ev.launch_s
         for p in rest:
             host[p] = floor
-        for p in pos:
+        for p in share:
             source[p] = DEVICE_ARGUMENT if ev.device_argument else \
                 NULL_PASS if met[p] == seq.ops[p].aten_op else \
                 CHAIN if met[p] in chain_of(seq.ops[p]) else OUT_OF_PLACE
-    if len(issues) > len(calls):
-        extra = issues[len(calls)]
-        raise ProfileMismatch(
-            f"the pass made {len(issues) - len(calls)} launching call(s) after the "
-            f"recorded sequence ended (first: {extra.name} in layer {extra.layer})")
     marks = [i for i, op in enumerate(seq.ops) if op.kind is SeqKind.HOST_COMPUTE]
     if len(marks) != len(log.markers):
         raise ProfileMismatch(
@@ -708,7 +756,8 @@ def empty_at(seq: OpSequence, log: PassLog, *, isolated: Sequence[int] = ()) -> 
     whose gap holds its dispatch: the first position of the next launching
     call, or None after the last one."""
     met = met_at(seq, (e.name for e in log.issues), skip=isolated)
-    firsts = [pos[0] for _, _, pos in recorded_calls(seq, met, skip=isolated)]
+    firsts = [share[0] for _, _, share in align_calls(
+        seq, met, [(e.name, e.layer) for e in log.issues], skip=isolated)]
     return tuple({"operator": name, "layer": layer,
                   "position": firsts[n] if n < len(firsts) else None}
                  for name, layer, n in log.empty)

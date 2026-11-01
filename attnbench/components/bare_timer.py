@@ -35,8 +35,10 @@ call with an empty output gives no position, as in the null pass, and its
 bare time is carried into the next call's.
 
 **From calls to positions** (`bare_profile`). The pass's calls are aligned
-to the recorded call instances as the null pass's are (`recorded_calls`),
-and refused where they differ. A call's price goes to its first position,
+to the recorded call instances as the null pass's are (`align_calls`, once
+only: a call the recording nests in another, such as `scalar_tensor` in
+`where`, prices its own positions within that call), and refused where they
+differ. A call's price goes to its first position,
 less the bare launch floor (the null kernel, bare-timed) for each further
 position, which gets the floor: the call's sum is its price. A leaf is
 priced by its direct time (`bare_leaf`); a composite by its chain
@@ -77,8 +79,8 @@ from torch.utils._python_dispatch import TorchDispatchMode, _disable_current_mod
 
 from .host_profile import (ISOLATED_OUTSIDE_LAYERS, ISOLATED_REPLAY, NULL_PASS, HostProfile,
                            NullDevice, NullEntry, ProfileMismatch, _isolated_origins, _layer_hooks,
-                           _State, all_empty, aten_name, device_call, isolated_positions,
-                           launching_names, met_at, recorded_calls)
+                           _State, align_calls, all_empty, aten_name, device_call,
+                           isolated_positions, launching_names, met_at)
 from .op_sequence import OpSequence, SeqKind
 from .sync_tape import SyncTape, TapeReplayer
 
@@ -416,16 +418,11 @@ def bare_profile(seq: OpSequence, bp: BarePass, null: HostProfile, *,
     price is set beside the bare one."""
     iso = tuple(i for i, s in null.cost_source.items() if s == ISOLATED_REPLAY)
     met = met_at(seq, (c.name for c in bp.calls), skip=iso)
-    calls = recorded_calls(seq, met, skip=iso)
-    if len(calls) != len(bp.calls):
-        raise ProfileMismatch(f"the bare pass made {len(bp.calls)} launching calls and the "
-                              f"recording has {len(calls)}")
-    for n, ((name, layer, pos), c) in enumerate(zip(calls, bp.calls)):
-        if (c.name, c.layer) != (name, layer):
-            raise ProfileMismatch(
-                f"the recording's call {n} is to {name or 'an entry point'} in layer {layer} "
-                f"(position {pos[0]}), and the bare pass's was to "
-                f"{c.name or 'an entry point'} in layer {c.layer}")
+    # Once-only (`host_profile.align_calls`): each bare call prices the
+    # positions it takes in the recorded call that nests it.
+    calls = [(c.name, c.layer, share) for (i, _, share), c in zip(
+        align_calls(seq, met, [(c.name, c.layer) for c in bp.calls], skip=iso,
+                    what="the bare pass"), bp.calls)]
     if len(bp.empty) != len(null.empty_calls):
         raise ProfileMismatch(f"the bare pass met {len(bp.empty)} empty call(s), the null "
                               f"pass {len(null.empty_calls)}")

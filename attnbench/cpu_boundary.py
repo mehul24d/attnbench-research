@@ -248,7 +248,11 @@ NO_LAUNCH = frozenset({
     "aten::unflatten", "aten::flatten", "aten::view_as", "aten::contiguous", "aten::to",
     "aten::_to_copy", "aten::item", "aten::is_nonzero", "aten::size", "aten::stride",
     "aten::numel", "aten::dim", "aten::result_type", "aten::set_", "aten::_has_compatible_shallow_copy_type",
-    "aten::is_same_size", "aten::_local_scalar_dense", "aten::scalar_tensor",
+    "aten::is_same_size", "aten::_local_scalar_dense",
+    # Not `aten::scalar_tensor`: on the L4 `torch.where` with a Python number
+    # makes one on the device, a `fill_` (Shakedown 6, 140 calls per
+    # XAttention prefill, every one under `aten::where`); on a CPU it is a
+    # leaf, so the stand-in gives it the launch.
     "aten::unfold", "aten::movedim", "aten::swapaxes", "aten::diagonal",
     "aten::resolve_conj", "aten::resolve_neg", "aten::conj",
     # Operators that make no tensor (found by the null pass, 1 Nov 2026):
