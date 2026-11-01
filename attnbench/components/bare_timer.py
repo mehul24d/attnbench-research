@@ -172,9 +172,11 @@ class Pricer:
         self.reps, self.sync, self.clock = reps, sync, clock
         self.overhead_ns = timer_overhead_ns(max(reps, MIN_REPS), clock)
         self.prices: dict = {}
+        self.busy = 0         # timing a re-issue: an entry point it reaches is not a call
 
     def time(self, key: tuple, make: Callable[[], Callable[[], object]]) -> float:
         if key not in self.prices:
+            self.busy += 1
             try:
                 with _disable_current_modes(), torch._C.DisableTorchFunction():
                     self.prices[key] = time_bare(make(), reps=self.reps,
@@ -183,6 +185,8 @@ class Pricer:
             except Exception as e:
                 raise BareTimerError(f"{key[0] or 'an entry point'} could not be re-issued "
                                      f"bare: {e!r}") from e
+            finally:
+                self.busy -= 1
         return self.prices[key]
 
     def call(self, func, args, kwargs) -> float:
@@ -340,7 +344,10 @@ def _bare_entries(entries: Sequence[NullEntry], mode: BareMode):
             def bare(*args, _orig=original,
                      _name=f"{getattr(e.module, '__name__', type(e.module).__name__)}.{e.attr}",
                      **kwargs):
-                if mode.inside:
+                # Inside a met call it is the call's child; inside a re-issue
+                # it is the repetition's (Shakedown 6: a custom op's 1000
+                # repetitions each reached the entry and were counted).
+                if mode.inside or mode.pricer.busy:
                     return _orig(*args, **kwargs)
                 with _disable_current_modes():
                     out = _orig(*args, **kwargs)

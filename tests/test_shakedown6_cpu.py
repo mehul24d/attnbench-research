@@ -234,6 +234,28 @@ def test_the_floor_goes_to_each_further_position_and_the_rest_to_the_first():
     assert bt._spread(2.0, [7], 1.0) == {7: 2.0}
 
 
+def test_an_entry_point_reached_by_a_re_issue_is_not_a_call():
+    # Shakedown 6 (L4): the block-sparse custom op reaches the extension's
+    # entry point inside its own body; timing the op re-issued it 1000 times
+    # after the met call had returned, and each repetition was counted, so
+    # the bare pass made 1001 calls more than the recording (2588 to 1587).
+    import types
+    calls = []
+    mod = types.SimpleNamespace(fwd=lambda x: calls.append("ran") or x * 2)
+
+    def op(x):                          # a met call whose re-issue reaches the entry
+        return mod.fwd(x)
+    pricer = bt.Pricer(reps=4, sync=lambda: None, min_reps=1)
+    out = bt.BarePass()
+    state = hp._State(lambda: 0.0, 0.0)
+    mode = bt.BareMode(pricer, frozenset(), "cpu", state, out)
+    with bt._bare_entries([hp.NullEntry(mod, "fwd", None)], mode):
+        mod.fwd(torch.ones(2))                                  # met at top level: one call
+        pricer.entry("op", op, (torch.ones(2),), {})            # 5 re-issues reach the entry
+    assert [c.name for c in out.calls] == [None]
+    assert len(calls) == 1 + 5 + 5      # the call, its own pricing, the op's re-issues
+
+
 # --- declared breaks and the recompile gate (T2.21) ------------------------------------------
 
 from attnbench.backends import compiled as C  # noqa: E402
