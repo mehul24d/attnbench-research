@@ -24,7 +24,7 @@ import t227_shakedown as sh  # noqa: E402
 import t228_steps as st  # noqa: E402
 from test_t227_shakedown import fake_runner  # noqa: E402
 
-STEPS = ("nvml", "t216", "t213", "density", "mask_ab", "t212", "t22", "queue")
+STEPS = ("nvml", "t216", "t213", "density", "mask_ab", "t212", "t22", "queue", "pricing_zoo")
 CFG = st._config()
 
 
@@ -57,7 +57,7 @@ def test_resuming_after_a_failure_needs_the_earlier_steps_to_have_passed(tmp_pat
     ran = []
     assert sh.run_session(tmp_path, start="t213", extra=[], dry_run=False, sync=False,
                           runner=fake_runner({}, ran), config=CFG) == 0
-    assert ran == ["t213", "density", "mask_ab", "t212", "t22", "queue"]
+    assert ran == ["t213", "density", "mask_ab", "t212", "t22", "queue", "pricing_zoo"]
     assert any(p.name.startswith("03_t213.failed.") for p in tmp_path.iterdir())
 
 
@@ -183,7 +183,8 @@ def test_check_control_is_read_against_t216s_record(tmp_path, monkeypatch):
 
 # --- the card steps: skipped on a CPU, refused when real ----------------------------------
 
-@pytest.mark.parametrize("step", ["nvml", "t216", "density", "mask_ab", "t212", "t22"])
+@pytest.mark.parametrize("step", ["nvml", "t216", "density", "mask_ab", "t212", "t22",
+                                  "pricing_zoo"])
 def test_the_card_steps_skip_a_cpu_dry_run_and_fail_a_real_one(tmp_path, step, monkeypatch):
     monkeypatch.setattr(st, "_cuda", lambda: False)
     monkeypatch.setattr("t227_steps._cuda", lambda: False)
@@ -455,6 +456,76 @@ def test_t22_fails_when_the_builder_profile_is_not_written(tmp_path, card, monke
     assert st.run_step("t22", _live(_args(tmp_path, "t22")), st.STEP_FUNCS) == 1
 
 
+# --- the pricing zoo (ruling, 1 Nov 2026, after Shakedown 5) -------------------------------
+
+def _zoo_rig(monkeypatch, fail=()):
+    import t31_steps
+    from attnbench.components import bare_timer as bt
+    from attnbench.components import host_profile as hp
+    from attnbench.components import recorder
+    seen = []
+    monkeypatch.setattr(st, "_harness", lambda args: SimpleNamespace(unwrap=lambda: None))
+    monkeypatch.setattr(st, "zoo_entries", lambda h, L, device: {"sdpa_flash": "fn"})
+    monkeypatch.setattr(bt, "price_closure", lambda fn, pricer, device: [bt.BareCall(
+        "aten::_scaled_dot_product_flash_attention", None, 4e-5, 3e-5,
+        ("aten::_flash_attention_forward",))])
+    monkeypatch.setattr(t31_steps, "bare_pricer", lambda: SimpleNamespace(
+        reps=1000, overhead_ns=40.0, prices={"a": 1, "b": 2}))
+
+    def ready(h, arm, d, L, b):
+        seen.append((arm, d, L, b))
+        return SimpleNamespace(run_prefill=None, code_path=None, length=L - 3,
+                               prompt_id="p", layers=[])
+    monkeypatch.setattr(t31_steps, "ready_cell", ready)
+    monkeypatch.setattr(recorder, "record_arm_prefill", lambda *a, **k: "rec")
+    monkeypatch.setattr(hp, "block_sparse_entry", lambda: "entry")
+    null = SimpleNamespace(total_s=2e-3)
+    monkeypatch.setattr(t31_steps, "host_profile_cell",
+                        lambda a, rec, cd, **k: (null, {"share": 0.2}))
+
+    def bare(a, rec, cd, n, **k):
+        arm = Path(cd).name
+        if arm in fail:
+            raise bt.BareTimerError("aten::sort could not be re-issued bare")
+        bad = arm == "oracle"
+        return SimpleNamespace(total_s=1e-3), {
+            "routes": {bt.LEAF: 5},
+            "chain_gate": {"aggregate_tol": 0.1, "composite_calls": 4, "share": 0.3 if bad else 0.02,
+                           "passed": not bad, "fallback": bt.FALLBACK_LABEL if bad else None},
+            "instrumented_over_bare": {"ratio": 2.2},
+            "operators": {"aten::_to_copy": {"composite": True, "calls": 2},
+                          "aten::index_put_": {"composite": False, "calls": 1},
+                          "aten::mm": {"composite": False, "calls": 9}}}
+    monkeypatch.setattr(t31_steps, "bare_profile_cell", bare)
+    return seen
+
+
+def test_the_pricing_zoo_prices_its_entries_and_every_arm_with_the_oracle_re_evaluated(
+        tmp_path, card, monkeypatch):
+    seen = _zoo_rig(monkeypatch)
+    assert st.run_step("pricing_zoo", _live(_args(tmp_path, "pricing_zoo")), st.STEP_FUNCS) == 0
+    f = json.loads((tmp_path / "result.json").read_text())["findings"]
+    assert [a for a, *_ in seen] == ["dense", "oracle", "meanpool", "xattention",
+                                     "xattention_noassert"]
+    assert ("oracle", 0.25, 8192, 1) in seen and ("xattention", None, 8192, 1) in seen
+    (e,) = f["entries"]["sdpa_flash"]
+    assert e["children"] == ["aten::_flash_attention_forward"]
+    assert e["chain_over_direct"] == pytest.approx(0.75)
+    assert f["oracle_reevaluation"]["fallback"] and f["fallback_arms"] == ["oracle"]
+    assert set(f["arms"]["dense"]["operators"]) == {"aten::_to_copy", "aten::index_put_"}
+    assert f["reps"] == 1000 and f["signatures_timed"] == 2
+
+
+def test_the_pricing_zoo_fails_on_an_arm_it_cannot_price_after_the_rest(
+        tmp_path, card, monkeypatch):
+    _zoo_rig(monkeypatch, fail=("meanpool",))
+    assert st.run_step("pricing_zoo", _live(_args(tmp_path, "pricing_zoo")), st.STEP_FUNCS) == 1
+    res = json.loads((tmp_path / "result.json").read_text())
+    assert "could not price ['meanpool']" in res["reason"]
+    assert "error" in res["findings"]["arms"]["meanpool"]
+    assert "chain_gate" in res["findings"]["arms"]["xattention_noassert"]
+
+
 # --- the density probe -------------------------------------------------------------------
 
 def test_the_density_step_runs_one_process_per_compile_setting_and_fails_with_any(
@@ -618,18 +689,31 @@ def test_the_a_b_summary_is_b_minus_a_with_the_wider_spread():
     assert got["spread_ms"] == max(r["iqr_ms"] for r in got["arms"].values())
 
 
-def test_the_a_b_step_runs_its_child_and_fails_when_the_child_does(tmp_path, monkeypatch):
+def test_the_a_b_step_runs_one_side_per_process_and_pools_the_rounds(tmp_path, monkeypatch):
+    # Shakedown 5: both sides in one process reached Dynamo's recompile limit.
     monkeypatch.setattr(st, "_need_cuda", lambda args, what: None)
     seen = []
 
     def run(cmd):
-        seen.append(cmd)
-        (tmp_path / "mask_ab.json").write_text(json.dumps({"b_minus_a_ms": 0.1}))
+        side, part = cmd[cmd.index("--side") + 1], cmd[cmd.index("--part") + 1]
+        seen.append(side)
+        t = 0.0101 if side == "with_mask_output" else 0.0100
+        (tmp_path / f"mask_ab_{part}_{side}.json").write_text(json.dumps(
+            {"side": side, "length": 8075, "prompt_id": "p", "compiles": 31,
+             "rounds_s": [t, t], "if_material": "x"}))
         return 0
     monkeypatch.setattr(st, "_run", run)
     found = st.step_mask_ab(_args(tmp_path, "mask_ab", dry_run=False))
-    assert found == {"b_minus_a_ms": 0.1} and "mask-ab-one" in seen[0]
+    assert seen == list(st.AB_ORDER) == ["without_mask_output", "with_mask_output",
+                                         "with_mask_output", "without_mask_output"]
+    assert found["rounds_s"]["with_mask_output"] == [0.0101] * 4
+    assert found["b_minus_a_ms"] == pytest.approx(0.1)
+    assert json.loads((tmp_path / "mask_ab.json").read_text())["b_minus_a_ms"] == \
+        pytest.approx(0.1)
+
+
+def test_the_a_b_step_fails_when_a_side_s_process_does(tmp_path, monkeypatch):
+    monkeypatch.setattr(st, "_need_cuda", lambda args, what: None)
     monkeypatch.setattr(st, "_run", lambda cmd: 1)
-    (tmp_path / "mask_ab.json").unlink()
-    with pytest.raises(st.StepFailed, match="A/B failed"):
+    with pytest.raises(st.StepFailed, match=r"A/B failed in process 0 \(without_mask_output\)"):
         st.step_mask_ab(_args(tmp_path, "mask_ab", dry_run=False))

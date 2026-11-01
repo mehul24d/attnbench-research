@@ -53,6 +53,28 @@ the prefill.
 
 ---
 
+## Compiled XAttention's mask is an output of its timed graph, measured at one length (1 Nov 2026)
+
+Compiled XAttention returns the block mask its kernel ran as an output of
+the compiled function, so the timed graph and the untimed twin that reads
+its density are one graph (researcher's rulings, 1 Nov 2026). The extra
+output could change what is timed. Shakedown 5 measured it once: at 8075
+tokens (the 8192 budget), `compiled_default`, with the kernel interface
+outside Dynamo, one side per process in the order A, B, B, A, the graph
+with the mask output (B) was 11.5 ms faster than the graph without it (A),
+about 1.5% of the prefill (`results/shakedown5_l4_20261101/`, `s5_diag/`).
+The researcher ruled this a limitation, not a correction (1 Nov 2026):
+compiled rows keep the executed mask's density from the graph that was
+timed, and no eager-twin density is substituted.
+
+What the A/B does not show: any length but 8075, the capture setting, a
+second session, or a spread from which 1.5% could be called noise or
+signal. A compiled XAttention time is the time of the graph that returns
+its mask, and a reader should not take it to within 1.5% as the time of a
+graph that does not.
+
+---
+
 ## SCOPE, second: every speedup in this study names a card, or it is wrong
 
 Added 2026-09-16, after Stage 5 ran on a second architecture and the sign

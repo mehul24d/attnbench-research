@@ -72,6 +72,7 @@ GPU session checks the stand-in's prediction against its own trace
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import functools
 import json
@@ -292,8 +293,13 @@ def _may_launch(name: str) -> bool:
 # Shakedown 4's L4 traces, 1 Nov 2026. Only beside the preparing children
 # named here, and not when a child is the same operator (a `sum` that
 # redispatches to its `out` form): a CPU build's own children (the `fill_`
-# with which a CPU `sum` starts) are not the L4's.
-LAUNCHES_BESIDE_CHILDREN = frozenset({"aten::cumsum", "aten::index", "aten::sort", "aten::sum"})
+# with which a CPU `sum` starts) are not the L4's. Shakedown 5 added
+# `_index_put_impl_`: XAttention's chunked path writes a scalar through a
+# boolean mask, copying the scalar to the device and cloning the target,
+# then launches the index kernel itself; with long indices it hands the
+# write to a `masked_fill_` child and launches nothing of its own.
+LAUNCHES_BESIDE_CHILDREN = frozenset({"aten::_index_put_impl_", "aten::cumsum", "aten::index",
+                                      "aten::sort", "aten::sum"})
 PREPARING_CHILDREN = frozenset({"aten::to", "aten::_to_copy", "aten::copy_", "aten::clone",
                                 "aten::contiguous", "aten::nonzero", "aten::arange"})
 # Functions that work on host tensors on the L4 outside a host-compute
@@ -424,6 +430,25 @@ class LaunchMismatch(RuntimeError):
 GPU_CUSTOM_KERNELS = ("flash_attn::_block_sparse_attn_forward",)
 
 
+def _holders(ops: list, parent: dict, calls: list, within) -> dict:
+    """Per operator (by id), how many of `calls` it holds innermost.
+    Operators on one thread nest, so every operator holding a call is an
+    ancestor of the last one to start before it: one bisect and a walk up,
+    where a scan of every operator per call took 4 minutes on a 34,000-call
+    trace in Shakedown 5. `ops` are sorted by start, as `_cpu_ops` sorts."""
+    from .components.op_sequence import _EPS
+    starts = [e["ts"] for e in ops]
+    own: dict = {}
+    for c in calls:
+        i = bisect.bisect_right(starts, c["ts"] + _EPS) - 1
+        e = ops[i] if i >= 0 else None
+        while e is not None and not within(c, e):
+            e = parent.get(id(e))
+        if e is not None:
+            own[id(e)] = own.get(id(e), 0) + 1
+    return own
+
+
 def launch_check(trace: Union[str, Path, dict], *, region: Optional[str] = None) -> dict:
     """In a GPU session: the stand-in's prediction (`predict`) over the
     recorded trace against the launches the trace records (researcher's
@@ -458,14 +483,8 @@ def launch_check(trace: Union[str, Path, dict], *, region: Optional[str] = None)
     pred = predict(host, custom)
     ops = [p.event for p in pred]
     parent, _ = _nesting(ops)
-    own: dict = {}
-    for c in host:
-        if c.get("cat") in S._HOST_CATS and \
-                S.api_class(c["name"]) in ("launch", "memset", "memcpy", "memcpy_blocking"):
-            inner = [e for e in ops if within(c, e)]
-            if inner:
-                k = id(max(inner, key=lambda e: (e["ts"], -e.get("dur", 0))))
-                own[k] = own.get(k, 0) + 1
+    own = _holders(ops, parent, [c for c in host if c.get("cat") in S._HOST_CATS and S.api_class(
+        c["name"]) in ("launch", "memset", "memcpy", "memcpy_blocking")], within)
     checked, rows = 0, []
     for p in pred:
         e = p.event

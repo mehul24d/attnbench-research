@@ -8,6 +8,11 @@ kernels to the launch path, to the whole operation sequence (device work
 replaced by null kernels), and by running host-side compute directly at
 target sizes. The adaptation is not claimed as a contribution."
 
+**What the prediction reads** (researcher's ruling, 1 Nov 2026, after
+Shakedown 5): the bare timer's prices (`bare_timer`), taken uninstrumented.
+This pass is kept as the instrumented comparison beside them; its alignment
+of calls to positions (`met_at`, `recorded_calls`) is the bare timer's too.
+
 **The pass.** The arm's own prefill is run once per repetition on the target
 with the device work taken out:
 
@@ -244,6 +249,16 @@ def _named_device(func, kwargs, tensors) -> Optional[torch.device]:
     return None if dev is None else torch.device(dev)
 
 
+def device_call(func, args, kwargs, device_type: str) -> Optional[bool]:
+    """None if the call touches no `device_type` device; else whether only its
+    `device` argument names the device (module docstring)."""
+    tensors = [t for t in pytree.tree_leaves((args, kwargs)) if isinstance(t, torch.Tensor)]
+    if any(t.device.type == device_type for t in tensors):
+        return False
+    dev = _named_device(func, kwargs, tensors)
+    return True if dev is not None and dev.type == device_type else None
+
+
 class NullDeviceMode(TorchDispatchMode):
     """Replace every launching aten call by one null launch (module
     docstring). `launching` is the set of aten operator names in the recorded
@@ -260,13 +275,7 @@ class NullDeviceMode(TorchDispatchMode):
         self.log, self.state, self.clock = log, state, clock
 
     def _device_call(self, func, args, kwargs) -> Optional[bool]:
-        """None if the call touches no device; else whether only its `device`
-        argument names the device (module docstring)."""
-        tensors = [t for t in pytree.tree_leaves((args, kwargs)) if isinstance(t, torch.Tensor)]
-        if any(t.device.type == self.device.device_type for t in tensors):
-            return False
-        dev = _named_device(func, kwargs, tensors)
-        return True if dev is not None and dev.type == self.device.device_type else None
+        return device_call(func, args, kwargs, self.device.device_type)
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
@@ -719,6 +728,11 @@ class HostProfile:
     cost_source: Mapping[int, str] = field(default_factory=dict)   # absent: NULL_PASS
     met_at: Mapping[int, str] = field(default_factory=dict)       # every source but NULL_PASS
     empty_calls: tuple = ()       # {operator, layer, position whose gap holds it}
+    # How the costs were taken: the null pass's (instrumented), or the bare
+    # timer's (`bare_timer`, ruling of 1 Nov 2026), with each position's
+    # price route (`bare_timer.PRICE_ROUTES`).
+    pricing: str = NULL_PASS
+    price_route: Mapping[int, str] = field(default_factory=dict)
 
     def source(self, i: int) -> str:
         return self.cost_source.get(i, NULL_PASS)
@@ -942,7 +956,9 @@ def to_record(p: HostProfile) -> dict:
             "reps_s": {str(i): list(v) for i, v in sorted(p.reps_s.items())},
             "cost_source": {str(i): v for i, v in sorted(p.cost_source.items())},
             "met_at": {str(i): v for i, v in sorted(p.met_at.items())},
-            "empty_calls": [dict(e) for e in p.empty_calls]}
+            "empty_calls": [dict(e) for e in p.empty_calls],
+            "pricing": p.pricing,
+            "price_route": {str(i): v for i, v in sorted(p.price_route.items())}}
 
 
 def from_record(rec: Mapping) -> HostProfile:
@@ -955,7 +971,9 @@ def from_record(rec: Mapping) -> HostProfile:
         sequence_sha256=rec["sequence_sha256"],
         cost_source={int(i): str(v) for i, v in (rec.get("cost_source") or {}).items()},
         met_at={int(i): str(v) for i, v in (rec.get("met_at") or {}).items()},
-        empty_calls=tuple(dict(e) for e in rec.get("empty_calls") or ()))
+        empty_calls=tuple(dict(e) for e in rec.get("empty_calls") or ()),
+        pricing=str(rec.get("pricing") or NULL_PASS),
+        price_route={int(i): str(v) for i, v in (rec.get("price_route") or {}).items()})
 
 
 def dumps(p: HostProfile) -> str:

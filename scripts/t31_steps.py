@@ -117,6 +117,7 @@ CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), 
 # plan Sections 5.4, 5.9, H6 and `docs/limitations.md` say so).
 BATCH1_ONLY = ("xattention", "xattention_noassert", "oracle", "meanpool")
 HOST_PROFILE_REPS = 5
+BOUNDARY_BARE_REPS = 3
 
 # A dry run's own values: small, and labelled so nothing it writes can pass
 # for P1's.
@@ -347,23 +348,32 @@ def _null_device():
     return hp.cuda_device()
 
 
+def _isolated_ops() -> frozenset:
+    """The operators the isolated replay prices outside the layers (ruling of
+    31 Oct 2026); behind the CPU boundary, its embedding kernel too."""
+    from attnbench import cpu_boundary
+    from attnbench.components import host_profile as hp
+    return hp.ISOLATED_OUTSIDE_LAYERS | (
+        {cpu_boundary.EMBEDDING_KERNEL_OP} if _boundary() else frozenset())
+
+
 def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=()):
-    """T2.2's null-kernel profile of one recording, and the chain check.
+    """T2.2's null-kernel profile of one recording, and the instrumented chain
+    check.
 
     The isolated replay of the original operators prices the positions the
     ruling of 31 Oct 2026 gives it (`host_profile.ISOLATED_OUTSIDE_LAYERS`;
     behind the CPU boundary its embedding kernel,
     `cpu_boundary.EMBEDDING_KERNEL_OP`) and any composite whose chain is not
-    recorded, and is what `chain_check` holds the calls met at a composite or
-    by their device argument against (ruling of 1 Nov 2026), in aggregate
-    within `tolerance` ({"aggregate"}: the summed |chain - direct| as a share
-    of the profile's host time, T4.1 row 32, working 10%). Returns (profile,
-    check) and writes the check to `chain_check.json`."""
-    from attnbench import cpu_boundary
+    recorded. `chain_check` holds the null pass's calls met at a composite or
+    by their device argument against it (`tolerance` {"aggregate"}, T4.1 row
+    32). Since the ruling of 1 Nov 2026 after Shakedown 5 that check compares
+    two instrumented measurements and is recorded, never gated: the gate is
+    the bare timer's (`bare_profile_cell`). Returns (profile, check) and
+    writes the check to `chain_check.json`."""
     from attnbench.components import host_profile as hp
     from attnbench.components import replay
-    ops = hp.ISOLATED_OUTSIDE_LAYERS | (
-        {cpu_boundary.EMBEDDING_KERNEL_OP} if _boundary() else set())
+    ops = _isolated_ops()
     pos = hp.isolated_positions(rec.sequence, ops)
     trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
                                    device=_device(), masks=rec.masks, substitute=False)
@@ -372,25 +382,49 @@ def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=
                       entries=entries, layers=a.layers, isolated=iso, isolated_ops=ops)
     check = hp.chain_check(trace, rec.sequence, prof,
                            aggregate_tol=float(tolerance["aggregate"]))
-    check["gated"] = not _boundary()
-    if not check["gated"]:
-        check["why_not_gated"] = ("behind the CPU boundary a kernel runs inside its call, so "
-                                  "the direct time holds the compute")
+    check["gated"] = False
+    check["why_not_gated"] = (
+        "both sides are instrumented (null pass, profiled isolated replay); the gate is the "
+        "bare timer's (ruling, 1 Nov 2026, after Shakedown 5)")
     _write_json(Path(out) / "chain_check.json", check)
     return prof, check
 
 
-def chain_check_failure(cfg, check) -> "str | None":
-    """The chain check's verdict for a step: a failure message where it gates,
-    else None. It gates a real session; a rehearsal records it (its tolerance
-    is a working value the rehearsal measures), as does the CPU boundary."""
-    if check["passed"] or not check["gated"] or cfg.get("rehearsal"):
-        return None
-    share = check["share"]
-    return (f"the chain check failed: the summed |chain - direct| over "
-            f"{check['checked_calls']} composite call(s) is "
-            f"{'no share' if share is None else f'{share:.1%}'} of the profile's host time, "
-            f"against {check['aggregate_tol']:.0%}")
+def _sync():
+    import torch
+    return (lambda: None) if _boundary() else torch.cuda.synchronize
+
+
+def bare_pricer():
+    """One bare-price cache for the process (`bare_timer.Pricer`): at least
+    `bare_timer.MIN_REPS` repetitions on the card; behind the CPU boundary,
+    `BOUNDARY_BARE_REPS`, whose CPU timings mean nothing."""
+    from attnbench.components import bare_timer as bt
+    if _boundary():
+        return bt.Pricer(reps=BOUNDARY_BARE_REPS, sync=_sync(), min_reps=1)
+    return bt.Pricer(reps=bt.MIN_REPS, sync=_sync())
+
+
+def bare_profile_cell(a, rec, out: Path, null, *, pricer, tolerance: dict, entries=()):
+    """The bare-timer prices of one recording (`bare_timer`; ruling of 1 Nov
+    2026 after Shakedown 5): the prediction's host costs. `null` is the
+    recording's null-pass profile, kept as the instrumented comparison. The
+    chain gate is evaluated in the zoo; a cell that fails it falls back to
+    each composite's own bare time and is labelled, never refused. Writes
+    `host_profile.json` (bare), `host_profile_null_pass.json` and
+    `bare_prices.json`; returns (bare profile, record)."""
+    from attnbench.components import bare_timer as bt
+    from attnbench.components import host_profile as hp
+    bp = bt.bare_pass(a.run_prefill, rec.tape, rec.sequence, device=_null_device(),
+                      pricer=pricer, entries=entries, layers=a.layers,
+                      isolated_ops=_isolated_ops())
+    bare, record = bt.bare_profile(rec.sequence, bp, null,
+                                   aggregate_tol=float(tolerance["aggregate"]))
+    out = Path(out)
+    (out / "host_profile.json").write_text(hp.dumps(bare))
+    (out / "host_profile_null_pass.json").write_text(hp.dumps(null))
+    _write_json(out / "bare_prices.json", record)
+    return bare, record
 
 
 def code_path_definition(cp) -> dict:
@@ -782,17 +816,23 @@ def step_probe(args, cfg) -> dict:
 
 def step_host_components(args, cfg) -> dict:
     """T2.2 per cell: the arm's prefill recorded at the cell (trace,
-    sequence, masks, tape), then the null-kernel host profile from its tape
-    (`HOST_PROFILE_REPS` passes). Writes `cells_index.json`, which the
-    device step reads; a calibrated arm's density is the mask density it
-    produced on the cell's prompt."""
+    sequence, masks, tape), the null-kernel host profile from its tape
+    (`HOST_PROFILE_REPS` passes, the instrumented comparison), then the
+    bare-timer prices the prediction reads (`bare_profile_cell`; ruling of 1
+    Nov 2026 after Shakedown 5). Writes `cells_index.json`, which the device
+    step reads; a calibrated arm's density is the mask density it produced
+    on the cell's prompt. A cell that fails the chain gate is labelled with
+    its fallback, not refused (oracle re-evaluation and fallback labelling,
+    the same ruling)."""
     if args.dry_run:
         return {"fake": True}
     _need_gpu("the null-kernel host profile")
+    from attnbench.components import bare_timer as bt
     from attnbench.components import host_profile as hp
     from attnbench.components import recorder
     out = Path(args.out)
     h = _harness(args)
+    pricer = bare_pricer()
     index = []
     for arm, d, L, b in cells(cfg):
         cd = cell_dir(out, arm, d, L, b)
@@ -803,10 +843,8 @@ def step_host_components(args, cfg) -> dict:
         entries = () if arm == "dense" else (hp.block_sparse_entry(),)
         prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
                                         tolerance=cfg["chain_check_tolerance"])
-        (cd / "host_profile.json").write_text(hp.dumps(prof))
-        failure = chain_check_failure(cfg, check)
-        if failure:
-            raise StepFailed(f"{arm} at {L} (batch {b}): {failure}")
+        bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
+                                         tolerance=cfg["chain_check_tolerance"])
         realised = d
         if d is None:
             per_layer = list(getattr(a.backend, "last_layer_density", None) or ())
@@ -818,16 +856,22 @@ def step_host_components(args, cfg) -> dict:
                       "context_length": a.length, "batch": b, "prompt_id": a.prompt_id,
                       "dir": str(cd.relative_to(out)),
                       "code_path": code_path_definition(a.code_path),
-                      "host_total_ms": prof.total_s * 1e3,
+                      "host_total_ms": bare.total_s * 1e3,
+                      "host_total_null_pass_ms": prof.total_s * 1e3,
                       "host_cost_sources": prof.sources(),
-                      "chain_check": {k: check[k] for k in ("passed", "gated", "share",
-                                                            "aggregate_tol", "checked_calls",
-                                                            "unchecked_calls")}})
+                      "price_routes": record["routes"],
+                      "chain_gate": bt.gate_summary(record),
+                      "chain_check_instrumented": {
+                          k: check[k] for k in ("passed", "gated", "share", "aggregate_tol",
+                                                "checked_calls", "unchecked_calls")}})
     h.unwrap()
     _write_json(out / "cells_index.json", {"cells": index})
-    failed = [f"{c['arm']}@{c['context_length']}x{c['batch']}" for c in index
-              if not c["chain_check"]["passed"]]
-    return {"cells": len(index), "chain_check_failed_cells": failed}
+    name = lambda c: f"{c['arm']}@{c['context_length']}x{c['batch']}"   # noqa: E731
+    return {"cells": len(index), "signatures_timed": len(pricer.prices),
+            "chain_gate_fallback_cells": [name(c) for c in index
+                                          if c["chain_gate"]["fallback"]],
+            "instrumented_over_bare": {name(c): c["chain_gate"]["instrumented_over_bare"]
+                                       for c in index}}
 
 
 def step_device_components(args, cfg) -> dict:

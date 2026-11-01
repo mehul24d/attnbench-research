@@ -423,10 +423,12 @@ def injected_prefill(run_prefill: Callable[[], None], schedule: Schedule,
 def observed(run_prefill: Callable[[], None], observer: Observer,
              calls: Optional[Sequence[Call]] = None) -> Callable[[], None]:
     """`run_prefill` under the observer with nothing injected, for T2.2's
-    null pass (`host_profile.profile(observed(...), ...)`), so the host costs
-    the prediction reads carry the observer's overhead like every measured
-    variant. With `calls` (the calibration), each pass must make exactly
-    those calls."""
+    null pass (`host_profile.profile(observed(...), ...)`). Since the ruling
+    of 1 Nov 2026 after Shakedown 5 the prediction reads uninstrumented host
+    costs (the bare timer's, `bare_timer`), not costs taken under the
+    observer; this pass is the instrumented comparison, and the observer's
+    own effect is reported (`observer_effect`), never priced. With `calls`
+    (the calibration), each pass must make exactly those calls."""
     expected = None if calls is None else tuple(calls)
 
     def run() -> None:

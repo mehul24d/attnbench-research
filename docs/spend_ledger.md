@@ -107,8 +107,9 @@ authority is the billing console.
 | 2026-10-31 | `attnbench-l4-t228-20261031-1708`, Shakedown 2 (T2.27 again, T2.13/T2.16/T2.12/T2.2/T2.20/T2.6 steps, T3.1 rehearsal), asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `cefe69e`, cap ₹300; run A 7 of 11 steps passed, run B 3 of 7, run C stopped at its preflight (provisioning vocabulary, mask density, replay, probe, figure1, t22: fixed or open on `shakedown3-prep-2026-10-31`) | **51** | **92** | `session_cost.txt` (`results/t228_shakedown2_l4_20261031/`) |
 | 2026-10-31 | `attnbench-l4-s3-20261031-2214`, Shakedown 3 (T2.27 run A, T2.28 run B, T3.1 rehearsal run C), asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `fdeb33f`, cap ₹200, halt 90 min; run A 3 of 4 steps passed, run B 2 of 5, run C stopped at step 5 of 8 (dense density setting, compiled wrapper's density record, mean-pool density record in T2.12, the embedding's gather in T2.2, the probe's work outside the layers: fixed, diagnosed or open on `shakedown4-prep-2026-10-31`) | **50** | **91** | `session_cost.txt` (`results/shakedown3_l4_20261031/`) |
 | 2026-11-01 | `attnbench-l4-s4-20261101-1246`, Shakedown 4 (T2.27 replay run A, T2.28 run B, T3.1 rehearsal run C), asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `a0b04da`, cap ₹200, halt 90 min; run A (replay) passed, run B density failed in both compiled groups, t212 passed, t22 failed (kernel split), run C stopped at step 5 of 8 (XAttention's empty-slice `fill_`); fixed or ruled on `shakedown5-rulings-2026-11-01` | **46** | **83** | `session_cost.txt` (`results/shakedown4_l4_20261101/`) |
+| 2026-11-01 | `attnbench-l4-s5-20261101-1634`, Shakedown 5, the last before T3.1 (T3.1 rehearsal run C, T2.27 replay run A, T2.28 run B), asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `b13ef8b`, cap ₹200, halt 90 min; run C stopped at step 4 of 8 (the launch check refused XAttention's chunked boolean `index_put_`), run A (replay) passed, run B density and mask_ab failed (compiled XAttention under `compiled_default`), t212 and t22 passed; a 10-minute diagnosis on the same instance before teardown; fixed on `shakedown5-fixes-2026-11-01` | **64** | **116** | `session_cost.txt` (`results/shakedown5_l4_20261101/`) |
 
-### New-spend headroom against the ₹14,000 budget (1 Nov 2026, after Shakedown 4)
+### New-spend headroom against the ₹14,000 budget (1 Nov 2026, after Shakedown 5)
 
 Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of ₹14,000 at the planning rates. Counted from the rows dated 21 Oct 2026 on:
 
@@ -122,9 +123,10 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | Shakedown 2 (L4) | 92 |
 | Shakedown 3 (L4) | 91 |
 | Shakedown 4 (L4) | 83 |
-| **Total** | **~1,149** |
+| Shakedown 5 (L4) | 116 |
+| **Total** | **~1,265** |
 
-Headroom: ₹14,000 − ₹1,149 = **about ₹12,851**. This counts only the rows above. Machine-image storage (the v7 image), egress and any launch not yet in this table are not in it. H100 Flex attempt 1 (31 Oct 2026, us-central1-a) was not granted and billed nothing; it has no row, and neither have the retry loop's later attempts (55 to 1 Nov 2026 08:44Z, none granted, nothing billed: `logs/flex_attempts.tsv` on the Mac). The first FA3 build is ₹176 from its cost file; the ₹175 reported at the time was read before the teardown and is superseded. Nothing here is a go-ahead for a launch: caps are per session (rule 10).
+Headroom: ₹14,000 − ₹1,265 = **about ₹12,735**. This counts only the rows above. Machine-image storage (the v7 image), egress and any launch not yet in this table are not in it. H100 Flex attempt 1 (31 Oct 2026, us-central1-a) was not granted and billed nothing; it has no row, and neither have the retry loop's later attempts (55 to 1 Nov 2026 08:44Z, none granted, nothing billed: `logs/flex_attempts.tsv` on the Mac). The first FA3 build is ₹176 from its cost file; the ₹175 reported at the time was read before the teardown and is superseded. Nothing here is a go-ahead for a launch: caps are per session (rule 10).
 
 **Notes on the table (18 Oct 2026).**
 
