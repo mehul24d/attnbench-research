@@ -677,13 +677,38 @@ def _t227(args, step: str, out: Path) -> None:
 def step_preflight(args, cfg) -> dict:
     """The session config of record (copied, with its hash), then T2.27's
     `t21_t220`: the host-speed probe `start` and every T2.20 field, which
-    refuses a dirty tree outside a dry run."""
+    refuses a dirty tree outside a dry run. Then the block-sparse kernel's
+    contract (`kernel_contract`)."""
     import hashlib
     out = Path(args.out)
     data = json.dumps(cfg, indent=1, sort_keys=True).encode()
     (out / "session_config.json").write_bytes(data)
     _t227(args, "t21_t220", out / "t21_t220")
-    return {"config_sha256": hashlib.sha256(data).hexdigest(), "cells": len(cells(cfg))}
+    return {"config_sha256": hashlib.sha256(data).hexdigest(), "cells": len(cells(cfg)),
+            "kernel_contract": kernel_contract(args, out / "kernel_contract")}
+
+
+def kernel_contract(args, out: Path) -> dict:
+    """The block-sparse kernel's contract (`attnbench.bsa_contract`;
+    researcher's ruling, 2 Nov 2026, after the XAttention crash): the pinned
+    library, the adapter's mask buffer, the kernel against a reference masked
+    attention on masks with every head's last row fully selected, and
+    memcheck with and without the fix. Any refusal fails the step, so the
+    session stops before any arm runs. A dry run has no kernel to check."""
+    from attnbench import bsa_contract
+    if args.dry_run:
+        return {"status": "not run: dry run"}
+    sanitizer = None
+    if _cuda():
+        from t31_xa_diag import find_sanitizer
+        sanitizer = find_sanitizer()
+    try:
+        rep = bsa_contract.contract_check(out, sanitizer=sanitizer)
+    except bsa_contract.ContractError as e:
+        raise StepFailed(f"kernel contract: {e}",
+                         json.loads((out / "kernel_contract.json").read_text())) from e
+    return {"status": rep["status"], "outputs": rep["outputs"],
+            "sanitizer": {k: rep["sanitizer"].get(k) for k in ("status", "shipped", "fixed")}}
 
 
 def step_link(args, cfg) -> dict:

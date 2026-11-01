@@ -125,6 +125,15 @@ def libraries() -> tuple[tuple[str, str], ...]:
             out.append((mod, str(getattr(m, "__version__", "unknown"))))
         except Exception:
             pass
+    if any(n == "block_sparse_attn" for n, _ in out):
+        # The adapter's fix to the kernel's mask buffer, and the interface file
+        # it patches (`bsa_contract`, 2 Nov 2026): a recording made without the
+        # fix is another code path.
+        from .. import bsa_contract
+        ident = bsa_contract.identity()
+        out.append(("bsa_row_mask_fix", ident["bsa_row_mask_fix"]))
+        if ident["bsa_interface_sha256"]:
+            out.append(("bsa_interface", ident["bsa_interface_sha256"][:12]))
     try:
         from ..backends.xattention import installed_checkout
         head, dirty = installed_checkout()

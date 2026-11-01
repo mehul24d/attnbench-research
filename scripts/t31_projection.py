@@ -77,6 +77,9 @@ UNMEASURED = {
     "sparse_wall_over_dense": (0.8, 1.0, 1.5),
     "compile_s_per_arm_cell": (30.0, 60.0, 120.0),        # Dynamo + inductor + CUDA graphs
     "xattention_chunk_tokens": (16384, 16384, 8192),     # kernels grow per chunk
+    # step 1's kernel contract (2 Nov 2026): a few kernel calls and two one-call
+    # memcheck runs; the diagnostic's memcheck on case A ended within a minute
+    "kernel_contract_min": (1.0, 2.0, 4.0),
 }
 SETUP_MIN, TEARDOWN_MIN = 6.0, 8.0                        # Shakedown 6: launch to first step; pull
 
@@ -163,7 +166,7 @@ def project(which: int) -> dict:
 
     sum_b1 = lambda Ls: sum(wall_s(L, 1) for L in Ls)                    # noqa: E731
     m = {}
-    m["1 preflight"] = a("preflight_s") / 60
+    m["1 preflight"] = a("preflight_s") / 60 + u["kernel_contract_min"]
     # the mechanism table is per length; the rest of the step is fixed
     m["2 link"] = a("link_s") / 60 * (0.5 + 0.5 * len(lengths) / len(rehearsal_b1))
     sel = [wall_s(L, b) for (L, b) in by_lb]

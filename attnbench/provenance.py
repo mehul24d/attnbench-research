@@ -326,6 +326,11 @@ def _pkg(name: str) -> Optional[str]:
         return None
 
 
+def _bsa_identity() -> dict:
+    from . import bsa_contract
+    return bsa_contract.identity()
+
+
 @dataclass
 class Provenance:
     """Everything that could plausibly move a number."""
@@ -372,6 +377,13 @@ class Provenance:
     # reads the missing column as null (accuracy/schema.py). Decoded text, and
     # so a score, can differ between transformers versions (accuracy/pins.py).
     transformers: Optional[str]
+    # From 2026-11-02 (`bsa_contract`): the block-sparse library's version, the
+    # sha256 of the interface file the adapter patches (the images build it
+    # from a clone, so pip records no commit), and the adapter's fix for its
+    # boundary read. Earlier rows lack them; they ran the library's own buffer.
+    block_sparse_attn: Optional[str]
+    bsa_interface_sha256: Optional[str]
+    bsa_row_mask_fix: Optional[str]
 
     driver: Optional[str]
     gpu_name: Optional[str]
@@ -449,6 +461,7 @@ def capture(clocks_locked: bool = False) -> Provenance:
         xformers=_pkg("xformers"),
         fla=_pkg("flash-linear-attention"),
         transformers=_pkg("transformers"),
+        **_bsa_identity(),
         driver=driver,
         gpu_name=name,
         compute_capability=cc,
@@ -532,6 +545,7 @@ RECORDED_FIELDS = frozenset({
     "boot_image", "bootstrap_sha256",
     "torch", "torch_cuda", "cudnn", "triton",
     "flash_attn", "flashinfer", "xformers", "fla", "transformers",
+    "block_sparse_attn", "bsa_interface_sha256", "bsa_row_mask_fix",
     "driver", "compute_capability", "gpu_memory_gb", "gpu_count",
     "sm_clock_mhz_at_capture", "mem_clock_mhz", "persistence_mode",
 })
