@@ -13,6 +13,7 @@ run in the CPU dry run itself (`t31_session.py --cpu-boundary`).
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -200,6 +201,37 @@ def test_work_between_layers_is_refused_as_its_own_region():
     assert ext.verdict == DIFFERENT and "between layers" in ext.reason
 
 
+# --- the extension test: base + chunks x body (ruling, 1 Nov 2026) ----------------------
+
+def test_counts_that_follow_base_plus_chunks_times_body_fit_at_every_probe_length():
+    seqs = {L: with_regions(L, PER_1K.chunks(L)) for L in (2048, 3072, 4096)}
+    fit = P.count_fit(seqs, PER_1K)
+    assert fit["fits"] and fit["fit_from"] == [2048, 3072]
+    assert [(r["region"], r["base"], r["body"]) for r in fit["regions"]] == \
+        [("layer 0", 2.0, 1.0), ("layer 1", 2.0, 1.0)]
+    assert fit["chunks"] == {2048: 2, 3072: 3, 4096: 4}
+
+
+def test_a_third_point_off_the_line_fails_the_fit_and_says_where():
+    # XAttention behind the boundary: 240 and 301 operations at 3 and 4 chunks
+    # (base 57, body 61), and 294 at 32768, four whole chunks with no padding.
+    seqs = {L: with_regions(L, PER_1K.chunks(L)) for L in (2048, 3072)}
+    padless = with_regions(4096, PER_1K.chunks(4096))
+    seqs[4096] = replace(padless, ops=tuple(o for i, o in enumerate(padless.ops)
+                                            if not (o.layer == 0 and o.aten_op == "aten::mm")))
+    fit = P.count_fit(seqs, PER_1K)
+    layer0 = fit["regions"][0]
+    assert not fit["fits"] and not layer0["fits"] and fit["regions"][1]["fits"]
+    assert layer0["reason"] == "4096: 6 predicted, 5 recorded"
+
+
+def test_no_two_distinct_chunk_counts_cannot_fit():
+    one = P.ChunkingRule("one", lambda L: 2)
+    fit = P.count_fit({L: with_regions(L, 2) for L in (2048, 4096)}, one)
+    assert not fit["fits"] and fit["fit_from"] is None
+    assert fit["regions"][0]["reason"] == "no two probe lengths with distinct chunk counts"
+
+
 # --- t22: the embedding's gather outside the layers --------------------------------------
 
 def _record(harness, arm, tmp_path, density=None):
@@ -227,16 +259,48 @@ def test_the_null_pass_meets_the_embedding_lookup_outside_the_layers(harness, tm
         a.run_prefill, rec.tape, tmp_path / "iso.json", device="cpu", substitute=False),
         rec.sequence, pos)
     assert set(iso) == {0} and iso[0] > 0
-    with pytest.raises(hp.ProfileMismatch) as e:
-        hp.profile(a.run_prefill, rec.tape, rec.sequence, device=dev, reps=1, layers=a.layers,
+    # Past the embedding the pass met `arange` (no tensor input) by its
+    # device argument and the composites (`_to_copy`, `mean`, `clone`) at
+    # their recorded chains (ruling, 1 Nov 2026), so every position is priced.
+    p = hp.profile(a.run_prefill, rec.tape, rec.sequence, device=dev, reps=1, layers=a.layers,
                    isolated=iso, isolated_ops=ops)
-    # Past the embedding, the next call the pass does not meet is refused,
-    # as the ruling has it ("refuse all other unhandled ops"): `arange`, a
-    # factory call with no tensor input, so the pass never sees it touch the
-    # device. The L4's recording has it at the same place (Shakedown 3,
-    # position 1). Open: a ruling on the pass's unseen calls.
-    assert "aten::embedding" not in str(e.value) and cb.EMBEDDING_KERNEL_OP not in str(e.value)
-    assert "under aten::arange in layer None" in str(e.value)
+    issued = [i for i, op in enumerate(rec.sequence.ops)
+              if op.is_device or op.kind is SeqKind.COPY]
+    assert set(issued) <= set(p.host_s)
+    first_arange = next(i for i, op in enumerate(rec.sequence.ops) if op.aten_op == "aten::arange")
+    assert p.source(first_arange) == hp.DEVICE_ARGUMENT
+    assert p.met_at[first_arange] == "aten::arange"
+    met = {p.met_at[i] for i in p.cost_source if p.source(i) == hp.CHAIN}
+    assert {"aten::_to_copy", "aten::mean"} <= met
+    assert "aten::to" not in met and "aten::linear" not in met      # never shown to the pass
+    src = p.sources()
+    assert src[hp.ISOLATED_REPLAY] == 1 and src[hp.CHAIN] > 0 and src[hp.DEVICE_ARGUMENT] > 0
+
+
+def test_the_chain_check_holds_the_composites_against_the_isolated_replay(harness, tmp_path):
+    """The ruling's validation, on the real arm: each composite's chain-priced
+    cost against its host time in the isolated replay of the original
+    operators. Behind the boundary a CPU kernel runs inside its call, so the
+    direct time holds the compute and the check is not expected to pass;
+    what is checked here is that it reads every composite call."""
+    a, rec = _record(harness, "dense", tmp_path)
+    ops = hp.ISOLATED_OUTSIDE_LAYERS | {cb.EMBEDDING_KERNEL_OP}
+    trace = replay.isolated_replay(a.run_prefill, rec.tape, tmp_path / "iso.json", device="cpu",
+                                   substitute=False)
+    iso = hp.isolated_host_s(trace, rec.sequence, hp.isolated_positions(rec.sequence, ops))
+    p = hp.profile(a.run_prefill, rec.tape, rec.sequence,
+                   device=hp.NullDevice(launch=lambda: None, device_type="cpu"), reps=1,
+                   layers=a.layers, isolated=iso, isolated_ops=ops)
+    c = hp.chain_check(trace, rec.sequence, p, rel_tol=0.25, abs_tol_s=5e-6)
+    priced = [i for i in p.cost_source if p.source(i) in (hp.CHAIN, hp.DEVICE_ARGUMENT)]
+    calls = len({(p.met_at[i], i) for i in priced})
+    assert c["checked_calls"] + c["unchecked_calls"] <= calls and c["checked_calls"] > 0
+    assert {"aten::mean", "aten::add", "aten::ones"} <= set(c["operators"])
+    assert c["operators"]["aten::ones"]["sources"] == [hp.DEVICE_ARGUMENT]
+    assert c["operators"]["aten::mean"]["sources"] == [hp.CHAIN]
+    for row in c["operators"].values():
+        assert 0 < row["chain_s"] < row["direct_s"]      # the CPU's compute is in the call
+    assert not c["passed"] and c["failed"]
 
 
 # --- the replay and T2.12: diagnosis by arm and layer (findings, no gate) -----------------
@@ -254,35 +318,93 @@ def test_the_mean_pool_masks_agree_on_every_eager_path_of_the_replay(harness, tm
         assert s["layers"] == 2 and s["identical_layers"] == 2 and s["a_all_false_layers"] == 0
 
 
-def test_t212_fails_mean_pool_on_an_empty_source_density_record(boundary, tmp_path):
+# --- the replay reads its live masks after a replay (ruling, 1 Nov 2026) --------------------
+
+def test_a_graph_s_live_masks_are_unwritten_after_the_capture_alone(harness, tmp_path):
+    """Shakedown 3's replay compared live masks no kernel had written: a
+    graph's capture runs none. Behind the boundary the graph stand-in keeps
+    that property, and the buffers say so instead of reading as all-False."""
+    a, rec = _record(harness, "meanpool", tmp_path, density=0.25)
+    bank = rec.masks.tensors("cpu")
+    check, buffers = replay.check_masks(a.run_prefill, rec.tape, rec.tape.stage("cpu"), bank,
+                                        cb.GraphLikeBackend(), replays=0)
+    assert len(bank) == 2 and check.unwritten == (0, 1) and check.agreement is None
+    assert replay.unwritten(buffers) == [0, 1]
+
+
+def test_the_mask_check_replays_once_and_then_agrees_with_the_bank(harness, tmp_path):
+    a, rec = _record(harness, "meanpool", tmp_path, density=0.25)
+    be = cb.GraphLikeBackend()
+    cap = replay.capture(a.run_prefill, rec.tape, device="cpu", masks=rec.masks, backend=be)
+    assert cap.mask_check.replays == 1 and cap.mask_check.unwritten == ()
+    assert be.replays == 1                      # the check graph's; the timed graph's are later
+    agreement = replay.mask_agreement(cap)
+    assert agreement["identical"] and agreement["per_call_agreement"] == [1.0, 1.0]
+
+
+def test_a_layer_no_replay_wrote_is_refused(harness, tmp_path):
+    class NoWrite(cb.GraphLikeBackend):     # a replay that runs no kernel
+        def replay(self, body):
+            self.replays += 1
+            self.capture(body)
+    a, rec = _record(harness, "meanpool", tmp_path, density=0.25)
+    cap = replay.capture(a.run_prefill, rec.tape, device="cpu", masks=rec.masks,
+                         backend=NoWrite())
+    with pytest.raises(replay.ReplayError, match=r"kernel calls \[0, 1\] were never written"):
+        replay.mask_agreement(cap)
+
+
+def test_the_timed_graph_holds_the_arm_s_kernels_and_none_of_the_check_s(harness, tmp_path):
+    """The check's copies would be graph nodes with no position (the CPU dry
+    run's first device step, 1 Nov 2026), so they live in a graph of their own."""
+    a, rec = _record(harness, "oracle", tmp_path, density=0.25)
+    cap = replay.capture(a.run_prefill, rec.tape, device="cpu", masks=rec.masks,
+                         backend=cb.GraphLikeBackend())
+    m = replay.match(rec.sequence, replay.replay_nodes(
+        replay.profile_replay(cap, tmp_path / "replay.json")))
+    assert m.extra_nodes == () and replay.mask_agreement(cap)["identical"]
+
+
+def test_t212_takes_mean_pool_s_density_from_the_kernel_input_recorder(boundary, tmp_path):
     """Shakedown 3, t212: "meanpool: the replay's executed density differs
-    from its source's", logits bitwise equal. Reproduced through the step
-    itself: the masks agree in every layer; the source's density record
+    from its source's", logits bitwise equal: the source's density record
     (`BlockSparseAttention.last_layer_density`) does not exist, so the check
-    compares no layers with the precomputed arm's. A finding: the gate is
-    unchanged until it is ruled on."""
+    compared no layers. Ruling of 1 Nov 2026: both sides' executed density
+    is the kernel-input recorder's. Through the step itself, it now passes."""
     from types import SimpleNamespace
     import t228_steps
     args = SimpleNamespace(out=str(tmp_path / "t212"), dry_run=False, cpu_boundary=True,
                            length=1024, replay_arms="meanpool", reps=2, warmup=2, max_rerun=0,
                            floor_ms=1e9, sampler_hz=10.0)
-    with pytest.raises(t228_steps.StepFailed, match="meanpool: the replay's executed density "
-                                                    "differs from its source's") as e:
-        t228_steps.step_t212(args)
-    f = e.value.findings["arms"]["meanpool"]
-    assert f["bitwise_equal_logits"] is True
-    assert f["density_record_layers"] == {"source": 0, "precomputed": 2}
+    findings = t228_steps.step_t212(args)
+    f = findings["arms"]["meanpool"]
+    assert f["bitwise_equal_logits"] is True and f["executed_density_equal"] is True
+    assert f["density_record_layers"] == {"source": 2, "precomputed": 2}
+    assert f["density_source"] == "kernel-input recorder"
     d = f["mask_diagnosis"]
-    assert d["source_keeps_density_record"] is False
+    assert d["source_keeps_density_record"] is False       # why the old record was empty
     for k in ("live_live", "live_bank", "precomputed_vs_source"):
         assert d[k]["identical_layers"] == d[k]["layers"] == 2
+
+
+def test_t212_refuses_a_density_comparison_over_no_layers(boundary, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import t228_steps
+    from attnbench import densities as D
+    monkeypatch.setattr(D.KernelInputRecorder, "per_call_density", lambda self: [])
+    args = SimpleNamespace(out=str(tmp_path / "t212"), dry_run=False, cpu_boundary=True,
+                           length=1024, replay_arms="meanpool", reps=2, warmup=2, max_rerun=0,
+                           floor_ms=1e9, sampler_hz=10.0)
+    with pytest.raises(t228_steps.StepFailed, match="source and precomputed has no layers"):
+        t228_steps.step_t212(args)
 
 
 # --- the boundary itself ------------------------------------------------------------------
 
 def test_the_boundary_puts_back_everything_it_replaced():
+    from attnbench.components import sync_tape
     before = (torch.cuda.synchronize, torch.cuda.get_device_properties,
-              torch.profiler.profile.export_chrome_trace)
+              torch.profiler.profile.export_chrome_trace, sync_tape._as_device)
     with cb.installed(xattn=False):
         assert cb.active() and "block_sparse_attn" in sys.modules
         assert torch.cuda.get_device_properties(0).name == cb.STUB_DEVICE_NAME
@@ -292,8 +414,28 @@ def test_the_boundary_puts_back_everything_it_replaced():
                 pass
     assert not cb.active() and "block_sparse_attn" not in sys.modules
     assert (torch.cuda.synchronize, torch.cuda.get_device_properties,
-            torch.profiler.profile.export_chrome_trace) == before
+            torch.profiler.profile.export_chrome_trace, sync_tape._as_device) == before
     assert "triton" not in sys.modules
+
+
+def test_the_tape_reads_cuda_as_the_device_behind_the_boundary(boundary):
+    """XAttention's estimator calls `.to("cuda")` on a tensor already on the
+    device. On the L4 the tape lets that call through; behind the boundary
+    the tape saw it before `CudaToCpu` and took it for a copy to the host, so
+    the null pass met the tape's own clone (1 Nov 2026)."""
+    from attnbench.components import sync_tape as st
+    x = torch.ones(2, device="cuda")
+    for target in ("cuda", "cuda:0", torch.device("cuda"), 0):
+        assert st.classify(torch.Tensor.to, (x, target), {}, "cpu") is None
+    assert st.classify(torch.tensor, ([1.0],), {"device": "cuda"}, "cpu") == "to_device"
+
+
+def test_an_operator_with_no_kernel_of_its_own_is_no_launch_in_the_trace_shim():
+    """`F.dropout(p=0, training=False)` returns its input: on a CUDA build
+    `aten::dropout` is CompositeImplicitAutograd and launches nothing."""
+    assert cb.composite_implicit("aten::dropout") and cb.composite_implicit("aten::matmul")
+    assert not cb.composite_implicit("aten::mm") and not cb.composite_implicit("aten::_to_copy")
+    assert not cb.composite_implicit(cb.KERNEL_OP)
 
 
 def test_the_stub_kernel_with_every_block_kept_is_causal_attention():
@@ -330,3 +472,9 @@ def test_the_trace_shim_launches_once_per_kernel_operator_and_never_for_a_view()
     assert not 2 <= sel["ts"] <= 3                 # in index_select's own time, not empty's
     assert [e["name"] for e in ev if e.get("cat") == "cuda_runtime" and e["ts"] >= 50] == \
         ["cudaMemcpyAsync", "cudaStreamSynchronize"]
+
+
+def test_the_cpu_boundary_config_writes_its_prediction_under_a_rehearsal_prefix(tmp_path):
+    """Found by the CPU dry run's step 7 (1 Nov 2026)."""
+    assert T.prediction_dir(T.cpu_boundary_config(), tmp_path).startswith(
+        "predictions/P1-cpu-boundary-rehearsal")

@@ -9,6 +9,8 @@ between two launching calls, a launch is what the fake launch advances.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -680,7 +682,8 @@ def test_the_profile_takes_the_isolated_cost_and_flags_its_source():
     p = H.profile(embed_then_mm(clock), SyncTape("cpu"), sq, device=device(clock), reps=2,
                   clock=clock, isolated={0: 7e-6})
     assert p.host_s[0] == 7e-6 and p.source(0) == H.ISOLATED_REPLAY and p.source(1) == H.NULL_PASS
-    assert p.sources() == {H.NULL_PASS: 1, H.ISOLATED_REPLAY: 1}
+    assert p.sources() == {H.NULL_PASS: 1, H.CHAIN: 0, H.DEVICE_ARGUMENT: 0, H.OUT_OF_PLACE: 0,
+                           H.ISOLATED_REPLAY: 1}
     back = H.from_record(H.to_record(p))
     assert back.cost_source == {0: H.ISOLATED_REPLAY} and back.host_s == p.host_s
     assert H.host_costs(p, sq) == p.host_s
@@ -694,13 +697,171 @@ def test_the_isolated_costs_must_cover_exactly_the_isolated_positions(given):
                   device=device(clock), reps=1, clock=clock, isolated=given)
 
 
-def test_a_gather_inside_a_layer_is_not_isolated_and_is_refused_unmet():
+class Layer(torch.nn.Module):
+    def __init__(self, body):
+        super().__init__()
+        self.body = body
+
+    def forward(self):
+        self.body()
+
+
+def test_a_gather_inside_a_layer_with_no_recorded_chain_falls_back_to_the_isolated_replay():
+    # Ruling of 1 Nov 2026: a composite whose chain is not recorded is priced
+    # by the isolated replay at its origin, wherever it is.
     clock = Clock()
     sq = seq(gathered(layer=0), k("aten::mm", layer=0))
+    assert H.isolated_positions(sq) == (0,)
+    layer = Layer(embed_then_mm(clock))
+    p = H.profile(layer, SyncTape("cpu"), sq, device=device(clock), reps=1, clock=clock,
+                  layers=[layer], isolated={0: 7e-6})
+    assert p.host_s == {0: 7e-6, 1: 2.0 + 4.0 + LAUNCH}
+    assert p.cost_source == {0: H.ISOLATED_REPLAY}
+
+
+def test_a_gather_inside_a_layer_with_its_chain_is_met_at_the_embedding():
+    clock = Clock()
+    g = replace(gathered(layer=0), chain=("aten::embedding", "aten::gather"))
+    sq = seq(g, k("aten::mm", layer=0))
     assert H.isolated_positions(sq) == ()
-    with pytest.raises(H.ProfileMismatch, match="aten::gather in layer 0"):
-        H.profile(embed_then_mm(clock), SyncTape("cpu"), sq, device=device(clock), reps=1,
-                  clock=clock, layers=())
+    layer = Layer(embed_then_mm(clock))
+    p = H.profile(layer, SyncTape("cpu"), sq, device=device(clock), reps=1, clock=clock,
+                  layers=[layer])
+    assert p.host_s == {0: 2.0 + LAUNCH, 1: 4.0 + LAUNCH}
+    assert p.cost_source == {0: H.CHAIN} and p.met_at == {0: "aten::embedding"}
+
+
+def test_a_composite_whose_origin_the_dispatcher_never_shows_is_refused():
+    # Neither route: no recorded chain, and the pass never meets `aten::linear`
+    # (the dispatcher decomposes it before the pass sees it).
+    clock = Clock()
+    op = SeqOp(SeqKind.KERNEL, layer=None, aten_op="aten::mm", origin="aten::linear",
+               api="cudaLaunchKernel", kernels=("k",))
+
+    def prefill():
+        torch.nn.functional.linear(torch.ones(3, 3), W)
+    with pytest.raises(H.ProfileMismatch, match="met no call to aten::linear"):
+        H.profile(prefill, SyncTape("cpu"), seq(op), device=device(clock), reps=1,
+                  clock=clock, isolated={0: 1e-6})
+
+
+# --------------------------------------------------------------------------
+# Composite and factory calls (researcher's ruling, 1 Nov 2026)
+# --------------------------------------------------------------------------
+
+def chained(*chain, layer=None):
+    return SeqOp(SeqKind.KERNEL, layer=layer, aten_op=chain[-1], origin=chain[0],
+                 chain=tuple(chain), api="cudaLaunchKernel", kernels=("k",))
+
+
+def test_a_copy_is_met_at_the_composite_the_dispatcher_shows():
+    clock = Clock()
+    x = torch.ones(3, 3)
+
+    def prefill():
+        clock.advance(2.0)
+        x.to(torch.float64)                 # the dispatcher shows `aten::_to_copy`
+        clock.advance(3.0)
+        torch.mm(x, W)
+    sq = seq(chained("aten::to", "aten::_to_copy", "aten::copy_"), k("aten::mm"))
+    p = H.profile(prefill, SyncTape("cpu"), sq, device=device(clock), reps=1, clock=clock)
+    assert p.host_s == {0: 2.0 + LAUNCH, 1: 3.0 + LAUNCH}
+    assert p.cost_source == {0: H.CHAIN} and p.met_at == {0: "aten::_to_copy"}
+    assert p.sources() == {H.NULL_PASS: 1, H.CHAIN: 1, H.DEVICE_ARGUMENT: 0, H.OUT_OF_PLACE: 0,
+                           H.ISOLATED_REPLAY: 0}
+
+
+def test_one_composite_call_over_two_different_kernels_takes_one_gap_and_the_floor():
+    clock = Clock()
+    x = torch.ones(3, 4)
+
+    def prefill():
+        clock.advance(2.0)
+        x.mean(-1)                          # sum's fill_, then div_'s copy_
+    sq = seq(chained("aten::mean", "aten::sum", "aten::fill_"),
+             chained("aten::mean", "aten::div_", "aten::copy_"))
+    p = H.profile(prefill, SyncTape("cpu"), sq, device=device(clock), reps=1, clock=clock,
+                  warmup=0)
+    assert p.host_s == {0: 2.0 + LAUNCH, 1: LAUNCH}     # the floor is the median launch
+    assert p.cost_source == {0: H.CHAIN, 1: H.CHAIN}
+    assert p.met_at == {0: "aten::mean", 1: "aten::mean"}
+
+
+def test_a_factory_call_on_the_device_is_a_launch_by_its_device_argument():
+    clock = Clock()
+
+    def prefill():
+        clock.advance(2.0)
+        torch.arange(4, device="cpu")       # no tensor input: only `device` names the device
+    sq = seq(chained("aten::arange", "aten::arange"))
+    p = H.profile(prefill, SyncTape("cpu"), sq, device=device(clock), reps=1, clock=clock)
+    assert p.host_s == {0: 2.0 + LAUNCH}
+    assert p.cost_source == {0: H.DEVICE_ARGUMENT} and p.met_at == {0: "aten::arange"}
+
+
+def test_a_factory_call_with_no_device_argument_follows_the_default_device():
+    clock = Clock()
+    p = H.profile(lambda: torch.zeros(2), SyncTape("cpu"),
+                  seq(chained("aten::zeros", "aten::zero_")), device=device(clock), reps=1,
+                  clock=clock)
+    assert p.cost_source == {0: H.DEVICE_ARGUMENT}
+
+
+def test_a_factory_call_on_the_host_runs_for_real_and_launches_nothing():
+    clock = Clock()
+    d = H.NullDevice(launch=lambda: None, device_type="cuda")   # the device is not the CPU
+    log = H.null_pass(lambda: torch.arange(4, device="cpu"), SyncTape("cpu"),
+                      seq(chained("aten::arange", "aten::arange")), device=d,
+                      staged_device=torch.device("cpu"), clock=clock)
+    assert log.issues == []
+
+
+def test_a_nulled_factory_call_gives_its_output_on_the_named_device_at_its_shape():
+    out = H._null_outputs(torch.ops.aten.arange.start, (2, 7), {"device": torch.device("cpu"),
+                          "dtype": torch.int64}, "cpu")
+    assert out.shape == (5,) and out.dtype == torch.int64 and out.device.type == "cpu"
+
+
+def test_an_in_place_call_the_mode_turns_out_of_place_is_met_there_and_flagged():
+    # Under any dispatch mode SDPA's math path adds its mask with `aten::add`;
+    # the recording, made with no dispatch mode, names `aten::add_`.
+    clock = Clock()
+    q, m = torch.randn(1, 1, 4, 2), torch.zeros(4, 4)
+    seq_ops = [chained("aten::scaled_dot_product_attention",
+                       "aten::_scaled_dot_product_attention_math", "aten::add_")]
+    pass_ = H.null_pass(lambda: torch.ops.aten._scaled_dot_product_attention_math(
+        q, q, q, attn_mask=m), SyncTape("cpu"), seq(*seq_ops), device=device(clock), clock=clock)
+    assert "aten::add" in [e.name for e in pass_.issues]
+    assert "aten::add_" not in [e.name for e in pass_.issues]
+    sq = seq(*seq_ops)
+    assert H.met_at(sq, ["aten::add"]) == {0: "aten::add"}
+    log = H.PassLog(issues=[H.Issue("aten::add", None, 2.0, LAUNCH)], launches=[LAUNCH])
+    host, src, met = H.align(sq, log)
+    assert host == {0: 2.0 + LAUNCH} and src == {0: H.OUT_OF_PLACE} and met == {0: "aten::add"}
+
+
+def test_an_out_of_place_call_is_not_taken_for_an_in_place_one():
+    sq = seq(chained("aten::add"))
+    assert H.met_at(sq, ["aten::add_"]) == {0: "aten::add"}     # unmet: its own name
+    assert H.out_of_place("aten::add_") == "aten::add" and H.out_of_place("aten::add") is None
+    assert H.out_of_place("aten::__and__") is None
+
+
+def test_two_passes_must_meet_the_sequence_at_the_same_calls():
+    clock = Clock()
+    x = torch.ones(3, 3)
+    calls = []
+
+    def prefill():                          # first pass: _to_copy; later passes: copy_
+        if calls:
+            torch.empty(3, 3, dtype=torch.float64).copy_(x)
+        else:
+            x.to(torch.float64)
+        calls.append(1)
+    sq = seq(chained("aten::to", "aten::_to_copy", "aten::copy_"))
+    with pytest.raises(H.ProfileMismatch, match="at different calls"):
+        H.profile(prefill, SyncTape("cpu"), sq, device=device(clock), reps=2, warmup=0,
+                  clock=clock)
 
 
 def test_an_isolated_position_the_pass_never_meets_is_refused():
@@ -722,4 +883,150 @@ def test_an_old_profile_record_reads_every_cost_as_the_null_pass():
     rec = H.to_record(H.profile(prefill, SyncTape("cpu"), sq, device=device(clock), reps=1,
                                 clock=clock))
     del rec["cost_source"]
-    assert H.from_record(rec).sources() == {H.NULL_PASS: 1, H.ISOLATED_REPLAY: 0}
+    assert H.from_record(rec).sources() == {H.NULL_PASS: 1, H.CHAIN: 0, H.DEVICE_ARGUMENT: 0, H.OUT_OF_PLACE: 0,
+                                            H.ISOLATED_REPLAY: 0}
+
+
+# --------------------------------------------------------------------------
+# The chain check: the composites against the isolated replay (1 Nov 2026)
+# --------------------------------------------------------------------------
+
+class IsoTrace:
+    """A hand-built isolated replay: one thread, times in microseconds."""
+
+    def __init__(self):
+        from attnbench.components.replay import FLUSH, REPLAY_REGION
+        self.FLUSH = FLUSH
+        self.ev = [{"ph": "X", "cat": "user_annotation", "name": REPLAY_REGION, "ts": 0,
+                    "dur": 10_000, "pid": 1, "tid": 1}]
+
+    def x(self, cat, name, ts, dur):
+        self.ev.append({"ph": "X", "cat": cat, "name": name, "ts": ts, "dur": dur,
+                        "pid": 1, "tid": 1})
+
+    def call(self, names, ts, dur, flush=0.0, launches=1):
+        """Nested aten calls `names` (outermost first) over [ts, ts + dur], a
+        flush of `flush` at its start and `launches` launches inside."""
+        for n, name in enumerate(names):
+            self.x("cpu_op", name, ts + n * 0.01, dur - n * 0.01)   # one end
+        if flush:
+            self.x("user_annotation", self.FLUSH, ts + 0.05, flush)
+        for j in range(launches):
+            self.x("cuda_runtime", "cudaLaunchKernel", ts + flush + 1 + j, 0.5)
+
+    def trace(self):
+        return {"traceEvents": self.ev}
+
+
+def check_profile(sq, host, sources, met):
+    return H.HostProfile(host_s=host, reps_s={i: (v,) for i, v in host.items()},
+                         launch_floor_s=0.0, reps=1, sequence_sha256="x",
+                         cost_source=sources, met_at=met)
+
+
+def chain_seq():
+    return seq(k("aten::mm"),
+               chained("aten::to", "aten::_to_copy", "aten::copy_"),
+               chained("aten::mean", "aten::sum", "aten::fill_"),
+               chained("aten::mean", "aten::div_", "aten::copy_"))
+
+
+def chain_trace(flush_between=0.0, first=True):
+    t = IsoTrace()
+    if first:
+        t.call(["aten::mm"], 100, 10)                           # ends at 110
+    if flush_between:                                           # a view's flush in the gap
+        t.x("user_annotation", t.FLUSH, 115, flush_between)
+    t.call(["aten::to", "aten::_to_copy", "aten::copy_"], 130, 20, flush=4)    # ends 150
+    t.call(["aten::mean"], 160, 30, flush=5, launches=2)        # ends 190
+    return t.trace()
+
+
+def test_a_composite_s_direct_time_runs_from_the_last_call_s_end_less_the_flushes():
+    sq = chain_seq()
+    p = check_profile(sq, {0: 9e-6, 1: 30e-6, 2: 25e-6, 3: 1e-6},
+                      {1: H.CHAIN, 2: H.CHAIN, 3: H.CHAIN},
+                      {1: "aten::_to_copy", 2: "aten::mean", 3: "aten::mean"})
+    c = H.chain_check(chain_trace(flush_between=6), sq, p, rel_tol=0.1, abs_tol_s=1e-6)
+    to, mean = c["operators"]["aten::_to_copy"], c["operators"]["aten::mean"]
+    assert to["calls"] == 1 and to["direct_s"] == pytest.approx((150 - 110 - 6 - 4) * 1e-6)
+    assert to["sources"] == [H.CHAIN]
+    assert to["chain_s"] == pytest.approx(30e-6)
+    assert mean["calls"] == 1 and mean["chain_s"] == pytest.approx(26e-6)   # both positions
+    assert mean["direct_s"] == pytest.approx((190 - 150 - 5) * 1e-6)
+    assert to["allowed_s"] == pytest.approx(0.1 * 30e-6 + 1e-6) and to["passed"]
+    assert not mean["passed"] and c["failed"] == ["aten::mean"] and not c["passed"]
+    assert c["checked_calls"] == 2 and c["unchecked_calls"] == 0
+
+
+def test_a_composite_within_the_tolerance_passes_and_one_outside_fails():
+    sq = chain_seq()
+    base = {0: 9e-6, 1: 30e-6, 2: 34e-6, 3: 1e-6}
+    srcs = {1: H.CHAIN, 2: H.CHAIN, 3: H.CHAIN}
+    met = {1: "aten::_to_copy", 2: "aten::mean", 3: "aten::mean"}
+    c = H.chain_check(chain_trace(), sq, check_profile(sq, base, srcs, met),
+                      rel_tol=0.0, abs_tol_s=0.0)
+    assert c["operators"]["aten::mean"]["passed"]                # 35 us both ways
+    assert not c["operators"]["aten::_to_copy"]["passed"]        # 30 against 36
+    assert c["failed"] == ["aten::_to_copy"]
+    c = H.chain_check(chain_trace(), sq, check_profile(sq, base, srcs, met),
+                      rel_tol=0.0, abs_tol_s=6e-6)
+    assert c["passed"]                                           # 6 us allowed per call
+
+
+def test_a_composite_after_a_kept_out_call_or_first_in_line_is_unchecked():
+    sq = chain_seq()
+    p = check_profile(sq, {0: 9e-6, 1: 30e-6, 2: 30e-6, 3: 1e-6},
+                      {0: H.ISOLATED_REPLAY, 1: H.CHAIN, 2: H.DEVICE_ARGUMENT,
+                       3: H.DEVICE_ARGUMENT},
+                      {1: "aten::_to_copy", 2: "aten::mean", 3: "aten::mean"})
+    p = replace(p, cost_source={**p.cost_source, 0: H.ISOLATED_REPLAY})
+    sq0 = replace(sq, ops=(replace(sq.ops[0], origin="aten::mm"),) + sq.ops[1:])
+    c = H.chain_check(chain_trace(), sq0, p, rel_tol=1.0, abs_tol_s=0.0)
+    assert c["unchecked_calls"] == 1 and set(c["operators"]) == {"aten::mean"}
+    assert c["operators"]["aten::mean"]["sources"] == [H.DEVICE_ARGUMENT]
+    tail = seq(*sq.ops[1:])                                      # the composite first in line
+    first = H.chain_check(chain_trace(first=False), tail,
+                          check_profile(tail, {0: 30e-6, 1: 30e-6, 2: 1e-6},
+                                        {0: H.CHAIN, 1: H.CHAIN, 2: H.CHAIN},
+                                        {0: "aten::_to_copy", 1: "aten::mean",
+                                         2: "aten::mean"}),
+                          rel_tol=1.0, abs_tol_s=0.0)
+    assert first["unchecked_calls"] == 1 and set(first["operators"]) == {"aten::mean"}
+
+
+def test_a_sync_between_two_calls_leaves_the_second_unchecked():
+    sq = seq(k("aten::mm"), sync(), chained("aten::to", "aten::_to_copy", "aten::copy_"))
+    t = IsoTrace()
+    t.call(["aten::mm"], 100, 10)
+    t.call(["aten::to", "aten::_to_copy", "aten::copy_"], 130, 20, flush=4)
+    c = H.chain_check(t.trace(), sq, check_profile(sq, {0: 9e-6, 2: 30e-6}, {2: H.CHAIN},
+                                                   {2: "aten::_to_copy"}),
+                      rel_tol=1.0, abs_tol_s=0.0)
+    assert c["checked_calls"] == 0 and c["unchecked_calls"] == 1 and c["passed"]
+
+
+def test_a_chain_priced_call_the_isolated_replay_does_not_make_is_refused():
+    sq = seq(k("aten::mm"), chained("aten::to", "aten::_to_copy", "aten::copy_"))
+    t = IsoTrace()
+    t.call(["aten::mm"], 100, 10)
+    t.call(["aten::copy_"], 130, 20)                 # no `_to_copy` around the launch
+    with pytest.raises(H.ProfileMismatch, match="no call to aten::_to_copy"):
+        H.chain_check(t.trace(), sq, check_profile(sq, {0: 9e-6, 1: 30e-6}, {1: H.CHAIN},
+                                                   {1: "aten::_to_copy"}),
+                      rel_tol=1.0, abs_tol_s=0.0)
+
+
+def test_an_operator_with_no_device_argument_is_no_factory():
+    # `aten::promote_types` takes no tensor and makes none (found on mean-pool).
+    clock = Clock()
+    log = H.null_pass(lambda: torch.promote_types(torch.float16, torch.float32),
+                      SyncTape("cpu"), seq(chained("aten::promote_types")),
+                      device=device(clock), clock=clock)
+    assert log.issues == []
+
+
+def test_the_met_at_operator_is_the_outermost_the_pass_issued():
+    sq = seq(chained("aten::mean", "aten::div_", "aten::to", "aten::_to_copy", "aten::copy_"))
+    assert H.met_at(sq, ["aten::copy_", "aten::_to_copy", "aten::mean"]) == {0: "aten::mean"}
+    assert H.met_at(sq, ["aten::copy_", "aten::_to_copy"]) == {0: "aten::_to_copy"}

@@ -19,6 +19,18 @@ recording (`recorder.record_arm_prefill`):
     is kept and compared with the bank (`mask_agreement`), which must be
     bitwise on the code path that recorded it.
 
+**The live masks are read after a replay** (researcher's ruling, 1 Nov
+2026). A graph's capture records kernels and runs none, so a live mask read
+straight after it was never written (Shakedown 3: all-False in all 28 layers,
+agreement 1 - 7380/49152 by construction). Each live mask is therefore copied,
+inside the captured prefill, into a buffer that holds `NEVER_WRITTEN` from
+before the capture (`live_buffers`), the graph is replayed once and
+synchronised, and a call whose buffer still holds the marker is refused
+before anything is compared (`check_masks`, `mask_agreement`). The copies
+are work of the check, not of the arm, so the check has a graph of its own,
+dropped before the timed graph is captured: the timed graph and its node
+match hold the arm's kernels only.
+
 The graph is replayed under the profiler once to read every node's device
 time (`replay_nodes`), and without it `reps` times with CUDA events for the
 total (`time_replay`), so the profiler's effect on the node times is
@@ -87,6 +99,7 @@ FLUSH = "attnbench::isolation_flush"
 SCHEMA = "attnbench.replay/2"
 SCHEMAS_READ = ("attnbench.replay/1", SCHEMA)
 GRAPH, ISOLATED_ORIGINAL = "graph", "isolated_original"
+NEVER_WRITTEN = 2          # in a live-mask buffer: no replay has written it (a mask is 0 or 1)
 # The aten operators issuing the device work at a position the tape
 # substitutes (`sync_tape.SUBSTITUTED_KINDS`): `nonzero` (and `torch.where`
 # with one argument, through `nonzero_numpy`), boolean indexing and
@@ -173,16 +186,38 @@ class Captured:
     backend: object
     tape: SyncTape
     banked: Optional[list[torch.Tensor]]
-    live_masks: list[torch.Tensor] = field(default_factory=list)
+    live_masks: list[torch.Tensor] = field(default_factory=list)   # the check graph's buffers
     staged: dict = field(default_factory=dict)
+    mask_check: Optional["MaskCheck"] = None
 
     def replay(self) -> None:
         self.backend.replay(self.handle)
 
 
-def _bank_capture(banked, kernel_module, copy: bool = False) -> mask_bank.MaskCapture:
+@dataclass(frozen=True)
+class MaskCheck:
+    """The live masks of the check graph after its one replay (module
+    docstring): the agreement with the bank, or why there is none."""
+
+    agreement: Optional[dict]
+    unwritten: tuple            # kernel calls whose buffer no replay wrote
+    replays: int
+
+
+def _bank_capture(banked, kernel_module, into=None) -> mask_bank.MaskCapture:
     return mask_bank.MaskCapture(module=kernel_module, substitute=banked,
-                                 optional=banked is None, copy=copy)
+                                 optional=banked is None, into=into)
+
+
+def live_buffers(banked: Sequence[torch.Tensor]) -> list[torch.Tensor]:
+    """One buffer per banked call, at its shape, holding `NEVER_WRITTEN`."""
+    return [torch.full(tuple(b.shape), NEVER_WRITTEN, dtype=torch.uint8, device=b.device)
+            for b in banked]
+
+
+def unwritten(buffers: Sequence[torch.Tensor]) -> list[int]:
+    """The kernel calls whose live-mask buffer still holds `NEVER_WRITTEN`."""
+    return [i for i, m in enumerate(buffers) if bool((m == NEVER_WRITTEN).any())]
 
 
 def _check_calls(cap: mask_bank.MaskCapture, banked) -> None:
@@ -192,46 +227,70 @@ def _check_calls(cap: mask_bank.MaskCapture, banked) -> None:
                           f"{n} masks are banked")
 
 
-def _body(run_prefill, tape, staged, banked, kernel_module, sink: list, copy: bool = False):
+def _body(run_prefill, tape, staged, banked, kernel_module, into=None):
     def body():
         rep = TapeReplayer(tape, staged)
-        with rep, _bank_capture(banked, kernel_module, copy) as cap:
+        with rep, _bank_capture(banked, kernel_module, into) as cap:
             run_prefill()
         rep.finish()
         _check_calls(cap, banked)
-        sink[:] = cap.live_masks()
     return body
+
+
+def check_masks(run_prefill, tape, staged, banked, backend, *, kernel_module=None,
+                replays: int = 1) -> tuple[MaskCheck, list[torch.Tensor]]:
+    """The check graph: the prefill captured with each live mask copied into
+    a `live_buffers` buffer, replayed `replays` times (one; zero only to show
+    what a capture alone writes), synchronised, then read (module
+    docstring). Its graph is dropped here, before the timed one is
+    captured."""
+    buffers = live_buffers(banked)
+    handle = backend.capture(_body(run_prefill, tape, staged, banked, kernel_module, buffers))
+    for _ in range(replays):
+        backend.replay(handle)
+    backend.synchronize()
+    del handle
+    missing = unwritten(buffers)
+    agreement = None if missing else mask_bank.agreement([b.bool() for b in buffers], banked)
+    return MaskCheck(agreement, tuple(missing), replays), buffers
 
 
 def capture(run_prefill: Callable[[], None], tape: SyncTape, *, device,
             masks: Optional[mask_bank.MaskRecord] = None, backend=None,
-            warmup: int = 1, kernel_module=None, copy_live: bool = False) -> Captured:
+            warmup: int = 1, kernel_module=None) -> Captured:
     """The arm's prefill as one graph, from the tape and the bank. The modes
     are entered inside the capture, so the backend's own synchronisation
-    around it is not taken for the arm's. With `copy_live` each live mask is
-    copied at its call, inside the graph (`mask_diagnosis`). A graph's
-    kernels run at a replay, not at the capture: its live masks hold
-    nothing until the first replay."""
+    around it is not taken for the arm's. With a bank, the mask check runs
+    first on a graph of its own (`check_masks`), so the timed graph holds the
+    arm's kernels and nothing of the check's."""
     backend = backend or CudaGraphBackend()
     if tape.unhandled:
         raise ReplayError(f"the tape has unhandled interactions at {tape.unhandled}: "
                           f"{tape.entries[tape.unhandled[0]].note}")
     staged = tape.stage(device)
     banked = masks.tensors(device) if masks is not None else None
-    live: list = []
-    body = _body(run_prefill, tape, staged, banked, kernel_module, live, copy_live)
+    body = _body(run_prefill, tape, staged, banked, kernel_module)
     for _ in range(warmup):
         backend.warmup(body)
+    check, buffers = (None, [])
+    if banked is not None:
+        check, buffers = check_masks(run_prefill, tape, staged, banked, backend,
+                                     kernel_module=kernel_module)
     handle = backend.capture(body)
-    return Captured(handle, backend, tape, banked, live, staged)
+    return Captured(handle, backend, tape, banked, buffers, staged, check)
 
 
 def mask_agreement(cap: Captured) -> Optional[dict]:
-    """The estimator's live masks after a replay against the bank."""
+    """The estimator's live masks against the bank, read after one replay of
+    the check graph and a synchronise (module docstring). Refuses a call
+    whose mask no replay wrote."""
     if cap.banked is None:
         return None
-    cap.backend.synchronize()
-    return mask_bank.agreement(cap.live_masks, cap.banked)
+    if cap.mask_check.unwritten:
+        raise ReplayError(
+            f"the live masks of kernel calls {list(cap.mask_check.unwritten)} were never "
+            f"written after a replay and a synchronise; nothing is compared with the bank")
+    return cap.mask_check.agreement
 
 
 def time_replay(cap: Captured, reps: int) -> dict:

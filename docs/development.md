@@ -62,7 +62,10 @@ python3 scripts/t228_steps.py density --cpu-boundary --out /tmp/density --length
 
 `t227_steps.py` and `t228_steps.py` take `--cpu-boundary` for one step.
 `tests/test_shakedown3_cpu.py` holds Shakedown 3's failures, reproduced on
-the real classes.
+the real classes, and the rulings of 1 Nov 2026 tested on them. Behind the
+boundary the replay runs on `cpu_boundary.GraphLikeBackend`, whose capture
+writes nothing, as a CUDA graph's does; and the chain check is recorded but
+not gated, because a CPU kernel runs inside its call.
 
 ## Earlier work in this repository
 

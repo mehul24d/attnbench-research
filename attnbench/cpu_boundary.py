@@ -34,20 +34,31 @@ replaced is listed here, so nothing else can be stubbed by accident:
     `current_device` answer for the stub device, `torch.cuda.synchronize`
     returns at once, and a tensor sent or created on "cuda" (the authors'
     estimator hard-codes `.to("cuda")` and `device="cuda"`) stays on the
-    CPU (`CudaToCpu`).
+    CPU (`CudaToCpu`). The tape (`sync_tape`), whose mode sees a call before
+    `CudaToCpu` does, reads "cuda" as the CPU too (`_as_device`), so it
+    classifies `.to("cuda")` on a device tensor as the L4's tape does, a call
+    that keeps the device, and not as a copy to the host (found by the null
+    pass on XAttention, 1 Nov 2026).
   - **The compiler's back end.** A compiled variant is traced by Dynamo as
     on the L4, and its graphs run under Dynamo's "eager" back end
     (`COMPILE_KWARGS`): inductor's Triton code and CUDA graphs are the GPU's.
   - **The profiler's device activity.** On a CPU the profiler records host
     operators only. `synthesize_device` rewrites an exported trace into the
     form CUPTI gives: one `cudaLaunchKernel` and one kernel per launching
-    operator (a leaf operator that is not a view, an allocation or a
-    metadata read, or a custom kernel operator whatever its children), and
+    operator (a leaf operator that is not a view, an allocation, a
+    metadata read or wholly CompositeImplicitAutograd, or a custom kernel
+    operator whatever its children), and
     for a scalar read (`_local_scalar_dense`) a device-to-host copy and a
     stream synchronisation, with correlation ids and the stub device. Durations are the CPU's; nothing timed here is a result.
+  - **The CUDA graph.** `GraphLikeBackend` keeps the one property of a graph
+    the replay's checks rest on: a capture runs the arm's Python and writes
+    no tensor (every aten call returns an unwritten output, as a captured
+    kernel does until a replay), and a replay runs the prefill for real.
+    `replay.EagerBackend`, which wrote at the "capture", hid Shakedown 3's
+    unwritten live masks (ruling, 1 Nov 2026).
 
-What a CPU dry run cannot test, and the L4 must: the CUDA graph (the replay
-uses `replay.EagerBackend`), the device's own timings, CUPTI's records
+What a CPU dry run cannot test, and the L4 must: the CUDA graph's own
+replay (the stand-in reruns the Python), the device's own timings, CUPTI's records
 (memsets with no device record), the library's Python around the kernel,
 and which operators a CUDA build lowers to (on a CPU `embedding` reaches
 `index_select`, on the L4 `gather`).
@@ -56,6 +67,7 @@ and which operators a CUDA build lowers to (on a CPU `embedding` reaches
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import math
 import os
@@ -67,6 +79,9 @@ from typing import Iterator, Optional, Union
 
 import torch
 from torch.overrides import TorchFunctionMode
+from torch.utils._python_dispatch import TorchDispatchMode
+
+from .components import sync_tape
 
 STUB_DEVICE_NAME = "NVIDIA L4 (CPU stub)"   # lacks "100", as the L4 does
 # The CPU's kernel operator for the embedding lookup, where the L4's is
@@ -228,8 +243,40 @@ NO_LAUNCH = frozenset({
     "aten::is_same_size", "aten::_local_scalar_dense", "aten::scalar_tensor",
     "aten::unfold", "aten::movedim", "aten::swapaxes", "aten::diagonal",
     "aten::resolve_conj", "aten::resolve_neg", "aten::conj",
+    # Operators that make no tensor (found by the null pass, 1 Nov 2026):
+    "aten::promote_types", "aten::can_cast", "aten::is_floating_point", "aten::is_complex",
+    "aten::detach_", "detach_", "detach",           # autograd metadata, as `aten::detach`
 })
 SYNC_OPS = frozenset({"aten::_local_scalar_dense"})
+
+
+@functools.lru_cache(maxsize=None)
+def composite_implicit(name: str) -> bool:
+    """Whether every overload of an aten operator is CompositeImplicitAutograd:
+    it has no kernel of its own, so on a CUDA build its device work is its
+    children's, and as a leaf it launched nothing (`aten::dropout` at p=0 in
+    eval returns its input; found by the null pass on XAttention, 1 Nov 2026).
+    TorchScript-only overloads, which the dispatcher does not hold, are
+    skipped."""
+    if not name.startswith("aten::"):
+        return False
+    base = name.split("::", 1)[1]
+    packet = getattr(torch.ops.aten, base, None)
+    if packet is None:
+        return False
+    found = []
+    for o in packet.overloads():
+        full = f"aten::{base}" + ("" if o == "default" else f".{o}")
+        try:
+            found.append(torch._C._dispatch_has_kernel_for_dispatch_key(
+                full, "CompositeImplicitAutograd"))
+        except RuntimeError:
+            continue
+    return bool(found) and all(found)
+
+
+def _may_launch(name: str) -> bool:
+    return name not in NO_LAUNCH and not composite_implicit(name)
 CUSTOM_KERNELS = (KERNEL_OP,)
 _STREAM = 7
 
@@ -277,11 +324,11 @@ def synthesize_device(trace: Union[str, Path, dict]) -> dict:
     def subtree(e) -> bool:
         if id(e) not in below:
             kids = [subtree(c) for c in children.get(id(e), ())]
-            below[id(e)] = any(kids) or (e["name"] not in NO_LAUNCH and not any(kids))
+            below[id(e)] = any(kids) or (_may_launch(e["name"]) and not any(kids))
         return below[id(e)]
 
     def launches(e) -> bool:
-        return e["name"] not in NO_LAUNCH and \
+        return _may_launch(e["name"]) and \
             not any(subtree(c) for c in children.get(id(e), ()))
 
     def gap(e) -> tuple[float, float]:
@@ -342,6 +389,43 @@ def synthesize_device(trace: Union[str, Path, dict]) -> dict:
 _installed = False
 
 
+class _NoKernels(TorchDispatchMode):
+    """Every aten call returns its outputs allocated and unwritten (an
+    in-place call or `out=` returns its input untouched)."""
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        from attnbench.components.host_profile import _null_outputs
+        return _null_outputs(func, args, kwargs or {}, "cpu")
+
+
+class GraphLikeBackend:
+    """`replay.CudaGraphBackend` behind the boundary (module docstring)."""
+
+    def __init__(self):
+        self.replays = 0
+
+    def capture(self, body):
+        with _NoKernels():
+            body()
+        return body
+
+    def warmup(self, body) -> None:
+        body()
+
+    def replay(self, body) -> None:
+        self.replays += 1
+        body()
+
+    def synchronize(self) -> None:
+        pass
+
+    def time_once(self, body) -> float:
+        import time
+        t0 = time.perf_counter()
+        self.replay(body)
+        return time.perf_counter() - t0
+
+
 def active() -> bool:
     return _installed
 
@@ -371,6 +455,7 @@ def installed(xattn_path: Optional[Union[str, Path]] = None, *,
         "props": torch.cuda.get_device_properties, "current": torch.cuda.current_device,
         "sync": torch.cuda.synchronize, "name": torch.cuda.get_device_name,
         "export": torch.profiler.profile.export_chrome_trace,
+        "as_device": sync_tape._as_device,
     }
     props = types.SimpleNamespace(name=STUB_DEVICE_NAME, major=8, minor=9,
                                   total_memory=23659151360, L2_cache_size=48 * 1024 * 1024,
@@ -379,6 +464,11 @@ def installed(xattn_path: Optional[Union[str, Path]] = None, *,
     def export(self, path):
         saved["export"](self, path)
         synthesize_device(path)
+
+    def as_device(d):
+        if _is_cuda(d) or (isinstance(d, int) and not isinstance(d, bool)):
+            return torch.device("cpu")
+        return saved["as_device"](d)
 
     mode = CudaToCpu()
     if root is not None:
@@ -390,6 +480,7 @@ def installed(xattn_path: Optional[Union[str, Path]] = None, *,
         torch.cuda.synchronize = lambda *a, **k: None
         torch.cuda.get_device_name = lambda *a, **k: STUB_DEVICE_NAME
         torch.profiler.profile.export_chrome_trace = export
+        sync_tape._as_device = as_device
         if root is not None:
             _import_xattn()
         _installed = True
@@ -402,6 +493,7 @@ def installed(xattn_path: Optional[Union[str, Path]] = None, *,
         torch.cuda.synchronize = saved["sync"]
         torch.cuda.get_device_name = saved["name"]
         torch.profiler.profile.export_chrome_trace = saved["export"]
+        sync_tape._as_device = saved["as_device"]
         for n, m in saved_mods.items():
             if m is None:
                 sys.modules.pop(n, None)

@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
+from typing import Sequence
 
 import torch
 
@@ -182,9 +183,26 @@ class MaskTap:
                            f"density (last_layer_density), so its rows would carry none")
 
 
+def refuse_nothing_compared(what: str, **sides: Sequence) -> None:
+    """A per-layer comparison with no layer on either side passes or fails by
+    comparing nothing, so it is refused (researcher's ruling, 1 Nov 2026)."""
+    empty = [name for name, v in sides.items() if len(v) == 0]
+    if empty:
+        raise DensityMismatch(f"{what}: {' and '.join(empty)} has no layers, so the "
+                              f"comparison would compare nothing")
+
+
+def same_per_layer(what: str, source: Sequence[float], other: Sequence[float], *,
+                   tol: float = 1e-9, names=("source", "other")) -> bool:
+    """Layer-by-layer equality within `tol`; refused over zero layers."""
+    refuse_nothing_compared(what, **{names[0]: source, names[1]: other})
+    return len(source) == len(other) and all(abs(x - y) < tol for x, y in zip(source, other))
+
+
 def check_repeatable(arm: str, first: list, second: list) -> None:
     """Two compiled twin passes on one input, call by call (or layer by
     layer): equal, or `DensityMismatch` naming the calls."""
+    refuse_nothing_compared(f"{arm}'s compiled twin passes", first=first, second=second)
     if len(first) != len(second):
         raise DensityMismatch(f"{arm}: {len(first)} kernel calls in one compiled twin pass "
                               f"and {len(second)} in the next")

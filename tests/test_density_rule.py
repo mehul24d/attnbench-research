@@ -372,3 +372,21 @@ def test_the_kernel_recorder_is_not_traced_into_a_compiled_function(fake_bsa):
         torch.compile(layer, backend="eager")(torch.ones(4, 1, 8), m)
     torch._dynamo.reset()
     assert rec.per_call_density() == [pytest.approx(float(D.block_density(m)))]
+
+
+# --- a comparison over no layers is refused (researcher's ruling, 1 Nov 2026) --------------
+
+@pytest.mark.parametrize("first, second", [([], []), ([0.5], []), ([], [0.5])])
+def test_compiled_twin_passes_with_no_calls_are_refused(first, second):
+    with pytest.raises(D.DensityMismatch, match="has no layers"):
+        D.check_repeatable("xattention", first, second)
+
+
+def test_a_per_layer_density_comparison_needs_layers_on_both_sides():
+    assert D.same_per_layer("x", [0.25, 0.5], [0.25, 0.5]) is True
+    assert D.same_per_layer("x", [0.25, 0.5], [0.25, 0.51]) is False
+    assert D.same_per_layer("x", [0.25], [0.25, 0.5]) is False
+    with pytest.raises(D.DensityMismatch, match="source has no layers"):
+        D.same_per_layer("x", [], [0.25])
+    with pytest.raises(D.DensityMismatch, match="source and other has no layers"):
+        D.same_per_layer("x", [], [])

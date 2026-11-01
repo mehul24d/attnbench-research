@@ -105,13 +105,18 @@ REQUIRED = ("densities", "reps", "dense_rounds")
 # fenced block in this file). Marked "working, pre-lock"; P1 only.
 WORKING_TABLE = ROOT / "docs" / "lock_value_table.md"
 WORKING_FENCE = "```json t31-working-values"
-WORKING_KEYS = ("densities", "gt_groups", "reps", "dense_rounds", "sampler_interval_s")
+WORKING_KEYS = ("densities", "gt_groups", "reps", "dense_rounds", "sampler_interval_s",
+                "chain_check_tolerance")
 WORKING_STATUS = "working, pre-lock"
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
 # oracle's scoring pass and the mean-pool estimator, which refuse a batch
-# above one as built (found by the CPU-boundary rehearsal, 31 Oct 2026; the
-# batch-4 cells hold the dense control only until a ruling says otherwise).
+# above one as built (found by the CPU-boundary rehearsal, 31 Oct 2026). The
+# batch-4 cells hold the dense control only: accepted as a default (ruling,
+# 1 Nov 2026) on the condition that the plan promises no sparse arm above
+# batch 1, and it does (Section 5.4 "Batch", H6 and Section 5.9 choose a
+# sparse arm per batch), so the conflict is flagged and open; no scope line
+# is written until it is decided.
 BATCH1_ONLY = ("xattention", "xattention_noassert", "oracle", "meanpool")
 HOST_PROFILE_REPS = 5
 
@@ -147,7 +152,7 @@ CPU_BOUNDARY_CONFIG = {
     "flag_reasons": DRY_CONFIG["flag_reasons"],
     "sampler_interval_s": None,
     "clock_skew_s": 2, "hold_guard_s": 1,
-    "prediction_prefix": "predictions/P1-cpu-boundary",
+    "prediction_prefix": "predictions/P1-cpu-boundary-rehearsal",
 }
 
 # What each refusing step still needs (plan Section 8 rows), so a GPU run
@@ -240,8 +245,9 @@ def cpu_boundary_config(path=None) -> dict:
     labelled as taken from it."""
     vals, sha = working_values(path)
     return dict(CPU_BOUNDARY_CONFIG, densities=vals["densities"], gt_groups=vals["gt_groups"],
+                chain_check_tolerance=vals["chain_check_tolerance"],
                 working_values={"sha256": sha, "status": WORKING_STATUS,
-                                "filled": ["densities", "gt_groups"]})
+                                "filled": ["densities", "gt_groups", "chain_check_tolerance"]})
 
 
 def load_config(path, *, dry_run: bool, cpu_boundary: bool = False) -> dict:
@@ -325,6 +331,16 @@ def _harness(args):
                    score_cache_dir=str(Path(session) / "score_cache") if session else None)
 
 
+def _graph_backend():
+    """T2.4's CUDA graph; behind the CPU boundary, its stand-in, whose capture
+    writes nothing (`cpu_boundary.GraphLikeBackend`)."""
+    from attnbench.components import replay
+    if _boundary():
+        from attnbench.cpu_boundary import GraphLikeBackend
+        return GraphLikeBackend()
+    return replay.CudaGraphBackend()
+
+
 def _null_device():
     """T2.2's null kernel; behind the CPU boundary, a launch that does nothing."""
     from attnbench.components import host_profile as hp
@@ -333,24 +349,46 @@ def _null_device():
     return hp.cuda_device()
 
 
-def host_profile_cell(a, rec, out: Path, *, reps: int, entries=()):
-    """T2.2's null-kernel profile of one recording, with the positions the
-    ruling of 31 Oct 2026 prices by an isolated replay of the original
-    operators (`host_profile.ISOLATED_OUTSIDE_LAYERS`; behind the CPU
-    boundary its embedding kernel, `cpu_boundary.EMBEDDING_KERNEL_OP`)."""
+def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=()):
+    """T2.2's null-kernel profile of one recording, and the chain check.
+
+    The isolated replay of the original operators prices the positions the
+    ruling of 31 Oct 2026 gives it (`host_profile.ISOLATED_OUTSIDE_LAYERS`;
+    behind the CPU boundary its embedding kernel,
+    `cpu_boundary.EMBEDDING_KERNEL_OP`) and any composite whose chain is not
+    recorded, and is what `chain_check` holds the calls met at a composite or
+    by their device argument against (ruling of 1 Nov 2026), within
+    `tolerance` ({"rel", "abs_us"}, T4.1 row 32). Returns (profile, check)
+    and writes the check to `chain_check.json`."""
     from attnbench import cpu_boundary
     from attnbench.components import host_profile as hp
     from attnbench.components import replay
     ops = hp.ISOLATED_OUTSIDE_LAYERS | (
         {cpu_boundary.EMBEDDING_KERNEL_OP} if _boundary() else set())
     pos = hp.isolated_positions(rec.sequence, ops)
-    iso = {}
-    if pos:
-        trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
-                                       device=_device(), masks=rec.masks, substitute=False)
-        iso = hp.isolated_host_s(trace, rec.sequence, pos)
-    return hp.profile(a.run_prefill, rec.tape, rec.sequence, device=_null_device(), reps=reps,
+    trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
+                                   device=_device(), masks=rec.masks, substitute=False)
+    iso = hp.isolated_host_s(trace, rec.sequence, pos)
+    prof = hp.profile(a.run_prefill, rec.tape, rec.sequence, device=_null_device(), reps=reps,
                       entries=entries, layers=a.layers, isolated=iso, isolated_ops=ops)
+    check = hp.chain_check(trace, rec.sequence, prof, rel_tol=float(tolerance["rel"]),
+                           abs_tol_s=float(tolerance["abs_us"]) * 1e-6)
+    check["gated"] = not _boundary()
+    if not check["gated"]:
+        check["why_not_gated"] = ("behind the CPU boundary a kernel runs inside its call, so "
+                                  "the direct time holds the compute")
+    _write_json(Path(out) / "chain_check.json", check)
+    return prof, check
+
+
+def chain_check_failure(cfg, check) -> "str | None":
+    """The chain check's verdict for a step: a failure message where it gates,
+    else None. It gates a real session; a rehearsal records it (its tolerance
+    is a working value the rehearsal measures), as does the CPU boundary."""
+    if check["passed"] or not check["gated"] or cfg.get("rehearsal"):
+        return None
+    return (f"the chain check failed for {check['failed']}: a composite's chain-priced cost "
+            f"is outside the tolerance of its directly measured host time")
 
 
 def code_path_definition(cp) -> dict:
@@ -728,6 +766,13 @@ def step_probe(args, cfg) -> dict:
         found[name] = {"rule": rule.name, "probe_lengths": list(lengths),
                        "probe_plan": plan.reason, "full_third": plan.full_third,
                        "by_length": per}
+        if rule.chunked:    # the extension test (ruling, 1 Nov 2026): reported either way
+            fit = sp.count_fit(seqs, rule)
+            found[name]["extension_test"] = {
+                "count_fit": fit,
+                "periodic_order": all(r["extension"] == "same sequence" for r in per.values()),
+                "passed": fit["fits"] and all(r["structure"] == "extended" for r in per.values()),
+                "fallback": "full-length recording per grid cell"}
     h.unwrap()
     _write_json(out / "probe.json", found)
     return found
@@ -754,8 +799,12 @@ def step_host_components(args, cfg) -> dict:
                                           context_length=a.length, batch=b,
                                           prompt_id=a.prompt_id, layers=a.layers)
         entries = () if arm == "dense" else (hp.block_sparse_entry(),)
-        prof = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries)
+        prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
+                                        tolerance=cfg["chain_check_tolerance"])
         (cd / "host_profile.json").write_text(hp.dumps(prof))
+        failure = chain_check_failure(cfg, check)
+        if failure:
+            raise StepFailed(f"{arm} at {L} (batch {b}): {failure}")
         realised = d
         if d is None:
             per_layer = list(getattr(a.backend, "last_layer_density", None) or ())
@@ -768,10 +817,14 @@ def step_host_components(args, cfg) -> dict:
                       "dir": str(cd.relative_to(out)),
                       "code_path": code_path_definition(a.code_path),
                       "host_total_ms": prof.total_s * 1e3,
-                      "host_cost_sources": prof.sources()})
+                      "host_cost_sources": prof.sources(),
+                      "chain_check": {k: check[k] for k in ("passed", "gated", "failed",
+                                                            "checked_calls", "unchecked_calls")}})
     h.unwrap()
     _write_json(out / "cells_index.json", {"cells": index})
-    return {"cells": len(index)}
+    failed = [f"{c['arm']}@{c['context_length']}x{c['batch']}" for c in index
+              if not c["chain_check"]["passed"]]
+    return {"cells": len(index), "chain_check_failed_cells": failed}
 
 
 def step_device_components(args, cfg) -> dict:
@@ -817,15 +870,19 @@ def device_components_real(args, cfg) -> dict:
         rec = recorder.load_recording(host_dir / c["dir"] / "recording")
         a = ready_cell(h, c["arm"], c["nominal_density"], c["budget"], c["batch"])
         cap = replay.capture(a.run_prefill, rec.tape, device=_device(), masks=rec.masks,
-                             backend=replay.EagerBackend() if _boundary() else None)
-        agreement = replay.mask_agreement(cap)
+                             backend=_graph_backend())
+        try:    # after one replay and a synchronise (ruling, 1 Nov 2026)
+            agreement, failure = replay.mask_agreement(cap), None
+        except replay.ReplayError as e:
+            agreement, failure = None, str(e)
         if agreement is not None and not agreement.get("identical"):
+            failure = "the replay's live masks differ from the bank"
+        if failure:
             from attnbench.components import mask_diagnosis as md   # findings only (31 Oct 2026)
             diag = md.guarded(md.replay_diagnosis, a.run_prefill, rec, device=_device(),
-                              graph_backend=None if _boundary() else replay.CudaGraphBackend())
+                              graph_backend=_graph_backend())
             _write_json(cd / "mask_diagnosis.json", diag)
-            raise StepFailed(f"{c['dir']}: the replay's live masks differ from the bank",
-                             {"mask_diagnosis": md.summaries(diag)})
+            raise StepFailed(f"{c['dir']}: {failure}", {"mask_diagnosis": md.summaries(diag)})
         m = replay.match(rec.sequence, replay.replay_nodes(
             replay.profile_replay(cap, cd / "replay_trace.json")))
         original = None

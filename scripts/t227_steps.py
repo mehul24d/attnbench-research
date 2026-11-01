@@ -459,17 +459,25 @@ def step_replay(args) -> dict:
                       "sequence": _sequence_summary(seq),
                       "tape_entries": len(rec.tape), "tape_substitutions": rec.tape.substitutions,
                       "mask_calls": len(rec.masks.masks) if rec.masks else 0}
-    graph = replay.EagerBackend if _boundary() else replay.CudaGraphBackend
+    if _boundary():
+        from attnbench.cpu_boundary import GraphLikeBackend as graph
+    else:
+        graph = replay.CudaGraphBackend
     cap = replay.capture(arm.run_prefill, rec.tape, device=_dev(), masks=rec.masks,
                          backend=graph())
-    agreement = replay.mask_agreement(cap)
+    try:    # after one replay and a synchronise (ruling, 1 Nov 2026)
+        agreement, unwritten = replay.mask_agreement(cap), None
+    except replay.ReplayError as e:
+        agreement, unwritten = None, str(e)
     findings["mask_agreement"] = agreement
     if rec.masks is not None:      # findings only (31 Oct 2026): no gate reads them
         from attnbench.components import mask_diagnosis as md
         diag = md.guarded(md.replay_diagnosis, arm.run_prefill, rec, device=_dev(),
-                          graph_backend=None if _boundary() else graph())
+                          graph_backend=graph())
         _write_json(out / "mask_diagnosis.json", diag)
         findings["mask_diagnosis"] = md.summaries(diag)
+    if unwritten:
+        raise StepFailed(unwritten, findings)
     timing = replay.time_replay(cap, args.replay_reps)
     nodes = replay.replay_nodes(replay.profile_replay(cap, out / "replay_trace.json"))
     m = replay.match(seq, nodes)

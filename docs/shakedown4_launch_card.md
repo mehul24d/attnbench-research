@@ -1,12 +1,13 @@
 # Launch card: Shakedown 4 (one L4 session, three runs)
 
-Prepared 1 Nov 2026. **Not launchable yet.** The researcher's condition is
-that the CPU dry run of the T3.1 rehearsal (`t31_session.py
---cpu-boundary`, steps 1 to 8 on the real arms behind the stubbed GPU
-boundary) passes first, and it does not: it stops at step 5 (see "Known
-before launch"). Deploys from `main` at the merge of
-`shakedown4-prep-2026-10-31` or later. The researcher launches it; nothing
-here runs on its own. The step minutes are estimates from Shakedown 3.
+Prepared 1 Nov 2026, revised the same day for the researcher's five rulings
+of 1 Nov 2026. The researcher's condition, that the CPU dry run of the T3.1
+rehearsal (`t31_session.py --cpu-boundary`, steps 1 to 8 on the real arms
+behind the stubbed GPU boundary) passes first, is met: all eight steps
+passed in one run on `shakedown4-rulings-2026-11-01` (see "The CPU dry
+run"). Deploys from `main` at the merge of `shakedown4-rulings-2026-11-01`
+or later. Launchable only on the researcher's yes; nothing here runs on its
+own. The step minutes are estimates from Shakedown 3.
 
 ## What runs
 
@@ -19,11 +20,11 @@ last step, not the rehearsal.
 
 | Run | Command | Steps | What Shakedown 3 found, and what changed | Expected min |
 |---|---|---|---|---|
-| C | `t31_session.py --rehearsal` | T3.1 steps 1 to 8, `preflight` to `hold` | Step 5 refused dense's 1.0 as a density setting; dense now takes none. The batch-4 cells hold the dense control only (the oracle and mean-pool refuse batch > 1, as XAttention does). The embedding's gather is priced by an isolated replay. Step 6 runs the memset zoo, and on a mask mismatch writes `mask_diagnosis.json`. Results discarded, never banked | 40 |
-| A | `t227_shakedown.py --keep-going --only replay` | `replay` | All-False live masks in all 28 layers. Same gate; now also `mask_diagnosis.json`: live/live, live/bank, the tape without a graph, and the graph's masks before a replay, after one, and copied inside it | 5 |
+| C | `t31_session.py --rehearsal` | T3.1 steps 1 to 8, `preflight` to `hold` | Step 5 refused dense's 1.0 as a density setting; dense now takes none. The batch-4 cells hold the dense control only (open, see below). Step 5 now nulls composite calls at their recorded chain and factory calls by their device argument, and writes each cell's `chain_check.json` (recorded, not gated, in a rehearsal). Step 6 checks the live masks on a graph of its own after one replay, runs the memset zoo, and on a mask failure writes `mask_diagnosis.json`. Results discarded, never banked | 40 |
+| A | `t227_shakedown.py --keep-going --only replay` | `replay` | All-False live masks in all 28 layers: read before any replay. Now read after one replay of a check graph, from buffers marked "never written", and refused where one is still unwritten; `mask_diagnosis.json` has the check graph's buffers after the capture alone and after one replay | 5 |
 | B | `t228_steps.py run --keep-going --only density,t212,t22` | `density` | The compiled wrapper claimed a density record its arm (mean-pool) lacks; it now forwards one only where the arm keeps one. Compiled XAttention's density is its compiled twin's, with the eager comparison | 10 |
-| | | `t212` | Mean-pool's source density record is empty, so the check compared nothing. Same gate; `mask_diagnosis_<arm>.json` and the record lengths are now in the findings | 8 |
-| | | `t22` | Refused at the embedding's gather outside the layers. Priced by the isolated replay with a cost-source flag (ruling, 31 Oct 2026). The next refusal is expected at `aten::arange` (see below) | 10 |
+| | | `t212` | Mean-pool's source density record was empty, so the check compared nothing. Both sides' executed density is now the kernel-input recorder's, and a comparison over no layers is refused | 8 |
+| | | `t22` | Refused at the embedding's gather outside the layers, then (CPU) at `aten::arange`. Gather by the isolated replay; composites by chain, factories by device argument, each flagged; the chain check is in the findings | 10 |
 
 ## The instance
 
@@ -98,37 +99,60 @@ torch):
 
 ```bash
 export ATTNBENCH_XATTN_DIR=/path/to/x-attention
-python3 scripts/t31_session.py --cpu-boundary --session /tmp/t31_cpu
+python3 scripts/t31_session.py --cpu-boundary --session /tmp/t31_cpu   # passed, 1 Nov 2026
 python3 scripts/t228_steps.py density --cpu-boundary --out /tmp/s4_density --length 1024
 python3 scripts/t228_steps.py t212 --cpu-boundary --out /tmp/s4_t212 --length 1024 --reps 2
 python3 scripts/t228_steps.py t22 --cpu-boundary --out /tmp/s4_t22 --length 1024 --profile-reps 1
 python3 scripts/t227_steps.py replay --cpu-boundary --out /tmp/s4_replay --length 1024
 ```
 
+## The CPU dry run (1 Nov 2026)
+
+On the Mac, the real arms behind `attnbench/cpu_boundary.py`, transformers
+4.46.0, x-attention at `XATTN_COMMIT`: all eight rehearsal steps passed in
+one run (15 cells: five arms at 2048 and 4096, batch 2 dense only at 4096).
+Fixed on the way, each with a test on the real classes:
+
+- the null pass: composites met at their chain, `arange` by its device
+  argument, SDPA's in-place `add_` met out of place under the pass's own
+  dispatch mode (flagged `out_of_place`), and `aten::promote_types` (no
+  `device` argument) not taken for a factory;
+- the boundary itself: the trace shim gave a launch to `promote_types`,
+  `detach_` and wholly CompositeImplicitAutograd leaves (`dropout` at p=0),
+  and the tape took XAttention's `.to("cuda")` on a device tensor for a copy
+  to the host; the replay now runs on a graph stand-in whose capture writes
+  nothing (`GraphLikeBackend`), which is how Shakedown 3's unwritten masks
+  would have shown on the CPU;
+- the mask check's copies, inside the timed graph at first, were graph
+  nodes with no position: the check has a graph of its own;
+- the CPU config's prediction prefix lacked `-rehearsal` (step 7).
+
+The chain check reads every composite call (33 to 211 per cell) and fails
+everywhere on the CPU, as expected: a CPU kernel runs inside its call, so the
+direct time holds the compute. It is recorded there, not gated.
+
+XAttention's extension test fails on the CPU: layer 0 holds 234, 294 and
+287 operations at 20480, 28672 and 32768 (3, 4 and 4 chunks), base 54 and
+body 60 from the first two, so 294 predicted at 32768. The 7 missing are a
+partial last chunk's padding (`aten::pad`; 32768 is four whole chunks of
+8192), and the chunks do not repeat in one order. The no-assert copy: base
+65, body 50, 258 recorded against 265. Both take the fallback, the
+full-length recording per grid cell.
+
 ## Known before launch
 
-- **The CPU dry run stops at step 5.** The null pass (T2.2) refuses at the
-  first launching call it does not see, as the ruling has it ("refuse all
-  other unhandled ops"). Past the embedding that is `aten::arange` before
-  the layers: a factory call with no tensor input, so the pass never sees
-  it touch the device. Behind it are the composite calls, where the
-  dispatcher shows the pass `aten::_to_copy`, `aten::constant_pad_nd`,
-  `aten::masked_scatter` or `aten::clone` and the recording names their
-  kernels' `copy_`, `fill_` or `masked_scatter_` (Shakedown 3's mean-pool
-  recording has the same calls in every layer). The L4 would refuse where
-  the CPU does. A ruling is owed before this card can launch.
-- **The replay's mask check reads before any replay.** `step_replay` and
-  T3.1's `device_components` call `mask_agreement` straight after
-  `capture`. A CUDA graph's capture records kernels and runs none, so the
-  live masks it holds were never written: Shakedown 3 read all-False masks
-  in all 28 layers (7380 of 49152 kept in each bank layer, agreement
-  1 - 7380/49152). On the CPU's eager path every comparison agrees. Run A's
-  diagnosis reads the graph's masks before and after a replay; the gate is
-  unchanged until it is ruled on.
-- **T2.12's mean-pool density check compares an empty record.**
-  `BlockSparseAttention` keeps no `last_layer_density`, so the source side
-  has no layers. On the CPU the masks agree in every layer and the logits
-  are bitwise equal. The gate is unchanged until it is ruled on.
-- **The memset zoo and the bound's operations are unrun** on a GPU. They run
-  in step 6 if a cell's sequence holds flagged memsets.
+- **The chain check's tolerance is a working guess** (T4.1 row 32: 0.25 of
+  the direct time plus 5 us per call). Run C records it per cell and goes
+  on; `chain_check.json` is what sets it. No GPU figure exists yet.
+- **Batch 4 holds dense only, and the plan says otherwise.** Section 5.4
+  ("Batch 1 and 4 at 16384 on the L4"), H6 and Section 5.9 choose a sparse
+  arm per batch. The researcher's default holds the rehearsal; the scope
+  line waits for a decision.
+- **XAttention's structure is its full-length recording** at every grid
+  cell unless the L4's probe passes the extension test the CPU's fails.
+- **The memset zoo and the bound's operations are unrun** on a GPU: a CPU
+  trace has no memset without a device record, so step 6 never reached them
+  in the dry run.
+- **The check graph doubles step 6's captures**: one extra capture and
+  replay per sparse cell, its graph dropped before the timed one.
 - **The density figures are a rehearsal's.** Working, pre-lock values.
