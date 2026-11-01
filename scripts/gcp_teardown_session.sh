@@ -14,6 +14,10 @@
 #      the only diagnostic channel that survives losing SSH
 #   2. results second -- they need SSH, which may already be gone; a failure
 #      here must not prevent step 4
+#   2b. every ~/*.log on the instance -- the one step the delete waits for
+#      (researcher's ruling, 2 Nov 2026, after T3.1's first session lost
+#      ~/t31_session.log and ~/t31_driver.log). Without them the delete is
+#      refused unless TEARDOWN_DELETE_WITHOUT_HOME_LOGS names the reason
 #   3. age manifest third -- it also needs SSH, but unlike the results it can
 #      be reconstructed from nothing, so it never goes ahead of them. Copying
 #      does not alter mtimes on the instance, so it is just as accurate here
@@ -22,7 +26,11 @@
 #      gcp_cleanup_check.sh does not cover
 #
 # Steps 1 and 2 are allowed to fail without aborting the run: an instance
-# whose SSH is dead is precisely when deletion matters most.
+# whose SSH is dead is precisely when deletion matters most. Step 2b is not:
+# the instance's own clocks (the in-guest halt, the hard delete) bound what a
+# refused delete can bill, and a log lost to the delete is lost for good. An
+# instance with dead SSH is deleted by re-running with the override:
+#   TEARDOWN_DELETE_WITHOUT_HOME_LOGS="sshd gone after the OOM" bash ...
 #
 #   bash scripts/gcp_teardown_session.sh INSTANCE_NAME ZONE [RESULTS_DIR]
 set -uo pipefail
@@ -64,7 +72,9 @@ if ! gcloud compute instances describe "$NAME" --zone="$ZONE" --project="$PROJEC
     exit 2
   fi
   echo "   NOTE: $NAME was not found in any zone -- nothing to copy or delete"
+  FOUND=0
 fi
+FOUND="${FOUND:-1}"
 mkdir -p "$S"
 
 echo "== 1/5 serial console log -> $S/serial_console.log (before anything can destroy it)"
@@ -92,6 +102,39 @@ for LOG in fa_build.log bsa_build.log batch_probe.log anchor16k.log; do
   gcloud compute scp "$NAME:~/$LOG" "$S/$LOG" --zone="$ZONE" --project="$PROJECT" 2>/dev/null \
     && echo "   copied $LOG" || true
 done
+
+echo "== 2b/5 every ~/*.log on the instance -> $S/home_logs/ (the delete waits for this)"
+# Listed with sizes on the instance, then copied one by one; a copy counts
+# only if it is at least the listed size (a log still being written grows).
+# "No logs there" is a pull too: the listing ends with END either way.
+HOME_LOGS=missing
+if [[ "$FOUND" == 0 ]]; then
+  HOME_LOGS="no instance"
+else
+  LISTING="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet \
+    --command='for f in ~/*.log; do [ -f "$f" ] && echo "$(basename "$f") $(stat -c %s "$f")"; done; echo END' \
+    2>/dev/null | tr -d '\r')"
+  if [[ "$(printf '%s\n' "$LISTING" | tail -1)" == END ]]; then
+    mkdir -p "$S/home_logs"
+    N=0; BAD=0
+    while read -r F SIZE; do
+      [[ -z "$F" || "$F" == END ]] && continue
+      if gcloud compute scp "$NAME:~/$F" "$S/home_logs/$F" --zone="$ZONE" --project="$PROJECT" \
+           >/dev/null 2>&1 && (( $(wc -c < "$S/home_logs/$F") >= SIZE )); then
+        N=$((N + 1))
+      else
+        BAD=$((BAD + 1)); echo "   FAILED: ~/$F"
+      fi
+    done <<< "$LISTING"
+    if (( BAD == 0 )); then
+      HOME_LOGS="pulled"
+      printf '%s\n' "$LISTING" > "$S/home_logs/listing.txt"
+      echo "   pulled $N log(s) (listing in home_logs/listing.txt)"
+    fi
+  else
+    echo "   could not list ~/*.log (SSH may be gone)"
+  fi
+fi
 
 echo "== 3/5 age manifest: which files predate this boot"
 #
@@ -194,6 +237,17 @@ print(int((b - a).total_seconds()))' "$CREATED" "$STOPPED" 2>/dev/null)"
 fi
 
 echo "== 4/5 delete (not stop -- a stopped instance still bills for its disk)"
+if [[ "$HOME_LOGS" == missing ]]; then
+  if [[ -z "${TEARDOWN_DELETE_WITHOUT_HOME_LOGS:-}" ]]; then
+    echo "REFUSING TO DELETE: the instance's ~/*.log were not all pulled (step 2b)." >&2
+    echo "$NAME is still there, bounded by its halt and hard delete. Restore SSH and re-run," >&2
+    echo "or re-run with TEARDOWN_DELETE_WITHOUT_HOME_LOGS='<why>' to delete without them." >&2
+    exit 3
+  fi
+  printf '%s deleted without its ~/*.log: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$TEARDOWN_DELETE_WITHOUT_HOME_LOGS" >> "$S/home_logs_missing.txt"
+  echo "   deleting WITHOUT the home logs: $TEARDOWN_DELETE_WITHOUT_HOME_LOGS (home_logs_missing.txt)"
+fi
 gcloud compute instances delete "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet
 
 echo "== 5/5 verify nothing is left billing"

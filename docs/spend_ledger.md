@@ -109,8 +109,10 @@ authority is the billing console.
 | 2026-11-01 | `attnbench-l4-s4-20261101-1246`, Shakedown 4 (T2.27 replay run A, T2.28 run B, T3.1 rehearsal run C), asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `a0b04da`, cap ₹200, halt 90 min; run A (replay) passed, run B density failed in both compiled groups, t212 passed, t22 failed (kernel split), run C stopped at step 5 of 8 (XAttention's empty-slice `fill_`); fixed or ruled on `shakedown5-rulings-2026-11-01` | **46** | **83** | `session_cost.txt` (`results/shakedown4_l4_20261101/`) |
 | 2026-11-01 | `attnbench-l4-s5-20261101-1634`, Shakedown 5, the last before T3.1 (T3.1 rehearsal run C, T2.27 replay run A, T2.28 run B), asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `b13ef8b`, cap ₹200, halt 90 min; run C stopped at step 4 of 8 (the launch check refused XAttention's chunked boolean `index_put_`), run A (replay) passed, run B density and mask_ab failed (compiled XAttention under `compiled_default`), t212 and t22 passed; a 10-minute diagnosis on the same instance before teardown; fixed on `shakedown5-fixes-2026-11-01` | **64** | **116** | `session_cost.txt` (`results/shakedown5_l4_20261101/`) |
 | 2026-11-01 | `attnbench-l4-s6-20261101-1924`, Shakedown 6 (T3.1 rehearsal run C, T2.28 density run B, the pricing zoo run Z, the T2.21 graph-break report G added at launch), asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `0ea591c`, cap ₹160, halt 85 min; run C passed steps 1 to 4 and stopped at step 5 (the bare timer counted a custom op's re-issues as calls), run B passed `compiled_capture` and failed `compiled_default` (compiled mean-pool recompiled per call), run Z stopped to make room for G after pricing dense, G passed; a 5-minute diagnosis on the same instance before teardown; fixes on `shakedown6-fixes-2026-11-01` | **62** | **112** | `session_cost.txt` (`results/shakedown6_l4_20261101/`) |
+| 2026-11-01 | `attnbench-l4-t31-20261101-2301`, T3.1, the P1 session, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `c38e196`, cap ₹760, halt 420 min, stop at the first failure; steps 1 to 3 passed, step 4 (`probe`) stopped at XAttention's first full recording (2048, after its three probes) with a CUDA illegal memory access in x-attention's `find_blocks_chunked`; no fix or resume in the session | **29** | **53** | `session_cost.txt` (`results/t31_p1/`) |
+| 2026-11-01 | `attnbench-l4-xadiag-20261102-0131`, the XAttention crash diagnostic after T3.1's first session, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `09f2c11` (local), cap ₹120, halt 60 min, hard delete 66 min; cases C, D and E reproduced the illegal memory access at XAttention's first full recording (2048), B and A did not; memcheck on A reported an out-of-bounds read in block-sparse-attn's forward kernel; home logs pulled before the delete | **43** | **78** | `session_cost.txt` (`results/t31_xa_diag/`) |
 
-### New-spend headroom against the ₹14,000 budget (1 Nov 2026, after Shakedown 6)
+### New-spend headroom against the ₹14,000 budget (2 Nov 2026, after the XAttention crash diagnostic)
 
 Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of ₹14,000 at the planning rates. Counted from the rows dated 21 Oct 2026 on:
 
@@ -126,9 +128,11 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | Shakedown 4 (L4) | 83 |
 | Shakedown 5 (L4) | 116 |
 | Shakedown 6 (L4) | 112 |
-| **Total** | **~1,377** |
+| T3.1, first P1 session (L4) | 53 |
+| XAttention crash diagnostic (L4) | 78 |
+| **Total** | **~1,508** |
 
-Headroom: ₹14,000 − ₹1,377 = **about ₹12,623**. This counts only the rows above. Machine-image storage (the v7 image), egress and any launch not yet in this table are not in it. H100 Flex attempt 1 (31 Oct 2026, us-central1-a) was not granted and billed nothing; it has no row, and neither have the retry loop's later attempts (55 to 1 Nov 2026 08:44Z, none granted, nothing billed: `logs/flex_attempts.tsv` on the Mac). The first FA3 build is ₹176 from its cost file; the ₹175 reported at the time was read before the teardown and is superseded. Nothing here is a go-ahead for a launch: caps are per session (rule 10).
+Headroom: ₹14,000 − ₹1,508 = **about ₹12,492**. This counts only the rows above. Machine-image storage (the v7 image), egress and any launch not yet in this table are not in it. H100 Flex attempt 1 (31 Oct 2026, us-central1-a) was not granted and billed nothing; it has no row, and neither have the retry loop's later attempts (55 to 1 Nov 2026 08:44Z, none granted, nothing billed: `logs/flex_attempts.tsv` on the Mac). The first FA3 build is ₹176 from its cost file; the ₹175 reported at the time was read before the teardown and is superseded. Nothing here is a go-ahead for a launch: caps are per session (rule 10).
 
 **Notes on the table (18 Oct 2026).**
 
