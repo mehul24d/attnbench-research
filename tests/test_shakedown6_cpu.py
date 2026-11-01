@@ -131,11 +131,13 @@ def test_a_number_in_a_tensor_argument_runs_as_a_leaf():
 
 class Layer(torch.nn.Module):
     """A copy to another dtype (a composite: `_to_copy` over `copy_`), a
-    multiply and an add (leaves)."""
+    multiply and an add of tensors (leaves that launch their own kernels; a
+    Python number would be copied to the device first, a child)."""
 
     def forward(self, x):
-        y = x.to(torch.float64) * 2
-        return y.to(torch.float32) + 1
+        y = x.to(torch.float64)
+        y = y * y
+        return y.to(torch.float32) + x
 
 
 def _recorded(tmp_path):
