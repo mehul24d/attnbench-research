@@ -87,6 +87,15 @@ compiled variant's code path, and the recompile gate. Behind the boundary a
 bare call runs its CPU compute, which the null pass skips, so the CPU's
 instrumented/bare ratios mean nothing; `pricing_zoo` takes
 `--cpu-boundary` for the same reason it is a dry run, not a measurement.
+`tests/test_shakedown6_rulings.py` holds the rulings after Shakedown 6:
+once-only host pricing on Shakedown 6's own XAttention sequence (the
+committed fixture `tests/fixtures/s6_xattention_2048_layer0.json.gz` is its
+first 187 operations; with `results/` present the whole sequence is tested
+too), with its conservation test; the kernel interface outside Dynamo for
+every block-sparse arm, behind the boundary, where `t227_steps.py
+graph-breaks-one --cpu-boundary` now runs; the per-layer residual; and the
+null pass's speed-ups. `scripts/t31_projection.py` prints T3.1's projected
+step durations from Shakedown 6's banked anchors.
 
 ## Earlier work in this repository
 
