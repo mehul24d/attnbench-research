@@ -615,24 +615,46 @@ def density_one(args) -> int:
 
 # --- the mask-output A/B -------------------------------------------------------------------
 
+# The A/B's processes, one side each: two compiled wrappers of one arm in one
+# process share `block_sparse_attn`'s resume frames, whose cache entries the
+# other side's calls invalidate, and Shakedown 5's interleaved run reached
+# Dynamo's recompile limit (256); each side alone compiles in two prefills.
+AB_ORDER = ("without_mask_output", "with_mask_output", "with_mask_output", "without_mask_output")
+
+
 def step_mask_ab(args) -> dict:
     """Compiled XAttention (`compiled_default`) timed with its mask as an
     output of the compiled function (B, how T3.1 times it, so the timed graph
-    is its density twin's) and without (A, the output alone), interleaved, at
-    `--length` (researcher's ruling, 1 Nov 2026). In a process of its own,
-    as every compiled setting runs. A finding: if the difference is
-    material, compiled rows take their density from the eager twin, labelled
-    `compiled.EAGER_TWIN_LABEL`; the researcher rules on it."""
+    is its density twin's) and without (A, the output alone), at `--length`
+    (researcher's ruling, 1 Nov 2026). One side per process, in the order
+    `AB_ORDER`, so drift falls on both sides alike. A finding: if the
+    difference is material, compiled rows take their density from the eager
+    twin, labelled `compiled.EAGER_TWIN_LABEL`; the researcher rules on it."""
     _need_cuda(args, "the compiled arm's CUDA graphs")
     out = Path(args.out)
-    rc = _run(_py("t228_steps.py", "mask-ab-one", "--out", str(out), "--length",
-                  str(args.length), "--reps", str(args.reps), "--warmup", str(args.warmup),
-                  *(["--dry-run"] if args.dry_run else []),
-                  *(["--cpu-boundary"] if getattr(args, "cpu_boundary", False) else [])))
-    path = out / "mask_ab.json"
-    found = json.loads(path.read_text()) if path.exists() else {"rc": rc}
-    if rc:
-        raise StepFailed("the mask-output A/B failed; see its log", found)
+    times: dict = {k: [] for k in AB_ORDER}
+    runs = []
+    for i, side in enumerate(AB_ORDER):
+        part = out / f"mask_ab_{i}_{side}.json"
+        rc = _run(_py("t228_steps.py", "mask-ab-one", "--out", str(out), "--side", side,
+                      "--part", str(i), "--length", str(args.length), "--reps", str(args.reps),
+                      "--warmup", str(args.warmup),
+                      *(["--dry-run"] if args.dry_run else []),
+                      *(["--cpu-boundary"] if getattr(args, "cpu_boundary", False) else [])))
+        if rc or not part.exists():
+            raise StepFailed(f"the mask-output A/B failed in process {i} ({side}); see its log",
+                             {"rc": rc, "process": i, "side": side, "runs": runs})
+        run = json.loads(part.read_text())
+        runs.append({k: v for k, v in run.items() if k != "rounds_s"})
+        times[side] += run["rounds_s"]
+    first = runs[0]
+    found = {"arm": "xattention", "compile_setting": "default", "length": first["length"],
+             "prompt_id": first["prompt_id"], "reps": args.reps, "warmup": args.warmup,
+             "order": list(AB_ORDER), "runs": runs, **ab_summary(times), "rounds_s": times,
+             "if_material": first["if_material"]}
+    _write_json(out / "mask_ab.json", found)
+    print(f"  mask output: B - A = {found['b_minus_a_ms']:+.3f} ms "
+          f"({found['b_minus_a_pct']:+.2f}%), spread {found['spread_ms']:.3f} ms", flush=True)
     return found
 
 
@@ -649,47 +671,46 @@ def ab_summary(times: dict) -> dict:
 
 
 def mask_ab_one(args) -> int:
+    """One side of the A/B (`--side`) in its own process: `--warmup` prefills
+    to compile, then `--reps` timed ones, none of which may compile."""
     import torch
     from attnbench import cpu_boundary
     from attnbench import ground_truth as gt
-    from attnbench.backends.compiled import EAGER_TWIN_LABEL, CompiledBackend
+    from attnbench.backends import compiled
     from attnbench.components.shakedown_arms import ARMS
+    if args.side not in AB_ORDER:
+        raise SystemExit(f"--side must be one of {sorted(set(AB_ORDER))}")
     h = _harness(args)
     eager = h._backend(ARMS["xattention"])
-    kw = cpu_boundary.compile_kwargs()
-    sides = {"with_mask_output": CompiledBackend(eager, "default", **kw),
-             "without_mask_output": CompiledBackend(eager, "default", mask_output=False, **kw)}
+    be = compiled.CompiledBackend(eager, "default",
+                                  mask_output=args.side == "with_mask_output",
+                                  **cpu_boundary.compile_kwargs())
     wrapped, ids, prompt_id, arms, score_kwargs = h.timing_arms(
         ["dense", "xattention"], args.length, densities=[None, None],
-        backends=[None, sides["with_mask_output"]], compile_settings=[None, "default"])
+        backends=[None, be], compile_settings=[None, "default"])
     a = arms[1]
     setup = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
     sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
 
-    def once(backend) -> float:
+    def once() -> float:
         sync()
         t0 = time.perf_counter()
-        wrapped.run_measured(ids, backend, cfg=a.cfg, logits_to_keep=1, **setup)
+        wrapped.run_measured(ids, be, cfg=a.cfg, logits_to_keep=1, **setup)
         sync()
         return time.perf_counter() - t0
-    for be in sides.values():
-        for _ in range(args.warmup):                    # each side compiles here
-            once(be)
-    times: dict = {k: [] for k in sides}
-    for r in range(args.reps):
-        order = list(sides) if r % 2 == 0 else list(reversed(sides))
-        for k in order:
-            times[k].append(once(sides[k]))
+    for _ in range(args.warmup):                        # compiles here
+        once()
+    before = compiled.graphs_compiled()
+    times = [once() for _ in range(args.reps)]
     h.unwrap()
-    found = {"arm": "xattention", "compile_setting": "default", "length": int(ids.shape[-1]),
-             "prompt_id": prompt_id, "reps": args.reps, "warmup": args.warmup,
-             "recompiles": {k: be.recompiles for k, be in sides.items()},
-             **ab_summary(times), "rounds_s": times,
-             "if_material": f"compiled rows' density from the eager twin, labelled "
-                            f"{EAGER_TWIN_LABEL!r}"}
-    _write_json(Path(args.out) / "mask_ab.json", found)
-    print(f"  mask output: B - A = {found['b_minus_a_ms']:+.3f} ms "
-          f"({found['b_minus_a_pct']:+.2f}%), spread {found['spread_ms']:.3f} ms", flush=True)
+    if compiled.graphs_compiled() != before:
+        raise SystemExit(f"{compiled.graphs_compiled() - before} graphs compiled inside the "
+                         f"timed prefills; raise --warmup")
+    _write_json(Path(args.out) / f"mask_ab_{args.part}_{args.side}.json", {
+        "side": args.side, "length": int(ids.shape[-1]), "prompt_id": prompt_id,
+        "compiles": len(be.events), "rounds_s": times,
+        "if_material": f"compiled rows' density from the eager twin, labelled "
+                       f"{compiled.EAGER_TWIN_LABEL!r}"})
     return 0
 
 
@@ -783,6 +804,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--builder-lengths", default="2048,4096,8192,16384,32768")
     ap.add_argument("--builder-reps", type=int, default=10)
     ap.add_argument("--group", default=None, help="density-one: the ground-truth group")
+    ap.add_argument("--side", default=None, help="mask-ab-one: the A/B side")
+    ap.add_argument("--part", type=int, default=0, help="mask-ab-one: the process's place in AB_ORDER")
     return ap
 
 

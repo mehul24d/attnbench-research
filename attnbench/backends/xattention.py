@@ -211,6 +211,13 @@ class XAttentionBackend(AttentionBackend):
     def set_layer(self, layer_idx: int) -> None:
         self.layer_idx = layer_idx
 
+    def prepare_eager(self, q: torch.Tensor) -> None:
+        """Build this layer's threshold row on q's device before a compiled
+        forward, outside the graph. Built inside it, the cached row was a
+        CUDA-graph output, and the next prefill read it after a replay had
+        overwritten it (Shakedown 5, `compiled_default`, 1 Nov 2026)."""
+        self._threshold_for(q, q.shape[1])
+
     def _threshold_for(self, q: torch.Tensor, n_heads: int):
         """The scalar, or this layer's row of the table as a per-head tensor
         on q's device -- the form `Xattention_prefill` receives in the

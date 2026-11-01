@@ -236,6 +236,8 @@ class CompiledBackend:
         return out
 
     def forward(self, q, k, v, cfg: AttnConfig, mask=None):
+        if hasattr(self.arm, "prepare_eager"):    # state the arm caches, built outside the graph
+            self.arm.prepare_eager(q)
         if not self.mask_output:
             return self._call(self._forward, q, k, v, cfg, mask=mask)
         if self._twin:

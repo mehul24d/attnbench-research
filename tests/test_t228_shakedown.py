@@ -618,18 +618,31 @@ def test_the_a_b_summary_is_b_minus_a_with_the_wider_spread():
     assert got["spread_ms"] == max(r["iqr_ms"] for r in got["arms"].values())
 
 
-def test_the_a_b_step_runs_its_child_and_fails_when_the_child_does(tmp_path, monkeypatch):
+def test_the_a_b_step_runs_one_side_per_process_and_pools_the_rounds(tmp_path, monkeypatch):
+    # Shakedown 5: both sides in one process reached Dynamo's recompile limit.
     monkeypatch.setattr(st, "_need_cuda", lambda args, what: None)
     seen = []
 
     def run(cmd):
-        seen.append(cmd)
-        (tmp_path / "mask_ab.json").write_text(json.dumps({"b_minus_a_ms": 0.1}))
+        side, part = cmd[cmd.index("--side") + 1], cmd[cmd.index("--part") + 1]
+        seen.append(side)
+        t = 0.0101 if side == "with_mask_output" else 0.0100
+        (tmp_path / f"mask_ab_{part}_{side}.json").write_text(json.dumps(
+            {"side": side, "length": 8075, "prompt_id": "p", "compiles": 31,
+             "rounds_s": [t, t], "if_material": "x"}))
         return 0
     monkeypatch.setattr(st, "_run", run)
     found = st.step_mask_ab(_args(tmp_path, "mask_ab", dry_run=False))
-    assert found == {"b_minus_a_ms": 0.1} and "mask-ab-one" in seen[0]
+    assert seen == list(st.AB_ORDER) == ["without_mask_output", "with_mask_output",
+                                         "with_mask_output", "without_mask_output"]
+    assert found["rounds_s"]["with_mask_output"] == [0.0101] * 4
+    assert found["b_minus_a_ms"] == pytest.approx(0.1)
+    assert json.loads((tmp_path / "mask_ab.json").read_text())["b_minus_a_ms"] == \
+        pytest.approx(0.1)
+
+
+def test_the_a_b_step_fails_when_a_side_s_process_does(tmp_path, monkeypatch):
+    monkeypatch.setattr(st, "_need_cuda", lambda args, what: None)
     monkeypatch.setattr(st, "_run", lambda cmd: 1)
-    (tmp_path / "mask_ab.json").unlink()
-    with pytest.raises(st.StepFailed, match="A/B failed"):
+    with pytest.raises(st.StepFailed, match=r"A/B failed in process 0 \(without_mask_output\)"):
         st.step_mask_ab(_args(tmp_path, "mask_ab", dry_run=False))
