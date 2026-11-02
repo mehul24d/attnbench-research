@@ -256,3 +256,44 @@ def test_a_replayed_scalar_setitem_builds_its_value_on_the_device():
     assert any(f.startswith("aten.full") for f in ops.seen[:put])
     assert not any(f.startswith(("aten.lift_fresh", "aten._to_copy", "aten.scalar_tensor"))
                    for f in ops.seen[:put])
+
+
+def test_an_integer_indexed_assignment_of_a_number_is_a_device_fill_in_the_replay():
+    """XAttention's `find_blocks_chunked`: `mask[:, rows, index] = True`. Its value
+    is a host tensor, and the copy to the device is not permitted during graph
+    capture (the debug session's L4 capture, 2 Nov 2026). It records no
+    interaction, so the replay serves it from a device fill and consumes no entry."""
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class Ops(TorchDispatchMode):
+        def __init__(self):
+            super().__init__()
+            self.seen = []
+
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            self.seen.append(str(func))
+            return func(*args, **(kwargs or {}))
+
+    def setter(m, rows, index):
+        m[:, rows, index] = True
+        return m
+
+    m0 = torch.zeros(1, 4, 3, dtype=torch.bool)
+    rows = torch.arange(4).unsqueeze(-1)
+    index = torch.tensor([[[0, 2], [1, 2], [0, 1], [2, 2]]])
+    tape, rec = record(setter, m0.clone(), rows, index)
+    assert len(tape) == 0
+    rep = TapeReplayer(tape)
+    with rep, Ops() as ops:
+        out = setter(m0.clone(), rows, index)
+    rep.finish()
+    assert torch.equal(out, rec)
+    put = next(i for i, f in enumerate(ops.seen) if f.startswith("aten.index_put"))
+    assert any(f.startswith("aten.full") for f in ops.seen[:put])
+    assert not any(f.startswith(("aten.lift_fresh", "aten._to_copy", "aten.scalar_tensor"))
+                   for f in ops.seen[:put])
+    plain = TapeReplayer(tape, serve_setitem=False)         # the null pass keeps the recorded call
+    with plain, Ops() as ops:
+        again = setter(m0.clone(), rows, index)
+    assert torch.equal(again, rec)
+    assert not any(f.startswith("aten.full") for f in ops.seen)

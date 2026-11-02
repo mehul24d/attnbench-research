@@ -531,3 +531,53 @@ def test_the_original_isolated_replay_runs_the_operators_not_the_tape(tmp_path):
     RP.isolated_replay(prefill, rec.tape, tmp_path / "t.json", **kw)
     RP.isolated_replay(prefill, rec.tape, tmp_path / "o.json", substitute=False, **kw)
     assert seen == [6, 6, 10]                       # recorded, served from the tape, live
+
+
+# --- a debug session's lenient pricing (2 Nov 2026) ---------------------------------------
+
+_CP = ("void at::native::{}<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::"
+       "{{lambda()#3}}::operator()() const::{{lambda()#1}}::operator()() const::"
+       "{{lambda({})#1}}>(at::TensorIteratorBase&)")
+COPY_EW = _CP.format("elementwise_kernel<128, 4, at::native::gpu_kernel_impl", "unsigned char")
+COPY_UNROLLED = _CP.format("unrolled_elementwise_kernel", "unsigned char")
+COPY_OTHER_TYPE = _CP.format("unrolled_elementwise_kernel", "float")
+
+SEQ_COPY = OpSequence(code_path=CP, context_length=4096, batch=1, streams=(7,), ops=(
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::eq", kernels=("eq",)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::copy_", kernels=(COPY_EW,)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::mm", kernels=("gemm",)),
+))
+GRAPH_COPY = nodes(("eq", 1.0), ("stand_in_fill", 0.5), ("gemm", 4.0))
+
+
+def test_a_copy_matches_its_other_launch_variant_only_when_asked_and_by_element_type():
+    other = nodes(("eq", 1.5), ("Memcpy DtoH (Device -> Pinned)", 0.1), (COPY_UNROLLED, 0.75),
+                  ("gemm", 4.5))
+    assert RP.match(SEQ_COPY, other).unmatched_positions == (1,)
+    m = RP.match(SEQ_COPY, other, variants=True)
+    assert m.unmatched_positions == () and m.variant_matched == (1,)
+    assert m.device_s[1] == 0.75 and m.extra_nodes == ("Memcpy DtoH (Device -> Pinned)",)
+    wrong = nodes(("eq", 1.5), (COPY_OTHER_TYPE, 0.75), ("gemm", 4.5))
+    assert RP.match(SEQ_COPY, wrong, variants=True).unmatched_positions == (1,)
+
+
+def test_lenient_pricing_takes_a_variant_and_counts_the_originals_extra_nodes():
+    g = RP.match(SEQ_COPY, GRAPH_COPY)
+    assert g.unmatched_positions == (1,)
+    o = RP.match(SEQ_COPY, nodes(("eq", 1.5), ("Memcpy DtoH (Device -> Pinned)", 0.1),
+                                 (COPY_UNROLLED, 0.75), ("gemm", 4.5)), variants=True)
+    p = RP.price_positions(SEQ_COPY, g, o, lenient=True)
+    assert p.source == {0: RP.GRAPH, 1: RP.ISOLATED_VARIANT, 2: RP.GRAPH}
+    assert p.device_s == {0: 1.0, 1: 0.75, 2: 4.0} and p.original_extra_nodes == 1
+    with pytest.raises(ReplayError, match="does not match the sequence"):
+        RP.price_positions(SEQ_COPY, g, o)                 # the strict rule is the default
+
+
+def test_lenient_pricing_still_refuses_a_position_no_original_node_matches():
+    g = RP.match(SEQ_COPY, GRAPH_COPY)
+    o = RP.match(SEQ_COPY, nodes(("eq", 1.5), (COPY_OTHER_TYPE, 0.75), ("gemm", 4.5)),
+                 variants=True)
+    with pytest.raises(ReplayError, match="1 of the 1 substituted positions are not matched"):
+        RP.price_positions(SEQ_COPY, g, o, lenient=True)
+    with pytest.raises(ReplayError, match="which was not run"):
+        RP.price_positions(SEQ_COPY, g, None, lenient=True)

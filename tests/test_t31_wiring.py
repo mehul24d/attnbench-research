@@ -269,9 +269,9 @@ def _components(monkeypatch, h, check=CHECK, gate_ok=True):
     monkeypatch.setattr(replay, "mask_agreement", lambda cap: None)
     monkeypatch.setattr(replay, "profile_replay", lambda cap, p: p)
     monkeypatch.setattr(replay, "replay_nodes", lambda p, **k: [])
-    monkeypatch.setattr(replay, "match", lambda seq, nodes: SimpleNamespace(complete=True))
-    monkeypatch.setattr(replay, "price_positions", lambda seq, m, o: SimpleNamespace(
-        device_s=dev, counts=lambda: {"graph": len(dev)}))
+    monkeypatch.setattr(replay, "match", lambda seq, nodes, **k: SimpleNamespace(complete=True))
+    monkeypatch.setattr(replay, "price_positions", lambda seq, m, o, **k: SimpleNamespace(
+        device_s=dev, original_extra_nodes=0, counts=lambda: {"graph": len(dev)}))
 
 
 def _session(tmp_path):
@@ -370,7 +370,7 @@ def test_a_cell_the_replay_cannot_price_stops_the_step(tmp_path, monkeypatch):
                         out=str(st.step_dir(session, "host_components")))
     st.step_host_components(a, cfg)
 
-    def refuse(*x):
+    def refuse(*x, **k):
         raise replay.ReplayError("position 3 has no cost")
     monkeypatch.setattr(replay, "price_positions", refuse)
     a.out = str(st.step_dir(session, "device_components"))

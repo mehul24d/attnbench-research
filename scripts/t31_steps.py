@@ -1345,7 +1345,7 @@ def memset_zoo(out: Path) -> dict[int, float]:
     return zoo
 
 
-def device_cell(h, out: Path, session: Path, cell) -> dict:
+def device_cell(h, out: Path, session: Path, cell, *, lenient: bool = False) -> dict:
     """One cell of step 6, in this process: its `cells.json` entry."""
     import pandas as pd
     import torch
@@ -1382,9 +1382,10 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
         torch.cuda.synchronize()
         orig = replay.isolated_replay(a.run_prefill, rec.tape, cd / "isolated_original.json",
                                       device=_device(), masks=rec.masks, substitute=False)
-        original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH))
+        original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH),
+                                variants=lenient)
     try:
-        pricing = replay.price_positions(rec.sequence, m, original)
+        pricing = replay.price_positions(rec.sequence, m, original, lenient=lenient)
     except replay.ReplayError as e:
         raise StepFailed(f"{c['dir']}: {e}")
     prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
@@ -1406,6 +1407,7 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
             "context_length": c["context_length"], "budget": c["budget"],
             "batch": c["batch"], "prompt_id": c["prompt_id"],
             "code_path": c["code_path"], "cost_sources": pricing.counts(),
+            **({"original_extra_nodes": pricing.original_extra_nodes} if lenient else {}),
             "ops": [op_to_dict(op) for op in priced],
             **({"memset_flags": memsets} if memsets else {})}
 
@@ -1419,7 +1421,8 @@ def run_device_cell(args, cfg, cell):
 def _device_cell_entry(args, cfg, cell) -> dict:
     _need_gpu("the CUDA-graph replay")
     h = _harness(args)
-    entry = device_cell(h, Path(args.out), Path(args.session), cell)
+    entry = device_cell(h, Path(args.out), Path(args.session), cell,
+                        **({"lenient": True} if cfg.get("debug") else {}))
     h.unwrap()
     return entry
 

@@ -80,6 +80,7 @@ from __future__ import annotations
 import bisect
 import difflib
 import json
+import re
 import statistics
 import time
 from collections import defaultdict
@@ -100,6 +101,9 @@ FLUSH = "attnbench::isolation_flush"
 SCHEMA = "attnbench.replay/2"
 SCHEMAS_READ = ("attnbench.replay/1", SCHEMA)
 GRAPH, ISOLATED_ORIGINAL = "graph", "isolated_original"
+# a position priced from the isolated original's kernel of another launch
+# variant of the same copy (`match(variants=True)`); a debug session's, until ruled on
+ISOLATED_VARIANT = "isolated_original_variant"
 NEVER_WRITTEN = 2          # in a live-mask buffer: no replay has written it (a mask is 0 or 1)
 # The aten operators issuing the device work at a position the tape
 # substitutes (`sync_tape.SUBSTITUTED_KINDS`): `nonzero` (and `torch.where`
@@ -377,6 +381,7 @@ class Match:
     families_unmatched: dict       # family -> count of unmatched positions
     n_expected: int
     n_nodes: int
+    variant_matched: tuple = ()    # positions matched to a node of another launch variant
 
     @property
     def complete(self) -> bool:
@@ -388,29 +393,45 @@ def expected_nodes(seq: OpSequence) -> list[tuple[int, str]]:
     return [(i, name) for i, op in seq.device_ops() for name in op.kernels]
 
 
-def _same_activity(name: str) -> str:
+_COPY_TYPE = re.compile(r"\{lambda\(([^)]*)\)#\d+\}")
+
+
+def _same_activity(name: str, variants: bool = False) -> str:
     """The name two activities are compared by. A memset's memory kind is
     part of its name in a trace: "Memset (Device)" in an eager run and
     "Memset (Unknown)" for a CUDA graph's memset node, which has no
     allocation to name (found by the debug session, 2 Nov 2026: every
     memset of `dense_d1_L2048_b1`, 140 of them, was unmatched on the name
-    alone). The kind is left out; nothing else is."""
-    return "Memset" if name.startswith("Memset (") and name.endswith(")") else name
+    alone). The kind is left out; nothing else is. With `variants`, a
+    device copy kernel is named by the element type it copies: PyTorch picks
+    `elementwise_kernel<128, 4, ...>` or `unrolled_elementwise_kernel<...>`
+    for the same copy by the operands' alignment (found by the debug session,
+    2 Nov 2026: 28 copies of an oracle cell's isolated original)."""
+    if name.startswith("Memset (") and name.endswith(")"):
+        return "Memset"
+    if variants and "direct_copy_kernel_cuda" in name:
+        kinds = _COPY_TYPE.findall(name)
+        if kinds:
+            return f"direct_copy_kernel_cuda({kinds[-1]})"
+    return name
 
 
-def match(seq: OpSequence, nodes: Sequence[Node]) -> Match:
+def match(seq: OpSequence, nodes: Sequence[Node], *, variants: bool = False) -> Match:
     exp = expected_nodes(seq)
-    a = [_same_activity(name) for _, name in exp]
-    b = [_same_activity(n.name) for n in nodes]
+    a = [_same_activity(name, variants) for _, name in exp]
+    b = [_same_activity(n.name, variants) for n in nodes]
     sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
     got = [False] * len(a)
     used = [False] * len(b)
     device: dict = defaultdict(float)
+    varied: set = set()
     for blk in sm.get_matching_blocks():
         for k in range(blk.size):
             pos = exp[blk.a + k][0]
             device[pos] += nodes[blk.b + k].duration_s
             got[blk.a + k] = used[blk.b + k] = True
+            if variants and _same_activity(exp[blk.a + k][1]) != _same_activity(nodes[blk.b + k].name):
+                varied.add(pos)
     missing = sorted({exp[k][0] for k in range(len(a)) if not got[k]})
     fam: dict = defaultdict(int)
     for p in missing:
@@ -419,7 +440,7 @@ def match(seq: OpSequence, nodes: Sequence[Node]) -> Match:
         device.pop(p, None)
     return Match(dict(device), tuple(missing),
                  tuple(nodes[k].name for k in range(len(b)) if not used[k]),
-                 dict(fam), len(a), len(b))
+                 dict(fam), len(a), len(b), tuple(sorted(varied - set(missing))))
 
 
 def device_costs(m: Match) -> dict[int, float]:
@@ -437,6 +458,7 @@ class Pricing:
     device_s: dict                 # position -> device seconds, every device position
     source: dict                   # position -> GRAPH or ISOLATED_ORIGINAL
     substitute_nodes: tuple        # the graph's stand-in kernels, priced nowhere
+    original_extra_nodes: int = 0  # nodes of the isolated original no position owns (lenient)
 
     def counts(self) -> dict[str, int]:
         out: dict = defaultdict(int)
@@ -445,10 +467,18 @@ class Pricing:
         return dict(out)
 
 
-def price_positions(seq: OpSequence, graph: Match, original: Optional[Match]) -> Pricing:
+def price_positions(seq: OpSequence, graph: Match, original: Optional[Match], *,
+                    lenient: bool = False) -> Pricing:
     """c_dev for every device position: from the in-order graph where it
     holds the position as recorded, else from the isolated replay of the
-    original operator (module docstring, "Substituted positions")."""
+    original operator (module docstring, "Substituted positions").
+
+    `lenient` (a debug session's, 2 Nov 2026, until the researcher rules on
+    it): the original needs only to match the positions the graph misses, and
+    its nodes no position owns are counted, not refused (every sparse cell's
+    original has them: an eager run's host-to-device copies and syncs the
+    recording's trace does not hold); a position matched to another launch
+    variant of its copy is priced from it and marked `ISOLATED_VARIANT`."""
     if graph.complete:
         return Pricing(dict(graph.device_s), {i: GRAPH for i in graph.device_s}, ())
     missing = graph.unmatched_positions
@@ -461,6 +491,18 @@ def price_positions(seq: OpSequence, graph: Match, original: Optional[Match]) ->
             f"{len(other)} unmatched positions are not substitutions "
             f"({sorted({operation_family(seq.ops[i]) for i in other})}); "
             f"no device cost is taken from a different kernel")
+    if lenient and original is not None:
+        unpriced = sorted(set(missing) & set(original.unmatched_positions))
+        if not unpriced:
+            costs, source = dict(graph.device_s), {i: GRAPH for i in graph.device_s}
+            for i in missing:
+                costs[i] = original.device_s[i]
+                source[i] = (ISOLATED_VARIANT if i in original.variant_matched
+                             else ISOLATED_ORIGINAL)
+            return Pricing(dict(sorted(costs.items())), dict(sorted(source.items())),
+                           tuple(graph.extra_nodes), len(original.extra_nodes))
+        raise ReplayError(f"{len(unpriced)} of the {len(missing)} substituted positions are "
+                          f"not matched even by the isolated original's launch variants")
     if original is None or not original.complete:
         why = "was not run" if original is None else (
             f"does not match the sequence ({len(original.unmatched_positions)} positions "
