@@ -189,6 +189,54 @@ def test_replay_nodes_reads_the_device_work_of_the_region_in_device_order():
     assert "flush" in [n.name for n in RP.replay_nodes(t.dict())]
 
 
+def _flushed_trace(n, rng=None, nest=False):
+    """n launches in the region; a flush annotation around some of them (optionally
+    nested or overlapping), so some host calls fall inside one and some do not."""
+    t = Trace()
+    t.x("user_annotation", RP.REPLAY_REGION, 0, 10 * n + 100)
+    for i in range(n):
+        ts = 10 + 10 * i
+        wraps = rng is None or rng.random() < 0.5
+        if wraps:
+            span = (rng.choice([4, 9, 25, 60]) if (rng and nest) else 8)
+            t.x("user_annotation", RP.FLUSH, ts - 1, span)
+        t.launch(ts, f"k{i}")
+    return t
+
+
+def _brute_replay_names(t, exclude):
+    trace = RP.op_sequence.load_trace(t.dict())
+    events = RP.op_sequence._events(trace)
+    reg = [e for e in events if e.cat == "user_annotation" and e.name == RP.REPLAY_REGION][0]
+    skips = [e for e in events if e.cat == "user_annotation" and e.name == exclude]
+    keep = set()
+    for e in events:
+        if e.cat in RP.op_sequence._HOST_CATS and e.ts >= reg.ts and e.end <= reg.end:
+            if not any(s.ts <= e.ts and e.end <= s.end for s in skips):
+                keep.add(RP.op_sequence._int_arg(e.args, "correlation"))
+    return sorted(n.name for n in RP.replay_nodes(t.dict())
+                  if n.correlation in keep)
+
+
+@pytest.mark.parametrize("nest", [False, True])
+def test_replay_nodes_exclusion_agrees_with_a_scan_of_every_skip(nest):
+    import random
+    rng = random.Random(7)
+    t = _flushed_trace(300, rng, nest=nest)
+    got = sorted(n.name for n in RP.replay_nodes(t.dict(), exclude=RP.FLUSH))
+    assert got == _brute_replay_names(t, RP.FLUSH)
+    assert 0 < len(got) < 300
+
+
+def test_replay_nodes_exclusion_is_not_quadratic_in_the_flushes():
+    import time
+    t = _flushed_trace(60000)
+    t0 = time.perf_counter()
+    nodes = RP.replay_nodes(t.dict(), exclude=RP.FLUSH)
+    assert len(nodes) < 60000
+    assert time.perf_counter() - t0 < 10     # a scan of every skip per call takes about a minute here
+
+
 def test_replay_nodes_needs_exactly_one_region():
     t = Trace()
     with pytest.raises(ReplayError, match="0 'attnbench::replay' regions"):

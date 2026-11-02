@@ -77,6 +77,7 @@ The graph is behind `GraphBackend` so the bookkeeping is tested on CPU with
 
 from __future__ import annotations
 
+import bisect
 import difflib
 import json
 import statistics
@@ -341,11 +342,20 @@ def replay_nodes(trace: Union[str, Path, Mapping], *, region: str = REPLAY_REGIO
         raise ReplayError(f"{len(regions)} {region!r} regions in the trace, expected one")
     reg = regions[0]
     inside = lambda e: e.ts >= reg.ts - op_sequence._EPS and e.end <= reg.end + op_sequence._EPS
-    skips = [e for e in events if exclude and e.cat == "user_annotation" and e.name == exclude]
+    skips = sorted((e for e in events if exclude and e.cat == "user_annotation" and e.name == exclude),
+                   key=lambda s: s.ts)
+    starts = [s.ts for s in skips]
+    reach, far = [], float("-inf")      # reach[i]: the latest end among the first i+1 skips
+    for s in skips:
+        far = max(far, s.end)
+        reach.append(far)
+    # an isolated replay has one flush per operator, so a scan of every skip for every
+    # host event is quadratic (an 8192-token oracle cell ran 14 minutes in it, 2 Nov 2026)
+    skipped = lambda e: (i := bisect.bisect_right(starts, e.ts)) > 0 and e.end <= reach[i - 1]
     keep: set = set()
     for e in events:
         if e.cat in op_sequence._HOST_CATS and inside(e) and (e.pid, e.tid) == (reg.pid, reg.tid):
-            if any(s.ts <= e.ts and e.end <= s.end for s in skips):
+            if skipped(e):
                 continue
             c = op_sequence._int_arg(e.args, "correlation")
             if c is not None:
