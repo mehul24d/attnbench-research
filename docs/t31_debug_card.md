@@ -100,6 +100,21 @@ bash scripts/gcp_teardown_session.sh "$NAME" "$ZONE" results/t31_dbg_s1   # not 
 bash scripts/gcp_cleanup_check.sh
 ```
 
+## Step 6 on the large oracle cells
+
+The debug session's step 6 prices `oracle_d0.25_L32768` from the staged host
+cell. Its manifest peak says whether step 6's own full reads (the original
+operators' replay trace where the graph does not match, the recording's trace
+where memsets are flagged) fit: step 6 for `oracle_d0.5_L32768` would be about
+twice that. That is the only step-6 evidence for the large cell before the
+T3.1 session.
+
+**An option for the researcher:** run `oracle_d0.5_L32768` in step 5 of this
+session too (leave it out of `not_measured`), which measures the segmented
+replay's real peak on the card before the T3.1 session depends on it. About
+35 to 60 minutes and ₹65 to ₹110 more, and the cap grows by the same. The
+ruling marks the cell not measured; this runs only on the researcher's word.
+
 ## What it settles, and what it does not
 
 It settles whether steps 6 to 11 run on the card, and every defect in them

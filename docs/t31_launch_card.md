@@ -132,7 +132,7 @@ GiB. The first cells' manifests will show it.
 
 | Cell | Largest phase | Above base | Peak | Against 26 |
 |---|---|---|---|---|
-| `oracle_d0.5_L32768` | the isolated trace's export (5.7 GB) | 12.2 | 15 to 18 | 8 to 11 GiB under |
+| `oracle_d0.5_L32768` | the isolated trace's export (5.7 GB) | 12.2 projected, **killed at the ceiling** | 15 to 18 projected, **killed at 26** | see the section below |
 | | (reading it in full, before the fix) | (15.4) | (18 to 21) | |
 | `oracle_d0.25_L32768` | the isolated trace's export (3.1 GB) | 6.6 | 10 to 13 | |
 | `oracle_d0.5_L16384` | the isolated trace's export (1.5 GB) | 3.3 | 6 to 9 | |
@@ -142,6 +142,45 @@ The profiler's figure is from a CPU-only run. With CUDA activity it may hold
 more per event. Even if it held twice as much, `oracle_d0.5_L32768` would
 peak at 30 GiB. That is over the ceiling, so the guard would stop that cell
 alone and record it.
+
+## The isolated replay in blocks of layers (2 Nov 2026, after the fourth session)
+
+The fourth session measured what the table above projected. `oracle_d0.25_L32768`
+peaked at 15.7 GiB (projected 10 to 13), and `oracle_d0.5_L32768` was killed
+at the 26 GiB ceiling in the isolated replay's profiler. The profiler holds
+about five times the trace it exports (15.7 GiB for 14.0 M events at density
+0.25), so density 0.5 needs about 29 GiB there. The table's
+"8 to 11 GiB under" row is withdrawn.
+
+Step 5's isolated replay now runs in blocks of two decoder layers
+(`replay.isolated_replay_compact`, `ISOLATED_SEGMENT_LAYERS`; a config may set
+`isolated_segment_layers`, 0 for one session): a profiler session per block,
+rolled from the layer's forward pre-hook (between operators, so no call is
+cut), each block exported, compacted and deleted before the next opens, the
+blocks' compact streams joined into the one stream the readers take
+(`trace_stream.stitch_compact`). The replay prices each operator alone, so
+the join is a concatenation, not a merge. For the largest cell a block is a
+fourteenth of the events: about 2 GiB of profiler memory, so a peak near the
+base plus 2, 6 to 8 GiB.
+
+What is checked offline: the 31 banked streams of the fourth session, cut at
+gaps between top-level calls into 14 pieces and stitched, give the same
+launches, call chains, flush time and host costs as the originals (31 of 31,
+exact); on a CPU a layered toy replayed in blocks has the whole replay's
+operators, no operator cut, one region, nothing left hooked or running, and
+the profiler's peak above its base falls from 0.70 GiB (one session) to 0.13
+(14 blocks). What is not: a CUDA profiler's memory on the card. The first
+number will be `oracle_d0.5_L32768`'s own manifest in the T3.1 session.
+**If the segmentation is not accepted by 5 Nov, that cell is dropped from the
+grid for every pairing** ("not measured: host memory limit of P1's pinned
+machine"; `not_measured` in the config), the researcher's ruling.
+
+**Not covered: step 6's own reads.** Where a cell's graph replay does not
+match the whole sequence, step 6 replays the original operators and reads that
+trace in full (`isolated_original.json`); and where the sequence has flagged
+memsets it reads the recording's trace in full. Either could exceed the
+ceiling at `oracle_d0.5_L32768`. The debug session runs step 6 on
+`oracle_d0.25_L32768`, whose manifest peak says how far it is.
 
 ## What changed since the second session (2 Nov 2026)
 
