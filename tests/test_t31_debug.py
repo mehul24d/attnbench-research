@@ -402,7 +402,6 @@ def test_the_cli_refuses_what_a_debug_session_may_not_be(tmp_path, capsys):
     assert sess.main(base + ["--config", "x.json"]) == 2
     assert sess.main(["--debug", "--session", str(tmp_path / "plain")]) == 2   # not staged
     assert sess.main(base + ["--from", "link"]) == 2                       # steps 1 to 4 are never rerun
-    assert sess.main(base + ["--from", "device_components"]) == 2          # not where it was staged
     assert sess.main(["--keep-going", "--session", str(tmp_path / "k")]) == 2   # debug only
     assert "REFUSING" in capsys.readouterr().err
 
@@ -435,3 +434,15 @@ def test_the_fetch_command_takes_what_results_bucket_returns(monkeypatch):
     monkeypatch.setenv("ATTNBENCH_BUCKET", "gs://attnbench-results-y")
     cmd = dbg.fetch_command(st.results_bucket(), "i", "s", Path("d"))
     assert not any("gs://gs:" in c for c in cmd) and cmd[-2] == "gs://attnbench-results-y/i/results/s"
+
+
+def test_a_debug_session_resumes_after_a_fix_from_a_step_it_ran_but_not_from_before_its_start(tmp_path):
+    s = _staged_session(tmp_path)
+    rc, ran = _drun(s, {"device_components": ("failed", 1)}, keep_going=True)
+    assert rc == 1 and ran == ["host_components", "device_components", "postflight"]
+    rc, ran = _drun(s, start="device_components", keep_going=True)    # after the fix
+    assert rc == 0 and ran == list(ORDER[5:])
+    rc, ran = _drun(_staged_session(tmp_path / "z"), start="device_components")
+    assert rc == 2 and ran == []                          # step 5 never passed in that session
+    base = ["--debug", "--session", str(s), "--no-sync", "--cpu-boundary"]
+    assert sess.main(base + ["--from", "link"]) == 2

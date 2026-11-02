@@ -121,8 +121,15 @@ def step_command(step: str, session: Path, extra: list[str], *, dry_run: bool,
     return cmd
 
 
+NEVER_STARTED = ("blocked", "not_run")      # a debug session's records of a step that did not run
+
+
 def clocked_started(manifest: dict) -> bool:
-    return any(a["step"] == FIRST_CLOCKED for a in manifest["attempts"])
+    """Whether a ground-truth process has started: an attempt a debug session
+    recorded as blocked or not run did not (and refusing a resume for it
+    refused every resume after a failure before ground truth)."""
+    return any(a["step"] == FIRST_CLOCKED and a["status"] not in NEVER_STARTED
+               for a in manifest["attempts"])
 
 
 def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, sync: bool,
@@ -300,13 +307,11 @@ def debug_main(args) -> int:
         print(f"REFUSING: {session} was not staged by `t31_debug.py stage`", file=sys.stderr)
         return 2
     rec = json.loads(staged.read_text())
-    if args.start != STEPS[0] and args.start != rec["start"]:
-        print(f"REFUSING: this debug session was staged to start at {rec['start']}",
-              file=sys.stderr)
-        return 2
     start = rec["start"] if args.start == STEPS[0] else args.start
-    if start not in STEPS or STEPS.index(start) < STEPS.index(DEBUG_STARTS[0]):
-        print("REFUSING: a debug session never reruns steps 1 to 4", file=sys.stderr)
+    if STEPS.index(start) < STEPS.index(rec["start"]):
+        print(f"REFUSING: this debug session was staged to start at {rec['start']}; it "
+              f"never reruns the steps before it (a resume after a fix may start later)",
+              file=sys.stderr)
         return 2
     args.config = str(session / DEBUG_CONFIG)
     try:

@@ -243,6 +243,34 @@ def test_an_extra_node_alone_makes_the_match_incomplete():
         RP.device_costs(m)
 
 
+SEQ_MEMSET = OpSequence(code_path=CP, context_length=4096, batch=1, streams=(7,), ops=(
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::addmm", kernels=("Memset (Device)", "gemm")),
+    SeqOp(SeqKind.KERNEL, layer=1, aten_op="aten::addmm", kernels=("Memset (Device)", "gemm")),
+))
+
+
+def test_a_graph_memset_node_matches_the_eager_memset_whatever_its_memory_kind():
+    # the graph's memset node has no allocation to name: "Memset (Unknown)"
+    m = RP.match(SEQ_MEMSET, nodes(("Memset (Unknown)", 0.1), ("gemm", 1.0),
+                                   ("Memset (Unknown)", 0.2), ("gemm", 2.0)))
+    assert m.complete and RP.device_costs(m) == {0: 1.1, 1: 2.2}
+
+
+def test_the_memory_kind_is_the_only_thing_a_memset_match_forgives():
+    # a kernel with a parenthesis is still compared whole; a memset needs a memset
+    m = RP.match(SEQ_MEMSET, nodes(("Memset (Unknown)", 0.1), ("gemm", 1.0),
+                                   ("Memcpy (Unknown)", 0.2), ("gemm", 2.0)))
+    assert m.unmatched_positions == (1,) and m.extra_nodes == ("Memcpy (Unknown)",)
+    m = RP.match(SEQ_MEMSET, nodes(("Memset (Unknown)", 0.1), ("gemm", 1.0), ("gemm", 2.0)))
+    assert m.unmatched_positions == (1,) and not m.extra_nodes
+    m = RP.match(SEQ_MEMSET, nodes(("Memset (Unknown)", 0.1), ("gemm", 1.0), ("Memset (Unknown)", 0.2),
+                                   ("gemm", 2.0), ("Memset (Unknown)", 0.3)))
+    assert m.unmatched_positions == () and m.extra_nodes == ("Memset (Unknown)",)   # the name as seen
+    m = RP.match(SEQ, nodes(("gemm", 1.0), ("scan (x)", 0.5), ("write", 0.25),
+                            ("g0", 2.0), ("g1", 3.0), ("gemm", 4.0)))
+    assert m.unmatched_positions == (2,) and m.extra_nodes == ("scan (x)",)    # names reported as seen
+
+
 # --- reports -----------------------------------------------------------------------
 
 def test_cache_effect_is_isolated_minus_in_order():

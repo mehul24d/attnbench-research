@@ -373,10 +373,20 @@ def expected_nodes(seq: OpSequence) -> list[tuple[int, str]]:
     return [(i, name) for i, op in seq.device_ops() for name in op.kernels]
 
 
+def _same_activity(name: str) -> str:
+    """The name two activities are compared by. A memset's memory kind is
+    part of its name in a trace: "Memset (Device)" in an eager run and
+    "Memset (Unknown)" for a CUDA graph's memset node, which has no
+    allocation to name (found by the debug session, 2 Nov 2026: every
+    memset of `dense_d1_L2048_b1`, 140 of them, was unmatched on the name
+    alone). The kind is left out; nothing else is."""
+    return "Memset" if name.startswith("Memset (") and name.endswith(")") else name
+
+
 def match(seq: OpSequence, nodes: Sequence[Node]) -> Match:
     exp = expected_nodes(seq)
-    a = [name for _, name in exp]
-    b = [n.name for n in nodes]
+    a = [_same_activity(name) for _, name in exp]
+    b = [_same_activity(n.name) for n in nodes]
     sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
     got = [False] * len(a)
     used = [False] * len(b)
@@ -392,7 +402,8 @@ def match(seq: OpSequence, nodes: Sequence[Node]) -> Match:
         fam[operation_family(seq.ops[p])] += 1
     for p in missing:
         device.pop(p, None)
-    return Match(dict(device), tuple(missing), tuple(b[k] for k in range(len(b)) if not used[k]),
+    return Match(dict(device), tuple(missing),
+                 tuple(nodes[k].name for k in range(len(b)) if not used[k]),
                  dict(fam), len(a), len(b))
 
 
