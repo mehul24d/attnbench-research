@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 5752 passed, 140 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 5795 passed, 147 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -21,8 +21,8 @@ architecture-gated, and the harness must import on a machine where a kernel is
 unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
 learned baseline (T2.10); without it one more test skips.
 
-The 140 skips are the honest part, and they split six ways: **39** need CUDA
-or the GPU image's x-attention and block-sparse-attn, **75** read banked result
+The 147 skips are the honest part, and they split six ways: **39** need CUDA
+or the GPU image's x-attention and block-sparse-attn, **82** read banked result
 files that `results/` keeps out of git, **10** are scripts
 `test_script_call_sites.py` has nothing to check because they import nothing
 from `attnbench`, **10** are the same scripts skipped again by
@@ -33,11 +33,11 @@ Face cache. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 5831 passed, 61 skipped**, because
-the 75 banked-file tests run instead of skipping (all but two do) and, on a machine with the
+**With `results/` present the suite reads 5881 passed, 61 skipped**, because
+the 82 banked-file tests run instead of skipping (all but two do) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 5827 passed, 65 skipped). All three
-totals are 5892, which is
+present and those two hidden it reads 5877 passed, 65 skipped). All three
+totals are 5942, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 

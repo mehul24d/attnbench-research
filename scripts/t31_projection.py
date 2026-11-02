@@ -129,17 +129,21 @@ def wall_s(L: int, b: int) -> float:
     return b * (lin * L + quad * L * L) / 1e3
 
 
-def grid():
+def grid(cfg=None):
+    """The session's config (a debug session's, if given), its cells, and the
+    batch-1-only arms."""
     from t31_steps import BATCH1_ONLY, cells, fill_working_values
-    cfg = json.loads((ROOT / "configs" / "t31" / "p1_session.json").read_text())
-    cfg = fill_working_values(cfg)
+    if cfg is None:
+        cfg = json.loads((ROOT / "configs" / "t31" / "p1_session.json").read_text())
+        cfg = fill_working_values(cfg)
     return cfg, cells(cfg), BATCH1_ONLY
 
 
-def project(which: int) -> dict:
-    """Minutes per step for scenario `which` (0 low, 1 central, 2 high)."""
+def project(which: int, cfg=None) -> dict:
+    """Minutes per step for scenario `which` (0 low, 1 central, 2 high), for
+    the config `cfg` if given."""
     u = {k: v[which] for k, v in UNMEASURED.items()}
-    cfg, cells, batch1 = grid()
+    cfg, cells, batch1 = grid(cfg)
     by_lb: dict = {}
     for arm, d, L, b in cells:
         by_lb.setdefault((L, b), []).append(arm)
@@ -184,6 +188,25 @@ def project(which: int) -> dict:
     m["11 postflight"] = 2.0
     return {"steps": m, "step5_phases": dict(phase),
             "cells": len(cells)}
+
+
+def debug_cap_min(start: str, not_measured=(), run_here=()) -> float:
+    """The cap of a debug session (ruling, 2 Nov 2026): 1.5 times the central
+    projection of the steps from `start` to the last, on the grid without the
+    `not_measured` cells. Step 5, if the session starts there, is the cells it
+    runs (`run_here`, the ones the donor never ran): each a small 32768 cell and
+    a process, since the staged cells resume."""
+    from t31_debug import CAP_FACTOR
+    from t31_steps import STEPS
+    cfg, _, _ = grid()
+    cfg = dict(cfg, not_measured=list(not_measured))
+    steps = project(1, cfg)["steps"]
+    u = {k: v[1] for k, v in UNMEASURED.items()}
+    steps = {s: m for s, m in steps.items() if STEPS.index(s.split(" ", 1)[1]) >= STEPS.index(start)}
+    if "5 host_components" in steps:
+        steps["5 host_components"] = len(run_here) * (
+            u["step5_small_32768_cell_min"] + u["cell_process_start_s"] / 60)
+    return CAP_FACTOR * sum(steps.values())
 
 
 def table() -> dict:

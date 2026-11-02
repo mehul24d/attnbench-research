@@ -113,8 +113,9 @@ authority is the billing console.
 | 2026-11-01 | `attnbench-l4-xadiag-20261102-0131`, the XAttention crash diagnostic after T3.1's first session, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `09f2c11` (local), cap ₹120, halt 60 min, hard delete 66 min; cases C, D and E reproduced the illegal memory access at XAttention's first full recording (2048), B and A did not; memcheck on A reported an out-of-bounds read in block-sparse-attn's forward kernel; home logs pulled before the delete | **43** | **78** | `session_cost.txt` (`results/t31_xa_diag/`) |
 | 2026-11-02 | `attnbench-l4-t31-20261102-1110`, T3.1, the second P1 session, asia-northeast1-c (zone a stocked out; the plan's fallback, approved by the researcher), on-demand, ₹108.64/h (planning rate, all-in); commit `764f146`, cap ₹760, halt 420 min, stop at the first failure; step 1 stopped in the kernel contract: memcheck's positive control saw no error with the library's own buffer; every other part passed, the padding changing nothing bitwise on the synthetic masks and on the real `qa_1` prompt | **12** | **22** | `session_cost.txt` (`results/t31_p1_s2/`) |
 | 2026-11-02 | `attnbench-l4-t31-20261102-1209`, T3.1, the third P1 session, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `02d6ba1`, cap ₹760, halt 420 min, stop at the first failure; steps 1 to 4 passed (the kernel contract clean: memcheck 130 errors with the library's own buffer, 0 with the fix; the real prompt bitwise 0), step 5 (`host_components`) was killed by the kernel's out-of-memory killer at 31.6 GB in its 32nd cell (`oracle_d0.5_L32768`, its isolated replay) after 31 of 36 cells; fixed on `t31-step5-memory-2026-11-02` (a process per cell under an RSS ceiling, the isolated trace kept as a compact stream) | **149** | **270** | `session_cost.txt` (`results/t31_p1_s3/`) |
+| 2026-11-02 | `attnbench-l4-t31-20261102-1732`, T3.1, the fourth P1 session, asia-northeast1-a, on-demand, ₹108.64/h (planning rate, all-in); commit `5cb47ac`, cap ₹760, halt 420 min, stop at the first failure; steps 1 to 4 passed (1.6, 2.7, 3.5 and 13.9 min), step 5 (`host_components`) ran each cell in its own process and stopped at its 32nd, `oracle_d0.5_L32768`, which the RSS guard killed at the 26 GiB ceiling (sampled 26.8 GiB, in its isolated replay, before any isolated trace was written) after 31 of 36 cells passed; `oracle_d0.25_L32768` peaked at 15.7 GiB against a projection of 10 to 13 | **139** | **252** | `session_cost.txt` (`results/t31_p1_s4/`) |
 
-### New-spend headroom against the ₹14,000 budget (2 Nov 2026, after T3.1's third session)
+### New-spend headroom against the ₹14,000 budget (2 Nov 2026, after T3.1's fourth session)
 
 Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of ₹14,000 at the planning rates. Counted from the rows dated 21 Oct 2026 on:
 
@@ -134,9 +135,10 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | XAttention crash diagnostic (L4) | 78 |
 | T3.1, second P1 session (L4) | 22 |
 | T3.1, third P1 session (L4) | 270 |
-| **Total** | **~1,800** |
+| T3.1, fourth P1 session (L4) | 252 |
+| **Total** | **~2,050** |
 
-Headroom: ₹14,000 − ₹1,800 = **about ₹12,200**. This counts only the rows above. Machine-image storage (the v7 image), egress and any launch not yet in this table are not in it. H100 Flex attempt 1 (31 Oct 2026, us-central1-a) was not granted and billed nothing; it has no row, and neither have the retry loop's later attempts (55 to 1 Nov 2026 08:44Z, none granted, nothing billed: `logs/flex_attempts.tsv` on the Mac). The first FA3 build is ₹176 from its cost file; the ₹175 reported at the time was read before the teardown and is superseded. Nothing here is a go-ahead for a launch: caps are per session (rule 10).
+Headroom: ₹14,000 − ₹2,050 = **about ₹11,950**. This counts only the rows above. Machine-image storage (the v7 image), egress and any launch not yet in this table are not in it. H100 Flex attempt 1 (31 Oct 2026, us-central1-a) was not granted and billed nothing; it has no row, and neither have the retry loop's later attempts (55 to 1 Nov 2026 08:44Z, none granted, nothing billed: `logs/flex_attempts.tsv` on the Mac). The first FA3 build is ₹176 from its cost file; the ₹175 reported at the time was read before the teardown and is superseded. Nothing here is a go-ahead for a launch: caps are per session (rule 10).
 
 **Notes on the table (18 Oct 2026).**
 

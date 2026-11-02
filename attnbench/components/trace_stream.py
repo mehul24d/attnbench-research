@@ -17,6 +17,12 @@ its thread, its timing and its index in the original trace, so the calls it
 groups are keyed as before. Device activity, flows and arguments are not
 kept. `load_compact` reads the stream back as `op_sequence._Ev` events.
 
+The isolated replay of the largest cells does not fit the host's memory as
+one profiler session either (the profiler holds about five times the trace:
+15.7 GB at `oracle_d0.25_L32768`, killed at 26 GB at density 0.5), so
+`replay.isolated_replay_compact` runs it in blocks of layers, a profiler
+session each, and `stitch_compact` joins the blocks' compact streams.
+
 The recording's own trace (`recorder.record_arm_prefill`) is not compacted:
 the sequence parser reads its Python frames and the launch check its shapes,
 and `recording.json` pins it by sha256.
@@ -157,3 +163,81 @@ def load_compact(path: Union[str, Path]) -> list:
             ts = float(ts)
             out.append(_Ev(i, cat, name, pid, tid, ts, ts + float(dur), _NO_ARGS))
     return out
+
+
+def _bounds(path: Path, region: str) -> dict:
+    """One pass over a part: its header, event count, highest index, time span,
+    and the replay region it holds (exactly one)."""
+    n = hi = 0
+    regions = []
+    with open(path, encoding="utf-8") as f:
+        head = json.loads(f.readline() or "null")
+        if not isinstance(head, dict) or head.get("schema") != SCHEMA:
+            raise TraceStreamError(f"{path}: not a {SCHEMA} stream")
+        for line in f:
+            i, cat, name, pid, tid, ts, dur = json.loads(line)
+            n += 1
+            hi = max(hi, i)
+            if cat == "user_annotation" and name == region:
+                regions.append((i, pid, tid, float(ts), float(ts) + float(dur)))
+    if len(regions) != 1:
+        raise TraceStreamError(f"{path}: {len(regions)} {region!r} regions, expected one per segment")
+    return {"head": head, "events": n, "max_index": hi, "region": regions[0]}
+
+
+def stitch_compact(parts, dst: Union[str, Path], *, region: str) -> dict:
+    """One compact stream from the streams of a replay's consecutive segments
+    (researcher's ruling, 2 Nov 2026: the isolated replay in blocks of
+    operations, so the profiler holds only a slice).
+
+    Each segment is a profiler session of its own, with its own `region`
+    event, exported and compacted by itself. The replay prices every
+    operation independently (each alone on a cold cache), so the stream of
+    the whole is the segments' events in order: concatenated, their
+    indices offset to stay unique, and the segments' regions replaced by one
+    region from the first's start to the last's end, on the first's thread.
+    Refused if a segment is not a `SCHEMA` stream, does not hold exactly one
+    region, is on another thread than the first, or starts before the one
+    before it ended (the segments are not on one timeline). Returns the
+    counts."""
+    parts, dst = [Path(p) for p in parts], Path(dst)
+    if not parts:
+        raise TraceStreamError("no segments to stitch")
+    info = [_bounds(p, region) for p in parts]
+    thread = info[0]["region"][1:3]
+    prev_end = float("-inf")
+    for p, b in zip(parts, info):
+        i, pid, tid, r0, r1 = b["region"]
+        if (pid, tid) != tuple(thread):
+            raise TraceStreamError(f"{p}: its region is on thread {(pid, tid)}, not {tuple(thread)}")
+        if r0 < prev_end - 1e-3:
+            raise TraceStreamError(f"{p}: starts at {r0}, before the segment before it ended "
+                                   f"({prev_end}); not one timeline")
+        prev_end = r1
+    first, last = info[0]["region"], info[-1]["region"]
+    head = dict(info[0]["head"], source=dst.name, segments=len(parts))
+    tmp = dst.with_name(dst.name + ".part")
+    offset = 0
+    kept = 0
+    try:
+        with open(tmp, "w", encoding="utf-8") as out:
+            out.write(json.dumps(head) + "\n")
+            out.write(json.dumps([first[0], "user_annotation", region, first[1], first[2],
+                                  first[3], last[4] - first[3]], separators=(",", ":")) + "\n")
+            kept += 1
+            for p, b in zip(parts, info):
+                with open(p, encoding="utf-8") as f:
+                    f.readline()
+                    for line in f:
+                        i, cat, name, pid, tid, ts, dur = json.loads(line)
+                        if cat == "user_annotation" and name == region:
+                            continue
+                        out.write(json.dumps([i + offset, cat, name, pid, tid, ts, dur],
+                                             separators=(",", ":")) + "\n")
+                        kept += 1
+                offset += b["max_index"] + 1
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, dst)
+    return {"path": str(dst), "segments": len(parts), "kept": kept, "bytes": dst.stat().st_size}

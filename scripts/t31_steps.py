@@ -119,6 +119,13 @@ CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), 
 BATCH1_ONLY = ("xattention", "xattention_noassert", "oracle", "meanpool")
 HOST_PROFILE_REPS = 5
 BOUNDARY_BARE_REPS = 3
+# The isolated replay's profiler is rolled every this many decoder layers
+# (ruling, 2 Nov 2026, after T3.1's fourth session: `oracle_d0.5_L32768` hit
+# the ceiling in one profiler session). At two layers the largest cell's
+# blocks are a fourteenth of its events, about 2 GiB of profiler memory
+# against 29 GiB for the whole; a session's config may set
+# `isolated_segment_layers` (0: one session, as before).
+ISOLATED_SEGMENT_LAYERS = 2
 
 # Steps 5 and 6 run each cell in its own process under a host-memory ceiling
 # (researcher's ruling, 2 Nov 2026, after T3.1's third session, whose step 5
@@ -127,6 +134,8 @@ BOUNDARY_BARE_REPS = 3
 # 5 GiB for the parent, the system and the guard's sampling interval; a
 # session's config may set `host_cell_rss_ceiling_gb`.
 HOST_CELL_RSS_CEILING_GB = 26.0
+DEBUG_LABEL = "debug, not T3.1 data"    # a debug session's every output (2 Nov 2026 ruling)
+STAGED_INPUTS = "staged_inputs.json"     # what a debug session staged, and from where
 CELL_CHILDREN = ("host-cell-one", "device-cell-one")     # steps 5 and 6
 CELL_MANIFEST = "cell_manifest.json"      # the parent's record of the cell's process
 CELL_INDEX = "cell_index.json"            # the child's entry for the step's index
@@ -289,18 +298,34 @@ def nominal_density(d):
     return None if d == CALIBRATED else float(d)
 
 
+def not_measured(cfg: dict) -> dict:
+    """The cells a session names as not measured (researcher's ruling, 2 Nov
+    2026), (arm, density, length, batch) -> reason: a debug session's missing
+    cell, or a cell dropped from the grid for a pairing's every session. No
+    step prices, times or predicts one."""
+    out = {}
+    for e in cfg.get("not_measured") or ():
+        key = (e["arm"], nominal_density(e["density"]), int(e["length"]), int(e["batch"]))
+        out[key] = e["reason"]
+    return out
+
+
 def cells(cfg: dict):
     """(arm, density, length, batch) for every ground-truth cell; density is
     None for an arm whose estimator sets it. The XAttention arms run at batch
-    1 only (the kernel call's limit, T2.12)."""
+    1 only (the kernel call's limit, T2.12). A cell the config names as not
+    measured (`not_measured`) is not in the grid."""
     out = []
+    skip = not_measured(cfg)
     for L in cfg["lengths"]:
         for b in cfg["batches"].get(str(L), [1]):
             for arm in cfg["arms"]:
                 if b > 1 and arm in BATCH1_ONLY:
                     continue
                 for d in cfg["densities"][arm]:
-                    out.append((arm, nominal_density(d), int(L), int(b)))
+                    cell = (arm, nominal_density(d), int(L), int(b))
+                    if cell not in skip:
+                        out.append(cell)
     return out
 
 
@@ -374,7 +399,8 @@ def _isolated_ops() -> frozenset:
         {cpu_boundary.EMBEDDING_KERNEL_OP} if _boundary() else frozenset())
 
 
-def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=()):
+def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=(),
+                      segment_layers: int = 0):
     """T2.2's null-kernel profile of one recording, and the instrumented chain
     check.
 
@@ -392,14 +418,25 @@ def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=
     The replay's trace is kept as its compact event stream
     (`isolated_host.events.jsonl`, `trace_stream`), the full trace deleted,
     and read once for both uses (ruling, 2 Nov 2026, after T3.1's third
-    session); `check["isolated_trace"]` holds the counts."""
+    session); `check["isolated_trace"]` holds the counts.
+
+    With `segment_layers` the replay runs in blocks of that many layers, a
+    profiler session each, their streams stitched into the one stream
+    (`replay.isolated_replay_compact`; ruling, 2 Nov 2026, after T3.1's
+    fourth session); a prefill of no more layers than that is one block, run
+    as before."""
     from attnbench.components import host_profile as hp
     from attnbench.components import replay
     ops = _isolated_ops()
     pos = hp.isolated_positions(rec.sequence, ops)
-    trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
-                                   device=_device(), masks=rec.masks, substitute=False)
-    stream, counts = compact_isolated(trace)
+    if segment_layers and len(a.layers) > segment_layers:
+        stream, counts = replay.isolated_replay_compact(
+            a.run_prefill, rec.tape, Path(out) / "isolated_host.json", device=_device(),
+            layers=a.layers, segment_layers=segment_layers, masks=rec.masks)
+    else:
+        trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
+                                       device=_device(), masks=rec.masks, substitute=False)
+        stream, counts = compact_isolated(trace)
     read = hp.read_isolated(stream, rec.sequence)
     iso = hp.isolated_host_s(read, rec.sequence, pos)
     prof = hp.profile(a.run_prefill, rec.tape, rec.sequence, device=_null_device(), reps=reps,
@@ -661,6 +698,9 @@ def prediction_dir(cfg, session: Path) -> str:
     if bool(cfg.get("rehearsal")) != prefix.endswith("-rehearsal"):
         raise StepFailed(f"a rehearsal's prediction goes under a '-rehearsal' prefix, and only "
                          f"a rehearsal's: rehearsal={cfg.get('rehearsal')!r}, prefix {prefix!r}")
+    if bool(cfg.get("debug")) != prefix.endswith("-debug"):
+        raise StepFailed(f"a debug session's prediction goes under a '-debug' prefix, and only "
+                         f"a debug session's: debug={cfg.get('debug')!r}, prefix {prefix!r}")
     return f"{prefix}/{Path(session).name}"
 
 
@@ -978,13 +1018,14 @@ def guarded_cells(args, cfg, cell_list, *, spawn, inputs=None) -> dict:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     ident, spec = cell_identity(), instance_spec()
+    accept = staged_accept(args.session, cfg)
     ceiling_gb = float(cfg.get("host_cell_rss_ceiling_gb") or HOST_CELL_RSS_CEILING_GB)
     index, resumed, peaks = [], [], {}
     for cell in cell_list:
         cd = cell_dir(out, *cell)
         name = cd.name
         given = inputs(cell) if inputs else None
-        done = resumable(cd, ident, spec, given)
+        done = resumable(cd, ident, spec, given, accept)
         if done is not None:
             index.append(done)
             resumed.append(name)
@@ -1060,16 +1101,40 @@ def instance_spec() -> dict:
                                       "provisioning_model")} | {"gpu": gpu, "mem_total_gib": mem}
 
 
-def resumable(cd: Path, ident: dict, spec: dict, inputs=None):
+def staged_accept(session, cfg) -> dict | None:
+    """In a debug session, the identity and instance of the cells it staged
+    from an earlier session (`staged_inputs.json`), with each cell's entry
+    sha256; otherwise None. A staged cell resumes under its own donor
+    identity, as no cell of another identity does anywhere else (2 Nov 2026
+    ruling: a debug session's data is discarded)."""
+    if not cfg.get("debug"):
+        return None
+    staged = _read_json(Path(session) / STAGED_INPUTS)
+    if not staged:
+        raise StepFailed(f"a debug session needs {STAGED_INPUTS} in {session}")
+    return {"identity": staged["donor"]["identity"], "instance": staged["donor"]["instance"],
+            "cells": {c["dir"]: c["cell_index_sha256"] for c in staged["cells"]}}
+
+
+def resumable(cd: Path, ident: dict, spec: dict, inputs=None, accept=None):
     """The cell's entry (`cell_index.json`) if it passed under this code
-    identity, instance spec and inputs, from a clean tree; else None."""
-    m = _read_json(Path(cd) / CELL_MANIFEST)
-    if not m or m.get("status") != "passed" or m.get("identity") != ident \
-            or m.get("instance") != spec or m.get("inputs") != inputs:
+    identity, instance spec and inputs, from a clean tree; else None. In a
+    debug session (`accept`, from `staged_accept`) a cell it staged also
+    resumes under its donor's identity and instance, if its entry is the one
+    staged."""
+    cd = Path(cd)
+    m = _read_json(cd / CELL_MANIFEST)
+    if not m or m.get("status") != "passed" or m.get("inputs") != inputs:
         return None
-    if not ident.get("git_commit") or ident.get("git_dirty") is not False:
-        return None
-    return _read_json(Path(cd) / CELL_INDEX)
+    if m.get("identity") == ident and m.get("instance") == spec:
+        if not ident.get("git_commit") or ident.get("git_dirty") is not False:
+            return None
+        return _read_json(cd / CELL_INDEX)
+    if accept and cd.name in accept["cells"] and m.get("identity") == accept["identity"] \
+            and m.get("instance") == accept["instance"] \
+            and _sha256(cd / CELL_INDEX) == accept["cells"][cd.name]:
+        return _read_json(cd / CELL_INDEX)
+    return None
 
 
 def _density_arg(d) -> str:
@@ -1115,7 +1180,9 @@ def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
     seconds["record"], t0 = time.time() - t0, time.time()
     entries = () if arm == "dense" else (hp.block_sparse_entry(),)
     prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
-                                    tolerance=cfg["chain_check_tolerance"])
+                                    tolerance=cfg["chain_check_tolerance"],
+                                    segment_layers=int(cfg.get("isolated_segment_layers",
+                                                               ISOLATED_SEGMENT_LAYERS)))
     seconds["isolated_and_null_pass"], t0 = time.time() - t0, time.time()
     bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
                                      tolerance=cfg["chain_check_tolerance"])
@@ -1545,10 +1612,13 @@ def group_arms(cfg, group: str, length: int, batch: int):
     """(names, densities) for one group's cell: the eager dense control first,
     then every other arm of the group at each of its densities."""
     names, dens = ["dense"], [None]
+    skip = not_measured(cfg)
     for arm in cfg["gt_groups"][group]:
         if arm == "dense" or (batch > 1 and arm in BATCH1_ONLY):
             continue
         for d in cfg["densities"][arm]:
+            if (arm, nominal_density(d), int(length), int(batch)) in skip:
+                continue
             names.append(arm)
             dens.append(nominal_density(d))
     return names, dens
@@ -1676,8 +1746,10 @@ def run_step(name: str, args) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     started = time.time()
+    debug = False
     try:
         cfg = load_config(args.config, dry_run=args.dry_run, cpu_boundary=args.cpu_boundary)
+        debug = bool(cfg.get("debug"))
         status, reason, findings = PASSED, "", STEP_FUNCS[name](args, cfg)
     except Skip as e:
         status, reason, findings = SKIPPED, str(e), {}
@@ -1688,7 +1760,8 @@ def run_step(name: str, args) -> int:
         status, reason, findings = FAILED, f"{type(e).__name__}: {e}", {}
     _write_json(out / "result.json", {
         "step": name, "status": status, "reason": reason, "dry_run": args.dry_run,
-        "cpu_boundary": args.cpu_boundary, "seconds": round(time.time() - started, 1), "findings": findings})
+        "cpu_boundary": args.cpu_boundary, "seconds": round(time.time() - started, 1),
+        **({"debug": DEBUG_LABEL} if debug else {}), "findings": findings})
     print(f"[{name}] {status.upper()}{': ' + reason if reason else ''}", flush=True)
     return EXIT[status]
 

@@ -126,9 +126,21 @@ def clocked_started(manifest: dict) -> bool:
 
 
 def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, sync: bool,
-                runner=run_logged, rehearsal: bool = False) -> int:
+                runner=run_logged, rehearsal: bool = False, debug: bool = False,
+                keep_going: bool = False, rehearsal_end: bool = False,
+                cap_s: float | None = None, clock=time.time) -> int:
+    """`debug`: a debug session (`t31_debug`), whose manifest says so and which
+    no other session may share a directory with. `keep_going`: a step whose
+    inputs did not fail runs after a failure (`DEPENDS`); the others are
+    recorded as blocked. `cap_s`: no step starts after this many seconds since
+    the session began. `rehearsal_end`: end at `hold`, as a rehearsal does."""
     session.mkdir(parents=True, exist_ok=True)
+    session_t0 = clock()
     manifest = load_manifest(session)
+    if bool(manifest.get("debug")) != debug:
+        print(f"REFUSING: {session} is {'a' if manifest.get('debug') else 'not a'} debug session",
+              file=sys.stderr)
+        return 2
     manifest.setdefault("dry_run", dry_run)
     if manifest["dry_run"] != dry_run:
         print(f"REFUSING: {session} is a {'dry' if manifest['dry_run'] else 'real'} session",
@@ -139,7 +151,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         print(f"REFUSING: {session} is {'a' if manifest['rehearsal'] else 'not a'} rehearsal",
               file=sys.stderr)
         return 2
-    last = STEPS.index(REHEARSAL_LAST) if rehearsal else len(STEPS) - 1
+    last = STEPS.index(REHEARSAL_LAST) if rehearsal or rehearsal_end else len(STEPS) - 1
     first = STEPS.index(start)
     if first > last:
         print(f"REFUSING --from {start}: a rehearsal ends at {REHEARSAL_LAST}", file=sys.stderr)
@@ -155,8 +167,31 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         print(f"REFUSING --from {start}: earlier steps have not passed in {session}: "
               f"{unpassed}", file=sys.stderr)
         return 2
+    failed_steps = []
     for step in STEPS[first:last + 1]:
         d = step_dir(session, step)
+        if cap_s is not None and clock() - session_t0 > cap_s:
+            print(f"\nSTOPPED before {step}: the debug session's cap of {cap_s / 60:.0f} min "
+                  f"has passed", flush=True)
+            manifest["attempts"].append({
+                "step": step, "n": STEPS.index(step) + 1, "status": "not_run",
+                "reason": f"debug cap of {cap_s / 60:.0f} min", "exit": None,
+                "started": _now(), "seconds": 0.0, "dir": d.name, "log": ""})
+            save_manifest(session, manifest)
+            return 1
+        if keep_going:
+            from t31_debug import blocked
+            why = blocked(step, last_status(manifest))
+            if why:
+                print(f"\n----- {step}: BLOCKED (not run; failed or unrun inputs: {why})",
+                      flush=True)
+                manifest["attempts"].append({
+                    "step": step, "n": STEPS.index(step) + 1, "status": "blocked",
+                    "reason": f"inputs did not pass: {why}", "exit": None, "started": _now(),
+                    "seconds": 0.0, "dir": d.name, "log": ""})
+                save_manifest(session, manifest)
+                failed_steps.append(step)
+                continue
         if d.exists():
             kept = d.with_name(f"{d.name}.{done.get(step, 'previous')}."
                                f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
@@ -190,6 +225,11 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
             "dir": d.name, "log": f"{d.name}/step.log"})
         save_manifest(session, manifest)
         print(f"----- {step}: {status.upper()}{': ' + reason if reason else ''}", flush=True)
+        if status == "failed" and keep_going:
+            print(f"\n{step} FAILED; going on with the steps that do not need it. "
+                  f"Log: {d / 'step.log'}", flush=True)
+            failed_steps.append(step)
+            continue
         if status == "failed":
             print(f"\nSTOPPED at step {n} ({step}). Log: {d / 'step.log'}", flush=True)
             if clocked_started(manifest) and STEPS.index(step) >= STEPS.index(FIRST_CLOCKED):
@@ -199,9 +239,10 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
                   f"--session {session}", flush=True)
             return 1
     statuses = last_status(manifest)
-    label = "T3.1 rehearsal (results discarded)" if rehearsal else "T3.1 session"
+    label = ("T3.1 rehearsal (results discarded)" if rehearsal else
+             "T3.1 DEBUG session (debug, not T3.1 data)" if debug else "T3.1 session")
     print(f"\n{label}: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS[:last + 1]))
-    return 0
+    return 1 if failed_steps else 0
 
 
 def rehearsal_config(session: Path, source) -> Path:
@@ -238,6 +279,58 @@ def keep_attempt(d: Path, kept: Path, *, in_place: bool) -> None:
             shutil.copy2(p, kept / p.name)
 
 
+def debug_main(args) -> int:
+    """`--debug`: the session staged by `t31_debug.py stage`, from where it was
+    staged, on its debug config; the cap is 1.5 times the projected duration
+    of the steps it runs (not applied on a CPU, where nothing is timed)."""
+    import json
+    from t31_debug import DEBUG_CONFIG, DEBUG_STARTS
+    from t31_steps import DEBUG_LABEL, STAGED_INPUTS
+    if args.rehearsal or (args.dry_run and args.cpu_boundary):
+        print("REFUSING: a debug session is not a rehearsal; --cpu-boundary or --dry-run "
+              "alone is its CPU check", file=sys.stderr)
+        return 2
+    if args.session is None or args.config is not None:
+        print("REFUSING: --debug takes the --session `t31_debug.py stage` made, and no "
+              "--config (its own is in the session)", file=sys.stderr)
+        return 2
+    session = Path(args.session)
+    staged = session / STAGED_INPUTS
+    if not staged.exists() or not (session / DEBUG_CONFIG).exists():
+        print(f"REFUSING: {session} was not staged by `t31_debug.py stage`", file=sys.stderr)
+        return 2
+    rec = json.loads(staged.read_text())
+    if args.start != STEPS[0] and args.start != rec["start"]:
+        print(f"REFUSING: this debug session was staged to start at {rec['start']}",
+              file=sys.stderr)
+        return 2
+    start = rec["start"] if args.start == STEPS[0] else args.start
+    if start not in STEPS or STEPS.index(start) < STEPS.index(DEBUG_STARTS[0]):
+        print("REFUSING: a debug session never reruns steps 1 to 4", file=sys.stderr)
+        return 2
+    args.config = str(session / DEBUG_CONFIG)
+    try:
+        load_config(args.config, dry_run=args.dry_run)
+    except Exception as e:
+        print(f"REFUSING: {e}", file=sys.stderr)
+        return 2
+    cpu = args.dry_run or args.cpu_boundary
+    if not cpu and not tree_clean():
+        print("REFUSING: the tree is dirty, so no row could be banked with git_dirty = False",
+              file=sys.stderr)
+        return 2
+    cap_s = None
+    if not cpu:
+        from t31_projection import debug_cap_min
+        cap_s = 60.0 * debug_cap_min(start, rec["not_measured"], rec["run_in_this_session"])
+        print(f"{DEBUG_LABEL.upper()}: from {start}, cap {cap_s / 60:.0f} min "
+              f"(1.5 x the projected steps)", flush=True)
+    extra = ["--config", args.config] + (["--cpu-boundary"] if args.cpu_boundary else [])
+    return run_session(session, start=start, extra=extra, dry_run=args.dry_run,
+                       sync=not (cpu or args.no_sync), debug=True, keep_going=args.keep_going,
+                       rehearsal_end=args.cpu_boundary, cap_s=cap_s)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--session", default=None,
@@ -252,6 +345,11 @@ def main(argv=None) -> int:
     ap.add_argument("--cpu-boundary", action="store_true",
                     help="the rehearsal (steps 1 to 8) on a CPU, real arms behind the stubbed "
                          "GPU boundary")
+    ap.add_argument("--debug", action="store_true",
+                    help="a debug session staged by `t31_debug.py stage` (data discarded, "
+                         "'debug, not T3.1 data'); starts where it was staged")
+    ap.add_argument("--keep-going", action="store_true",
+                    help="with --debug: run every step whose inputs did not fail")
     ap.add_argument("--list", action="store_true",
                     help="print the steps, and what is not built yet, and exit")
     args = ap.parse_args(argv)
@@ -261,6 +359,11 @@ def main(argv=None) -> int:
             if s in NOT_BUILT:   # empty since 31 Oct 2026; kept for a step that regresses
                 print(f"   {'':18s} NOT BUILT: {NOT_BUILT[s]}")
         return 0
+    if args.debug:
+        return debug_main(args)
+    if args.keep_going:
+        print("REFUSING: --keep-going is for a debug session only", file=sys.stderr)
+        return 2
     if args.cpu_boundary and (args.dry_run or args.rehearsal):
         print("REFUSING: --cpu-boundary is its own rehearsal; not with --dry-run or --rehearsal",
               file=sys.stderr)
