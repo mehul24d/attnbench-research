@@ -3035,3 +3035,15 @@ every banked mask bank. There are 19 distinct recorded prefills, all
   (`block_sparse_attn`, `bsa_interface_sha256`, `bsa_row_mask_fix`). Each
   block-sparse arm's code identity includes the kernel path and the fix.
   Earlier rows lack these columns: they ran the library's own buffer.
+
+*Update 2 Nov 2026 (measured, T3.1's second session, `results/t31_p1_s2`):
+the effect is crash-only. Step 1 ran the kernel with the library's own buffer
+and with the fixed one, and the outputs were bitwise identical:
+- on the synthetic masks at 1951 and 4096 tokens, with every head's last row
+  fully selected;
+- on all 28 layers of XAttention's real `qa_1` prompt at 1951 tokens, where
+  the library's own buffer ran without faulting.
+
+So the results banked before the fix are unaffected by the read, and the
+queued `qa_1` re-check is dropped (the researcher's rule, plan Appendix A,
+2 Nov 2026). The fix stays mandatory, because the read can still fault.*

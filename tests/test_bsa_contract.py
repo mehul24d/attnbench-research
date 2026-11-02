@@ -183,6 +183,9 @@ def test_the_sanitizer_command_turns_the_caching_allocator_off(tmp_path):
     cmd, env = bc.sanitizer_command("/x/compute-sanitizer", "fixed", tmp_path / "m.log")
     assert cmd[:3] == ["/x/compute-sanitizer", "--tool", "memcheck"]
     assert "--error-exitcode" in cmd and cmd[-2:] == ["--variant", "fixed"]
+    # a read that lands in the next allocation is an error only with padding
+    assert cmd[cmd.index("--padding") + 1] == str(bc.SANITIZER_PADDING_BYTES)
+    assert bc.SANITIZER_PADDING_BYTES >= 4
     assert env["PYTORCH_NO_CUDA_MEMORY_CACHING"] == "1"
 
 

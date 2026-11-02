@@ -3,7 +3,7 @@
 Prepared 28 Oct 2026; rewritten 1 Nov 2026 after Shakedown 6 and the
 researcher's rulings that followed it; updated 2 Nov 2026 after the first
 session's crash and its diagnostic. Deploys from `main` at the merge of
-`kernel-contract-2026-11-02` or later. Launchable only on the researcher's
+`t31-s2-memcheck-padding-2026-11-02` or later. Launchable only on the researcher's
 yes; nothing here runs on its own. **Stop at the first failure:** the session
 runs once, the runner stops at the first step that fails, and the instance
 is torn down. Nothing is fixed and resumed inside this session; a fix and a
@@ -47,6 +47,22 @@ a GPU, so their minutes are the least certain.
 Step 5's minutes, central: recording 4, isolated replay 4, null passes 11,
 bare pass 23, residual 7. The bare pass is mostly device time: at least
 1000 repetitions of each signature, after a synchronise.
+
+## What changed since the second session (2 Nov 2026)
+
+The second session (`results/t31_p1_s2/`, ₹22, `asia-northeast1-c` after a
+stockout in zone a) stopped in step 1, in the kernel contract. memcheck's
+positive control saw no error with the library's own buffer: without padding,
+a read past one allocation that lands in the next one is not an error. memcheck
+now pads every allocation by 512 bytes (`--padding`).
+
+Every other part of the contract passed:
+- **Kernel against the reference:** 0.0156.
+- **Padding and tail values:** they changed nothing bitwise on the synthetic
+  masks or on the real prompt (28 layers, with the library's own buffer run
+  and compared).
+
+So the effect is crash-only, and the `qa_1` re-check is dropped.
 
 ## What changed since the first session (2 Nov 2026)
 
@@ -123,7 +139,7 @@ CUDA illegal memory access. The diagnostic (`docs/t31_xa_diag_card.md`,
 | | |
 |---|---|
 | Card | 1 × NVIDIA L4, `g2-standard-8` (32 GB RAM) |
-| Zone | `asia-northeast1-a` |
+| Zone | `asia-northeast1-a`; fallback `asia-northeast1-c` (plan Section 5.2), with `GCP_ZONE` and `ZONE` both set, only on the researcher's word (used on 2 Nov 2026, when zone a stocked out) |
 | Provisioning | STANDARD (on-demand) |
 | Image | `attnbench-env-v6-20260917` (set `ATTNBENCH_IMAGE`; the launcher defaults to v5) |
 | Bootstrap | `scripts/gcp_bootstrap_instance.sh NAME asia-northeast1-a`, with XAttention |
@@ -177,7 +193,7 @@ Back on the Mac, when it ends (passed or stopped):
 
 ```bash
 bash scripts/gcp_session_elapsed.sh "$NAME" "$ZONE" 108.64
-bash scripts/gcp_teardown_session.sh "$NAME" "$ZONE" results/t31_p1_s2   # the first session is results/t31_p1
+bash scripts/gcp_teardown_session.sh "$NAME" "$ZONE" results/t31_p1_s3   # sessions 1 and 2: results/t31_p1, results/t31_p1_s2
 bash scripts/gcp_cleanup_check.sh
 ```
 
@@ -282,7 +298,8 @@ its compute.
   bitwise, on every synthetic mask and on the real prompt. If clean, the
   T1.1 `qa_1` re-check is dropped, an Appendix A line records the effect as
   crash-only, and the limitations note takes the measured result. A
-  difference refuses the session in step 1, and the re-check stays.
+  difference refuses the session in step 1, and the re-check stays. The
+  second session measured clean, and all three were done on 2 Nov 2026.
 - **XAttention again.** If the contract passes and XAttention still fails in
   the session, the session stops there (first failure). The fallback ruled on
   2 Nov 2026 then applies: T3.1 runs with XAttention quarantined, "not run,

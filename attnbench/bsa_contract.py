@@ -73,6 +73,11 @@ CHECK_LENGTHS = (1951, 4096)   # 1951: the crash's prompt length (uneven tiles)
 HEADS, HEAD_DIM = 12, 128      # Qwen2.5-1.5B, the L4 model
 SANITIZER_LENGTH = 1951
 SANITIZER_TIMEOUT_S = 600
+# Bytes memcheck pads after every allocation. Without padding a read past one
+# allocation that lands in the next is not an error: T3.1's second session
+# (2 Nov 2026, `results/t31_p1_s2`) saw 0 errors with the library's own
+# buffer, and the positive control refused the session.
+SANITIZER_PADDING_BYTES = 512
 REAL_ARM, REAL_LENGTH = "xattention", 2048   # the grid's first 2048 prompt: 1951 tokens
 REAL_TIMEOUT_S = 900
 # The real-prompt variants, each a conversion of the interface module. The
@@ -434,8 +439,8 @@ def memcheck_errors(log: str) -> Optional[int]:
 
 
 def sanitizer_command(tool: str, variant: str, log: Path) -> tuple[list, dict]:
-    cmd = [tool, "--tool", "memcheck", "--print-limit", "20", "--error-exitcode", "99",
-           "--log-file", str(log), sys.executable, "-m", "attnbench.bsa_contract",
+    cmd = [tool, "--tool", "memcheck", "--padding", str(SANITIZER_PADDING_BYTES),
+           "--print-limit", "20", "--error-exitcode", "99", "--log-file", str(log), sys.executable, "-m", "attnbench.bsa_contract",
            "sanitize-case", "--variant", variant]
     # Each tensor its own allocation, so a read past one is past an allocation.
     return cmd, dict(os.environ, PYTORCH_NO_CUDA_MEMORY_CACHING="1")
