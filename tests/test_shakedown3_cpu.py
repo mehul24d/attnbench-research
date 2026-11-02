@@ -363,7 +363,10 @@ def test_the_timed_graph_holds_the_arm_s_kernels_and_none_of_the_check_s(harness
                          backend=cb.GraphLikeBackend())
     m = replay.match(rec.sequence, replay.replay_nodes(
         replay.profile_replay(cap, tmp_path / "replay.json")))
-    assert m.extra_nodes == () and replay.mask_agreement(cap)["identical"]
+    # the only nodes with no position are the device fills that stand in for the host
+    # value of an integer-indexed scalar assignment (2 Nov 2026); none is the check's
+    assert set(m.extra_nodes) <= {"cpu_stub::aten::fill_"}
+    assert replay.mask_agreement(cap)["identical"]
 
 
 def test_t212_takes_mean_pool_s_density_from_the_kernel_input_recorder(boundary, tmp_path):
