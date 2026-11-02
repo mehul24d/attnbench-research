@@ -472,3 +472,38 @@ def test_a_debug_session_resumes_after_a_fix_from_a_step_it_ran_but_not_from_bef
     assert rc == 2 and ran == []                          # step 5 never passed in that session
     base = ["--debug", "--session", str(s), "--no-sync", "--cpu-boundary"]
     assert sess.main(base + ["--from", "link"]) == 2
+
+
+def test_a_debug_sessions_own_passed_cell_resumes_under_an_earlier_commit_of_its_fixes(tmp_path):
+    cd = tmp_path / "cell"
+    cd.mkdir()
+    (cd / st.CELL_INDEX).write_text(json.dumps({"entry": 1}))
+    now = dict(IDENT, git_commit="b" * 40)
+    spec = dict(INST)
+    older = dict(now, git_commit="a" * 40, git_dirty=False)
+
+    def write(identity, instance=spec):
+        (cd / st.CELL_MANIFEST).write_text(json.dumps({
+            "identity": identity, "instance": instance, "inputs": None, "status": "passed"}))
+    write(older)
+    assert st.resumable(cd, now, spec, None, None, debug=True) == {"entry": 1}
+    assert st.resumable(cd, now, spec, None, None) is None                   # a real session reruns
+    write(dict(older, git_dirty=True))
+    assert st.resumable(cd, now, spec, None, None, debug=True) is None       # a dirty tree never counts
+    write(dict(older, libraries=[["other", "1"]]))
+    assert st.resumable(cd, now, spec, None, None, debug=True) is None       # other libraries
+    write(older, dict(spec, gpu="another"))
+    assert st.resumable(cd, now, spec, None, None, debug=True) is None       # another instance
+    accept = {"identity": older, "instance": spec, "cells": {}}
+    write(older)
+    assert st.resumable(cd, now, spec, None, accept, debug=True) is None     # the donor's, not staged
+
+
+def test_step_6_does_not_run_a_cell_the_session_names_not_measured(tmp_path, monkeypatch):
+    s, rec, args, spawn, ran, cfg = _debug_step5(tmp_path, monkeypatch)
+    dropped = st.not_measured(cfg)
+    assert dropped and all(k not in st.cells(cfg) for k in dropped)
+    extra = dict(cfg, not_measured=cfg["not_measured"] + [
+        {"arm": "oracle", "density": 0.25, "length": 2048, "batch": 1, "reason": "debug"}])
+    assert ("oracle", 0.25, 2048, 1) in st.not_measured(extra)
+    assert ("oracle", 0.25, 2048, 1) not in st.cells(extra)

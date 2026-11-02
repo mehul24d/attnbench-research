@@ -1027,7 +1027,7 @@ def guarded_cells(args, cfg, cell_list, *, spawn, inputs=None) -> dict:
         cd = cell_dir(out, *cell)
         name = cd.name
         given = inputs(cell) if inputs else None
-        done = resumable(cd, ident, spec, given, accept)
+        done = resumable(cd, ident, spec, given, accept, debug=bool(cfg.get("debug")))
         if done is not None:
             index.append(done)
             resumed.append(name)
@@ -1129,16 +1129,25 @@ def staged_accept(session, cfg) -> dict | None:
             "cells": {c["dir"]: c["cell_index_sha256"] for c in staged["cells"]}}
 
 
-def resumable(cd: Path, ident: dict, spec: dict, inputs=None, accept=None):
+def resumable(cd: Path, ident: dict, spec: dict, inputs=None, accept=None, *,
+              debug: bool = False):
     """The cell's entry (`cell_index.json`) if it passed under this code
     identity, instance spec and inputs, from a clean tree; else None. In a
     debug session (`accept`, from `staged_accept`) a cell it staged also
     resumes under its donor's identity and instance, if its entry is the one
-    staged."""
+    staged. A debug session's own passed cells also resume under an earlier
+    commit of its fixes (`debug`: same libraries and instance, a clean tree;
+    each fix would otherwise repeat every cell, 2 Nov 2026)."""
     cd = Path(cd)
     m = _read_json(cd / CELL_MANIFEST)
     if not m or m.get("status") != "passed" or m.get("inputs") != inputs:
         return None
+    mi = m.get("identity") or {}
+    if debug and not (accept and (cd.name in accept["cells"] or mi == accept["identity"])) \
+            and mi.get("git_dirty") is False \
+            and mi.get("git_commit") \
+            and mi.get("libraries") == ident.get("libraries") and m.get("instance") == spec:
+        return _read_json(cd / CELL_INDEX)
     if m.get("identity") == ident and m.get("instance") == spec:
         if not ident.get("git_commit") or ident.get("git_dirty") is not False:
             return None
@@ -1303,7 +1312,8 @@ def device_components_real(args, cfg) -> dict:
     def inputs(cell):
         return {"host_cell_index_sha256": _sha256(cell_dir(host_dir, *cell) / CELL_INDEX),
                 "link_sha256": _sha256(link)}
-    run = guarded_cells(args, cfg, [device_cell_key(c) for c in index],
+    dropped = not_measured(cfg)      # a debug session names more than step 5 ran
+    run = guarded_cells(args, cfg, [k for k in map(device_cell_key, index) if k not in dropped],
                         spawn=spawn_device_cell, inputs=inputs)
     entries = run["index"]
     _write_json(out / "cells.json", {"fake": False, "cells": entries})

@@ -189,3 +189,13 @@ def test_main_runs_a_device_cell_behind_the_boundary(tmp_path, monkeypatch):
                   "--arm", "oracle", "--density", "0.5", "--length", "2048", "--batch", "1",
                   "--cpu-boundary"])
     assert rc == 0 and seen == [("device-cell-one", ("oracle", 0.5, 2048, 1), True)]
+
+
+def test_a_cell_named_not_measured_after_step_5_ran_is_not_run_in_step_6(tmp_path, monkeypatch):
+    spawned = []
+    args, out, session = _steps(tmp_path, monkeypatch, device_spawned=spawned)
+    first = st.cells(tw._grid())[0]
+    cfg = dict(tw._grid(), not_measured=[{"arm": first[0], "density": first[1], "length": first[2],
+                                          "batch": first[3], "reason": "debug"}])
+    r = st.step_device_components(args, cfg)
+    assert first not in spawned and len(spawned) == 2 and r["cells"] == 2
