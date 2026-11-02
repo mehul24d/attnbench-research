@@ -32,6 +32,10 @@ against the earliest of those stamps.
 **Resuming.** After a failure and its fix, rerun from that step with
 `--from STEP --session DIR`; the steps before it must have passed in that
 session, and the failed attempt's directory is kept beside the new one.
+Steps 5 and 6 resume per cell (`t31_steps.guarded_cells`): their directory
+stays in place, so a cell that passed under the same code identity and
+instance is not run again, and the earlier attempt is kept beside it as a
+hard-linked copy (`keep_attempt`).
 Once any ground-truth process has started, a resume from `predict` or
 earlier is refused: a new prediction written after timed data exists would
 not be a prediction. Such a session ends there, and a new one starts.
@@ -58,6 +62,7 @@ which must pass before a shakedown is launched (31 Oct 2026):
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import time
@@ -69,6 +74,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from t227_shakedown import (_now, last_status, load_manifest, run_logged,  # noqa: E402
                             save_manifest, tree_clean)
 from t31_steps import NOT_BUILT, STEPS, load_config, step_dir  # noqa: E402
+
+# The steps that resume per cell, in place (ruling, 2 Nov 2026).
+CELL_STEPS = ("host_components", "device_components")
 
 CHECKLIST = {
     "preflight": "T2.1 probe start; T2.20 fields; session config of record",
@@ -152,7 +160,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         if d.exists():
             kept = d.with_name(f"{d.name}.{done.get(step, 'previous')}."
                                f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
-            shutil.move(str(d), str(kept))
+            keep_attempt(d, kept, in_place=step in CELL_STEPS)
             print(f"kept the earlier attempt at {kept}")
         n = STEPS.index(step) + 1
         print(f"\n===== {n:02d}/{len(STEPS)} {step}: {CHECKLIST[step]} =====", flush=True)
@@ -209,6 +217,25 @@ def rehearsal_config(session: Path, source) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(cfg, indent=1))
     return path
+
+
+def keep_attempt(d: Path, kept: Path, *, in_place: bool) -> None:
+    """Keep a step's earlier attempt at `kept`. A step that resumes per cell
+    (`in_place`) keeps its directory where it is, for its cells to resume
+    from, and `kept` is a copy: the step's own files (its log, result and
+    index, which the new attempt rewrites in place) copied, the cells'
+    files hard-linked, which the new attempt never rewrites (a cell it runs
+    again is removed and written afresh). Any other step's directory is
+    moved."""
+    if not in_place:
+        shutil.move(str(d), str(kept))
+        return
+    kept.mkdir()
+    for p in d.iterdir():
+        if p.is_dir():
+            shutil.copytree(p, kept / p.name, copy_function=os.link)
+        else:
+            shutil.copy2(p, kept / p.name)
 
 
 def main(argv=None) -> int:

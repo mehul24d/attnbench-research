@@ -106,8 +106,12 @@ host; together they did.
 - **Resume per cell.** A cell resumes only where its manifest says it passed
   under the same commit, the same clean tree, the same libraries and the
   same instance. Any other cell's directory is cleared and the cell runs
-  afresh. This session does not use resume (no `--from`); the third
-  session's cells are not reused.
+  afresh. A resume is `t31_session.py --from host_components` (or
+  `device_components`). It leaves those steps' directories in place for
+  their cells and keeps the earlier attempt beside them as a hard-linked
+  copy. Before 2 Nov 2026 the runner moved every step aside on `--from`, so
+  no cell could resume; the CPU check of the fix is below. This session does
+  not use resume (no `--from`); the third session's cells are not reused.
 - **The bare prices** are one cache for the step (`bare_price_cache.pkl`),
   as when the cells shared a process.
 
