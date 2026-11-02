@@ -3,8 +3,8 @@
 Prepared 28 Oct 2026; rewritten 1 Nov 2026 after Shakedown 6 and the
 researcher's rulings that followed it; updated 2 Nov 2026 after the first
 session's crash and its diagnostic, and again after the third session's
-out-of-memory stop. Deploys from `main` at the merge of
-`t31-step5-memory-2026-11-02` or later. **The session starts from step 1
+out-of-memory stop, and again when step 6 got the same per-cell isolation.
+Deploys from `main` at the merge of `t31-step6-cells-2026-11-02` or later. **The session starts from step 1
 and runs all of step 5 again:** none of the third session's 31 cells is
 reused (researcher's ruling, 2 Nov 2026), so every row comes from one code
 identity. Launchable only on the researcher's
@@ -43,7 +43,7 @@ the least certain.
 | 3 | `dense_select` | T2.16 record per (length, batch); the session floor | 3.6 |
 | 4 | `probe` | T2.18, every arm, at every grid length (durations discarded) | 13.9 |
 | 5 | `host_components` | T2.2 per cell, each cell in its own process under a 26 GiB RSS ceiling: the recording, the null pass (instrumented), the bare prices with the per-layer residual, which the prediction reads | 119 / 139 / 170 |
-| 6 | `device_components` | T2.4 replay per cell; the priced cells | 9 / 10 / 15 |
+| 6 | `device_components` | T2.4 replay per cell, each cell in its own process under the same ceiling; the priced cells | 21 / 28 / 45 |
 | 7 | `predict` | T2.11: write, sync, read back; the receipt | 1 |
 | 8 | `hold` | until sync + 90 s (`PLANNED_SYNC_WAIT_S`), on the instance clock | 1.5 |
 | 9 | `ground_truth` | T2.13, one process per compile group, under the recompile gate | 55 / 77 / 124 |
@@ -54,7 +54,8 @@ Step 5's minutes (low / central / high): the third session's 93.3 for 31
 cells and the first 24 minutes of the 32nd; the rest of that cell,
 `oracle_d0.5_L32768`, 10 / 20 / 35; the four mean-pool and XAttention cells
 at 32768, 4 / 8 / 12; a fresh process per cell (imports, CUDA, the model
-load), 12 / 18 / 30.
+load), 12 / 18 / 30. Step 6 pays the same 12 / 18 / 30 for its own process
+per cell, on top of Shakedown 6's scaling.
 
 ## What changed since the third session (2 Nov 2026)
 
@@ -105,8 +106,12 @@ host; together they did.
 - **Resume per cell.** A cell resumes only where its manifest says it passed
   under the same commit, the same clean tree, the same libraries and the
   same instance. Any other cell's directory is cleared and the cell runs
-  afresh. This session does not use resume (no `--from`); the third
-  session's cells are not reused.
+  afresh. A resume is `t31_session.py --from host_components` (or
+  `device_components`). It leaves those steps' directories in place for
+  their cells and keeps the earlier attempt beside them as a hard-linked
+  copy. Before 2 Nov 2026 the runner moved every step aside on `--from`, so
+  no cell could resume; the CPU check of the fix is below. This session does
+  not use resume (no `--from`); the third session's cells are not reused.
 - **The bare prices** are one cache for the step (`bare_price_cache.pkl`),
   as when the cells shared a process.
 
@@ -244,14 +249,14 @@ While this VM exists, the H100 retry loop running on the Mac skips its rounds
 | | Hours | ₹ at 108.64/h |
 |---|---|---|
 | Setup: launch, deploy, preflight, write gate, bootstrap (Shakedown 6: 6 min) | 0.1 | 11 |
-| Steps 1 to 11, central (low 3.5 h, high 5.6 h) | 4.2 | 459 |
+| Steps 1 to 11, central (low 3.7 h, high 6.1 h) | 4.5 | 492 |
 | Teardown: results pull, delete, cleanup check | 0.13 | 14 |
-| **Expected, central** (low 3.8 h ₹408, high 5.8 h ₹635) | **4.5** | **484** |
+| **Expected, central** (low 4.0 h ₹429, high 6.3 h ₹689) | **4.8** | **517** |
 | In-guest halt (`GCP_HALT_MINUTES=420`): GPU billing stops | 7.0 | 760 |
 | Hard delete (`GCP_MAX_RUN=7h30m`) | 7.5 | disk only after the halt |
 
 **Cost cap: ₹760**, the halt. The projection's central case is inside the
-expected 5 h. Its high case (5.8 h) is over that, but inside the cap. Each
+expected 5 h. Its high case (6.3 h) is over that, but inside the cap. Each
 failure from step 6 on would cost a whole session, 2 to 3 hours and ₹100 to
 ₹300. There is no "fixed and resumed" row: the session stops at the
 first failure.
@@ -317,6 +322,25 @@ python3 scripts/t228_steps.py pricing_zoo --cpu-boundary --out /tmp/zoo --length
 python3 scripts/t227_steps.py graph-breaks-one --cpu-boundary --arms meanpool --setting default --out /tmp/gb --gb-length 1024
 python3 scripts/t31_projection.py
 ```
+
+## The CPU dry run (2 Nov 2026, step 6 per cell)
+
+Behind the CPU boundary (transformers 4.46.0, torch 2.13.0), on the step-6
+change before its commit, the rehearsal passed steps 1 to 8 in 7.8 minutes:
+- **Step 6** ran its 15 cells, each in its own `device-cell-one` process, in
+  53 s. Every cell wrote its manifest, with its inputs' sha256. The peaks
+  were 0.5 to 1.1 GiB against the 26 GiB ceiling.
+- **What it did not reach:** on the CPU every cell's graph replay matched the
+  whole sequence, and no sequence had flagged memsets. So the isolated
+  replay of the original operators and the memset zoo did not run; their
+  per-cell handling is tested on fakes only (`tests/test_t31_step6_cells.py`).
+- **Resume, through the runner** (`--from host_components`, committed
+  tree): from cells of the previous commit, none of the 15 resumed in
+  either step, and both steps ran afresh (94 s and 53 s). Run again at the
+  same commit, all 15 resumed in both (0.2 s each), and steps 7 and 8
+  passed. Each earlier attempt was kept beside the step.
+
+The CPU's timings and peaks mean nothing for the L4's.
 
 ## The CPU dry run (2 Nov 2026, after the third session)
 
@@ -398,14 +422,22 @@ its compute.
   step 5 held one process for every cell, and the killer took it in
   `oracle_d0.5_L32768`. Step 5 now runs a process per cell under a ceiling,
   with the isolated trace compacted (above).
-- **Step 6 still runs every cell in one process** (not in the ruling;
-  proposed, not built). Per cell it reads the recording's trace when the
-  sequence has flagged memsets: about 5 GiB for `oracle_d0.5_L32768`. Where a
-  cell's graph replay does not match the whole sequence, it also runs the
-  isolated replay of the original operators and reads that trace in full
-  (`isolated_original.json`). At the oracle's 32768 cells, that read is the
-  12 to 15 GiB of step 5's before the fix. A step-6 out-of-memory stop would
-  cost a session.
+- **Step 6 runs a process per cell too** (researcher's answer, 2 Nov 2026:
+  fix step 6 before launch). Each cell runs as `t31_steps.py device-cell-one`
+  under the same guard and 26 GiB ceiling, with the same manifests. Its
+  inputs are pinned as well: the host cell's entry and the link row, by
+  sha256. Step 6's cells resume only from the same host step, and none
+  resume in this session. The memset zoo is measured once, by the first cell
+  that needs it, and kept in `memset_zoo.json` for the rest. A child's mask
+  diagnosis reaches the step's failure, as before. Per cell, step 6 reads
+  the recording's trace when the sequence has flagged memsets: about 5 GiB
+  for `oracle_d0.5_L32768`. Where a cell's graph replay does not match the
+  whole sequence, it runs the isolated replay of the original operators and
+  reads that trace in full (`isolated_original.json`, not compacted: the
+  replay's matching needs its device events and correlations). At
+  `oracle_d0.5_L32768` that is the 12 to 15 GiB of step 5 before the fix, so
+  the projected peak is 15 to 21 GiB, under the ceiling. If it is over, the
+  guard stops that cell alone, with its record.
 - **The residual's device check.** A layer where the device fell behind the
   host is labelled, and its span may hold launch-queue waits. Expect labels
   at 32768.

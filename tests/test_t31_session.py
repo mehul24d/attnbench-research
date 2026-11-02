@@ -12,6 +12,7 @@ restated here. GPU wiring (`dense_select`, `link`) is checked with
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -194,6 +195,38 @@ def test_resume_needs_every_earlier_step_passed(tmp_path):
     rc, ran = _run(tmp_path, start="link")
     assert rc == 0 and ran == list(ORDER[1:])
     assert len(list(tmp_path.glob("02_link.failed.*"))) == 1
+
+
+def test_a_per_cell_step_resumes_in_place_and_keeps_its_earlier_attempt(tmp_path):
+    # Steps 5 and 6 resume per cell (ruling, 2 Nov 2026): a resume leaves
+    # their cells where the step looks for them, and keeps a copy.
+    _run(tmp_path, {"device_components": ("failed", 1)})
+    _run(tmp_path, {"hold": ("failed", 1)}, start="device_components")   # no clock yet
+    host, dev = st.step_dir(tmp_path, "host_components"), st.step_dir(tmp_path, "device_components")
+    (st.step_dir(tmp_path, "predict") / "marker").write_text("earlier")
+    for d in (host, dev):
+        (d / "cell_a").mkdir()
+        (d / "cell_a" / "cell_manifest.json").write_text("passed")
+        (d / "cells_index.json").write_text("earlier")
+    rc, ran = _run(tmp_path, start="host_components")
+    assert rc == 0 and ran == list(ORDER[ORDER.index("host_components"):])
+    assert len(list(tmp_path.glob(f"{dev.name}.failed.*"))) == 1   # the first resume's
+    for d in (host, dev):
+        assert (d / "cell_a" / "cell_manifest.json").read_text() == "passed"   # in place
+        kept, = tmp_path.glob(f"{d.name}.passed.*")
+        assert (kept / "cells_index.json").read_text() == "earlier"
+        assert (kept / "step.log").read_text() == f"ran {d.name[3:]}\n"
+        # the step's own files are copies, which the new attempt may rewrite
+        (d / "cells_index.json").write_text("new")
+        assert (kept / "cells_index.json").read_text() == "earlier"
+        # the cells' files are links, and a cell run again is removed, not rewritten
+        a, b = d / "cell_a" / "cell_manifest.json", kept / "cell_a" / "cell_manifest.json"
+        assert a.stat().st_ino == b.stat().st_ino
+        shutil.rmtree(d / "cell_a")
+        assert b.read_text() == "passed"
+    # any other step is moved, as before
+    kept, = tmp_path.glob("07_predict.passed.*")
+    assert (kept / "marker").exists() and not (st.step_dir(tmp_path, "predict") / "marker").exists()
 
 
 def test_no_new_prediction_once_ground_truth_has_started(tmp_path):

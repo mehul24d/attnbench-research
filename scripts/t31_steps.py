@@ -120,16 +120,19 @@ BATCH1_ONLY = ("xattention", "xattention_noassert", "oracle", "meanpool")
 HOST_PROFILE_REPS = 5
 BOUNDARY_BARE_REPS = 3
 
-# Step 5 runs each cell in its own process under a host-memory ceiling
-# (researcher's ruling, 2 Nov 2026, after T3.1's third session, whose step
+# Steps 5 and 6 run each cell in its own process under a host-memory ceiling
+# (researcher's ruling, 2 Nov 2026, after T3.1's third session, whose step 5
 # was killed by the out-of-memory killer at 31.6 GB on g2-standard-8's 31
-# GiB). The ceiling leaves 5 GiB for the parent, the system and the guard's
-# sampling interval; a session's config may set `host_cell_rss_ceiling_gb`.
+# GiB; step 6 on the researcher's answer of the same day). The ceiling leaves
+# 5 GiB for the parent, the system and the guard's sampling interval; a
+# session's config may set `host_cell_rss_ceiling_gb`.
 HOST_CELL_RSS_CEILING_GB = 26.0
+CELL_CHILDREN = ("host-cell-one", "device-cell-one")     # steps 5 and 6
 CELL_MANIFEST = "cell_manifest.json"      # the parent's record of the cell's process
-CELL_INDEX = "cell_index.json"            # the child's `cells_index.json` entry
-CELL_EXIT = "cell_exit.json"              # the child's own high-water mark and error
-PRICE_CACHE = "bare_price_cache.pkl"      # the bare prices, shared by the step's cells
+CELL_INDEX = "cell_index.json"            # the child's entry for the step's index
+CELL_EXIT = "cell_exit.json"              # the child's own high-water mark, error, findings
+PRICE_CACHE = "bare_price_cache.pkl"      # the bare prices, shared by step 5's cells
+MEMSET_ZOO = "memset_zoo.json"            # the memset zoo, measured once for step 6
 
 # A dry run's own values: small, and labelled so nothing it writes can pass
 # for P1's.
@@ -943,14 +946,45 @@ def step_host_components(args, cfg) -> dict:
         return {"fake": True}
     _need_gpu("the null-kernel host profile")
     out = Path(args.out)
+    run = guarded_cells(args, cfg, cells(cfg), spawn=spawn_cell)
+    index = run["index"]
+    _write_json(out / "cells_index.json", {"cells": index})
+    prices = load_prices(SimpleNamespace(prices={}), out / PRICE_CACHE).prices
+    name = lambda c: f"{c['arm']}@{c['context_length']}x{c['batch']}"   # noqa: E731
+    return {"cells": len(index), "signatures_timed": len(prices),
+            "resumed": run["resumed"], "peak_rss_mb": run["peak_rss_mb"],
+            "rss_ceiling_gb": run["rss_ceiling_gb"],
+            "chain_gate_fallback_cells": [name(c) for c in index
+                                          if c["chain_gate"]["fallback"]],
+            "residual_labelled_cells": {name(c): c["layer_residual"]["labels"] for c in index
+                                        if c["layer_residual"]["labels"]},
+            "residual_added_ms": {name(c): c["layer_residual"]["residual_added_s"] * 1e3
+                                  for c in index},
+            "instrumented_over_bare": {name(c): c["chain_gate"]["instrumented_over_bare"]
+                                       for c in index}}
+
+
+def guarded_cells(args, cfg, cell_list, *, spawn, inputs=None) -> dict:
+    """Steps 5 and 6: each cell of `cell_list` in its own process (`spawn`)
+    under the RSS ceiling, in order, stopping at the first that fails or
+    crosses it. Writes each cell's `cell_manifest.json` (the cell, the code
+    identity, the instance spec, `inputs(cell)` if given, the status, the
+    peak RSS); a cell that passed under the same identity, instance and
+    inputs, from a clean tree, is not run again (`resumable`), and any other
+    cell directory is cleared first. A failing child's own findings (a
+    `StepFailed`'s, through `cell_exit.json`) are raised with the manifest.
+    Returns the cells' entries (`cell_index.json`), in order, the cells
+    resumed, the peaks and the ceiling."""
+    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     ident, spec = cell_identity(), instance_spec()
     ceiling_gb = float(cfg.get("host_cell_rss_ceiling_gb") or HOST_CELL_RSS_CEILING_GB)
     index, resumed, peaks = [], [], {}
-    for cell in cells(cfg):
+    for cell in cell_list:
         cd = cell_dir(out, *cell)
         name = cd.name
-        done = resumable(cd, ident, spec)
+        given = inputs(cell) if inputs else None
+        done = resumable(cd, ident, spec, given)
         if done is not None:
             index.append(done)
             resumed.append(name)
@@ -960,10 +994,11 @@ def step_host_components(args, cfg) -> dict:
             shutil.rmtree(cd)
         cd.mkdir(parents=True)
         manifest = {"cell": dict(zip(("arm", "density", "length", "batch"), cell)),
-                    "identity": ident, "instance": spec, "status": "running",
+                    "identity": ident, "instance": spec,
+                    **({"inputs": given} if inputs else {}), "status": "running",
                     "started": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         _write_json(cd / CELL_MANIFEST, manifest)
-        guarded = spawn_cell(args, cfg, cell, cd, ceiling_mb=ceiling_gb * 1024)
+        guarded = spawn(args, cfg, cell, cd, ceiling_mb=ceiling_gb * 1024)
         exit_ = _read_json(cd / CELL_EXIT) or {}
         ok = guarded["returncode"] == 0 and (cd / CELL_INDEX).exists() and not exit_.get("error")
         status = "passed" if ok else ("over_rss_ceiling" if guarded["over_ceiling"] else "failed")
@@ -979,22 +1014,12 @@ def step_host_components(args, cfg) -> dict:
         peaks[name] = manifest["peak_rss_mb"]
         if not ok:
             raise StepFailed(f"{name}: {manifest['error']}",
-                             {"cell_manifest": manifest, "cells_passed": len(index),
+                             {**(exit_.get("findings") or {}),
+                              "cell_manifest": manifest, "cells_passed": len(index),
                               "resumed": resumed, "peak_rss_mb": peaks})
         index.append(json.loads((cd / CELL_INDEX).read_text()))
-    _write_json(out / "cells_index.json", {"cells": index})
-    prices = load_prices(SimpleNamespace(prices={}), out / PRICE_CACHE).prices
-    name = lambda c: f"{c['arm']}@{c['context_length']}x{c['batch']}"   # noqa: E731
-    return {"cells": len(index), "signatures_timed": len(prices),
-            "resumed": resumed, "peak_rss_mb": peaks, "rss_ceiling_gb": ceiling_gb,
-            "chain_gate_fallback_cells": [name(c) for c in index
-                                          if c["chain_gate"]["fallback"]],
-            "residual_labelled_cells": {name(c): c["layer_residual"]["labels"] for c in index
-                                        if c["layer_residual"]["labels"]},
-            "residual_added_ms": {name(c): c["layer_residual"]["residual_added_s"] * 1e3
-                                  for c in index},
-            "instrumented_over_bare": {name(c): c["chain_gate"]["instrumented_over_bare"]
-                                       for c in index}}
+    return {"index": index, "resumed": resumed, "peak_rss_mb": peaks,
+            "rss_ceiling_gb": ceiling_gb}
 
 
 def _read_json(path: Path):
@@ -1035,12 +1060,12 @@ def instance_spec() -> dict:
                                       "provisioning_model")} | {"gpu": gpu, "mem_total_gib": mem}
 
 
-def resumable(cd: Path, ident: dict, spec: dict):
-    """The cell's `cells_index.json` entry if it passed under this code
-    identity and instance spec, from a clean tree; else None."""
+def resumable(cd: Path, ident: dict, spec: dict, inputs=None):
+    """The cell's entry (`cell_index.json`) if it passed under this code
+    identity, instance spec and inputs, from a clean tree; else None."""
     m = _read_json(Path(cd) / CELL_MANIFEST)
     if not m or m.get("status") != "passed" or m.get("identity") != ident \
-            or m.get("instance") != spec:
+            or m.get("instance") != spec or m.get("inputs") != inputs:
         return None
     if not ident.get("git_commit") or ident.get("git_dirty") is not False:
         return None
@@ -1051,22 +1076,23 @@ def _density_arg(d) -> str:
     return CALIBRATED if d is None else repr(float(d))
 
 
-def cell_command(args, cell) -> list[str]:
+def cell_command(args, cell, child: str = "host-cell-one") -> list[str]:
     arm, d, L, b = cell
-    return _py("t31_steps.py", "host-cell-one", "--out", str(args.out),
+    return _py("t31_steps.py", child, "--out", str(args.out),
                "--session", str(args.session), "--arm", arm, "--density", _density_arg(d),
                "--length", str(L), "--batch", str(b),
                *(["--cpu-boundary"] if getattr(args, "cpu_boundary", False) else []),
                *(["--config", args.config] if getattr(args, "config", None) else []))
 
 
-def spawn_cell(args, cfg, cell, cd: Path, *, ceiling_mb: float) -> dict:
+def spawn_cell(args, cfg, cell, cd: Path, *, ceiling_mb: float,
+               child: str = "host-cell-one") -> dict:
     """One cell in its own process under the RSS ceiling; its output in
     `cell.log`. Returns `resource_guard.Guarded.record()`. The child reads
     the step's config from the same file (`--config`, else the default), so
     `cfg` is not passed on."""
     from attnbench import resource_guard
-    cmd = cell_command(args, cell)
+    cmd = cell_command(args, cell, child)
     print("$ " + " ".join(cmd), flush=True)
     with open(Path(cd) / "cell.log", "w") as log:
         g = resource_guard.run_guarded(cmd, ceiling_mb=ceiling_mb, log=log, cwd=ROOT)
@@ -1124,38 +1150,39 @@ def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
 def run_cell(args, cfg, cell):
     """One cell of step 5 in this process: the bare prices the step has so
     far, the cell, the prices saved back, then its entry (`cell_index.json`).
-    Always writes `cell_exit.json`: this process's own peak RSS and the
-    error, if any, which it returns."""
-    from attnbench import resource_guard
+    Always writes `cell_exit.json` (`_cell_body`); returns the error."""
+    return _cell_body(_host_cell_entry, args, cfg, cell)
+
+
+def _host_cell_entry(args, cfg, cell) -> dict:
     out = Path(args.out)
-    cd = cell_dir(out, *cell)
-    error = None
+    _need_gpu("the null-kernel host profile")
+    h = _harness(args)
+    pricer = load_prices(bare_pricer(), out / PRICE_CACHE)
+    entry = host_cell(h, cfg, out, cell, pricer)
+    h.unwrap()
+    save_prices(pricer, out / PRICE_CACHE)
+    return entry
+
+
+def _cell_body(entry, args, cfg, cell):
+    """Run a child's cell (`entry(args, cfg, cell)`): its entry to
+    `cell_index.json`, and always `cell_exit.json` with this process's own
+    peak RSS, the error, if any, and a `StepFailed`'s findings, which the
+    parent raises. Returns the error."""
+    from attnbench import resource_guard
+    cd = cell_dir(Path(args.out), *cell)
+    error, findings = None, None
     try:
-        _need_gpu("the null-kernel host profile")
-        h = _harness(args)
-        pricer = load_prices(bare_pricer(), out / PRICE_CACHE)
-        entry = host_cell(h, cfg, out, cell, pricer)
-        h.unwrap()
-        save_prices(pricer, out / PRICE_CACHE)
-        _write_json(cd / CELL_INDEX, entry)
+        _write_json(cd / CELL_INDEX, entry(args, cfg, cell))
     except StepFailed as e:
-        error = str(e)
+        error, findings = str(e), e.findings or None
     except Exception as e:
         traceback.print_exc()
         error = f"{type(e).__name__}: {e}"
     _write_json(cd / CELL_EXIT, {"self_peak_rss_mb": round(resource_guard.self_peak_mb(), 1),
-                                 "error": error})
+                                 "error": error, "findings": findings})
     return error
-
-
-def cmd_host_cell_one(args) -> int:
-    """`host-cell-one`: the cell `spawn_cell` names, in this process."""
-    cell = (args.arm, nominal_density(args.density), int(args.length), int(args.batch))
-    cfg = load_config(args.config, dry_run=False, cpu_boundary=args.cpu_boundary)
-    error = run_cell(args, cfg, cell)
-    print(f"[host-cell-one {cell_dir(Path(args.out), *cell).name}] "
-          f"{'FAILED: ' + error if error else 'passed'}", flush=True)
-    return 1 if error else 0
 
 
 def step_device_components(args, cfg) -> dict:
@@ -1169,7 +1196,8 @@ def step_device_components(args, cfg) -> dict:
     carries their count and the same operations with those memsets priced
     at the memset zoo's duration (`memset_flags`), for the upper-bound
     sensitivity `predict` reports; the prediction itself prices them at
-    zero device cost."""
+    zero device cost. Each cell runs in its own process under the RSS
+    ceiling, with manifests and resume as step 5's (`device_components_real`)."""
     if not args.dry_run:
         return device_components_real(args, cfg)
     entries = [{"arm": a, "density": d, "context_length": L, "batch": b,
@@ -1181,77 +1209,151 @@ def step_device_components(args, cfg) -> dict:
 
 
 def device_components_real(args, cfg) -> dict:
+    """Step 6's parent: each of step 5's cells in its own process
+    (`device-cell-one`, `guarded_cells`; the researcher's answer of 2 Nov
+    2026, after the step-5 fix, to build the same isolation for step 6). A
+    cell's inputs are its host entry and the link row, by sha256, so a
+    resumed cell is one priced from the same host step."""
     _need_gpu("the CUDA-graph replay")
+    out, session = Path(args.out), Path(args.session)
+    host_dir = step_dir(session, "host_components")
+    index = json.loads((host_dir / "cells_index.json").read_text())["cells"]
+    link = step_dir(session, "link") / "link" / "link.parquet"
+
+    def inputs(cell):
+        return {"host_cell_index_sha256": _sha256(cell_dir(host_dir, *cell) / CELL_INDEX),
+                "link_sha256": _sha256(link)}
+    run = guarded_cells(args, cfg, [device_cell_key(c) for c in index],
+                        spawn=spawn_device_cell, inputs=inputs)
+    entries = run["index"]
+    _write_json(out / "cells.json", {"fake": False, "cells": entries})
+    return {"cells": len(entries),
+            "cost_sources": {cell_dir(Path(), *device_cell_key(e)).name: e["cost_sources"]
+                             for e in entries},
+            "resumed": run["resumed"], "peak_rss_mb": run["peak_rss_mb"],
+            "rss_ceiling_gb": run["rss_ceiling_gb"]}
+
+
+def _sha256(path: Path):
+    import hashlib
+    path = Path(path)
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
+def device_cell_key(c: dict) -> tuple:
+    """A host or device entry's cell: (arm, density setting, length, batch),
+    as `cells` gives it and `cell_dir` names it."""
+    return (c["arm"], c["nominal_density"], int(c["budget"]), int(c["batch"]))
+
+
+def spawn_device_cell(args, cfg, cell, cd: Path, *, ceiling_mb: float) -> dict:
+    return spawn_cell(args, cfg, cell, cd, ceiling_mb=ceiling_mb, child="device-cell-one")
+
+
+def memset_zoo(out: Path) -> dict[int, float]:
+    """The memset zoo's durations, measured once for the step and kept in
+    `memset_zoo.json`, which the step's later cells read."""
+    from attnbench.components import memset_flags as msf
+    path = Path(out) / MEMSET_ZOO
+    kept = _read_json(path)
+    if kept is not None:
+        return {int(k): float(v) for k, v in kept.items()}
+    zoo = msf.measure_zoo(Path(out) / "memset_zoo_trace.json")
+    tmp = path.with_name(path.name + ".part")
+    _write_json(tmp, {str(k): v for k, v in zoo.items()})
+    os.replace(tmp, path)
+    return zoo
+
+
+def device_cell(h, out: Path, session: Path, cell) -> dict:
+    """One cell of step 6, in this process: its `cells.json` entry."""
     import pandas as pd
     import torch
     from attnbench.components import host_profile as hp
     from attnbench.components import memset_flags as msf
     from attnbench.components import op_sequence as ops
     from attnbench.components import recorder, replay
-    out, session = Path(args.out), Path(args.session)
-    zoo: dict = {}
     host_dir = step_dir(session, "host_components")
-    index = json.loads((host_dir / "cells_index.json").read_text())["cells"]
+    name = cell_dir(Path(), *cell).name
+    c = json.loads((host_dir / name / CELL_INDEX).read_text())
     row = pd.read_parquet(step_dir(session, "link") / "link" / "link.parquet").iloc[0].to_dict()
+    cd = out / c["dir"]
+    cd.mkdir(parents=True, exist_ok=True)
+    rec = recorder.load_recording(host_dir / c["dir"] / "recording")
+    a = ready_cell(h, c["arm"], c["nominal_density"], c["budget"], c["batch"])
+    cap = replay.capture(a.run_prefill, rec.tape, device=_device(), masks=rec.masks,
+                         backend=_graph_backend())
+    try:    # after one replay and a synchronise (ruling, 1 Nov 2026)
+        agreement, failure = replay.mask_agreement(cap), None
+    except replay.ReplayError as e:
+        agreement, failure = None, str(e)
+    if agreement is not None and not agreement.get("identical"):
+        failure = "the replay's live masks differ from the bank"
+    if failure:
+        from attnbench.components import mask_diagnosis as md   # findings only (31 Oct 2026)
+        diag = md.guarded(md.replay_diagnosis, a.run_prefill, rec, device=_device(),
+                          graph_backend=_graph_backend())
+        _write_json(cd / "mask_diagnosis.json", diag)
+        raise StepFailed(f"{c['dir']}: {failure}", {"mask_diagnosis": md.summaries(diag)})
+    m = replay.match(rec.sequence, replay.replay_nodes(
+        replay.profile_replay(cap, cd / "replay_trace.json")))
+    original = None
+    if not m.complete:
+        torch.cuda.synchronize()
+        orig = replay.isolated_replay(a.run_prefill, rec.tape, cd / "isolated_original.json",
+                                      device=_device(), masks=rec.masks, substitute=False)
+        original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH))
+    try:
+        pricing = replay.price_positions(rec.sequence, m, original)
+    except replay.ReplayError as e:
+        raise StepFailed(f"{c['dir']}: {e}")
+    prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
+    costs = dict(host=hp.host_costs(prof, rec.sequence), device=pricing.device_s,
+                 link=link_costs(rec.sequence, row))
+    priced = label_outside_layers(ops.to_operations(rec.sequence, **costs))
+    memsets = None
+    if msf.count(rec.sequence):
+        zoo = memset_zoo(out)
+        trace = rec.directory / "trace.json"
+        sizes = (msf.flagged_sizes(trace, rec.sequence) if trace.exists()
+                 else {i: None for i in msf.flagged(rec.sequence)})
+        upper, src = msf.upper_bound_s(sizes, zoo)
+        memsets = {"count": len(upper), "sources": sorted(set(src.values())),
+                   "ops_upper": [op_to_dict(op) for op in label_outside_layers(
+                       ops.to_operations(rec.sequence, **costs, flagged_memset_s=upper))]}
+    return {"arm": c["arm"], "density": c["density"],
+            "nominal_density": c["nominal_density"],
+            "context_length": c["context_length"], "budget": c["budget"],
+            "batch": c["batch"], "prompt_id": c["prompt_id"],
+            "code_path": c["code_path"], "cost_sources": pricing.counts(),
+            "ops": [op_to_dict(op) for op in priced],
+            **({"memset_flags": memsets} if memsets else {})}
+
+
+def run_device_cell(args, cfg, cell):
+    """One cell of step 6 in this process (`device_cell`); always writes
+    `cell_exit.json` (`_cell_body`); returns the error."""
+    return _cell_body(_device_cell_entry, args, cfg, cell)
+
+
+def _device_cell_entry(args, cfg, cell) -> dict:
+    _need_gpu("the CUDA-graph replay")
     h = _harness(args)
-    entries, sources = [], {}
-    for c in index:
-        cd = out / c["dir"]
-        cd.mkdir(parents=True, exist_ok=True)
-        rec = recorder.load_recording(host_dir / c["dir"] / "recording")
-        a = ready_cell(h, c["arm"], c["nominal_density"], c["budget"], c["batch"])
-        cap = replay.capture(a.run_prefill, rec.tape, device=_device(), masks=rec.masks,
-                             backend=_graph_backend())
-        try:    # after one replay and a synchronise (ruling, 1 Nov 2026)
-            agreement, failure = replay.mask_agreement(cap), None
-        except replay.ReplayError as e:
-            agreement, failure = None, str(e)
-        if agreement is not None and not agreement.get("identical"):
-            failure = "the replay's live masks differ from the bank"
-        if failure:
-            from attnbench.components import mask_diagnosis as md   # findings only (31 Oct 2026)
-            diag = md.guarded(md.replay_diagnosis, a.run_prefill, rec, device=_device(),
-                              graph_backend=_graph_backend())
-            _write_json(cd / "mask_diagnosis.json", diag)
-            raise StepFailed(f"{c['dir']}: {failure}", {"mask_diagnosis": md.summaries(diag)})
-        m = replay.match(rec.sequence, replay.replay_nodes(
-            replay.profile_replay(cap, cd / "replay_trace.json")))
-        original = None
-        if not m.complete:
-            torch.cuda.synchronize()
-            orig = replay.isolated_replay(a.run_prefill, rec.tape, cd / "isolated_original.json",
-                                          device=_device(), masks=rec.masks, substitute=False)
-            original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH))
-        try:
-            pricing = replay.price_positions(rec.sequence, m, original)
-        except replay.ReplayError as e:
-            raise StepFailed(f"{c['dir']}: {e}")
-        prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
-        costs = dict(host=hp.host_costs(prof, rec.sequence), device=pricing.device_s,
-                     link=link_costs(rec.sequence, row))
-        priced = label_outside_layers(ops.to_operations(rec.sequence, **costs))
-        memsets = None
-        if msf.count(rec.sequence):
-            if not zoo:
-                zoo.update(msf.measure_zoo(out / "memset_zoo_trace.json"))
-            trace = rec.directory / "trace.json"
-            sizes = (msf.flagged_sizes(trace, rec.sequence) if trace.exists()
-                     else {i: None for i in msf.flagged(rec.sequence)})
-            upper, src = msf.upper_bound_s(sizes, zoo)
-            memsets = {"count": len(upper), "sources": sorted(set(src.values())),
-                       "ops_upper": [op_to_dict(op) for op in label_outside_layers(
-                           ops.to_operations(rec.sequence, **costs, flagged_memset_s=upper))]}
-        sources[c["dir"]] = pricing.counts()
-        entries.append({"arm": c["arm"], "density": c["density"],
-                        "nominal_density": c["nominal_density"],
-                        "context_length": c["context_length"], "budget": c["budget"],
-                        "batch": c["batch"], "prompt_id": c["prompt_id"],
-                        "code_path": c["code_path"], "cost_sources": pricing.counts(),
-                        "ops": [op_to_dict(op) for op in priced],
-                        **({"memset_flags": memsets} if memsets else {})})
+    entry = device_cell(h, Path(args.out), Path(args.session), cell)
     h.unwrap()
-    _write_json(out / "cells.json", {"fake": False, "cells": entries})
-    return {"cells": len(entries), "cost_sources": sources}
+    return entry
+
+
+def cmd_cell_one(args) -> int:
+    """`host-cell-one` or `device-cell-one`: the cell `spawn_cell` names, in
+    this process."""
+    cell = (args.arm, nominal_density(args.density), int(args.length), int(args.batch))
+    cfg = load_config(args.config, dry_run=False, cpu_boundary=args.cpu_boundary)
+    run = run_cell if args.step == "host-cell-one" else run_device_cell
+    error = run(args, cfg, cell)
+    print(f"[{args.step} {cell_dir(Path(args.out), *cell).name}] "
+          f"{'FAILED: ' + error if error else 'passed'}", flush=True)
+    return 1 if error else 0
 
 
 def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None):
@@ -1593,7 +1695,7 @@ def run_step(name: str, args) -> int:
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("step", choices=STEPS + ("ground-truth-one", "host-cell-one"))
+    ap.add_argument("step", choices=STEPS + ("ground-truth-one",) + CELL_CHILDREN)
     ap.add_argument("--out", required=True)
     ap.add_argument("--session", required=True)
     ap.add_argument("--dry-run", action="store_true")
@@ -1603,7 +1705,7 @@ def parser() -> argparse.ArgumentParser:
                     help=f"session values (default {DEFAULT_CONFIG.relative_to(ROOT)}; "
                          f"a dry run uses its own unless given)")
     ap.add_argument("--group", default=None)
-    # host-cell-one: the step-5 cell (`step_host_components`, `spawn_cell`)
+    # host-cell-one, device-cell-one: a step-5 or step-6 cell (`guarded_cells`)
     ap.add_argument("--arm", default=None)
     ap.add_argument("--density", default=None)
     ap.add_argument("--length", type=int, default=None)
@@ -1618,17 +1720,17 @@ def main(argv=None) -> int:
             print("REFUSING: --cpu-boundary runs the real steps; it is not --dry-run",
                   file=sys.stderr)
             return 2
-        if args.step not in STEPS[:STEPS.index("hold") + 1] + ("host-cell-one",):
+        if args.step not in STEPS[:STEPS.index("hold") + 1] + CELL_CHILDREN:
             print(f"REFUSING: the CPU boundary runs steps 1 to 8, not {args.step}",
                   file=sys.stderr)
             return 2
         from attnbench import cpu_boundary
         with cpu_boundary.installed():
-            if args.step == "host-cell-one":
-                return cmd_host_cell_one(args)
+            if args.step in CELL_CHILDREN:
+                return cmd_cell_one(args)
             return run_step(args.step, args)
-    if args.step == "host-cell-one":
-        return cmd_host_cell_one(args)
+    if args.step in CELL_CHILDREN:
+        return cmd_cell_one(args)
     if args.step == "ground-truth-one":
         try:
             return cmd_ground_truth_one(args)

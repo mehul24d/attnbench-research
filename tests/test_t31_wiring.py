@@ -193,20 +193,25 @@ INSTANCE = {"cloud_provider": "gcp", "instance_type": "g2-standard-8", "boot_ima
             "provisioning_model": "on-demand", "gpu": "NVIDIA L4", "mem_total_gib": 31.3}
 
 
-def in_process_cells(monkeypatch, *, spawned=None):
-    """Step 5's cells run in this process, through the child's own body
-    (`run_cell`), so the module-level fakes reach them; the guard's record
-    is a fake. `spawned` collects the cells run."""
+def in_process_cells(monkeypatch, *, spawned=None, device_spawned=None):
+    """Steps 5 and 6's cells run in this process, through the child's own
+    body (`run_cell`, `run_device_cell`), so the module-level fakes reach
+    them; the guard's record is a fake. `spawned` and `device_spawned`
+    collect the cells run."""
     monkeypatch.setattr(st, "cell_identity", lambda: dict(IDENTITY))
     monkeypatch.setattr(st, "instance_spec", lambda: dict(INSTANCE))
 
-    def spawn(args, cfg, cell, cd, *, ceiling_mb):
-        if spawned is not None:
-            spawned.append(cell)
-        error = st.run_cell(args, cfg, cell)
-        return {"returncode": 1 if error else 0, "seconds": 0.0, "sampled_peak_rss_mb": 900.0,
-                "rss_ceiling_mb": ceiling_mb, "over_ceiling": False}
-    monkeypatch.setattr(st, "spawn_cell", spawn)
+    def spawner(run, seen):
+        def spawn(args, cfg, cell, cd, *, ceiling_mb):
+            if seen is not None:
+                seen.append(cell)
+            error = run(args, cfg, cell)
+            return {"returncode": 1 if error else 0, "seconds": 0.0,
+                    "sampled_peak_rss_mb": 900.0, "rss_ceiling_mb": ceiling_mb,
+                    "over_ceiling": False}
+        return spawn
+    monkeypatch.setattr(st, "spawn_cell", spawner(st.run_cell, spawned))
+    monkeypatch.setattr(st, "spawn_device_cell", spawner(st.run_device_cell, device_spawned))
 
 
 def _bare(monkeypatch, gate_ok: bool):

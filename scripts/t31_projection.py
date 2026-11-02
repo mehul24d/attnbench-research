@@ -161,7 +161,7 @@ def project(which: int) -> dict:
              "four small cells at 32768": 4 * u["step5_small_32768_cell_min"],
              f"a process per cell ({len(cells)})": len(cells) * u["cell_process_start_s"] / 60}
     m["5 host_components"] = sum(phase.values())
-    dev = 0.0
+    dev = len(cells) * u["cell_process_start_s"]           # a process per cell, as step 5's
     for arm, d, L, b in cells:
         w = arm_wall(arm, L, b)
         dev += 4 * w + 10 + (0 if which < 2 else
