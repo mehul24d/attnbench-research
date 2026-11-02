@@ -422,3 +422,16 @@ def test_session_four_stages_with_only_the_missing_cells_left_to_run(tmp_path):
     assert not list((tmp_path / "s4dbg").rglob("isolated_host.events.jsonl"))
     dumped = json.dumps(rec) + (tmp_path / "s4dbg" / dbg.DEBUG_NOTE).read_text()
     assert "research-" not in dumped and "gs://" not in dumped
+
+
+@pytest.mark.parametrize("bucket", ["gs://attnbench-results-x", "gs://attnbench-results-x/", "attnbench-results-x"])
+def test_the_fetch_command_names_the_donor_in_the_bucket_with_one_prefix(bucket, monkeypatch):
+    cmd = dbg.fetch_command(bucket, "inst-1", "sess", Path("/d"))
+    assert cmd[-2:] == ["gs://attnbench-results-x/inst-1/results/sess", "/d"]
+    assert "-x" in cmd and cmd[cmd.index("-x") + 1].endswith(r"isolated_host\.events\.jsonl$")
+
+
+def test_the_fetch_command_takes_what_results_bucket_returns(monkeypatch):
+    monkeypatch.setenv("ATTNBENCH_BUCKET", "gs://attnbench-results-y")
+    cmd = dbg.fetch_command(st.results_bucket(), "i", "s", Path("d"))
+    assert not any("gs://gs:" in c for c in cmd) and cmd[-2] == "gs://attnbench-results-y/i/results/s"

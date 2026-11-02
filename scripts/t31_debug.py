@@ -239,9 +239,14 @@ def stage(donor: Path, session: Path, *, start: str = "host_components",
 
 def fetch_command(bucket: str, instance: str, donor_session: str, dest: Path) -> list[str]:
     """gsutil command for the donor's results in the bucket (layout of
-    `run_phase.sh`: <hostname>/results/<session>), leaving out the event log."""
+    `run_phase.sh`: <hostname>/results/<session>), leaving out the event log.
+    `bucket` is `t31_steps.results_bucket()`'s, which already starts `gs://`
+    (the first debug session's fetch doubled the prefix)."""
+    bucket = bucket.rstrip("/")
+    if not bucket.startswith("gs://"):
+        bucket = f"gs://{bucket}"
     return ["gsutil", "-m", "rsync", "-r", "-x", r".*isolated_host\.events\.jsonl$",
-            f"gs://{bucket}/{instance}/results/{donor_session}", str(dest)]
+            f"{bucket}/{instance}/results/{donor_session}", str(dest)]
 
 
 def main(argv=None) -> int:
