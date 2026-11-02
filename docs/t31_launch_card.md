@@ -2,8 +2,12 @@
 
 Prepared 28 Oct 2026; rewritten 1 Nov 2026 after Shakedown 6 and the
 researcher's rulings that followed it; updated 2 Nov 2026 after the first
-session's crash and its diagnostic. Deploys from `main` at the merge of
-`t31-s2-memcheck-padding-2026-11-02` or later. Launchable only on the researcher's
+session's crash and its diagnostic, and again after the third session's
+out-of-memory stop. Deploys from `main` at the merge of
+`t31-step5-memory-2026-11-02` or later. **The session starts from step 1
+and runs all of step 5 again:** none of the third session's 31 cells is
+reused (researcher's ruling, 2 Nov 2026), so every row comes from one code
+identity. Launchable only on the researcher's
 yes; nothing here runs on its own. **Stop at the first failure:** the session
 runs once, the runner stops at the first step that fails, and the instance
 is torn down. Nothing is fixed and resumed inside this session; a fix and a
@@ -26,17 +30,19 @@ default and compiled capture (mean-pool and XAttention, each with the eager
 dense control). It runs 10 clean rounds per cell and 5 dense-selection
 rounds; the rerun budget is 0 and the floor is derived in the session.
 
-Minutes are from `scripts/t31_projection.py` (low / central / high), which
-scales Shakedown 6's measurements to this grid. Steps 5 to 11 have not run on
-a GPU, so their minutes are the least certain.
+Minutes are from `scripts/t31_projection.py` (low / central / high). Steps
+1 to 4 are the third session's, which ran them on this grid; step 5 is that
+session's 93 minutes plus what it did not reach; steps 6 to 11 are scaled
+from Shakedown 6. Steps 6 to 11 have not run on a GPU, so their minutes are
+the least certain.
 
 | # | Step | Task | Minutes |
 |---|---|---|---|
-| 1 | `preflight` | T2.1 probe `start`, T2.20 fields, config of record; the kernel contract | 3 / 5 / 8 |
-| 2 | `link` | T2.5 row, T2.6 Q, mechanism table per length | 5 / 5 / 5 |
-| 3 | `dense_select` | T2.16 record per (length, batch); the session floor | 6 / 6 / 6 |
-| 4 | `probe` | T2.18, every arm, at every grid length (durations discarded) | 19 / 19 / 19 |
-| 5 | `host_components` | T2.2 per cell: the recording, the null pass (instrumented), the bare prices with the per-layer residual, which the prediction reads | 36 / 48 / 84 |
+| 1 | `preflight` | T2.1 probe `start`, T2.20 fields, config of record; the kernel contract | 1.6 |
+| 2 | `link` | T2.5 row, T2.6 Q, mechanism table per length | 2.7 |
+| 3 | `dense_select` | T2.16 record per (length, batch); the session floor | 3.6 |
+| 4 | `probe` | T2.18, every arm, at every grid length (durations discarded) | 13.9 |
+| 5 | `host_components` | T2.2 per cell, each cell in its own process under a 26 GiB RSS ceiling: the recording, the null pass (instrumented), the bare prices with the per-layer residual, which the prediction reads | 119 / 139 / 170 |
 | 6 | `device_components` | T2.4 replay per cell; the priced cells | 9 / 10 / 15 |
 | 7 | `predict` | T2.11: write, sync, read back; the receipt | 1 |
 | 8 | `hold` | until sync + 90 s (`PLANNED_SYNC_WAIT_S`), on the instance clock | 1.5 |
@@ -44,9 +50,93 @@ a GPU, so their minutes are the least certain.
 | 10 | `verify` | `load_committed` against the earliest ground-truth stamp | 1 |
 | 11 | `postflight` | T2.1 probe `end` | 2 |
 
-Step 5's minutes, central: recording 4, isolated replay 4, null passes 11,
-bare pass 23, residual 7. The bare pass is mostly device time: at least
-1000 repetitions of each signature, after a synchronise.
+Step 5's minutes (low / central / high): the third session's 93.3 for 31
+cells and the first 24 minutes of the 32nd; the rest of that cell,
+`oracle_d0.5_L32768`, 10 / 20 / 35; the four mean-pool and XAttention cells
+at 32768, 4 / 8 / 12; a fresh process per cell (imports, CUDA, the model
+load), 12 / 18 / 30.
+
+## What changed since the third session (2 Nov 2026)
+
+The third session (`results/t31_p1_s3/`, ₹270, 149 min) passed steps 1 to 4,
+the kernel contract clean on the L4 (memcheck 130 errors with the library's
+own buffer, 0 with the fix; the real prompt bitwise 0 on 28 layers). Step 5
+ran 31 of its 36 cells; in the 32nd, `oracle_d0.5_L32768`, the kernel's
+out-of-memory killer took the step's process at 31.6 GB, during its isolated
+replay's trace export.
+
+**Measured on the Mac from the banked cells** (one read per process, peak
+RSS above the process's start):
+
+| What | Holds about | Measured on |
+|---|---|---|
+| Reading an isolated trace in full (`json.load`, `_events`) | 2.7 × the file | the oracle's 2048 to 16384 cells (33 MB to 827 MB) |
+| Reading the recording's trace (`parse_trace`, `launch_check`), each | 4.9 × the file | `oracle_d0.5_L16384` (295 MB) |
+| The profiler before and during its export | 2.2 × the trace it writes | a CPU-only synthetic run, 722 MB trace |
+| Writing the compact stream | under 0.1 GB, at any size | the 3.3 GB `oracle_d0.25_L32768` trace, 49 s |
+| Reading the compact stream | 330 bytes per kept event (0.8 × the full trace) | `oracle_d0.25_L16384` |
+
+The oracle's traces grow with the length: its isolated trace is 3.1 GB at
+`d0.25_L32768`, and `d0.5_L32768`'s projects to 5.7 GB (its recording is 1.85
+times as large). So both causes held. **Memory built up across cells:** the
+process held 18.9 GB during the 32nd cell's recording, more than any one read
+of that phase needs. **And the 32nd cell was large on its own:** its export
+alone needs about 12 GiB, and reading its trace in full about 15 GiB, so
+alone it would have peaked near 20 GiB. Neither cause alone exceeded the
+host; together they did.
+
+**The fix** (researcher's ruling, 2 Nov 2026):
+- **A process per cell.** Step 5 runs each cell as `t31_steps.py
+  host-cell-one` under `attnbench/resource_guard.py`, which samples the
+  child's RSS and kills it at the ceiling (26 GiB of the host's 31; a
+  session config may set `host_cell_rss_ceiling_gb`). The cell then fails
+  alone, with its record, and the step stops as at any failure.
+- **The isolated trace as a compact stream.** It is read one event at a time
+  (`attnbench/components/trace_stream.py`). Of it, the
+  `isolated_host.events.jsonl` stream keeps what the profile reads, and the
+  full trace is deleted. Each kept event has its operation class, its name,
+  its thread, its timing and its index. The stream is read once, for both
+  the isolated prices and the chain check. On the banked cells it gives the
+  same launches, calls, flushes and prices as the full trace, and the same
+  chain check.
+- **Each cell's manifest** (`cell_manifest.json`) holds its code identity,
+  the instance spec, the status, and the peak RSS, sampled and the child's
+  own.
+- **Resume per cell.** A cell resumes only where its manifest says it passed
+  under the same commit, the same clean tree, the same libraries and the
+  same instance. Any other cell's directory is cleared and the cell runs
+  afresh. This session does not use resume (no `--from`); the third
+  session's cells are not reused.
+- **The bare prices** are one cache for the step (`bare_price_cache.pkl`),
+  as when the cells shared a process.
+
+**What is not compacted:**
+- **The recording's own trace** stays whole. The sequence parser reads its
+  Python frames: the call instance of an extension's kernel, such as the
+  block-sparse call, comes from them. The launch check reads its shapes
+  (ruling, 1 Nov 2026), and `recording.json` pins the trace by sha256. Its
+  profiler settings are unchanged.
+- **The isolated replay's profiler** already records no stacks, shapes,
+  memory or flops.
+- **No full trace is kept for Figure 1.** It reads T2.27's own recording,
+  not a T3.1 trace.
+
+**Projected peak RSS per cell** (GiB): the process's base plus the cell's
+largest phase. The base on the L4 is not measured; it is taken as 3 to 6
+GiB. The first cells' manifests will show it.
+
+| Cell | Largest phase | Above base | Peak | Against 26 |
+|---|---|---|---|---|
+| `oracle_d0.5_L32768` | the isolated trace's export (5.7 GB) | 12.2 | 15 to 18 | 8 to 11 GiB under |
+| | (reading it in full, before the fix) | (15.4) | (18 to 21) | |
+| `oracle_d0.25_L32768` | the isolated trace's export (3.1 GB) | 6.6 | 10 to 13 | |
+| `oracle_d0.5_L16384` | the isolated trace's export (1.5 GB) | 3.3 | 6 to 9 | |
+| dense, mean-pool, XAttention, any length | traces of 33 MB or less | under 0.2 | 3 to 6 | |
+
+The profiler's figure is from a CPU-only run. With CUDA activity it may hold
+more per event. Even if it held twice as much, `oracle_d0.5_L32768` would
+peak at 30 GiB. That is over the ceiling, so the guard would stop that cell
+alone and record it.
 
 ## What changed since the second session (2 Nov 2026)
 
@@ -154,14 +244,16 @@ While this VM exists, the H100 retry loop running on the Mac skips its rounds
 | | Hours | ₹ at 108.64/h |
 |---|---|---|
 | Setup: launch, deploy, preflight, write gate, bootstrap (Shakedown 6: 6 min) | 0.1 | 11 |
-| Steps 1 to 11, central (low 2.3 h, high 4.4 h) | 2.9 | 318 |
+| Steps 1 to 11, central (low 3.5 h, high 5.6 h) | 4.2 | 459 |
 | Teardown: results pull, delete, cleanup check | 0.13 | 14 |
-| **Expected, central** (low 2.6 h ₹278, high 4.7 h ₹508) | **3.2** | **343** |
+| **Expected, central** (low 3.8 h ₹408, high 5.8 h ₹635) | **4.5** | **484** |
 | In-guest halt (`GCP_HALT_MINUTES=420`): GPU billing stops | 7.0 | 760 |
 | Hard delete (`GCP_MAX_RUN=7h30m`) | 7.5 | disk only after the halt |
 
-**Cost cap: ₹760**, the halt. The projection's high case is inside the
-expected 5 h. There is no "fixed and resumed" row: the session stops at the
+**Cost cap: ₹760**, the halt. The projection's central case is inside the
+expected 5 h. Its high case (5.8 h) is over that, but inside the cap. Each
+failure from step 6 on would cost a whole session, 2 to 3 hours and ₹100 to
+₹300. There is no "fixed and resumed" row: the session stops at the
 first failure.
 
 ## The commands
@@ -193,7 +285,7 @@ Back on the Mac, when it ends (passed or stopped):
 
 ```bash
 bash scripts/gcp_session_elapsed.sh "$NAME" "$ZONE" 108.64
-bash scripts/gcp_teardown_session.sh "$NAME" "$ZONE" results/t31_p1_s3   # sessions 1 and 2: results/t31_p1, results/t31_p1_s2
+bash scripts/gcp_teardown_session.sh "$NAME" "$ZONE" results/t31_p1_s4   # sessions 1 to 3: results/t31_p1, results/t31_p1_s2, results/t31_p1_s3
 bash scripts/gcp_cleanup_check.sh
 ```
 
@@ -225,6 +317,25 @@ python3 scripts/t228_steps.py pricing_zoo --cpu-boundary --out /tmp/zoo --length
 python3 scripts/t227_steps.py graph-breaks-one --cpu-boundary --arms meanpool --setting default --out /tmp/gb --gb-length 1024
 python3 scripts/t31_projection.py
 ```
+
+## The CPU dry run (2 Nov 2026, after the third session)
+
+Behind the CPU boundary (transformers 4.46.0, torch 2.13.0), on the step-5
+fix before its commit, the rehearsal passed steps 1 to 8 in 9.4 minutes:
+- **Step 5** ran its 15 rehearsal cells, each in its own `host-cell-one`
+  process, in 127 s. Every cell wrote its manifest. The peaks were 0.5 to 1.0
+  GiB against the 26 GiB ceiling. For each cell, the guard's sampled peak and
+  the child's own figure were within 100 MiB of each other; the manifest
+  keeps both and their maximum.
+- **Compaction:** each cell kept `isolated_host.events.jsonl` (for the
+  oracle at 2048, 8,826 of 9,736 events, 0.7 MB of 3.1 MB), and no full
+  isolated trace was left.
+- **Signatures:** the step timed 711, one cache across the cells.
+- **Step 6** read the per-cell output and passed.
+- **Resume:** the tree was dirty (uncommitted), so no cell could have resumed,
+  and none did.
+
+The CPU's timings and peaks mean nothing for the L4's.
 
 ## The CPU dry run (2 Nov 2026)
 
@@ -283,8 +394,18 @@ its compute.
 - **The oracle's host work grows with length.** It builds its mask on the
   host: 21,507 host operators per prefill at 2048 and 125,751 at 8192. At
   that rate it reaches about 735,000 at 32768, which makes recording and
-  isolated-replay traces of over 1 GB. The 32 GB machine is expected to hold
-  them, but no session has loaded one that size.
+  isolated-replay traces of over 1 GB. The third session found the limit:
+  step 5 held one process for every cell, and the killer took it in
+  `oracle_d0.5_L32768`. Step 5 now runs a process per cell under a ceiling,
+  with the isolated trace compacted (above).
+- **Step 6 still runs every cell in one process** (not in the ruling;
+  proposed, not built). Per cell it reads the recording's trace when the
+  sequence has flagged memsets: about 5 GiB for `oracle_d0.5_L32768`. Where a
+  cell's graph replay does not match the whole sequence, it also runs the
+  isolated replay of the original operators and reads that trace in full
+  (`isolated_original.json`). At the oracle's 32768 cells, that read is the
+  12 to 15 GiB of step 5's before the fix. A step-6 out-of-memory stop would
+  cost a session.
 - **The residual's device check.** A layer where the device fell behind the
   host is labelled, and its span may hold launch-queue waits. Expect labels
   at 32768.

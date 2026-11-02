@@ -43,7 +43,9 @@ def test_the_anchors_are_the_banked_results():
 def test_a_changed_anchor_is_refused(monkeypatch, tmp_path, capsys):
     if not P.S6.exists():
         pytest.skip(f"needs the banked Shakedown 6 results {P.S6}")
-    monkeypatch.setitem(P.ANCHORS, "probe_s", ("x", 100.0))
+    if not (P.S3 / "manifest.json").exists():
+        pytest.skip(f"needs the banked third session {P.S3}")
+    monkeypatch.setitem(P.S3_ANCHORS, "probe_s", ("x", 100.0))
     assert P.main([]) == 2
     assert "probe_s" in capsys.readouterr().err
 
