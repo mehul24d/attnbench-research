@@ -507,6 +507,118 @@ def isolated_replay(run_prefill: Callable[[], None], tape: SyncTape, path, *, de
     return Path(path)
 
 
+class _Rolled:
+    """The isolated replay's profiler, rolled at layer boundaries (researcher's
+    ruling, 2 Nov 2026): one profiler session, with its own replay region,
+    per block of `per` layers, each exported, compacted and deleted before
+    the next opens, so the profiler holds a block's events and not the
+    prefill's (the oracle's trace at 32768 tokens is 3.1 GB at density 0.25,
+    and the profiler's host memory about five times that).
+
+    A roll is made before layer `j` for j a multiple of `per`, from the
+    layer's forward pre-hook: in Python, between operators, with no aten
+    call open, so no operator's event is cut. The dispatch mode is paused
+    for it (`_disable_current_modes`), as the profiler's own calls are not
+    the prefill's: left on, the mode puts its own events into the trace."""
+
+    def __init__(self, path, acts, sync, layers, per):
+        from torch.profiler import profile as _profile
+        self._profile, self.acts, self.sync = _profile, acts, sync
+        self.path, self.layers, self.per = Path(path), list(layers), int(per)
+        self.parts, self.exported, self.hooks = [], [], []
+        self.prof = self.region = None
+
+    def open(self):
+        self.prof = self._profile(activities=self.acts)
+        self.prof.__enter__()
+        self.region = record_function(REPLAY_REGION)
+        self.region.__enter__()
+
+    def close(self):
+        import gc
+        from . import trace_stream
+        self.region.__exit__(None, None, None)
+        self.sync()
+        self.prof.__exit__(None, None, None)
+        part = self.path.with_name(f"{self.path.stem}.seg{len(self.parts):03d}.json")
+        self.prof.export_chrome_trace(str(part))
+        self.prof = self.region = None
+        gc.collect()
+        info = trace_stream.write_compact(part)
+        part.unlink()
+        self.exported.append(info)
+        self.parts.append(Path(info["path"]))
+
+    def roll(self):
+        from torch.utils._python_dispatch import _disable_current_modes
+        with _disable_current_modes():
+            self.close()
+            self.open()
+
+    def attach(self):
+        for j, layer in enumerate(self.layers):
+            if j and j % self.per == 0:
+                self.hooks.append(layer.register_forward_pre_hook(lambda m, a: self.roll()))
+
+    def detach(self):
+        for h in self.hooks:
+            h.remove()
+        self.hooks = []
+
+
+def isolated_replay_compact(run_prefill: Callable[[], None], tape: SyncTape, path, *, device,
+                            layers, segment_layers: int,
+                            masks: Optional[mask_bank.MaskRecord] = None,
+                            flush: Optional[Callable[[], None]] = None,
+                            sync: Optional[Callable[[], None]] = None,
+                            kernel_module=None) -> tuple:
+    """`isolated_replay(..., substitute=False)` with the profiler rolled every
+    `segment_layers` layers (`_Rolled`), the segments' compact streams
+    stitched (`trace_stream.stitch_compact`) into one at
+    `compact_path(path)`; returns (that stream, its counts). The operators,
+    flushes and synchronisations are the unsegmented replay's, and each
+    operator is priced alone as before, so the stream is the whole replay's
+    events in order. Refused with fewer than two blocks of layers, where
+    the whole replay is the segment."""
+    from torch.profiler import ProfilerActivity
+    from . import trace_stream
+    layers = list(layers)
+    if not segment_layers >= 1 or len(layers) <= segment_layers:
+        raise ReplayError(f"{len(layers)} layers in blocks of {segment_layers}: not segmented")
+    sync = sync or torch.cuda.synchronize
+    flush = flush or l2_flush(device)
+    banked = masks.tensors(device) if masks is not None else None
+    acts = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if torch.cuda.is_available() else [])
+    mode = IsolationMode(flush, sync)
+    roller = _Rolled(path, acts, sync, layers, segment_layers)
+    sync()
+    try:
+        roller.open()
+        roller.attach()
+        with _bank_capture(banked, kernel_module) as cap, mode:
+            run_prefill()
+        _check_calls(cap, banked)
+        roller.close()
+    except BaseException:
+        if roller.prof is not None:      # a failed replay leaves no profiler running
+            roller.region.__exit__(None, None, None)
+            roller.prof.__exit__(None, None, None)
+        for p in roller.parts:
+            p.unlink(missing_ok=True)
+        raise
+    finally:
+        roller.detach()
+    dst = trace_stream.compact_path(Path(path))
+    info = trace_stream.stitch_compact(roller.parts, dst, region=REPLAY_REGION)
+    for p in roller.parts:
+        p.unlink()
+    return dst, {"stream": dst.name, "segments": len(roller.parts), "segment_layers": segment_layers,
+                 "events": sum(i["events"] for i in roller.exported),
+                 "kept": info["kept"],
+                 "source_bytes": sum(i["source_bytes"] for i in roller.exported),
+                 "bytes": info["bytes"]}
+
+
 # --- reports -------------------------------------------------------------------------------
 
 def by_family(seq: OpSequence, per_position: Mapping[int, float]) -> dict[str, dict]:

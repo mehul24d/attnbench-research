@@ -119,6 +119,13 @@ CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), 
 BATCH1_ONLY = ("xattention", "xattention_noassert", "oracle", "meanpool")
 HOST_PROFILE_REPS = 5
 BOUNDARY_BARE_REPS = 3
+# The isolated replay's profiler is rolled every this many decoder layers
+# (ruling, 2 Nov 2026, after T3.1's fourth session: `oracle_d0.5_L32768` hit
+# the ceiling in one profiler session). At two layers the largest cell's
+# blocks are a fourteenth of its events, about 2 GiB of profiler memory
+# against 29 GiB for the whole; a session's config may set
+# `isolated_segment_layers` (0: one session, as before).
+ISOLATED_SEGMENT_LAYERS = 2
 
 # Steps 5 and 6 run each cell in its own process under a host-memory ceiling
 # (researcher's ruling, 2 Nov 2026, after T3.1's third session, whose step 5
@@ -374,7 +381,8 @@ def _isolated_ops() -> frozenset:
         {cpu_boundary.EMBEDDING_KERNEL_OP} if _boundary() else frozenset())
 
 
-def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=()):
+def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=(),
+                      segment_layers: int = 0):
     """T2.2's null-kernel profile of one recording, and the instrumented chain
     check.
 
@@ -392,14 +400,25 @@ def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=
     The replay's trace is kept as its compact event stream
     (`isolated_host.events.jsonl`, `trace_stream`), the full trace deleted,
     and read once for both uses (ruling, 2 Nov 2026, after T3.1's third
-    session); `check["isolated_trace"]` holds the counts."""
+    session); `check["isolated_trace"]` holds the counts.
+
+    With `segment_layers` the replay runs in blocks of that many layers, a
+    profiler session each, their streams stitched into the one stream
+    (`replay.isolated_replay_compact`; ruling, 2 Nov 2026, after T3.1's
+    fourth session); a prefill of no more layers than that is one block, run
+    as before."""
     from attnbench.components import host_profile as hp
     from attnbench.components import replay
     ops = _isolated_ops()
     pos = hp.isolated_positions(rec.sequence, ops)
-    trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
-                                   device=_device(), masks=rec.masks, substitute=False)
-    stream, counts = compact_isolated(trace)
+    if segment_layers and len(a.layers) > segment_layers:
+        stream, counts = replay.isolated_replay_compact(
+            a.run_prefill, rec.tape, Path(out) / "isolated_host.json", device=_device(),
+            layers=a.layers, segment_layers=segment_layers, masks=rec.masks)
+    else:
+        trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
+                                       device=_device(), masks=rec.masks, substitute=False)
+        stream, counts = compact_isolated(trace)
     read = hp.read_isolated(stream, rec.sequence)
     iso = hp.isolated_host_s(read, rec.sequence, pos)
     prof = hp.profile(a.run_prefill, rec.tape, rec.sequence, device=_null_device(), reps=reps,
@@ -1115,7 +1134,9 @@ def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
     seconds["record"], t0 = time.time() - t0, time.time()
     entries = () if arm == "dense" else (hp.block_sparse_entry(),)
     prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
-                                    tolerance=cfg["chain_check_tolerance"])
+                                    tolerance=cfg["chain_check_tolerance"],
+                                    segment_layers=int(cfg.get("isolated_segment_layers",
+                                                               ISOLATED_SEGMENT_LAYERS)))
     seconds["isolated_and_null_pass"], t0 = time.time() - t0, time.time()
     bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
                                      tolerance=cfg["chain_check_tolerance"])
