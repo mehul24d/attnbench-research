@@ -263,6 +263,17 @@ def test_a_cell_is_staged_only_if_its_entry_is_the_one_staged(tmp_path, monkeypa
     assert ("dense", 1.0, 2048, 1) in ran                      # priced again, not trusted
 
 
+def test_a_cell_the_staging_did_not_list_is_run_even_under_the_donors_identity(tmp_path, monkeypatch):
+    s, rec, args, spawn, ran, cfg = _debug_step5(tmp_path, monkeypatch)
+    cd = st.cell_dir(Path(args.out), "meanpool", 0.25, 32768, 1)       # not staged: the donor never ran it
+    cd.mkdir(parents=True)
+    (cd / st.CELL_INDEX).write_text("{}")
+    (cd / st.CELL_MANIFEST).write_text(json.dumps({
+        "identity": IDENT, "instance": INST, "inputs": None, "status": "passed"}))
+    st.guarded_cells(args, cfg, st.cells(cfg), spawn=spawn)
+    assert ran == [("meanpool", 0.25, 32768, 1)]
+
+
 def test_a_cell_of_another_identity_resumes_only_in_a_debug_session(tmp_path, monkeypatch):
     s, rec, args, spawn, ran, cfg = _debug_step5(tmp_path, monkeypatch)
     plain = dict(cfg, debug=False, prediction_prefix="predictions/P1")
@@ -356,7 +367,7 @@ def test_a_debug_session_and_another_never_share_a_directory(tmp_path):
 
 
 def test_a_debug_cpu_check_ends_at_hold(tmp_path):
-    rc, ran = _drun(_staged_session(tmp_path), stop_at_hold=True)
+    rc, ran = _drun(_staged_session(tmp_path), rehearsal_end=True)
     assert rc == 0 and ran == ["host_components", "device_components", "predict", "hold"]
     assert "ground_truth" not in ran
 

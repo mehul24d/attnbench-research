@@ -127,13 +127,13 @@ def clocked_started(manifest: dict) -> bool:
 
 def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, sync: bool,
                 runner=run_logged, rehearsal: bool = False, debug: bool = False,
-                keep_going: bool = False, stop_at_hold: bool = False,
+                keep_going: bool = False, rehearsal_end: bool = False,
                 cap_s: float | None = None, clock=time.time) -> int:
     """`debug`: a debug session (`t31_debug`), whose manifest says so and which
     no other session may share a directory with. `keep_going`: a step whose
     inputs did not fail runs after a failure (`DEPENDS`); the others are
     recorded as blocked. `cap_s`: no step starts after this many seconds since
-    the session began. `stop_at_hold`: end at `hold`, as a rehearsal does."""
+    the session began. `rehearsal_end`: end at `hold`, as a rehearsal does."""
     session.mkdir(parents=True, exist_ok=True)
     session_t0 = clock()
     manifest = load_manifest(session)
@@ -151,7 +151,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         print(f"REFUSING: {session} is {'a' if manifest['rehearsal'] else 'not a'} rehearsal",
               file=sys.stderr)
         return 2
-    last = STEPS.index(REHEARSAL_LAST) if rehearsal or stop_at_hold else len(STEPS) - 1
+    last = STEPS.index(REHEARSAL_LAST) if rehearsal or rehearsal_end else len(STEPS) - 1
     first = STEPS.index(start)
     if first > last:
         print(f"REFUSING --from {start}: a rehearsal ends at {REHEARSAL_LAST}", file=sys.stderr)
@@ -328,7 +328,7 @@ def debug_main(args) -> int:
     extra = ["--config", args.config] + (["--cpu-boundary"] if args.cpu_boundary else [])
     return run_session(session, start=start, extra=extra, dry_run=args.dry_run,
                        sync=not (cpu or args.no_sync), debug=True, keep_going=args.keep_going,
-                       stop_at_hold=args.cpu_boundary, cap_s=cap_s)
+                       rehearsal_end=args.cpu_boundary, cap_s=cap_s)
 
 
 def main(argv=None) -> int:
