@@ -334,6 +334,11 @@ change before its commit, the rehearsal passed steps 1 to 8 in 7.8 minutes:
   whole sequence, and no sequence had flagged memsets. So the isolated
   replay of the original operators and the memset zoo did not run; their
   per-cell handling is tested on fakes only (`tests/test_t31_step6_cells.py`).
+- **Resume, through the runner** (`--from host_components`, committed
+  tree): from cells of the previous commit, none of the 15 resumed in
+  either step, and both steps ran afresh (94 s and 53 s). Run again at the
+  same commit, all 15 resumed in both (0.2 s each), and steps 7 and 8
+  passed. Each earlier attempt was kept beside the step.
 
 The CPU's timings and peaks mean nothing for the L4's.
 
