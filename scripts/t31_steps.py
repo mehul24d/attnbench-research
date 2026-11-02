@@ -78,6 +78,7 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -118,6 +119,17 @@ CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), 
 BATCH1_ONLY = ("xattention", "xattention_noassert", "oracle", "meanpool")
 HOST_PROFILE_REPS = 5
 BOUNDARY_BARE_REPS = 3
+
+# Step 5 runs each cell in its own process under a host-memory ceiling
+# (researcher's ruling, 2 Nov 2026, after T3.1's third session, whose step
+# was killed by the out-of-memory killer at 31.6 GB on g2-standard-8's 31
+# GiB). The ceiling leaves 5 GiB for the parent, the system and the guard's
+# sampling interval; a session's config may set `host_cell_rss_ceiling_gb`.
+HOST_CELL_RSS_CEILING_GB = 26.0
+CELL_MANIFEST = "cell_manifest.json"      # the parent's record of the cell's process
+CELL_INDEX = "cell_index.json"            # the child's `cells_index.json` entry
+CELL_EXIT = "cell_exit.json"              # the child's own high-water mark and error
+PRICE_CACHE = "bare_price_cache.pkl"      # the bare prices, shared by the step's cells
 
 # A dry run's own values: small, and labelled so nothing it writes can pass
 # for P1's.
@@ -372,24 +384,44 @@ def host_profile_cell(a, rec, out: Path, *, reps: int, tolerance: dict, entries=
     32). Since the ruling of 1 Nov 2026 after Shakedown 5 that check compares
     two instrumented measurements and is recorded, never gated: the gate is
     the bare timer's (`bare_profile_cell`). Returns (profile, check) and
-    writes the check to `chain_check.json`."""
+    writes the check to `chain_check.json`.
+
+    The replay's trace is kept as its compact event stream
+    (`isolated_host.events.jsonl`, `trace_stream`), the full trace deleted,
+    and read once for both uses (ruling, 2 Nov 2026, after T3.1's third
+    session); `check["isolated_trace"]` holds the counts."""
     from attnbench.components import host_profile as hp
     from attnbench.components import replay
     ops = _isolated_ops()
     pos = hp.isolated_positions(rec.sequence, ops)
     trace = replay.isolated_replay(a.run_prefill, rec.tape, Path(out) / "isolated_host.json",
                                    device=_device(), masks=rec.masks, substitute=False)
-    iso = hp.isolated_host_s(trace, rec.sequence, pos)
+    stream, counts = compact_isolated(trace)
+    read = hp.read_isolated(stream, rec.sequence)
+    iso = hp.isolated_host_s(read, rec.sequence, pos)
     prof = hp.profile(a.run_prefill, rec.tape, rec.sequence, device=_null_device(), reps=reps,
                       entries=entries, layers=a.layers, isolated=iso, isolated_ops=ops)
-    check = hp.chain_check(trace, rec.sequence, prof,
+    check = hp.chain_check(read, rec.sequence, prof,
                            aggregate_tol=float(tolerance["aggregate"]))
+    del read
     check["gated"] = False
     check["why_not_gated"] = (
         "both sides are instrumented (null pass, profiled isolated replay); the gate is the "
         "bare timer's (ruling, 1 Nov 2026, after Shakedown 5)")
+    check["isolated_trace"] = counts
     _write_json(Path(out) / "chain_check.json", check)
     return prof, check
+
+
+def compact_isolated(trace) -> tuple[Path, dict]:
+    """The isolated replay's trace as its compact event stream, the full
+    Chrome trace deleted; (stream, counts). The counts name the stream by
+    its file name only."""
+    from attnbench.components import trace_stream
+    info = trace_stream.write_compact(trace)
+    Path(trace).unlink()
+    stream = Path(info.pop("path"))
+    return stream, {"stream": stream.name, **info}
 
 
 def _sync():
@@ -405,6 +437,26 @@ def bare_pricer():
     if _boundary():
         return bt.Pricer(reps=BOUNDARY_BARE_REPS, sync=_sync(), min_reps=1)
     return bt.Pricer(reps=bt.MIN_REPS, sync=_sync())
+
+
+def load_prices(pricer, path: Path):
+    """The step's bare prices so far into `pricer`: one cache for the step,
+    as when its cells shared a process, now that each has its own (ruling,
+    2 Nov 2026). A signature is timed once per step, by the first cell that
+    meets it."""
+    import pickle
+    path = Path(path)
+    if path.exists():
+        pricer.prices.update(pickle.loads(path.read_bytes()))
+    return pricer
+
+
+def save_prices(pricer, path: Path) -> None:
+    import pickle
+    path = Path(path)
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_bytes(pickle.dumps(dict(pricer.prices)))
+    os.replace(tmp, path)
 
 
 def bare_profile_cell(a, rec, out: Path, null, *, pricer, tolerance: dict, entries=()):
@@ -875,62 +927,66 @@ def step_host_components(args, cfg) -> dict:
     step reads; a calibrated arm's density is the mask density it produced
     on the cell's prompt. A cell that fails the chain gate is labelled with
     its fallback, not refused (oracle re-evaluation and fallback labelling,
-    the same ruling)."""
+    the same ruling).
+
+    **Each cell in its own process** (ruling, 2 Nov 2026, after T3.1's third
+    session): `host-cell-one` under `resource_guard.run_guarded`, killed at
+    the RSS ceiling (`HOST_CELL_RSS_CEILING_GB`). The parent writes each
+    cell's `cell_manifest.json`: the cell, the code identity and instance
+    spec, the status, and the peak RSS (sampled, and the child's own). A
+    cell that fails or crosses the ceiling stops the step, as any failure
+    does. A cell whose manifest says it passed under the same code identity
+    (a clean tree) and instance spec is not run again; any other cell
+    directory is cleared and the cell run afresh, so no cells of two code
+    identities are mixed."""
     if args.dry_run:
         return {"fake": True}
     _need_gpu("the null-kernel host profile")
-    from attnbench.components import bare_timer as bt
-    from attnbench.components import host_profile as hp
-    from attnbench.components import layer_residual as lr
-    from attnbench.components import recorder
     out = Path(args.out)
-    h = _harness(args)
-    pricer = bare_pricer()
-    index = []
-    for arm, d, L, b in cells(cfg):
-        cd = cell_dir(out, arm, d, L, b)
-        a = ready_cell(h, arm, d, L, b)
-        seconds, t0 = {}, time.time()
-        rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording", code_path=a.code_path,
-                                          context_length=a.length, batch=b,
-                                          prompt_id=a.prompt_id, layers=a.layers)
-        seconds["record"], t0 = time.time() - t0, time.time()
-        entries = () if arm == "dense" else (hp.block_sparse_entry(),)
-        prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
-                                        tolerance=cfg["chain_check_tolerance"])
-        seconds["isolated_and_null_pass"], t0 = time.time() - t0, time.time()
-        bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
-                                         tolerance=cfg["chain_check_tolerance"])
-        seconds["bare_pass"], t0 = time.time() - t0, time.time()
-        priced, resid = residual_cell(a, rec, cd, bare, prof,
-                                      tolerance=cfg["residual_spread_tolerance"])
-        seconds["residual"] = time.time() - t0
-        realised = d
-        if d is None:
-            per_layer = list(getattr(a.backend, "last_layer_density", None) or ())
-            if not per_layer:
-                raise StepFailed(f"{arm}: its backend keeps no mask density, so its cell "
-                                 f"has no density")
-            realised = round(sum(float(x) for x in per_layer) / len(per_layer), 6)
-        index.append({"arm": arm, "nominal_density": d, "density": realised, "budget": L,
-                      "context_length": a.length, "batch": b, "prompt_id": a.prompt_id,
-                      "dir": str(cd.relative_to(out)),
-                      "code_path": code_path_definition(a.code_path),
-                      "host_total_ms": priced.total_s * 1e3,
-                      "host_total_bare_ms": bare.total_s * 1e3,
-                      "host_total_null_pass_ms": prof.total_s * 1e3,
-                      "layer_residual": lr.summary(resid),
-                      "seconds": {k: round(v, 1) for k, v in seconds.items()},
-                      "host_cost_sources": prof.sources(),
-                      "price_routes": record["routes"],
-                      "chain_gate": bt.gate_summary(record),
-                      "chain_check_instrumented": {
-                          k: check[k] for k in ("passed", "gated", "share", "aggregate_tol",
-                                                "checked_calls", "unchecked_calls")}})
-    h.unwrap()
+    out.mkdir(parents=True, exist_ok=True)
+    ident, spec = cell_identity(), instance_spec()
+    ceiling_gb = float(cfg.get("host_cell_rss_ceiling_gb") or HOST_CELL_RSS_CEILING_GB)
+    index, resumed, peaks = [], [], {}
+    for cell in cells(cfg):
+        cd = cell_dir(out, *cell)
+        name = cd.name
+        done = resumable(cd, ident, spec)
+        if done is not None:
+            index.append(done)
+            resumed.append(name)
+            peaks[name] = json.loads((cd / CELL_MANIFEST).read_text()).get("peak_rss_mb")
+            continue
+        if cd.exists():
+            shutil.rmtree(cd)
+        cd.mkdir(parents=True)
+        manifest = {"cell": dict(zip(("arm", "density", "length", "batch"), cell)),
+                    "identity": ident, "instance": spec, "status": "running",
+                    "started": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        _write_json(cd / CELL_MANIFEST, manifest)
+        guarded = spawn_cell(args, cfg, cell, cd, ceiling_mb=ceiling_gb * 1024)
+        exit_ = _read_json(cd / CELL_EXIT) or {}
+        ok = guarded["returncode"] == 0 and (cd / CELL_INDEX).exists() and not exit_.get("error")
+        status = "passed" if ok else ("over_rss_ceiling" if guarded["over_ceiling"] else "failed")
+        self_peak = exit_.get("self_peak_rss_mb")
+        manifest.update(guarded, status=status, self_peak_rss_mb=self_peak,
+                        peak_rss_mb=max(x for x in (self_peak, guarded["sampled_peak_rss_mb"])
+                                        if x is not None),
+                        error=exit_.get("error") or (None if ok else (
+                            f"killed by the guard at the {ceiling_gb:g} GiB RSS ceiling"
+                            if guarded["over_ceiling"] else
+                            f"exit {guarded['returncode']}; see {cd.name}/cell.log")))
+        _write_json(cd / CELL_MANIFEST, manifest)
+        peaks[name] = manifest["peak_rss_mb"]
+        if not ok:
+            raise StepFailed(f"{name}: {manifest['error']}",
+                             {"cell_manifest": manifest, "cells_passed": len(index),
+                              "resumed": resumed, "peak_rss_mb": peaks})
+        index.append(json.loads((cd / CELL_INDEX).read_text()))
     _write_json(out / "cells_index.json", {"cells": index})
+    prices = load_prices(SimpleNamespace(prices={}), out / PRICE_CACHE).prices
     name = lambda c: f"{c['arm']}@{c['context_length']}x{c['batch']}"   # noqa: E731
-    return {"cells": len(index), "signatures_timed": len(pricer.prices),
+    return {"cells": len(index), "signatures_timed": len(prices),
+            "resumed": resumed, "peak_rss_mb": peaks, "rss_ceiling_gb": ceiling_gb,
             "chain_gate_fallback_cells": [name(c) for c in index
                                           if c["chain_gate"]["fallback"]],
             "residual_labelled_cells": {name(c): c["layer_residual"]["labels"] for c in index
@@ -939,6 +995,167 @@ def step_host_components(args, cfg) -> dict:
                                   for c in index},
             "instrumented_over_bare": {name(c): c["chain_gate"]["instrumented_over_bare"]
                                        for c in index}}
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(Path(path).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def cell_identity() -> dict:
+    """What a cell's result depends on in code: the commit, whether the tree
+    is clean, and every library a sequence can depend on (the BSA fix
+    included, `shakedown_arms.libraries`)."""
+    from attnbench import provenance
+    from attnbench.components.shakedown_arms import libraries
+    commit, dirty = provenance._git_state()
+    return {"git_commit": commit, "git_dirty": dirty,
+            "libraries": [list(x) for x in libraries()]}
+
+
+def instance_spec() -> dict:
+    """What a cell's result depends on in hardware: the machine, its image,
+    the GPU and the host's memory."""
+    from attnbench import provenance
+    cloud = provenance._cloud_identity()
+    gpu = None
+    if _boundary():
+        gpu = "cpu-boundary"
+    elif _cuda():
+        import torch
+        gpu = torch.cuda.get_device_name(0)
+    mem = None
+    if Path("/proc/meminfo").exists():
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                mem = round(int(line.split()[1]) / 2**20, 1)
+    return {k: cloud.get(k) for k in ("cloud_provider", "instance_type", "boot_image",
+                                      "provisioning_model")} | {"gpu": gpu, "mem_total_gib": mem}
+
+
+def resumable(cd: Path, ident: dict, spec: dict):
+    """The cell's `cells_index.json` entry if it passed under this code
+    identity and instance spec, from a clean tree; else None."""
+    m = _read_json(Path(cd) / CELL_MANIFEST)
+    if not m or m.get("status") != "passed" or m.get("identity") != ident \
+            or m.get("instance") != spec:
+        return None
+    if not ident.get("git_commit") or ident.get("git_dirty") is not False:
+        return None
+    return _read_json(Path(cd) / CELL_INDEX)
+
+
+def _density_arg(d) -> str:
+    return CALIBRATED if d is None else repr(float(d))
+
+
+def cell_command(args, cell) -> list[str]:
+    arm, d, L, b = cell
+    return _py("t31_steps.py", "host-cell-one", "--out", str(args.out),
+               "--session", str(args.session), "--arm", arm, "--density", _density_arg(d),
+               "--length", str(L), "--batch", str(b),
+               *(["--cpu-boundary"] if getattr(args, "cpu_boundary", False) else []),
+               *(["--config", args.config] if getattr(args, "config", None) else []))
+
+
+def spawn_cell(args, cfg, cell, cd: Path, *, ceiling_mb: float) -> dict:
+    """One cell in its own process under the RSS ceiling; its output in
+    `cell.log`. Returns `resource_guard.Guarded.record()`. The child reads
+    the step's config from the same file (`--config`, else the default), so
+    `cfg` is not passed on."""
+    from attnbench import resource_guard
+    cmd = cell_command(args, cell)
+    print("$ " + " ".join(cmd), flush=True)
+    with open(Path(cd) / "cell.log", "w") as log:
+        g = resource_guard.run_guarded(cmd, ceiling_mb=ceiling_mb, log=log, cwd=ROOT)
+    return g.record()
+
+
+def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
+    """One cell of step 5, in this process: its `cells_index.json` entry."""
+    from attnbench.components import bare_timer as bt
+    from attnbench.components import host_profile as hp
+    from attnbench.components import layer_residual as lr
+    from attnbench.components import recorder
+    arm, d, L, b = cell
+    cd = cell_dir(out, arm, d, L, b)
+    a = ready_cell(h, arm, d, L, b)
+    seconds, t0 = {}, time.time()
+    rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording", code_path=a.code_path,
+                                      context_length=a.length, batch=b,
+                                      prompt_id=a.prompt_id, layers=a.layers)
+    seconds["record"], t0 = time.time() - t0, time.time()
+    entries = () if arm == "dense" else (hp.block_sparse_entry(),)
+    prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
+                                    tolerance=cfg["chain_check_tolerance"])
+    seconds["isolated_and_null_pass"], t0 = time.time() - t0, time.time()
+    bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
+                                     tolerance=cfg["chain_check_tolerance"])
+    seconds["bare_pass"], t0 = time.time() - t0, time.time()
+    priced, resid = residual_cell(a, rec, cd, bare, prof,
+                                  tolerance=cfg["residual_spread_tolerance"])
+    seconds["residual"] = time.time() - t0
+    realised = d
+    if d is None:
+        per_layer = list(getattr(a.backend, "last_layer_density", None) or ())
+        if not per_layer:
+            raise StepFailed(f"{arm}: its backend keeps no mask density, so its cell "
+                             f"has no density")
+        realised = round(sum(float(x) for x in per_layer) / len(per_layer), 6)
+    return {"arm": arm, "nominal_density": d, "density": realised, "budget": L,
+            "context_length": a.length, "batch": b, "prompt_id": a.prompt_id,
+            "dir": str(cd.relative_to(out)),
+            "code_path": code_path_definition(a.code_path),
+            "host_total_ms": priced.total_s * 1e3,
+            "host_total_bare_ms": bare.total_s * 1e3,
+            "host_total_null_pass_ms": prof.total_s * 1e3,
+            "layer_residual": lr.summary(resid),
+            "seconds": {k: round(v, 1) for k, v in seconds.items()},
+            "host_cost_sources": prof.sources(),
+            "price_routes": record["routes"],
+            "chain_gate": bt.gate_summary(record),
+            "chain_check_instrumented": {
+                k: check[k] for k in ("passed", "gated", "share", "aggregate_tol",
+                                      "checked_calls", "unchecked_calls")}}
+
+
+def run_cell(args, cfg, cell):
+    """One cell of step 5 in this process: the bare prices the step has so
+    far, the cell, the prices saved back, then its entry (`cell_index.json`).
+    Always writes `cell_exit.json`: this process's own peak RSS and the
+    error, if any, which it returns."""
+    from attnbench import resource_guard
+    out = Path(args.out)
+    cd = cell_dir(out, *cell)
+    error = None
+    try:
+        _need_gpu("the null-kernel host profile")
+        h = _harness(args)
+        pricer = load_prices(bare_pricer(), out / PRICE_CACHE)
+        entry = host_cell(h, cfg, out, cell, pricer)
+        h.unwrap()
+        save_prices(pricer, out / PRICE_CACHE)
+        _write_json(cd / CELL_INDEX, entry)
+    except StepFailed as e:
+        error = str(e)
+    except Exception as e:
+        traceback.print_exc()
+        error = f"{type(e).__name__}: {e}"
+    _write_json(cd / CELL_EXIT, {"self_peak_rss_mb": round(resource_guard.self_peak_mb(), 1),
+                                 "error": error})
+    return error
+
+
+def cmd_host_cell_one(args) -> int:
+    """`host-cell-one`: the cell `spawn_cell` names, in this process."""
+    cell = (args.arm, nominal_density(args.density), int(args.length), int(args.batch))
+    cfg = load_config(args.config, dry_run=False, cpu_boundary=args.cpu_boundary)
+    error = run_cell(args, cfg, cell)
+    print(f"[host-cell-one {cell_dir(Path(args.out), *cell).name}] "
+          f"{'FAILED: ' + error if error else 'passed'}", flush=True)
+    return 1 if error else 0
 
 
 def step_device_components(args, cfg) -> dict:
@@ -1376,7 +1593,7 @@ def run_step(name: str, args) -> int:
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("step", choices=STEPS + ("ground-truth-one",))
+    ap.add_argument("step", choices=STEPS + ("ground-truth-one", "host-cell-one"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--session", required=True)
     ap.add_argument("--dry-run", action="store_true")
@@ -1386,6 +1603,11 @@ def parser() -> argparse.ArgumentParser:
                     help=f"session values (default {DEFAULT_CONFIG.relative_to(ROOT)}; "
                          f"a dry run uses its own unless given)")
     ap.add_argument("--group", default=None)
+    # host-cell-one: the step-5 cell (`step_host_components`, `spawn_cell`)
+    ap.add_argument("--arm", default=None)
+    ap.add_argument("--density", default=None)
+    ap.add_argument("--length", type=int, default=None)
+    ap.add_argument("--batch", type=int, default=None)
     return ap
 
 
@@ -1396,13 +1618,17 @@ def main(argv=None) -> int:
             print("REFUSING: --cpu-boundary runs the real steps; it is not --dry-run",
                   file=sys.stderr)
             return 2
-        if args.step not in STEPS[:STEPS.index("hold") + 1]:
+        if args.step not in STEPS[:STEPS.index("hold") + 1] + ("host-cell-one",):
             print(f"REFUSING: the CPU boundary runs steps 1 to 8, not {args.step}",
                   file=sys.stderr)
             return 2
         from attnbench import cpu_boundary
         with cpu_boundary.installed():
+            if args.step == "host-cell-one":
+                return cmd_host_cell_one(args)
             return run_step(args.step, args)
+    if args.step == "host-cell-one":
+        return cmd_host_cell_one(args)
     if args.step == "ground-truth-one":
         try:
             return cmd_ground_truth_one(args)

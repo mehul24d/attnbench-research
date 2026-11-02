@@ -188,6 +188,27 @@ CHECK = {"passed": True, "share": 0.04, "aggregate_tol": 0.10, "checked_calls": 
          "unchecked_calls": 1}
 
 
+IDENTITY = {"git_commit": "a" * 40, "git_dirty": False, "libraries": [["torch", "2.9.1"]]}
+INSTANCE = {"cloud_provider": "gcp", "instance_type": "g2-standard-8", "boot_image": "v6",
+            "provisioning_model": "on-demand", "gpu": "NVIDIA L4", "mem_total_gib": 31.3}
+
+
+def in_process_cells(monkeypatch, *, spawned=None):
+    """Step 5's cells run in this process, through the child's own body
+    (`run_cell`), so the module-level fakes reach them; the guard's record
+    is a fake. `spawned` collects the cells run."""
+    monkeypatch.setattr(st, "cell_identity", lambda: dict(IDENTITY))
+    monkeypatch.setattr(st, "instance_spec", lambda: dict(INSTANCE))
+
+    def spawn(args, cfg, cell, cd, *, ceiling_mb):
+        if spawned is not None:
+            spawned.append(cell)
+        error = st.run_cell(args, cfg, cell)
+        return {"returncode": 1 if error else 0, "seconds": 0.0, "sampled_peak_rss_mb": 900.0,
+                "rss_ceiling_mb": ceiling_mb, "over_ceiling": False}
+    monkeypatch.setattr(st, "spawn_cell", spawn)
+
+
 def _bare(monkeypatch, gate_ok: bool):
     """The bare timer's pass and profile, faked: the gate passes or fails."""
     from attnbench.components import bare_timer as bt
@@ -233,6 +254,9 @@ def _components(monkeypatch, h, check=CHECK, gate_ok=True):
         host_s=host, reps_s={i: (v,) for i, v in host.items()}, launch_floor_s=2e-6, reps=5,
         sequence_sha256=sha))
     monkeypatch.setattr(replay, "isolated_replay", lambda *a, **k: "iso_trace")
+    monkeypatch.setattr(st, "compact_isolated", lambda t: (t, {"stream": "iso_trace"}))
+    monkeypatch.setattr(hp, "read_isolated", lambda t, seq: t)
+    in_process_cells(monkeypatch)
     monkeypatch.setattr(hp, "isolated_host_s", lambda *a, **k: {})
     monkeypatch.setattr(hp, "chain_check", lambda *a, **k: dict(check))
     dev = {i: 1e-5 for i, op in enumerate(SEQ.ops) if op.is_device}

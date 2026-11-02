@@ -932,9 +932,22 @@ class _Isolated:
     flushes: _Flushes
 
 
+def read_isolated(trace, seq: OpSequence) -> _Isolated:
+    """An isolated replay's trace read against `seq`: a Chrome trace (a path
+    or a dict), its compact event stream (`trace_stream.write_compact`), or
+    an `_Isolated` already read, returned as it is. `isolated_host_s` and
+    `chain_check` take any of these; step 5 reads once and passes the result
+    to both (ruling, 2 Nov 2026, after T3.1's third session)."""
+    if isinstance(trace, _Isolated):
+        return trace
+    return _read_isolated(trace, seq)
+
+
 def _read_isolated(trace, seq: OpSequence) -> _Isolated:
     from .replay import FLUSH, REPLAY_REGION
-    events = op_sequence._events(op_sequence.load_trace(trace))
+    from . import trace_stream
+    events = (trace_stream.load_compact(trace) if trace_stream.is_compact(trace)
+              else op_sequence._events(op_sequence.load_trace(trace)))
     regions = [e for e in events if e.cat == "user_annotation" and e.name == REPLAY_REGION]
     if len(regions) != 1:
         raise ProfileMismatch(f"{len(regions)} replay regions in the isolated trace, expected one")
@@ -966,7 +979,7 @@ def isolated_host_s(trace, seq: OpSequence, positions: Sequence[int]) -> dict[in
     call to its issuing operator (`origin`) around its launch, less any
     flush inside it. Refused where the replay's launches are not the
     recording's."""
-    iso = _read_isolated(trace, seq)
+    iso = read_isolated(trace, seq)
     out = {}
     for i in positions:
         op = seq.ops[i]
@@ -1008,7 +1021,7 @@ def chain_check(trace, seq: OpSequence, p: HostProfile, *, aggregate_tol: float)
     direct| must be at most `aggregate_tol` (a T4.1 lock value, working 10%)
     of the profile's whole host time. Each call's ratio chain / direct is
     reported (`calls`), and each operator's sums; neither is a gate."""
-    iso = _read_isolated(trace, seq)
+    iso = read_isolated(trace, seq)
 
     def call_of(i: int):
         op = seq.ops[i]

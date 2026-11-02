@@ -420,6 +420,9 @@ def _t22_rig(monkeypatch, *, builder_rc=0):
     monkeypatch.setattr(hp, "cuda_device", lambda: "device")
     from attnbench.components import replay
     monkeypatch.setattr(replay, "isolated_replay", lambda *a, **k: "iso_trace")
+    import t31_steps
+    monkeypatch.setattr(t31_steps, "compact_isolated", lambda t: (t, {"stream": "iso_trace"}))
+    monkeypatch.setattr(hp, "read_isolated", lambda t, seq: t)
     monkeypatch.setattr(hp, "isolated_host_s", lambda *a, **k: {})
     monkeypatch.setattr(hp, "chain_check", lambda *a, **k: {
         "passed": False, "share": 0.2, "aggregate_tol": k["aggregate_tol"]})
