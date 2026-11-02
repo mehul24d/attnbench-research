@@ -537,7 +537,7 @@ def test_the_original_isolated_replay_runs_the_operators_not_the_tape(tmp_path):
 
 _CP = ("void at::native::{}<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::"
        "{{lambda()#3}}::operator()() const::{{lambda()#1}}::operator()() const::"
-       "{{lambda({})#1}}>(at::TensorIteratorBase&)")
+       "{{lambda({})#1}}>(at::TensorIteratorBase&, int const&)::{{lambda(int)#1}})")
 COPY_EW = _CP.format("elementwise_kernel<128, 4, at::native::gpu_kernel_impl", "unsigned char")
 COPY_UNROLLED = _CP.format("unrolled_elementwise_kernel", "unsigned char")
 COPY_OTHER_TYPE = _CP.format("unrolled_elementwise_kernel", "float")
@@ -581,3 +581,14 @@ def test_lenient_pricing_still_refuses_a_position_no_original_node_matches():
         RP.price_positions(SEQ_COPY, g, o, lenient=True)
     with pytest.raises(ReplayError, match="which was not run"):
         RP.price_positions(SEQ_COPY, g, None, lenient=True)
+
+
+def test_lenient_pricing_prices_an_unsubstituted_missing_position_from_the_original_and_says_so():
+    g = RP.match(SEQ, nodes(("gemm", 1.0), ("scan", 0.5), ("write", 0.25),
+                            ("g0", 2.0), ("g1", 3.0), ("other_mm", 4.0)))
+    assert g.unmatched_positions == (5,)
+    p = RP.price_positions(SEQ, g, RP.match(SEQ, ORIGINAL), lenient=True)
+    assert p.source[5] == RP.ISOLATED_UNSUBSTITUTED and p.device_s[5] == 4.5
+    assert p.source[0] == RP.GRAPH
+    with pytest.raises(ReplayError, match="not substitutions"):
+        RP.price_positions(SEQ, g, RP.match(SEQ, ORIGINAL))

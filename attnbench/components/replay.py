@@ -104,6 +104,10 @@ GRAPH, ISOLATED_ORIGINAL = "graph", "isolated_original"
 # a position priced from the isolated original's kernel of another launch
 # variant of the same copy (`match(variants=True)`); a debug session's, until ruled on
 ISOLATED_VARIANT = "isolated_original_variant"
+# a position the tape does not substitute that the graph still misses (a graph runs
+# some kernels under other names: `memcpy128` for a device copy), priced from the
+# isolated original in a lenient (debug) session
+ISOLATED_UNSUBSTITUTED = "isolated_original_unsubstituted"
 NEVER_WRITTEN = 2          # in a live-mask buffer: no replay has written it (a mask is 0 or 1)
 # The aten operators issuing the device work at a position the tape
 # substitutes (`sync_tape.SUBSTITUTED_KINDS`): `nonzero` (and `torch.where`
@@ -393,7 +397,7 @@ def expected_nodes(seq: OpSequence) -> list[tuple[int, str]]:
     return [(i, name) for i, op in seq.device_ops() for name in op.kernels]
 
 
-_COPY_TYPE = re.compile(r"\{lambda\(([^)]*)\)#\d+\}")
+_COPY_TYPE = re.compile(r"\{lambda\(([^)]+)\)#\d+\}")
 
 
 def _same_activity(name: str, variants: bool = False) -> str:
@@ -412,7 +416,7 @@ def _same_activity(name: str, variants: bool = False) -> str:
     if variants and "direct_copy_kernel_cuda" in name:
         kinds = _COPY_TYPE.findall(name)
         if kinds:
-            return f"direct_copy_kernel_cuda({kinds[-1]})"
+            return f"direct_copy_kernel_cuda({kinds[0]})"
     return name
 
 
@@ -478,7 +482,10 @@ def price_positions(seq: OpSequence, graph: Match, original: Optional[Match], *,
     its nodes no position owns are counted, not refused (every sparse cell's
     original has them: an eager run's host-to-device copies and syncs the
     recording's trace does not hold); a position matched to another launch
-    variant of its copy is priced from it and marked `ISOLATED_VARIANT`."""
+    variant of its copy is priced from it and marked `ISOLATED_VARIANT`; a
+    position the graph misses that the tape does not substitute is priced
+    from the original too, marked `ISOLATED_UNSUBSTITUTED` (the XAttention
+    graph's 644 of them)."""
     if graph.complete:
         return Pricing(dict(graph.device_s), {i: GRAPH for i in graph.device_s}, ())
     missing = graph.unmatched_positions
@@ -486,7 +493,7 @@ def price_positions(seq: OpSequence, graph: Match, original: Optional[Match], *,
         raise ReplayError(f"the graph has {len(graph.extra_nodes)} nodes with no position "
                           f"and substitutes nothing; no position is priced")
     other = [i for i in missing if seq.ops[i].aten_op not in SUBSTITUTED_ATEN_OPS]
-    if other:
+    if other and not lenient:
         raise ReplayError(
             f"{len(other)} unmatched positions are not substitutions "
             f"({sorted({operation_family(seq.ops[i]) for i in other})}); "
@@ -498,7 +505,8 @@ def price_positions(seq: OpSequence, graph: Match, original: Optional[Match], *,
             for i in missing:
                 costs[i] = original.device_s[i]
                 source[i] = (ISOLATED_VARIANT if i in original.variant_matched
-                             else ISOLATED_ORIGINAL)
+                             else ISOLATED_UNSUBSTITUTED if seq.ops[i].aten_op not in
+                             SUBSTITUTED_ATEN_OPS else ISOLATED_ORIGINAL)
             return Pricing(dict(sorted(costs.items())), dict(sorted(source.items())),
                            tuple(graph.extra_nodes), len(original.extra_nodes))
         raise ReplayError(f"{len(unpriced)} of the {len(missing)} substituted positions are "
