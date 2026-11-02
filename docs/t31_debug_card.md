@@ -62,7 +62,7 @@ steps 6 to 11 at once. The T3.1 session then runs end to end on fixed code
 
 The halt ends GPU billing at ₹380 whatever the runner is doing; the cap
 ends the session before it unless a step started inside the cap runs long.
-Spend so far about ₹2,050 of ₹14,000.
+Spend before the debug session about ₹2,050 of ₹14,000; with it about ₹2,400.
 Launch window and credit as the T3.1 card's.
 
 ## The commands
@@ -128,3 +128,14 @@ Before the launch, on the Mac (passed 2 Nov 2026): the CPU check
 `t31_session.py --debug --cpu-boundary --keep-going` (steps 5 to 8, 15 cells
 staged and resumed, 15 device cells priced, prediction under
 `predictions/P1-debug`), and `--debug --dry-run` (steps 6 to 11 on fakes).
+
+## What the debug session found (2 Nov 2026, `attnbench-l4-dbg-20261102-2149`, ₹348, not T3.1 data)
+
+Steps 1 to 6 and 11 passed; step 7 failed; steps 8 to 10 never ran (blocked on 7). Five defects were fixed locally (commits `408406d` to `5ec95e5`, not on `main`): graph memset names; the tape's `masked_fill_` stand-in; a quadratic flush scan in `replay_nodes`; an integer-indexed scalar assignment (XAttention's `find_blocks_chunked`) whose host value tensor cannot be copied during capture; and resuming a debug session's own passed cells under its earlier fix commits.
+
+Open, each for the researcher before T3.1 (none is a code defect):
+
+1. **Strict pricing refuses every sparse cell.** The isolated original has nodes no position owns (host-to-device copies and syncs of an eager run) in every oracle, mean-pool and XAttention cell, 28 copies per oracle and mean-pool cell run another launch variant (`unrolled_elementwise_kernel` for `elementwise_kernel<128, 4>`), and XAttention's graph runs 644 kernels under other names (`memcpy128` for a device copy). The debug session priced them leniently (`price_positions(lenient=True)`, debug only), labelling each source `isolated_original_variant` or `isolated_original_unsubstituted`. Whether T3.1 may do the same is a methods ruling.
+2. **T2.5 does not measure `copy_from_host_pageable`** (nor `copy_from_host_pinned` or `event_synchronize`; `recursion.ADDED_MECHANISMS`). Step 7 stopped on it at operation 40 of an XAttention or oracle cell. The link microbenchmark has to measure them before any prediction can be written.
+3. **Step 6's full read at 32768 does not fit under the 26 GiB ceiling.** `oracle_d0.25_L32768` was killed in the replay's read of its 3 GB `isolated_original.json` (RSS 14 GiB at the file's write, over 26 GiB reading it back). The segmentation covers step 5's isolated replay, not this one. For the debug session the cell was set not measured; for T3.1 it needs the same compact-stream treatment, or the same ruling as `oracle_d0.5_L32768`.
+4. **Steps 8 to 10 remain unrun on a GPU.** The halt (210 min) left too little for the ground truth after step 7 failed.
