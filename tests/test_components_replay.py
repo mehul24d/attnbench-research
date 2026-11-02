@@ -397,6 +397,23 @@ def test_a_substituted_position_is_priced_from_the_original_operator_and_flagged
     assert p.substitute_nodes == ("nonzero_static",)
 
 
+SEQ_SETITEM = OpSequence(code_path=CP, context_length=4096, batch=1, streams=(7,), ops=(
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::eq", kernels=("eq",)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::masked_fill_", kernels=("fill",)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::mm", kernels=("gemm",)),
+))
+
+
+def test_a_masked_fill_the_tape_serves_as_an_index_put_is_priced_from_the_original_operator():
+    # the graph holds the tape's index_put_ in place of the eager masked_fill_
+    g = RP.match(SEQ_SETITEM, nodes(("eq", 1.0), ("index_put_kernel", 0.5), ("gemm", 4.0)))
+    assert g.unmatched_positions == (1,) and g.extra_nodes == ("index_put_kernel",)
+    o = RP.match(SEQ_SETITEM, nodes(("eq", 1.5), ("fill", 0.75), ("gemm", 4.5)))
+    p = RP.price_positions(SEQ_SETITEM, g, o)
+    assert p.source == {0: RP.GRAPH, 1: RP.ISOLATED_ORIGINAL, 2: RP.GRAPH}
+    assert p.device_s == {0: 1.0, 1: 0.75, 2: 4.0}
+
+
 def test_substituted_positions_without_a_complete_original_replay_are_refused():
     g = RP.match(SEQ, GRAPH_SUB)
     with pytest.raises(ReplayError, match="which was not run"):

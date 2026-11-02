@@ -107,7 +107,12 @@ NEVER_WRITTEN = 2          # in a live-mask buffer: no replay has written it (a 
 # yet from an L4 trace: T2.27's replay step reports the positions it prices.
 SUBSTITUTED_ATEN_OPS = frozenset({
     "aten::nonzero", "aten::nonzero_numpy", "aten::index", "aten::index_put_",
-    "aten::_index_put_impl_", "aten::copy_"})
+    "aten::_index_put_impl_", "aten::copy_",
+    # the tape's `__setitem__` entry serves a boolean-mask assignment with an
+    # `index_put_`; eagerly the same assignment of a scalar is `masked_fill_`
+    # (found by the debug session, 2 Nov 2026: 28 of them in the oracle's
+    # recording, none in its graph)
+    "aten::masked_fill_"})
 
 
 class ReplayError(RuntimeError):
