@@ -1143,7 +1143,7 @@ def resumable(cd: Path, ident: dict, spec: dict, inputs=None, accept=None, *,
     if not m or m.get("status") != "passed" or m.get("inputs") != inputs:
         return None
     mi = m.get("identity") or {}
-    if debug and not (accept and (cd.name in accept["cells"] or mi == accept["identity"])) \
+    if debug and not (accept and mi == accept["identity"]) \
             and mi.get("git_dirty") is False \
             and mi.get("git_commit") \
             and mi.get("libraries") == ident.get("libraries") and m.get("instance") == spec:

@@ -497,6 +497,9 @@ def test_a_debug_sessions_own_passed_cell_resumes_under_an_earlier_commit_of_its
     accept = {"identity": older, "instance": spec, "cells": {}}
     write(older)
     assert st.resumable(cd, now, spec, None, accept, debug=True) is None     # the donor's, not staged
+    # a cell the donor staged in step 5 has a step-6 namesake: the session's own passes resume
+    accept = {"identity": dict(older, git_commit="c" * 40), "instance": spec, "cells": {"cell": "x"}}
+    assert st.resumable(cd, now, spec, None, accept, debug=True) == {"entry": 1}
 
 
 def test_step_6_does_not_run_a_cell_the_session_names_not_measured(tmp_path, monkeypatch):
