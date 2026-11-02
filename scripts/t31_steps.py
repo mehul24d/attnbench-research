@@ -1014,13 +1014,15 @@ def guarded_cells(args, cfg, cell_list, *, spawn, inputs=None) -> dict:
     cell directory is cleared first. A failing child's own findings (a
     `StepFailed`'s, through `cell_exit.json`) are raised with the manifest.
     Returns the cells' entries (`cell_index.json`), in order, the cells
-    resumed, the peaks and the ceiling."""
+    resumed, the peaks and the ceiling. In a debug session a failing cell
+    does not stop the step: every cell runs and the step fails at the end,
+    naming each."""
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     ident, spec = cell_identity(), instance_spec()
     accept = staged_accept(args.session, cfg)
     ceiling_gb = float(cfg.get("host_cell_rss_ceiling_gb") or HOST_CELL_RSS_CEILING_GB)
-    index, resumed, peaks = [], [], {}
+    index, resumed, peaks, failed = [], [], {}, {}
     for cell in cell_list:
         cd = cell_dir(out, *cell)
         name = cd.name
@@ -1053,12 +1055,23 @@ def guarded_cells(args, cfg, cell_list, *, spawn, inputs=None) -> dict:
                             f"exit {guarded['returncode']}; see {cd.name}/cell.log")))
         _write_json(cd / CELL_MANIFEST, manifest)
         peaks[name] = manifest["peak_rss_mb"]
+        if not ok and cfg.get("debug"):
+            # a debug session's job is every failure at once (2 Nov 2026 ruling): the
+            # cell's failure is recorded, the others run, the step fails at the end
+            failed[name] = {"error": manifest["error"], "status": status,
+                            "findings": exit_.get("findings")}
+            continue
         if not ok:
             raise StepFailed(f"{name}: {manifest['error']}",
                              {**(exit_.get("findings") or {}),
                               "cell_manifest": manifest, "cells_passed": len(index),
                               "resumed": resumed, "peak_rss_mb": peaks})
         index.append(json.loads((cd / CELL_INDEX).read_text()))
+    if failed:
+        raise StepFailed(f"{len(failed)} of {len(cell_list)} cells failed: " + "; ".join(
+            f"{n}: {f['error']}" for n, f in failed.items()),
+            {"cells_failed": failed, "cells_passed": len(index), "resumed": resumed,
+             "peak_rss_mb": peaks})
     return {"index": index, "resumed": resumed, "peak_rss_mb": peaks,
             "rss_ceiling_gb": ceiling_gb}
 

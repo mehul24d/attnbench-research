@@ -282,6 +282,32 @@ def test_a_cell_of_another_identity_resumes_only_in_a_debug_session(tmp_path, mo
     assert len(ran) == len(st.cells(plain))                    # the donor's identity is not this one's
 
 
+def test_a_debug_session_runs_every_cell_and_names_every_failure(tmp_path, monkeypatch):
+    s, rec, args, spawn, ran, cfg = _debug_step5(tmp_path, monkeypatch)
+    # the cells the donor did not pass fail, the staged ones resume: make two of the staged re-run and fail
+    bad = {("dense", 1.0, 2048, 1), ("oracle", 0.25, 2048, 1)}
+    for c in bad:
+        (st.cell_dir(Path(args.out), *c) / st.CELL_INDEX).write_text("{}")      # not the staged entry
+
+    def failing(args, cfg, cell, cd, *, ceiling_mb):
+        out = spawn(args, cfg, cell, cd, ceiling_mb=ceiling_mb)
+        if cell in bad:
+            (cd / st.CELL_INDEX).unlink()
+            out["returncode"] = 1
+        return out
+    with pytest.raises(st.StepFailed, match="2 of") as e:
+        st.guarded_cells(args, cfg, st.cells(cfg), spawn=failing)
+    assert set(e.value.findings["cells_failed"]) == {"dense_d1_L2048_b1", "oracle_d0.25_L2048_b1"}
+    assert ("meanpool", 0.25, 32768, 1) in ran and len(ran) == 3        # the rest ran after the first failure
+    # the same failure stops a session that is not a debug one, at the first cell
+    plain = dict(cfg, debug=False, prediction_prefix="predictions/P1")
+    plain.pop("not_measured")
+    ran.clear()
+    with pytest.raises(st.StepFailed):
+        st.guarded_cells(args, plain, st.cells(plain), spawn=failing)
+    assert len(ran) == 1
+
+
 def test_a_debug_session_without_staged_inputs_is_refused(tmp_path, monkeypatch):
     s, rec, args, spawn, ran, cfg = _debug_step5(tmp_path, monkeypatch)
     (s / st.STAGED_INPUTS).unlink()
