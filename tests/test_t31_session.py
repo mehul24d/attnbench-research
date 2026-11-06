@@ -365,6 +365,7 @@ def test_link_wiring_on_a_real_run(tmp_path):
                               return_value=HardwareFeatures(1.0, 2.0)), \
             mock.patch.object(link, "mechanism_costs", autospec=True,
                               return_value={"item": MechanismCost(1e-5, 1e9, 5e8)}) as mc, \
+            mock.patch.object(link, "payload_range", autospec=True, return_value=(1, 1 << 28)), \
             mock.patch.object(launch_queue, "queue_depth", autospec=True, return_value=7) as qd:
         found = st.step_link(args, {**st.DRY_CONFIG, "lengths": [2048, 4096]})
     assert found == {"queue_depth": 7, "fake": False}
@@ -372,6 +373,7 @@ def test_link_wiring_on_a_real_run(tmp_path):
     assert [c.args[1] for c in mc.call_args_list] == [2048, 4096]
     inputs = json.loads((tmp_path / "recursion_inputs.json").read_text())
     assert inputs["by_length"]["4096"]["item"]["loaded_bandwidth"] == 5e8
+    assert inputs["max_payload_bytes"] == 1 << 28
 
 
 # --- the CPU dry run, end to end -------------------------------------------------------

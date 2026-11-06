@@ -25,10 +25,13 @@ from attnbench.predict import recursion
 REPO = Path(__file__).resolve().parents[1]
 
 FIXED_NS = {"synchronize": 4_000, "item": 9_000, "bool": 10_000,
-            "copy_to_host_pinned": 12_000, "copy_to_host_pageable": 15_000}
+            "copy_to_host_pinned": 12_000, "copy_to_host_pageable": 15_000,
+            "event_synchronize": 6_000, "copy_from_host_pinned": 13_000,
+            "copy_from_host_pageable": 17_000}
 BW = {("h2d", "pinned"): 24e9, ("h2d", "pageable"): 8e9,
       ("d2h", "pinned"): 25e9, ("d2h", "pageable"): 6e9}
-BLOCKING_BW = {"pinned": 20e9, "pageable": 5e9}
+BLOCKING_BW = {("d2h", "pinned"): 20e9, ("d2h", "pageable"): 5e9,
+               ("h2d", "pinned"): 22e9, ("h2d", "pageable"): 4e9}
 
 
 class VirtualDevice:
@@ -54,16 +57,19 @@ class VirtualDevice:
         def copy(direction, memory, n):
             return lambda: n / (BW[direction, memory])
 
-        def blocking(memory, n):
-            mech = f"copy_to_host_{memory}"
+        def blocking(direction):
+            def make(memory, n):
+                mech = f"copy_{'to' if direction == 'd2h' else 'from'}_host_{memory}"
 
-            def op():
-                self.t += FIXED_NS[mech] + round(
-                    n / (BLOCKING_BW[memory]) * 1e9)
-            return op
+                def op():
+                    self.t += FIXED_NS[mech] + round(
+                        n / (BLOCKING_BW[direction, memory]) * 1e9)
+                return op
+            return make
 
         return link.DeviceOps(sync=sync, mechanism=mechanism, copy=copy,
-                              blocking_d2h=blocking, device_time=lambda fn: fn())
+                              blocking_d2h=blocking("d2h"), device_time=lambda fn: fn(),
+                              blocking_h2d=blocking("h2d"))
 
 
 def test_every_host_repetition_starts_from_an_idle_device():
@@ -77,7 +83,7 @@ def test_every_host_repetition_starts_from_an_idle_device():
 def test_s_fixed_covers_exactly_the_recursions_mechanisms():
     dev = VirtualDevice()
     table = link.s_fixed_table(dev.ops(), 5, clock=dev.clock)
-    assert tuple(table) == recursion.SYNC_MECHANISMS
+    assert tuple(table) == recursion.PRICED_MECHANISMS
     for m, ns in FIXED_NS.items():
         assert table[m]["median"] == pytest.approx(ns * 1e-9)
 
@@ -89,14 +95,14 @@ def test_bandwidths_are_recovered_by_hand():
                                    clock=dev.clock)
     for (direction, memory), bw in BW.items():
         assert link.headline(tables[f"{direction}_{memory}"]) == pytest.approx(bw)
-    for memory, bw in BLOCKING_BW.items():
+    for (direction, memory), bw in BLOCKING_BW.items():
         # B = payload / (t - s_fixed): the fixed part is taken out, not fitted.
-        assert link.headline(tables[f"blocking_d2h_{memory}"]) == pytest.approx(bw, rel=1e-6)
+        assert link.headline(tables[f"blocking_{direction}_{memory}"]) == pytest.approx(bw, rel=1e-6)
 
 
 def test_a_blocking_copy_no_slower_than_s_fixed_has_no_bandwidth():
     dev = VirtualDevice()
-    fixed = {m: {"median": 1.0} for m in recursion.SYNC_MECHANISMS}   # absurdly large
+    fixed = {m: {"median": 1.0} for m in recursion.PRICED_MECHANISMS}   # absurdly large
     tables = link.bandwidth_tables(dev.ops(), [1024], 1, fixed, clock=dev.clock)
     assert tables["blocking_d2h_pinned"][0]["bytes_per_s"] is None
 
@@ -110,10 +116,11 @@ def _row(**kw):
 
 def test_one_row_carries_every_field():
     row = _row()
-    for m in recursion.SYNC_MECHANISMS:
+    for m in recursion.PRICED_MECHANISMS:
         assert row[f"s_fixed_{m}_median"] == pytest.approx(FIXED_NS[m] * 1e-9)
     for key in ("h2d_pinned", "h2d_pageable", "d2h_pinned", "d2h_pageable",
-                "blocking_d2h_pinned", "blocking_d2h_pageable"):
+                "blocking_d2h_pinned", "blocking_d2h_pageable",
+                "blocking_h2d_pinned", "blocking_h2d_pageable"):
         assert row[f"bw_{key}_Bps"] > 0
         assert row[f"loaded_bw_{key}_2048_Bps"] > 0
     assert row["load"] == "python_loop" and row["load_iterations_2048"] is not None
@@ -127,7 +134,7 @@ def test_the_readers_give_the_recursion_its_s0():
     """s_0(m, payload) = s_fixed(m) + payload / B, from the row alone."""
     row = _row()
     costs = link.mechanism_costs(row, context_length=2048)
-    assert set(costs) == set(recursion.SYNC_MECHANISMS)
+    assert set(costs) == set(recursion.PRICED_MECHANISMS)
     payload = 1 << 20
     s0 = recursion.s0(costs["copy_to_host_pinned"], payload, loaded=False)
     assert s0 == pytest.approx(12e-6 + payload / 20e9, rel=1e-6)

@@ -334,6 +334,16 @@ def test_host_then_device_components_give_the_cells_the_prediction_reads(tmp_pat
                             "0" * 40, False))
     rec = st.build_prediction(cfg, session, dry_run=False)
     assert rec is not None
+    # a blocking copy above the largest payload the link microbenchmark measured is refused,
+    # never extrapolated (researcher, 7 Nov 2026)
+    copies = [o for c in dev["cells"] for o in c["ops"]
+              if o["mechanism"] in st.COPY_MECHANISM_NAMES and o["payload_bytes"] > 0]
+    if copies:
+        rin_path = st.step_dir(session, "link") / "recursion_inputs.json"
+        rin = json.loads(rin_path.read_text())
+        rin_path.write_text(json.dumps({**rin, "max_payload_bytes": 0}))
+        with pytest.raises(st.StepFailed, match="never extrapolated"):
+            st.build_prediction(cfg, session, dry_run=False)
 
 
 FAILED_CHECK = {"passed": False, "share": 0.25, "aggregate_tol": 0.10, "checked_calls": 3,
@@ -430,3 +440,14 @@ def test_work_outside_the_layers_gets_its_own_step_and_unlabelled_work_inside_is
                                  kernel_op(1e-6, 1e-5, layer=1)])
     with pytest.raises(st.StepFailed, match="no layers"):
         st.label_outside_layers([kernel_op(1e-6, 1e-5, layer=None)])
+
+
+def test_a_blocking_copy_beyond_the_measured_payloads_is_refused_at_any_position():
+    from types import SimpleNamespace as NS
+    ok = NS(mechanism="copy_from_host_pageable", payload_bytes=1 << 20)
+    big = NS(mechanism="copy_from_host_pageable", payload_bytes=(1 << 28) + 1)
+    kernel = NS(mechanism=None, payload_bytes=1 << 40)       # a kernel moves no host-device bytes
+    st.check_payload_bound([ok, kernel], 1 << 28, "x")
+    st.check_payload_bound([big], None, "x")                 # a dry run's fakes
+    with pytest.raises(st.StepFailed, match="operation 2.*never extrapolated"):
+        st.check_payload_bound([ok, big], 1 << 28, "meanpool_d0.5_L32768")
