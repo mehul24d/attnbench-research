@@ -129,6 +129,13 @@ def _on_device_value(value, like: torch.Tensor):
     return torch.full((), value, dtype=like.dtype, device=like.device)
 
 
+def _host_scalar(value) -> bool:
+    """A Python number or a host 0-dim tensor."""
+    if isinstance(value, torch.Tensor):
+        return value.dim() == 0 and value.device.type == "cpu"
+    return isinstance(value, (bool, int, float))
+
+
 def _single_bool_index(index, device_type) -> Optional[torch.Tensor]:
     if isinstance(index, tuple) and len(index) == 1:
         index = index[0]
@@ -377,6 +384,14 @@ class TapeReplayer(TorchFunctionMode):
         dt = self.tape.device_type
         kind = classify(func, args, kwargs, dt)
         if kind is None:
+            if self.serve_setitem and getattr(func, "__name__", "") == "__setitem__" \
+                    and len(args) == 3 and _on(args[0], dt) and _host_scalar(args[2]):
+                # an integer-indexed assignment of a number (XAttention's
+                # `find_blocks_chunked`: `mask[:, rows, index] = True`) makes its
+                # value a host tensor, and the copy to the device is not
+                # permitted during capture (the debug session, 2 Nov 2026); it
+                # records no interaction, so it consumes no entry
+                return func(args[0], args[1], _on_device_value(args[2], args[0]))
             return func(*args, **kwargs)
         name = getattr(func, "__name__", str(func))
         i, e = self._next(kind, name, _input_sig(kind, func, args))

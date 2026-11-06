@@ -1014,18 +1014,20 @@ def guarded_cells(args, cfg, cell_list, *, spawn, inputs=None) -> dict:
     cell directory is cleared first. A failing child's own findings (a
     `StepFailed`'s, through `cell_exit.json`) are raised with the manifest.
     Returns the cells' entries (`cell_index.json`), in order, the cells
-    resumed, the peaks and the ceiling."""
+    resumed, the peaks and the ceiling. In a debug session a failing cell
+    does not stop the step: every cell runs and the step fails at the end,
+    naming each."""
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     ident, spec = cell_identity(), instance_spec()
     accept = staged_accept(args.session, cfg)
     ceiling_gb = float(cfg.get("host_cell_rss_ceiling_gb") or HOST_CELL_RSS_CEILING_GB)
-    index, resumed, peaks = [], [], {}
+    index, resumed, peaks, failed = [], [], {}, {}
     for cell in cell_list:
         cd = cell_dir(out, *cell)
         name = cd.name
         given = inputs(cell) if inputs else None
-        done = resumable(cd, ident, spec, given, accept)
+        done = resumable(cd, ident, spec, given, accept, debug=bool(cfg.get("debug")))
         if done is not None:
             index.append(done)
             resumed.append(name)
@@ -1053,12 +1055,23 @@ def guarded_cells(args, cfg, cell_list, *, spawn, inputs=None) -> dict:
                             f"exit {guarded['returncode']}; see {cd.name}/cell.log")))
         _write_json(cd / CELL_MANIFEST, manifest)
         peaks[name] = manifest["peak_rss_mb"]
+        if not ok and cfg.get("debug"):
+            # a debug session's job is every failure at once (2 Nov 2026 ruling): the
+            # cell's failure is recorded, the others run, the step fails at the end
+            failed[name] = {"error": manifest["error"], "status": status,
+                            "findings": exit_.get("findings")}
+            continue
         if not ok:
             raise StepFailed(f"{name}: {manifest['error']}",
                              {**(exit_.get("findings") or {}),
                               "cell_manifest": manifest, "cells_passed": len(index),
                               "resumed": resumed, "peak_rss_mb": peaks})
         index.append(json.loads((cd / CELL_INDEX).read_text()))
+    if failed:
+        raise StepFailed(f"{len(failed)} of {len(cell_list)} cells failed: " + "; ".join(
+            f"{n}: {f['error']}" for n, f in failed.items()),
+            {"cells_failed": failed, "cells_passed": len(index), "resumed": resumed,
+             "peak_rss_mb": peaks})
     return {"index": index, "resumed": resumed, "peak_rss_mb": peaks,
             "rss_ceiling_gb": ceiling_gb}
 
@@ -1116,16 +1129,25 @@ def staged_accept(session, cfg) -> dict | None:
             "cells": {c["dir"]: c["cell_index_sha256"] for c in staged["cells"]}}
 
 
-def resumable(cd: Path, ident: dict, spec: dict, inputs=None, accept=None):
+def resumable(cd: Path, ident: dict, spec: dict, inputs=None, accept=None, *,
+              debug: bool = False):
     """The cell's entry (`cell_index.json`) if it passed under this code
     identity, instance spec and inputs, from a clean tree; else None. In a
     debug session (`accept`, from `staged_accept`) a cell it staged also
     resumes under its donor's identity and instance, if its entry is the one
-    staged."""
+    staged. A debug session's own passed cells also resume under an earlier
+    commit of its fixes (`debug`: same libraries and instance, a clean tree;
+    each fix would otherwise repeat every cell, 2 Nov 2026)."""
     cd = Path(cd)
     m = _read_json(cd / CELL_MANIFEST)
     if not m or m.get("status") != "passed" or m.get("inputs") != inputs:
         return None
+    mi = m.get("identity") or {}
+    if debug and not (accept and mi == accept["identity"]) \
+            and mi.get("git_dirty") is False \
+            and mi.get("git_commit") \
+            and mi.get("libraries") == ident.get("libraries") and m.get("instance") == spec:
+        return _read_json(cd / CELL_INDEX)
     if m.get("identity") == ident and m.get("instance") == spec:
         if not ident.get("git_commit") or ident.get("git_dirty") is not False:
             return None
@@ -1290,7 +1312,8 @@ def device_components_real(args, cfg) -> dict:
     def inputs(cell):
         return {"host_cell_index_sha256": _sha256(cell_dir(host_dir, *cell) / CELL_INDEX),
                 "link_sha256": _sha256(link)}
-    run = guarded_cells(args, cfg, [device_cell_key(c) for c in index],
+    dropped = not_measured(cfg)      # a debug session names more than step 5 ran
+    run = guarded_cells(args, cfg, [k for k in map(device_cell_key, index) if k not in dropped],
                         spawn=spawn_device_cell, inputs=inputs)
     entries = run["index"]
     _write_json(out / "cells.json", {"fake": False, "cells": entries})
@@ -1332,7 +1355,7 @@ def memset_zoo(out: Path) -> dict[int, float]:
     return zoo
 
 
-def device_cell(h, out: Path, session: Path, cell) -> dict:
+def device_cell(h, out: Path, session: Path, cell, *, lenient: bool = False) -> dict:
     """One cell of step 6, in this process: its `cells.json` entry."""
     import pandas as pd
     import torch
@@ -1369,9 +1392,10 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
         torch.cuda.synchronize()
         orig = replay.isolated_replay(a.run_prefill, rec.tape, cd / "isolated_original.json",
                                       device=_device(), masks=rec.masks, substitute=False)
-        original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH))
+        original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH),
+                                variants=lenient)
     try:
-        pricing = replay.price_positions(rec.sequence, m, original)
+        pricing = replay.price_positions(rec.sequence, m, original, lenient=lenient)
     except replay.ReplayError as e:
         raise StepFailed(f"{c['dir']}: {e}")
     prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
@@ -1393,6 +1417,7 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
             "context_length": c["context_length"], "budget": c["budget"],
             "batch": c["batch"], "prompt_id": c["prompt_id"],
             "code_path": c["code_path"], "cost_sources": pricing.counts(),
+            **({"original_extra_nodes": pricing.original_extra_nodes} if lenient else {}),
             "ops": [op_to_dict(op) for op in priced],
             **({"memset_flags": memsets} if memsets else {})}
 
@@ -1406,7 +1431,8 @@ def run_device_cell(args, cfg, cell):
 def _device_cell_entry(args, cfg, cell) -> dict:
     _need_gpu("the CUDA-graph replay")
     h = _harness(args)
-    entry = device_cell(h, Path(args.out), Path(args.session), cell)
+    entry = device_cell(h, Path(args.out), Path(args.session), cell,
+                        **({"lenient": True} if cfg.get("debug") else {}))
     h.unwrap()
     return entry
 

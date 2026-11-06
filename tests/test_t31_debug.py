@@ -282,6 +282,32 @@ def test_a_cell_of_another_identity_resumes_only_in_a_debug_session(tmp_path, mo
     assert len(ran) == len(st.cells(plain))                    # the donor's identity is not this one's
 
 
+def test_a_debug_session_runs_every_cell_and_names_every_failure(tmp_path, monkeypatch):
+    s, rec, args, spawn, ran, cfg = _debug_step5(tmp_path, monkeypatch)
+    # the cells the donor did not pass fail, the staged ones resume: make two of the staged re-run and fail
+    bad = {("dense", 1.0, 2048, 1), ("oracle", 0.25, 2048, 1)}
+    for c in bad:
+        (st.cell_dir(Path(args.out), *c) / st.CELL_INDEX).write_text("{}")      # not the staged entry
+
+    def failing(args, cfg, cell, cd, *, ceiling_mb):
+        out = spawn(args, cfg, cell, cd, ceiling_mb=ceiling_mb)
+        if cell in bad:
+            (cd / st.CELL_INDEX).unlink()
+            out["returncode"] = 1
+        return out
+    with pytest.raises(st.StepFailed, match="2 of") as e:
+        st.guarded_cells(args, cfg, st.cells(cfg), spawn=failing)
+    assert set(e.value.findings["cells_failed"]) == {"dense_d1_L2048_b1", "oracle_d0.25_L2048_b1"}
+    assert ("meanpool", 0.25, 32768, 1) in ran and len(ran) == 3        # the rest ran after the first failure
+    # the same failure stops a session that is not a debug one, at the first cell
+    plain = dict(cfg, debug=False, prediction_prefix="predictions/P1")
+    plain.pop("not_measured")
+    ran.clear()
+    with pytest.raises(st.StepFailed):
+        st.guarded_cells(args, plain, st.cells(plain), spawn=failing)
+    assert len(ran) == 1
+
+
 def test_a_debug_session_without_staged_inputs_is_refused(tmp_path, monkeypatch):
     s, rec, args, spawn, ran, cfg = _debug_step5(tmp_path, monkeypatch)
     (s / st.STAGED_INPUTS).unlink()
@@ -402,7 +428,6 @@ def test_the_cli_refuses_what_a_debug_session_may_not_be(tmp_path, capsys):
     assert sess.main(base + ["--config", "x.json"]) == 2
     assert sess.main(["--debug", "--session", str(tmp_path / "plain")]) == 2   # not staged
     assert sess.main(base + ["--from", "link"]) == 2                       # steps 1 to 4 are never rerun
-    assert sess.main(base + ["--from", "device_components"]) == 2          # not where it was staged
     assert sess.main(["--keep-going", "--session", str(tmp_path / "k")]) == 2   # debug only
     assert "REFUSING" in capsys.readouterr().err
 
@@ -422,3 +447,66 @@ def test_session_four_stages_with_only_the_missing_cells_left_to_run(tmp_path):
     assert not list((tmp_path / "s4dbg").rglob("isolated_host.events.jsonl"))
     dumped = json.dumps(rec) + (tmp_path / "s4dbg" / dbg.DEBUG_NOTE).read_text()
     assert "research-" not in dumped and "gs://" not in dumped
+
+
+@pytest.mark.parametrize("bucket", ["gs://attnbench-results-x", "gs://attnbench-results-x/", "attnbench-results-x"])
+def test_the_fetch_command_names_the_donor_in_the_bucket_with_one_prefix(bucket, monkeypatch):
+    cmd = dbg.fetch_command(bucket, "inst-1", "sess", Path("/d"))
+    assert cmd[-2:] == ["gs://attnbench-results-x/inst-1/results/sess", "/d"]
+    assert "-x" in cmd and cmd[cmd.index("-x") + 1].endswith(r"isolated_host\.events\.jsonl$")
+
+
+def test_the_fetch_command_takes_what_results_bucket_returns(monkeypatch):
+    monkeypatch.setenv("ATTNBENCH_BUCKET", "gs://attnbench-results-y")
+    cmd = dbg.fetch_command(st.results_bucket(), "i", "s", Path("d"))
+    assert not any("gs://gs:" in c for c in cmd) and cmd[-2] == "gs://attnbench-results-y/i/results/s"
+
+
+def test_a_debug_session_resumes_after_a_fix_from_a_step_it_ran_but_not_from_before_its_start(tmp_path):
+    s = _staged_session(tmp_path)
+    rc, ran = _drun(s, {"device_components": ("failed", 1)}, keep_going=True)
+    assert rc == 1 and ran == ["host_components", "device_components", "postflight"]
+    rc, ran = _drun(s, start="device_components", keep_going=True)    # after the fix
+    assert rc == 0 and ran == list(ORDER[5:])
+    rc, ran = _drun(_staged_session(tmp_path / "z"), start="device_components")
+    assert rc == 2 and ran == []                          # step 5 never passed in that session
+    base = ["--debug", "--session", str(s), "--no-sync", "--cpu-boundary"]
+    assert sess.main(base + ["--from", "link"]) == 2
+
+
+def test_a_debug_sessions_own_passed_cell_resumes_under_an_earlier_commit_of_its_fixes(tmp_path):
+    cd = tmp_path / "cell"
+    cd.mkdir()
+    (cd / st.CELL_INDEX).write_text(json.dumps({"entry": 1}))
+    now = dict(IDENT, git_commit="b" * 40)
+    spec = dict(INST)
+    older = dict(now, git_commit="a" * 40, git_dirty=False)
+
+    def write(identity, instance=spec):
+        (cd / st.CELL_MANIFEST).write_text(json.dumps({
+            "identity": identity, "instance": instance, "inputs": None, "status": "passed"}))
+    write(older)
+    assert st.resumable(cd, now, spec, None, None, debug=True) == {"entry": 1}
+    assert st.resumable(cd, now, spec, None, None) is None                   # a real session reruns
+    write(dict(older, git_dirty=True))
+    assert st.resumable(cd, now, spec, None, None, debug=True) is None       # a dirty tree never counts
+    write(dict(older, libraries=[["other", "1"]]))
+    assert st.resumable(cd, now, spec, None, None, debug=True) is None       # other libraries
+    write(older, dict(spec, gpu="another"))
+    assert st.resumable(cd, now, spec, None, None, debug=True) is None       # another instance
+    accept = {"identity": older, "instance": spec, "cells": {}}
+    write(older)
+    assert st.resumable(cd, now, spec, None, accept, debug=True) is None     # the donor's, not staged
+    # a cell the donor staged in step 5 has a step-6 namesake: the session's own passes resume
+    accept = {"identity": dict(older, git_commit="c" * 40), "instance": spec, "cells": {"cell": "x"}}
+    assert st.resumable(cd, now, spec, None, accept, debug=True) == {"entry": 1}
+
+
+def test_step_6_does_not_run_a_cell_the_session_names_not_measured(tmp_path, monkeypatch):
+    s, rec, args, spawn, ran, cfg = _debug_step5(tmp_path, monkeypatch)
+    dropped = st.not_measured(cfg)
+    assert dropped and all(k not in st.cells(cfg) for k in dropped)
+    extra = dict(cfg, not_measured=cfg["not_measured"] + [
+        {"arm": "oracle", "density": 0.25, "length": 2048, "batch": 1, "reason": "debug"}])
+    assert ("oracle", 0.25, 2048, 1) in st.not_measured(extra)
+    assert ("oracle", 0.25, 2048, 1) not in st.cells(extra)

@@ -189,6 +189,54 @@ def test_replay_nodes_reads_the_device_work_of_the_region_in_device_order():
     assert "flush" in [n.name for n in RP.replay_nodes(t.dict())]
 
 
+def _flushed_trace(n, rng=None, nest=False):
+    """n launches in the region; a flush annotation around some of them (optionally
+    nested or overlapping), so some host calls fall inside one and some do not."""
+    t = Trace()
+    t.x("user_annotation", RP.REPLAY_REGION, 0, 10 * n + 100)
+    for i in range(n):
+        ts = 10 + 10 * i
+        wraps = rng is None or rng.random() < 0.5
+        if wraps:
+            span = (rng.choice([4, 9, 25, 60]) if (rng and nest) else 8)
+            t.x("user_annotation", RP.FLUSH, ts - 1, span)
+        t.launch(ts, f"k{i}")
+    return t
+
+
+def _brute_replay_names(t, exclude):
+    trace = RP.op_sequence.load_trace(t.dict())
+    events = RP.op_sequence._events(trace)
+    reg = [e for e in events if e.cat == "user_annotation" and e.name == RP.REPLAY_REGION][0]
+    skips = [e for e in events if e.cat == "user_annotation" and e.name == exclude]
+    keep = set()
+    for e in events:
+        if e.cat in RP.op_sequence._HOST_CATS and e.ts >= reg.ts and e.end <= reg.end:
+            if not any(s.ts <= e.ts and e.end <= s.end for s in skips):
+                keep.add(RP.op_sequence._int_arg(e.args, "correlation"))
+    return sorted(n.name for n in RP.replay_nodes(t.dict())
+                  if n.correlation in keep)
+
+
+@pytest.mark.parametrize("nest", [False, True])
+def test_replay_nodes_exclusion_agrees_with_a_scan_of_every_skip(nest):
+    import random
+    rng = random.Random(7)
+    t = _flushed_trace(300, rng, nest=nest)
+    got = sorted(n.name for n in RP.replay_nodes(t.dict(), exclude=RP.FLUSH))
+    assert got == _brute_replay_names(t, RP.FLUSH)
+    assert 0 < len(got) < 300
+
+
+def test_replay_nodes_exclusion_is_not_quadratic_in_the_flushes():
+    import time
+    t = _flushed_trace(60000)
+    t0 = time.perf_counter()
+    nodes = RP.replay_nodes(t.dict(), exclude=RP.FLUSH)
+    assert len(nodes) < 60000
+    assert time.perf_counter() - t0 < 10     # a scan of every skip per call takes about a minute here
+
+
 def test_replay_nodes_needs_exactly_one_region():
     t = Trace()
     with pytest.raises(ReplayError, match="0 'attnbench::replay' regions"):
@@ -241,6 +289,34 @@ def test_an_extra_node_alone_makes_the_match_incomplete():
     assert m.unmatched_positions == () and m.extra_nodes == ("stray",)
     with pytest.raises(ReplayError):
         RP.device_costs(m)
+
+
+SEQ_MEMSET = OpSequence(code_path=CP, context_length=4096, batch=1, streams=(7,), ops=(
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::addmm", kernels=("Memset (Device)", "gemm")),
+    SeqOp(SeqKind.KERNEL, layer=1, aten_op="aten::addmm", kernels=("Memset (Device)", "gemm")),
+))
+
+
+def test_a_graph_memset_node_matches_the_eager_memset_whatever_its_memory_kind():
+    # the graph's memset node has no allocation to name: "Memset (Unknown)"
+    m = RP.match(SEQ_MEMSET, nodes(("Memset (Unknown)", 0.1), ("gemm", 1.0),
+                                   ("Memset (Unknown)", 0.2), ("gemm", 2.0)))
+    assert m.complete and RP.device_costs(m) == {0: 1.1, 1: 2.2}
+
+
+def test_the_memory_kind_is_the_only_thing_a_memset_match_forgives():
+    # a kernel with a parenthesis is still compared whole; a memset needs a memset
+    m = RP.match(SEQ_MEMSET, nodes(("Memset (Unknown)", 0.1), ("gemm", 1.0),
+                                   ("Memcpy (Unknown)", 0.2), ("gemm", 2.0)))
+    assert m.unmatched_positions == (1,) and m.extra_nodes == ("Memcpy (Unknown)",)
+    m = RP.match(SEQ_MEMSET, nodes(("Memset (Unknown)", 0.1), ("gemm", 1.0), ("gemm", 2.0)))
+    assert m.unmatched_positions == (1,) and not m.extra_nodes
+    m = RP.match(SEQ_MEMSET, nodes(("Memset (Unknown)", 0.1), ("gemm", 1.0), ("Memset (Unknown)", 0.2),
+                                   ("gemm", 2.0), ("Memset (Unknown)", 0.3)))
+    assert m.unmatched_positions == () and m.extra_nodes == ("Memset (Unknown)",)   # the name as seen
+    m = RP.match(SEQ, nodes(("gemm", 1.0), ("scan (x)", 0.5), ("write", 0.25),
+                            ("g0", 2.0), ("g1", 3.0), ("gemm", 4.0)))
+    assert m.unmatched_positions == (2,) and m.extra_nodes == ("scan (x)",)    # names reported as seen
 
 
 # --- reports -----------------------------------------------------------------------
@@ -369,6 +445,23 @@ def test_a_substituted_position_is_priced_from_the_original_operator_and_flagged
     assert p.substitute_nodes == ("nonzero_static",)
 
 
+SEQ_SETITEM = OpSequence(code_path=CP, context_length=4096, batch=1, streams=(7,), ops=(
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::eq", kernels=("eq",)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::masked_fill_", kernels=("fill",)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::mm", kernels=("gemm",)),
+))
+
+
+def test_a_masked_fill_the_tape_serves_as_an_index_put_is_priced_from_the_original_operator():
+    # the graph holds the tape's index_put_ in place of the eager masked_fill_
+    g = RP.match(SEQ_SETITEM, nodes(("eq", 1.0), ("index_put_kernel", 0.5), ("gemm", 4.0)))
+    assert g.unmatched_positions == (1,) and g.extra_nodes == ("index_put_kernel",)
+    o = RP.match(SEQ_SETITEM, nodes(("eq", 1.5), ("fill", 0.75), ("gemm", 4.5)))
+    p = RP.price_positions(SEQ_SETITEM, g, o)
+    assert p.source == {0: RP.GRAPH, 1: RP.ISOLATED_ORIGINAL, 2: RP.GRAPH}
+    assert p.device_s == {0: 1.0, 1: 0.75, 2: 4.0}
+
+
 def test_substituted_positions_without_a_complete_original_replay_are_refused():
     g = RP.match(SEQ, GRAPH_SUB)
     with pytest.raises(ReplayError, match="which was not run"):
@@ -438,3 +531,64 @@ def test_the_original_isolated_replay_runs_the_operators_not_the_tape(tmp_path):
     RP.isolated_replay(prefill, rec.tape, tmp_path / "t.json", **kw)
     RP.isolated_replay(prefill, rec.tape, tmp_path / "o.json", substitute=False, **kw)
     assert seen == [6, 6, 10]                       # recorded, served from the tape, live
+
+
+# --- a debug session's lenient pricing (2 Nov 2026) ---------------------------------------
+
+_CP = ("void at::native::{}<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::"
+       "{{lambda()#3}}::operator()() const::{{lambda()#1}}::operator()() const::"
+       "{{lambda({})#1}}>(at::TensorIteratorBase&, int const&)::{{lambda(int)#1}})")
+COPY_EW = _CP.format("elementwise_kernel<128, 4, at::native::gpu_kernel_impl", "unsigned char")
+COPY_UNROLLED = _CP.format("unrolled_elementwise_kernel", "unsigned char")
+COPY_OTHER_TYPE = _CP.format("unrolled_elementwise_kernel", "float")
+
+SEQ_COPY = OpSequence(code_path=CP, context_length=4096, batch=1, streams=(7,), ops=(
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::eq", kernels=("eq",)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::copy_", kernels=(COPY_EW,)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::mm", kernels=("gemm",)),
+))
+GRAPH_COPY = nodes(("eq", 1.0), ("stand_in_fill", 0.5), ("gemm", 4.0))
+
+
+def test_a_copy_matches_its_other_launch_variant_only_when_asked_and_by_element_type():
+    other = nodes(("eq", 1.5), ("Memcpy DtoH (Device -> Pinned)", 0.1), (COPY_UNROLLED, 0.75),
+                  ("gemm", 4.5))
+    assert RP.match(SEQ_COPY, other).unmatched_positions == (1,)
+    m = RP.match(SEQ_COPY, other, variants=True)
+    assert m.unmatched_positions == () and m.variant_matched == (1,)
+    assert m.device_s[1] == 0.75 and m.extra_nodes == ("Memcpy DtoH (Device -> Pinned)",)
+    wrong = nodes(("eq", 1.5), (COPY_OTHER_TYPE, 0.75), ("gemm", 4.5))
+    assert RP.match(SEQ_COPY, wrong, variants=True).unmatched_positions == (1,)
+
+
+def test_lenient_pricing_takes_a_variant_and_counts_the_originals_extra_nodes():
+    g = RP.match(SEQ_COPY, GRAPH_COPY)
+    assert g.unmatched_positions == (1,)
+    o = RP.match(SEQ_COPY, nodes(("eq", 1.5), ("Memcpy DtoH (Device -> Pinned)", 0.1),
+                                 (COPY_UNROLLED, 0.75), ("gemm", 4.5)), variants=True)
+    p = RP.price_positions(SEQ_COPY, g, o, lenient=True)
+    assert p.source == {0: RP.GRAPH, 1: RP.ISOLATED_VARIANT, 2: RP.GRAPH}
+    assert p.device_s == {0: 1.0, 1: 0.75, 2: 4.0} and p.original_extra_nodes == 1
+    with pytest.raises(ReplayError, match="does not match the sequence"):
+        RP.price_positions(SEQ_COPY, g, o)                 # the strict rule is the default
+
+
+def test_lenient_pricing_still_refuses_a_position_no_original_node_matches():
+    g = RP.match(SEQ_COPY, GRAPH_COPY)
+    o = RP.match(SEQ_COPY, nodes(("eq", 1.5), (COPY_OTHER_TYPE, 0.75), ("gemm", 4.5)),
+                 variants=True)
+    with pytest.raises(ReplayError, match="1 of the 1 substituted positions are not matched"):
+        RP.price_positions(SEQ_COPY, g, o, lenient=True)
+    with pytest.raises(ReplayError, match="which was not run"):
+        RP.price_positions(SEQ_COPY, g, None, lenient=True)
+
+
+def test_lenient_pricing_prices_an_unsubstituted_missing_position_from_the_original_and_says_so():
+    g = RP.match(SEQ, nodes(("gemm", 1.0), ("scan", 0.5), ("write", 0.25),
+                            ("g0", 2.0), ("g1", 3.0), ("other_mm", 4.0)))
+    assert g.unmatched_positions == (5,)
+    p = RP.price_positions(SEQ, g, RP.match(SEQ, ORIGINAL), lenient=True)
+    assert p.source[5] == RP.ISOLATED_UNSUBSTITUTED and p.device_s[5] == 4.5
+    assert p.source[0] == RP.GRAPH
+    with pytest.raises(ReplayError, match="not substitutions"):
+        RP.price_positions(SEQ, g, RP.match(SEQ, ORIGINAL))
