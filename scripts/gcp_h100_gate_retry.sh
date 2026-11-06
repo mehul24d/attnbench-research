@@ -191,7 +191,17 @@ teardown() {
   trap - EXIT
   say "teardown of $NAME ($ZONE), the gate's exit $rc"
   bash "$HERE/gcp_session_elapsed.sh" "$NAME" "$ZONE" "$RATE" 2>&1 | gcp_redact | tee -a "$LOG" || true
-  bash "$HERE/gcp_teardown_session.sh" "$NAME" "$ZONE" "results/t64_gate" 2>&1 | gcp_redact | tee -a "$LOG" || true
+  # A gate that passed ended with its `halt` step, which stops the VM a minute
+  # later by design, so the teardown finds no SSH and refuses to delete a VM
+  # whose home logs it could not pull (7 Nov 2026: a passed gate left the stopped
+  # VM there). The step results were synced as each step ended and are in the
+  # bucket; only then is the delete told why it may go without the home logs.
+  if (( rc == 0 )); then
+    TEARDOWN_DELETE_WITHOUT_HOME_LOGS="the gate passed and its halt step stopped the VM; SSH is gone; the step results were synced as each step ended" \
+      bash "$HERE/gcp_teardown_session.sh" "$NAME" "$ZONE" "results/t64_gate" 2>&1 | gcp_redact | tee -a "$LOG" || true
+  else
+    bash "$HERE/gcp_teardown_session.sh" "$NAME" "$ZONE" "results/t64_gate" 2>&1 | gcp_redact | tee -a "$LOG" || true
+  fi
   bash "$HERE/gcp_cleanup_check.sh" 2>&1 | gcp_redact | tee -a "$LOG" || true
   say "done; log the attempt in docs/launch_cards/h100_flex_attempts.md"
   exit "$rc"
