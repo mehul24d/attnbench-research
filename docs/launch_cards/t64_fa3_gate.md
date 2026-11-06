@@ -16,7 +16,7 @@ P4 runner in its gate mode, with four steps and nothing timed:
 |---|---|---|
 | 1 | `prereqs` | The deployed tree holds the FA3 files and `run_probe.py`. There are no plan-row requirements |
 | 2 | `fa3_import` | `fa3_import_check.sh` checks the wheel's sha256 and the Python and torch tags, installs without dependencies, imports, and confirms the `fa3` backend is available on sm_90 |
-| 3 | `fa3_gate` | `run_probe.py --only-backends fa3 --max-seq 4096` runs the capability probe and the correctness gate against the float64 naive reference (4096 is the longest length the oracle is allocated for). It fails on no configuration checked, on any check other than `exact`, on any failed check, or on a stamp that is not this instance's (H100, `a3-highgpu-1g`, `dws-flex-start`, clean tree) |
+| 3 | `fa3_gate` | `run_probe.py --only-backends fa3 --max-seq 4096 --exact-only --long-model-configs` runs the capability probe and the correctness gate against the float64 naive reference (4096 is the longest length the oracle is allocated for). `--exact-only` leaves out, and lists in `gate_expectations.json`, any config whose float64 oracle does not fit (6 Nov 2026: two batch-16 configs; FA3 alone has no reference to compare with), so every row is `exact`. `--long-model-configs` adds the model's head layout (12:2, batch 1, causal) at 8192, 16384 and 32768 against a float64 reference computed a block of queries at a time (`gates.blockwise_reference`; the same arithmetic, no S x S matrix). It fails on no configuration checked, on any check other than `exact`, on any failed check, on a missing or failed long config, or on a stamp that is not this instance's (H100, `a3-highgpu-1g`, `dws-flex-start` or `spot`, clean tree) |
 | 4 | `halt` | `sudo shutdown -h +1`, so `run_phase.sh` syncs this step first. The teardown deletes the stopped VM |
 
 In this mode the step subcommand accepts only these four names, so any
@@ -59,8 +59,9 @@ terms, then every 30 minutes, start to start:
   exists in the project;
 - walks `us-central1-a`, `asia-southeast1-b` and `asia-southeast1-c` on
   FLEX_START, each request cancelled after 300 s; if no zone has capacity,
-  the same walk on SPOT. Spot is allowed for the gate alone: it times
-  nothing, and `t64_session.py` refuses a Spot row in P4;
+  the same walk on SPOT. Spot is allowed for the gate (it times nothing)
+  and, from 7 Nov 2026, for P4 (recorded as `spot`; an interrupted session is
+  discarded in full);
 - on a grant, stops polling and runs the gate below end to end, with the
   teardown on any exit; on a launcher error, stops; after 48 rounds, stops.
 

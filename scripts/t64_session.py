@@ -94,7 +94,8 @@ def _t64() -> S.SessionConfig:
     cfg = S.SessionConfig(
         task="T6.4", pairing="P4", title="The P4 session (T6.4: Sapphire Rapids + H100)",
         script="t64_session.py", phase_prefix="t64", session_prefix="t64_p4",
-        gpu="H100", instance_type="a3-highgpu-1g", provisioning=("FLEX_START",),
+        gpu="H100", instance_type="a3-highgpu-1g", provisioning=("FLEX_START", "SPOT"),
+        discard_on_restart=True,
         code_path={"gpu": "H100", "implementation": "xattention:triton",
                    "libraries": [["torch", "dry"], ["triton", "dry"], ["flash_attn_3", "dry"]],
                    "python_optimize": 0},
@@ -145,10 +146,13 @@ def _gate_provenance(cfg, row: dict) -> list:
             if not p.startswith("no null-kernel burst")]
 
 
-def read_gate(cfg, probe_dir: Path) -> dict:
+def read_gate(cfg, probe_dir: Path, *, long_required: bool = False) -> dict:
     """The verdict from `run_probe.py`'s files: FA3 was checked on at least one
     configuration, every check was the float64 one ("exact"), every check
-    passed, and the stamp is this instance's. Raises StepFailed otherwise."""
+    passed, and the stamp is this instance's. With `long_required` (the real
+    gate), every long configuration the probe's `gate_expectations.json` names
+    must also have its own passing row, and the gate must have been run
+    exact-only. Raises StepFailed otherwise."""
     import pandas as pd
     corr = Path(probe_dir) / "correctness.parquet"
     if not corr.exists():
@@ -162,6 +166,13 @@ def read_gate(cfg, probe_dir: Path) -> dict:
         "max_abs_err": None if fa3.empty or fa3.max_abs_err.isna().all()
         else float(fa3.max_abs_err.max()),
         "max_seq": GATE_MAX_SEQ}
+    expect = S.read_json(Path(probe_dir) / "gate_expectations.json") or {}
+    long_keys = list(expect.get("long_keys", []))
+    findings["long_configs"] = len(long_keys)
+    findings["long_configs_passed"] = (
+        int(fa3[fa3.config_key.isin(long_keys) & fa3.passed.astype(bool)].config_key.nunique())
+        if len(fa3) else 0)
+    findings["left_out_no_oracle"] = len(expect.get("skipped_no_oracle", []))
     stamp = S.read_json(Path(probe_dir) / "versions.json") or {}
     findings["provenance_problems"] = _gate_provenance(cfg, stamp)
     if fa3.empty:
@@ -170,6 +181,15 @@ def read_gate(cfg, probe_dir: Path) -> dict:
     if findings["check_kinds"] != ["exact"]:
         raise S.StepFailed(f"FA3's checks were {findings['check_kinds']}, not only the "
                            f"float64 one ('exact')", findings)
+    if long_required:
+        from attnbench.gates import gate_long_configs
+        want = sorted(c.key() for c in gate_long_configs())
+        if not expect.get("exact_only") or sorted(long_keys) != want:
+            raise S.StepFailed("the probe was not run exact-only on the gate's long "
+                               "configurations (gate_expectations.json)", findings)
+        if findings["long_configs_passed"] != len(want):
+            raise S.StepFailed(f"FA3 passed {findings['long_configs_passed']} of "
+                               f"{len(want)} long configurations (blockwise float64)", findings)
     if findings["failed"]:
         raise S.StepFailed(f"FA3 failed the float64 gate on {len(findings['failed'])} "
                            f"configuration(s)", findings)
@@ -185,10 +205,11 @@ def real_fa3_gate(cfg, args) -> dict:
     timing measurement (`run_probe.py`'s docstring)."""
     out = Path(args.out) / GATE_PROBE
     rc = S.run(S.py("run_probe.py", "--out", str(out), "--only-backends", "fa3",
-                    "--max-seq", str(GATE_MAX_SEQ), "--no-resume"))
+                    "--max-seq", str(GATE_MAX_SEQ), "--no-resume",
+                    "--exact-only", "--long-model-configs"))
     if rc != 0:
         raise S.StepFailed(f"run_probe.py exited {rc}", {"exit": rc})
-    return read_gate(cfg, out)
+    return read_gate(cfg, out, long_required=True)
 
 
 def fake_fa3_gate(cfg, args) -> dict:
@@ -196,16 +217,21 @@ def fake_fa3_gate(cfg, args) -> dict:
     from attnbench.provisioning import row_name
     out = Path(args.out) / GATE_PROBE
     out.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"backend": "fa3", "config_key": f"dry{n}", "passed": True,
-                   "check_kind": "exact", "max_abs_err": 1e-3} for n in (1, 2)]
+    from attnbench.gates import gate_long_configs
+    longs = [c.key() for c in gate_long_configs()]
+    pd.DataFrame([{"backend": "fa3", "config_key": k, "passed": True,
+                   "check_kind": "exact", "max_abs_err": 1e-3}
+                  for k in [f"dry{n}" for n in (1, 2)] + longs]
                  ).to_parquet(out / "correctness.parquet")
+    S.write_json(out / "gate_expectations.json", {
+        "exact_only": True, "long_keys": sorted(longs), "skipped_no_oracle": []})
     S.write_json(out / "versions.json", {
         "cloud_provider": "gcp", "instance_type": cfg.instance_type,
         "instance_generation": "a3", "cpu_microcode": "0xdry",
         "provisioning_model": row_name(cfg.provisioning[0]),
         "provisioning_model_problem": None, "python_optimize": 0, "git_dirty": False,
         "gpu_name": f"fake {cfg.gpu}"})
-    return {**read_gate(cfg, out), "fake": True}
+    return {**read_gate(cfg, out, long_required=True), "fake": True}
 
 
 def real_halt(cfg, args) -> dict:
@@ -232,7 +258,8 @@ def _t64_gate() -> S.SessionConfig:
         script="t64_session.py", phase_prefix="t64gate", session_prefix="t64_fa3_gate",
         # Spot is allowed for the gate alone (researcher, 31 Oct 2026): it times
         # nothing, so the preemption risk costs a rerun, not a row.
-        gpu="H100", instance_type=T64.instance_type, provisioning=T64.provisioning + ("SPOT",),
+        gpu="H100", instance_type=T64.instance_type, provisioning=T64.provisioning,
+        discard_on_restart=True,
         code_path=T64.code_path, banked=(),
         steps=(S.Step("prereqs", "T2.16", "deployed files present"),
                T64.step("fa3_import"),

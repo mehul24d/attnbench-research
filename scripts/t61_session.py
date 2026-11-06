@@ -161,6 +161,7 @@ class SessionConfig:
     reals: dict = field(default_factory=dict)    # step -> real body
     preflight_findings: Optional[Callable] = None   # row -> extra findings (P4's floor)
     step_args: tuple = ()         # passed to every step's process (P4's --gate-only)
+    discard_on_restart: bool = False   # a resume on another boot discards the session (P4, Spot)
 
     @property
     def names(self) -> tuple:
@@ -915,6 +916,24 @@ def step_dir(session: Path, step: str, cfg: SessionConfig) -> Path:
     return Path(session) / f"{cfg.names.index(step) + 1:02d}_{step}"
 
 
+BOOT_ID_FILE = Path("/proc/sys/kernel/random/boot_id")
+
+
+def boot_id() -> Optional[str]:
+    """This boot's id (Linux), or None where there is none (the Mac, a dry run)."""
+    try:
+        return BOOT_ID_FILE.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def interrupted(manifest: dict, now: Optional[str]) -> bool:
+    """The session began on another boot of this machine. A Spot VM that was
+    preempted and started again, or any restart, lands here."""
+    was = manifest.get("boot_id")
+    return was is not None and now is not None and was != now
+
+
 def load_manifest(session: Path) -> dict:
     return read_json(Path(session) / "manifest.json", {"attempts": []})
 
@@ -984,6 +1003,21 @@ def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, d
     if why:
         print(f"REFUSING --from {start}: {why}", file=sys.stderr)
         return 2
+    if cfg.discard_on_restart and not dry_run:
+        now = boot_id()
+        if interrupted(manifest, now):
+            (session / "INTERRUPTED_DISCARD.md").write_text(
+                f"# Discarded in full: the instance restarted\n\nThis session began on boot "
+                f"`{manifest['boot_id']}` and `--from {start}` was tried on boot `{now}`. A "
+                f"session that was interrupted is discarded in full (Appendix A, 7 Nov 2026): "
+                f"none of its rows is evidence. Start a new session on a new instance.\n")
+            print(f"REFUSING --from {start}: the instance restarted since this session began "
+                  f"(boot {manifest['boot_id']} -> {now}); an interrupted session is discarded "
+                  f"in full. See {session / 'INTERRUPTED_DISCARD.md'}", file=sys.stderr)
+            return 2
+        if now is not None and manifest.get("boot_id") is None:
+            manifest["boot_id"] = now
+            write_json(session / "manifest.json", manifest)
     done = last_status(manifest)
     total = len(cfg.steps)
     for step in cfg.names[cfg.names.index(start):]:

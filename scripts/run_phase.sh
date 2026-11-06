@@ -78,11 +78,25 @@ DEST="$BUCKET/$SESSION"
 mkdir -p logs results
 LOG="logs/${PHASE}.log"
 
+# The results already in the repository come with the deployed tree (a git
+# bundle): syncing them again copied every banked directory into each
+# session's bucket folder, and the teardown then pulled them back to the Mac
+# (the 6 Nov 2026 H100 gate). The session's own output is what is untracked, so
+# rsync leaves out the top-level results/ directories git tracks. gsutil's -x
+# takes a Python regular expression, matched against the relative path.
+TRACKED_RE=""
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  TRACKED_RE="$(git ls-files results 2>/dev/null | awk -F/ 'NF > 2 {print $2}' | sort -u \
+    | sed -e 's/[][\.*^$+?(){}|]/\\&/g' | paste -sd '|' -)"
+fi
+RSYNC_EXCLUDE=()
+if [[ -n "$TRACKED_RE" ]]; then RSYNC_EXCLUDE=(-x "^(${TRACKED_RE})/"); fi
+
 sync_now() {
   local rc=$1 tag=$2
   echo "--- sync[$tag] $PHASE -> $DEST (rc=$rc) $(date -u +%FT%TZ)" | _redact | tee -a "$LOG"
   # results first: it is the thing that cannot be regenerated.
-  gsutil -q -m rsync -r results "$DEST/results" 2>&1 | _redact | tee -a "$LOG" || {
+  gsutil -q -m rsync -r ${RSYNC_EXCLUDE[@]+"${RSYNC_EXCLUDE[@]}"} results "$DEST/results" 2>&1 | _redact | tee -a "$LOG" || {
       echo "SYNC FAILED for results -- the disk is now the only copy" >&2; return 1; }
   gsutil -q -m rsync -r logs "$DEST/logs" 2>&1 | _redact || {
       echo "SYNC FAILED for logs" >&2; return 1; }

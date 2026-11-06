@@ -27,13 +27,15 @@ exit 0
 """
 
 
-def _run(tmp_path, *, metadata=PROJ, bucket=None):
+def _run(tmp_path, *, metadata=PROJ, bucket=None, prepare=None):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "gsutil").write_text(FAKE_GSUTIL)
     (bin_dir / "gsutil").chmod(0o755)
     work = tmp_path / "work"          # not a git repository: the dirt check is skipped
     work.mkdir()
+    if prepare:
+        prepare(work)
     meta = tmp_path / "project-id"
     if metadata is not None:
         meta.write_text(metadata)
@@ -82,3 +84,31 @@ def test_the_override_wins_and_needs_no_metadata(tmp_path):
     p, calls, ran, _ = _run(tmp_path, metadata=None, bucket="gs://some-bucket")
     assert p.returncode == 0 and ran, p.stderr
     assert any("gs://some-bucket/sess/results" in c for c in calls), calls
+
+
+
+def test_the_sync_leaves_out_results_the_repository_already_tracks(tmp_path):
+    """6 Nov 2026: the gate's sync copied every banked results/ directory into the bucket."""
+    def prepare(work):
+        (work / "results" / "banked.v1" / "sub").mkdir(parents=True)
+        (work / "results" / "banked.v1" / "sub" / "a.parquet").write_text("x")
+        (work / "results" / "other").mkdir()
+        (work / "results" / "other" / "b.parquet").write_text("x")
+        (work / "results" / "README.md").write_text("x")
+        (work / ".gitignore").write_text("logs/\nresults/session_new/\n")
+        for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
+                    ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]):
+            subprocess.run(cmd, cwd=work, check=True, capture_output=True)
+        (work / "results" / "session_new").mkdir()
+        (work / "results" / "session_new" / "c.json").write_text("x")
+    p, calls, ran, work = _run(tmp_path, prepare=prepare)
+    assert p.returncode == 0, p.stderr
+    rsync = next(c for c in calls if "rsync" in c and "/results" in c)
+    assert "-x ^(banked\\.v1|other)/" in rsync, rsync
+    assert "session_new" not in rsync
+
+
+def test_a_tree_with_no_banked_results_syncs_everything(tmp_path):
+    p, calls, ran, work = _run(tmp_path)
+    rsync = next(c for c in calls if "rsync" in c and "/results" in c)
+    assert " -x " not in rsync

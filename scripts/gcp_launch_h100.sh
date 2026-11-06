@@ -27,12 +27,13 @@
 # every zone was tried and none had capacity (nothing live, nothing billed);
 # any other exit: stop and look.
 #
-# SPOT (FA3 correctness gate only; researcher, 31 Oct 2026):
+# SPOT (researcher, 31 Oct 2026 for the FA3 correctness gate; 7 Nov 2026 for P4):
 # GCP_H100_PROVISIONING=SPOT asks for Spot instead, through the same submit,
 # poll and cancel path, without --request-valid-for-duration (a FLEX_START
-# flag). No Spot planning rate is on record: declare it as GCP_RATE_INR_HR.
-# P4 itself stays FLEX_START (t64_session.py refuses a Spot row outside the
-# gate).
+# flag). Declare the rate as GCP_RATE_INR_HR (plan Section 5.2: Rs 668.04/h at
+# the higher region). t64_session.py takes a Spot row for the gate and for P4
+# (recorded as `spot`), and discards a session whose instance restarted
+# (preempted and started again): no row of it is evidence.
 #
 # Creates a BILLABLE resource. Planning rates, all-in, from the Cloud Billing
 # catalog on 2026-10-20 (plan Section 5.2): GPU + 26 cores + 234 GiB RAM + the
