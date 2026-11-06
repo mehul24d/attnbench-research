@@ -74,10 +74,11 @@ def main() -> int:
     df.to_parquet(path, index=False)
 
     print(f"wrote {path}{'  (DRY RUN: fake device)' if args.dry_run else ''}")
-    for m in link.SYNC_MECHANISMS:
+    for m in link.PRICED_MECHANISMS:
         print(f"  s_fixed {m:24s} p50 {row[f's_fixed_{m}_median'] * 1e6:9.3f} us")
     for key in ("h2d_pinned", "h2d_pageable", "d2h_pinned", "d2h_pageable",
-                "blocking_d2h_pinned", "blocking_d2h_pageable"):
+                "blocking_d2h_pinned", "blocking_d2h_pageable",
+                "blocking_h2d_pinned", "blocking_h2d_pageable"):
         bw = row[f"bw_{key}_Bps"]
         print(f"  {key:24s} {'--' if bw is None else f'{bw / 1e9:8.2f} GB/s'}")
     print(f"  PCIe gen {row['pcie_gen_current_under_copy']} (max {row['pcie_gen_max_under_copy']})"

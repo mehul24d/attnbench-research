@@ -728,6 +728,9 @@ FAKE_MECHANISMS = {
     "bool": {"s_fixed": 2e-5, "bandwidth": 1e9, "loaded_bandwidth": 5e8},
     "copy_to_host_pinned": {"s_fixed": 1e-5, "bandwidth": 2e10, "loaded_bandwidth": 1e10},
     "copy_to_host_pageable": {"s_fixed": 3e-5, "bandwidth": 5e9, "loaded_bandwidth": 2e9},
+    "event_synchronize": {"s_fixed": 1e-5},
+    "copy_from_host_pinned": {"s_fixed": 1e-5, "bandwidth": 2e10, "loaded_bandwidth": 1e10},
+    "copy_from_host_pageable": {"s_fixed": 3e-5, "bandwidth": 5e9, "loaded_bandwidth": 2e9},
 }
 
 
@@ -825,6 +828,7 @@ def step_link(args, cfg) -> dict:
         qrow = pd.read_parquet(out / "launch_queue" / "launch_queue.parquet").iloc[0].to_dict()
         hw = link.hardware_features(lrow)
         inputs = {"queue_depth": int(launch_queue.queue_depth(qrow, "sleep0")), "fake": False,
+                  "max_payload_bytes": link.payload_range(lrow)[1],
                   "stub_rows": _boundary(),          # the CPU boundary's dry-run rows
                   "hardware": {"pinned_bandwidth": hw.pinned_bandwidth,
                                "pageable_bandwidth": hw.pageable_bandwidth},
@@ -1449,6 +1453,25 @@ def cmd_cell_one(args) -> int:
     return 1 if error else 0
 
 
+COPY_MECHANISM_NAMES = ("copy_to_host_pinned", "copy_to_host_pageable",
+                        "copy_from_host_pinned", "copy_from_host_pageable")
+
+
+def check_payload_bound(ops, max_payload_bytes, label: str) -> None:
+    """Refuse a blocking copy that moves more than the link microbenchmark
+    measured. The payload term is read at the largest measured size and is
+    never extrapolated (researcher, 7 Nov 2026). `None` is a dry run's fakes."""
+    if max_payload_bytes is None:
+        return
+    beyond = [(i + 1, o.mechanism, o.payload_bytes) for i, o in enumerate(ops)
+              if o.mechanism in COPY_MECHANISM_NAMES and o.payload_bytes > max_payload_bytes]
+    if beyond:
+        raise StepFailed(
+            f"{label}: {len(beyond)} blocking copies move more than the link microbenchmark "
+            f"measured ({max_payload_bytes} bytes); first: operation {beyond[0][0]}, "
+            f"{beyond[0][1]}, {beyond[0][2]} bytes. The payload term is never extrapolated.")
+
+
 def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None):
     """The T2.11 record from the link and device-component steps' outputs."""
     from attnbench.predict import commit as C
@@ -1467,7 +1490,9 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None)
         # The link table is per grid length; a prompt lands at or below its budget.
         grid_L = e.get("budget", e["context_length"])
         mech = {m: MechanismCost(**v) for m, v in rin["by_length"][str(grid_L)].items()}
-        priced = price(close_prefill(op_from_dict(o) for o in e["ops"]), mech)
+        ops = list(close_prefill(op_from_dict(o) for o in e["ops"]))
+        check_payload_bound(ops, rin.get("max_payload_bytes"), label)
+        priced = price(ops, mech)
         out.append(Cell(pairing=cfg["pairing"], model_name=cfg["model"], code_path=label,
                         arm=e["arm"], context_length=e["context_length"],
                         density=e["density"], batch=e["batch"], priced=priced, hardware=hw))

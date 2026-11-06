@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from attnbench.components.link import SYNC_MECHANISMS as LINK_MECHANISMS
+from attnbench.predict.recursion import PRICED_MECHANISMS as LINK_MECHANISMS
 from attnbench.components.link import mechanism_costs
 from attnbench.components.op_sequence import (CodePath, OpSequence, SeqKind,
                                               SeqOp, to_operations)
@@ -69,8 +69,9 @@ def _t25_row() -> dict:
     row = {"dry_run": False}
     for m in LINK_MECHANISMS:
         row[f"s_fixed_{m}_median"] = 1e-5
-    for mem in ("pinned", "pageable"):
-        row[f"bw_blocking_d2h_{mem}_Bps"] = 1e10
+    for d in ("d2h", "h2d"):
+        for mem in ("pinned", "pageable"):
+            row[f"bw_blocking_{d}_{mem}_Bps"] = 1e10
     return row
 
 

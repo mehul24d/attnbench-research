@@ -3,7 +3,10 @@
 One provenance-stamped row per pairing with every link figure the model
 reads:
 
-  - **s_fixed(m)** for each mechanism in `predict.recursion.SYNC_MECHANISMS`:
+  - **s_fixed(m)** for each mechanism in `predict.recursion.PRICED_MECHANISMS`
+    (the five synchronising ones and, since 7 Nov 2026, the three Appendix A
+    25 Oct added: a blocking copy from pinned and from pageable host memory,
+    and an event synchronise):
     the host time to issue and complete mechanism m at the smallest payload
     (one byte), with the device idle. The device is synchronised before every
     repetition, outside the timer, and only the mechanism is timed, so the
@@ -13,9 +16,9 @@ reads:
   - **Copy bandwidth** host to device and device to host, pinned and
     pageable, from CUDA events around one copy: the device-side time the
     copy occupies the stream, which is what l_i is (Section 5.4).
-  - **Blocking device-to-host bandwidth**, pinned and pageable, timed on the
-    host: the payload term of s_0 for the two copy mechanisms, which the
-    host waits for. B = payload / (t - s_fixed) at the largest payload, the
+  - **Blocking device-to-host and host-to-device bandwidth**, pinned and
+    pageable, timed on the host: the payload term of s_0 for the four copy
+    mechanisms, which the host waits for. B = payload / (t - s_fixed) at the largest payload, the
     plan's s_0 = s_fixed + payload / B read at one point, not fitted.
   - **Loaded bandwidth**: the same six tables while a CPU load runs in a
     separate process, one per context length. A separate process, so the
@@ -44,17 +47,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from ..predict.recursion import SYNC_MECHANISMS, MechanismCost
+from ..predict.recursion import PRICED_MECHANISMS, MechanismCost
 from ..predict.training import HardwareFeatures
 
 SMALLEST_PAYLOAD_BYTES = 1
-DEFAULT_SIZES = (1 << 20, 1 << 22, 1 << 24, 1 << 26, 1 << 28)   # 1 MiB to 256 MiB
+# 4 KiB to 256 MiB: the recorded sequences' blocking copies run from a few
+# bytes (scalars) to the masks, so the table must reach below 1 MiB.
+DEFAULT_SIZES = (1 << 12, 1 << 16, 1 << 20, 1 << 22, 1 << 24, 1 << 26, 1 << 28)
 DEFAULT_CONTEXT_LENGTHS = (2048, 4096, 8192, 16384, 32768)       # Section 5.3 grid
 DIRECTIONS = ("h2d", "d2h")
 MEMORY_KINDS = ("pinned", "pageable")
-# The two synchronising copies, and the host memory each lands in.
-COPY_MECHANISMS = {"copy_to_host_pinned": "pinned",
-                   "copy_to_host_pageable": "pageable"}
+# The four synchronising copies: (direction, host memory). The host waits for
+# the transfer, so each has a payload term as well as an s_fixed.
+COPY_MECHANISMS = {"copy_to_host_pinned": ("d2h", "pinned"),
+                   "copy_to_host_pageable": ("d2h", "pageable"),
+                   "copy_from_host_pinned": ("h2d", "pinned"),
+                   "copy_from_host_pageable": ("h2d", "pageable")}
 
 
 @dataclass
@@ -69,6 +77,7 @@ class DeviceOps:
                                     asynchronously where CUDA allows
       blocking_d2h(memory, n)       a callable that copies n bytes to the
                                     host and returns when they are there
+      blocking_h2d(memory, n)       the same from the host to the device
       device_time(fn)               device seconds `fn` occupies the stream
     """
     sync: Callable[[], None]
@@ -76,6 +85,7 @@ class DeviceOps:
     copy: Callable[[str, str, int], Callable[[], object]]
     blocking_d2h: Callable[[str, int], Callable[[], object]]
     device_time: Callable[[Callable[[], object]], float]
+    blocking_h2d: Optional[Callable[[str, int], Callable[[], object]]] = None
 
 
 def cuda_ops(device: str = "cuda") -> DeviceOps:
@@ -107,8 +117,18 @@ def cuda_ops(device: str = "cuda") -> DeviceOps:
             return one_u8.item
         if name == "bool":
             return lambda: bool(one_bool)
+        if name == "event_synchronize":
+            # An event recorded on an idle device and waited for: the host cost
+            # of Event.synchronize() with nothing pending, as synchronize is.
+            ev = torch.cuda.Event()
+            ev.record()
+            torch.cuda.synchronize()
+            return ev.synchronize
         if name in COPY_MECHANISMS:
-            host = buf(COPY_MECHANISMS[name], SMALLEST_PAYLOAD_BYTES)
+            direction, memory = COPY_MECHANISMS[name]
+            host = buf(memory, SMALLEST_PAYLOAD_BYTES)
+            if direction == "h2d":
+                return lambda: one_u8.copy_(host, non_blocking=False)
             return lambda: host.copy_(one_u8, non_blocking=False)
         raise KeyError(name)
 
@@ -122,6 +142,10 @@ def cuda_ops(device: str = "cuda") -> DeviceOps:
         host, gpu = buf(memory, n), buf("device", n)
         return lambda: host.copy_(gpu, non_blocking=False)
 
+    def blocking_h2d(memory: str, n: int):
+        host, gpu = buf(memory, n), buf("device", n)
+        return lambda: gpu.copy_(host, non_blocking=False)
+
     def device_time(fn) -> float:
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
@@ -132,7 +156,8 @@ def cuda_ops(device: str = "cuda") -> DeviceOps:
         return start.elapsed_time(end) * 1e-3
 
     return DeviceOps(sync=torch.cuda.synchronize, mechanism=mechanism, copy=copy,
-                     blocking_d2h=blocking_d2h, device_time=device_time)
+                     blocking_d2h=blocking_d2h, device_time=device_time,
+                     blocking_h2d=blocking_h2d)
 
 
 def dry_run_ops(bytes_per_s: float = 10e9) -> DeviceOps:
@@ -148,7 +173,8 @@ def dry_run_ops(bytes_per_s: float = 10e9) -> DeviceOps:
         mechanism=lambda name: nothing,
         copy=lambda direction, memory, n: (lambda: n),
         blocking_d2h=lambda memory, n: nothing,
-        device_time=lambda fn: (fn() or 0) / bytes_per_s)
+        device_time=lambda fn: (fn() or 0) / bytes_per_s,
+        blocking_h2d=lambda memory, n: nothing)
 
 
 # --- timing ------------------------------------------------------------------------
@@ -189,14 +215,14 @@ def summary(xs: Sequence[float]) -> dict:
 def s_fixed_table(ops: DeviceOps, reps: int, *, clock=time.perf_counter_ns) -> dict:
     """{mechanism: summary} for every mechanism the recursion costs."""
     return {m: summary(time_host(ops.mechanism(m), reps, sync=ops.sync, clock=clock))
-            for m in SYNC_MECHANISMS}
+            for m in PRICED_MECHANISMS}
 
 
 def bandwidth_tables(ops: DeviceOps, sizes: Sequence[int], reps: int,
                      s_fixed: dict, *, clock=time.perf_counter_ns) -> dict:
-    """Bytes per second per size for the four event-timed copies and the two
-    blocking device-to-host copies. Keys: "<direction>_<memory>" and
-    "blocking_d2h_<memory>"; each value is a list of
+    """Bytes per second per size for the four event-timed copies and the four
+    blocking copies. Keys: "<direction>_<memory>" and
+    "blocking_<direction>_<memory>"; each value is a list of
     {bytes, median_s, bytes_per_s}, smallest size first."""
     out: dict = {}
     for direction in DIRECTIONS:
@@ -206,16 +232,20 @@ def bandwidth_tables(ops: DeviceOps, sizes: Sequence[int], reps: int,
                 med = summary(time_device(ops.copy(direction, memory, n), reps, ops))["median"]
                 rows.append({"bytes": n, "median_s": med, "bytes_per_s": n / med})
             out[f"{direction}_{memory}"] = rows
-    for mech, memory in COPY_MECHANISMS.items():
+    for mech, (direction, memory) in COPY_MECHANISMS.items():
         rows = []
         fixed = s_fixed[mech]["median"]
+        make = ops.blocking_h2d if direction == "h2d" else ops.blocking_d2h
+        if make is None:
+            raise ValueError(f"these DeviceOps cannot time a blocking {direction} copy, "
+                             f"which {mech!r} needs")
         for n in sizes:
-            med = summary(time_host(ops.blocking_d2h(memory, n), reps,
+            med = summary(time_host(make(memory, n), reps,
                                     sync=ops.sync, clock=clock))["median"]
             net = med - fixed
             rows.append({"bytes": n, "median_s": med,
                          "bytes_per_s": n / net if net > 0 else None})
-        out[f"blocking_d2h_{memory}"] = rows
+        out[f"blocking_{direction}_{memory}"] = rows
     return out
 
 
@@ -455,6 +485,38 @@ def measure(ops: DeviceOps, *, sync_reps: int = 2000, copy_reps: int = 50,
     return row
 
 
+# --- coverage ----------------------------------------------------------------------------
+
+def payload_range(row) -> tuple[int, int]:
+    """The payload sizes (bytes) a row's copy tables span: from the s_fixed
+    payload to the largest size in `sizes_bytes`. The payload term reads the
+    bandwidth at the largest size, so a recorded copy above it has no
+    measurement behind it."""
+    sizes = [int(x) for x in str(row["sizes_bytes"]).split(",") if x]
+    if not sizes:
+        raise ValueError("the row records no payload sizes")
+    return int(row.get("smallest_payload_bytes", SMALLEST_PAYLOAD_BYTES)), max(sizes)
+
+
+def uncovered_payloads(row, ops) -> list:
+    """(mechanism, payload_bytes) for every synchronising operation in `ops`
+    that the row does not cover: a mechanism with no s_fixed column, or a copy
+    whose payload is above the largest size measured. Empty when the row can
+    price every one. The prediction refuses on a non-empty answer and never
+    defaults (researcher, 7 Nov 2026)."""
+    lo, hi = payload_range(row)
+    out = []
+    for op in ops:
+        mech = getattr(op, "mechanism", None)
+        if mech is None:
+            continue
+        if f"s_fixed_{mech}_median" not in row:
+            out.append((mech, getattr(op, "payload_bytes", 0)))
+        elif mech in COPY_MECHANISMS and getattr(op, "payload_bytes", 0) > hi:
+            out.append((mech, op.payload_bytes))
+    return out
+
+
 # --- readers -----------------------------------------------------------------------------
 
 def _refuse_dry_run(row) -> None:
@@ -474,13 +536,13 @@ def mechanism_costs(row, context_length: Optional[int] = None) -> dict[str, Mech
     load. Mechanisms that move no payload carry no bandwidth."""
     _refuse_dry_run(row)
     out = {}
-    for m in SYNC_MECHANISMS:
+    for m in PRICED_MECHANISMS:
         bw = loaded = None
         if m in COPY_MECHANISMS:
-            mem = COPY_MECHANISMS[m]
-            bw = row[f"bw_blocking_d2h_{mem}_Bps"]
+            direction, mem = COPY_MECHANISMS[m]
+            bw = row[f"bw_blocking_{direction}_{mem}_Bps"]
             if context_length is not None:
-                loaded = row[f"loaded_bw_blocking_d2h_{mem}_{context_length}_Bps"]
+                loaded = row[f"loaded_bw_blocking_{direction}_{mem}_{context_length}_Bps"]
         out[m] = MechanismCost(s_fixed=float(row[f"s_fixed_{m}_median"]),
                                bandwidth=bw, loaded_bandwidth=loaded)
     return out
