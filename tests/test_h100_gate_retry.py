@@ -23,7 +23,8 @@ CALLED = ("gcp_launch_h100.sh", "gcp_verify_gcs_writable.sh", "gcp_deploy_source
           "gcp_preflight_instance.sh", "gcp_bootstrap_instance.sh", "gcp_session_elapsed.sh",
           "gcp_teardown_session.sh", "gcp_cleanup_check.sh")
 ENV_SEEN = ("GCP_H100_PROVISIONING", "GCP_MAX_RUN", "GCP_HALT_MINUTES", "GCP_RATE_INR_HR",
-            "GCP_ZONE_FALLBACKS", "GCP_CANCEL_AFTER_SECONDS", "GCP_IMAGE", "FA3_WHEEL_SHA256")
+            "GCP_ZONE_FALLBACKS", "GCP_CANCEL_AFTER_SECONDS", "GCP_IMAGE", "FA3_WHEEL_SHA256",
+            "TEARDOWN_DELETE_WITHOUT_HOME_LOGS")
 
 FAKE_SCRIPT = r"""#!/usr/bin/env bash
 me="$(basename "$0")"
@@ -234,6 +235,17 @@ def test_a_failed_gate_is_still_torn_down(tmp_path):
     p = lp.run()
     assert p.returncode != 0
     assert lp.called("gcp_teardown_session.sh") and lp.called("gcp_cleanup_check.sh")
+    # a failed gate leaves SSH up: the teardown pulls the home logs and is not told to skip them
+    assert _env(lp.called("gcp_teardown_session.sh")[0], "TEARDOWN_DELETE_WITHOUT_HOME_LOGS") == ""
+
+
+def test_a_passed_gate_has_halted_its_vm_so_the_teardown_may_delete_without_home_logs(tmp_path):
+    """7 Nov 2026: the halt step stopped the VM, SSH was gone and the teardown refused to delete it."""
+    lp = Loop(tmp_path, ["0:us-central1-a"])
+    p = lp.run()
+    assert p.returncode == 0, p.stdout[-1500:]
+    why = lp.called("gcp_teardown_session.sh")[0].split(" TEARDOWN_DELETE_WITHOUT_HOME_LOGS=", 1)[1]
+    assert "halt step stopped the VM" in why
 
 
 def test_it_stops_after_its_rounds(tmp_path):
