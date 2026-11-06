@@ -29,7 +29,8 @@ from attnbench import provenance                      # noqa: E402
 from attnbench.config import AttnConfig               # noqa: E402
 from attnbench.backends import all_backends           # noqa: E402
 from attnbench.backends.impls import SDPABackend      # noqa: E402
-from attnbench.gates import probe, check_for_family  # noqa: E402
+from attnbench.gates import (probe, check_for_family, check_correctness_blockwise,  # noqa: E402
+                             exact_oracle_fits, gate_long_configs)
 
 
 def probe_configs(max_seq: int, min_seq: int = 0, head_layouts=None):
@@ -100,6 +101,22 @@ def _legacy_probe_configs(max_seq: int):
                                  mask="block_sparse", pass_kind="fwd",
                                  block_size=block_size, sparsity=sparsity,
                                  mask_source="random")
+
+
+def stage1_check(b, cfg, refs, *, long_keys=(), exact_only=False):
+    """(CorrectnessResult, None), or (None, why-it-was-left-out).
+
+    A long gate configuration is checked against the blockwise float64
+    reference. Under `exact_only`, a config whose naive float64 oracle does not
+    fit is left out and named, never checked against other backends. Anything
+    else goes through `check_for_family`, as before."""
+    if cfg.key() in long_keys:
+        return check_correctness_blockwise(b, cfg), None
+    if exact_only and not exact_oracle_fits(cfg):
+        return None, {"backend": b.name, "config_key": cfg.key(),
+                      "seq_len": cfg.seq_len, "batch": cfg.batch,
+                      "n_heads_q": cfg.n_heads_q, "n_heads_kv": cfg.n_heads_kv}
+    return check_for_family(b, cfg, references=refs), None
 
 
 def band_plan(configs, backend_names, done):
@@ -179,6 +196,21 @@ def main():
                          "different band. One backend per process, with "
                          "CUDA_LAUNCH_BLOCKING=1, is the only configuration in "
                          "which the error location names the cause.")
+    ap.add_argument("--exact-only", action="store_true",
+                    help="Stage 1 checks only configs whose float64 oracle "
+                         "fits in memory, so every row is an 'exact' one. A "
+                         "config it would have to check against other "
+                         "backends is left out and listed in "
+                         "gate_expectations.json, never run as a weaker "
+                         "check. The FA3 gate (t64_session.py --gate-only) "
+                         "uses this: on 6 Nov 2026 its FA3-only run failed on "
+                         "two batch-16 configs that had no oracle and no "
+                         "reference backends.")
+    ap.add_argument("--long-model-configs", action="store_true",
+                    help="also probe and check the model's head layout "
+                         "(gates.gate_long_configs) at 8192 to 32768 tokens "
+                         "against the blockwise float64 reference, an 'exact' "
+                         "check with no S x S matrix.")
     args = ap.parse_args()
 
     outdir = Path(args.out)
@@ -227,6 +259,13 @@ def main():
     _hl = tuple(tuple(int(v) for v in x.split(":"))
                 for x in args.head_layouts.split(",") if x.strip()) or None
     configs = list(probe_configs(args.max_seq, args.min_seq, head_layouts=_hl))
+    long_keys = set()
+    if args.long_model_configs:
+        have = {c.key() for c in configs}
+        long_cfgs = gate_long_configs()
+        long_keys = {c.key() for c in long_cfgs}
+        configs += [c for c in long_cfgs if c.key() not in have]
+    skipped_no_oracle = []
     bands = sorted({c.seq_len for c in configs})
     probe_path = outdir / "probe.parquet"
     corr_path = outdir / "correctness.parquet"
@@ -323,7 +362,11 @@ def main():
                             if o.name != b.name
                             and o.capability.family in ("dense_exact",
                                                         "reference")]
-                    r = check_for_family(b, cfg, references=refs)
+                    r, left_out = stage1_check(b, cfg, refs, long_keys=long_keys,
+                                               exact_only=args.exact_only)
+                    if r is None:
+                        skipped_no_oracle.append(left_out)
+                        continue
                     pending.append({**r.to_dict(), **cfg.to_dict(),
                                     **prov.to_dict()})
                 if pending:
@@ -336,6 +379,16 @@ def main():
                     print(f"    {b.name:<16} max_abs_err={worst:.2e}  "
                           f"failed={failed}/{len(pending)}  "
                           f"[{','.join(kinds)}]", flush=True)
+
+    if args.exact_only or args.long_model_configs:
+        import json
+        (outdir / "gate_expectations.json").write_text(json.dumps(
+            {"exact_only": bool(args.exact_only),
+             "long_keys": sorted(long_keys),
+             "skipped_no_oracle": skipped_no_oracle}, indent=1))
+        if skipped_no_oracle:
+            print(f"left out (no float64 oracle fits): {len(skipped_no_oracle)} "
+                  f"configs, listed in gate_expectations.json")
 
     print(f"\nwritten to {outdir}/")
 

@@ -9,6 +9,7 @@ without passing here.
 from __future__ import annotations
 
 import gc
+import math
 from dataclasses import dataclass, asdict, replace
 from typing import Iterable, Optional
 
@@ -213,8 +214,14 @@ def resolvable_rel_err(abs_err, expected, floor: float):
 
 def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
                       mask=None, seed: int = 0,
-                      device: str = "cuda") -> CorrectnessResult:
+                      device: str = "cuda", reference=None) -> CorrectnessResult:
     """Compare against a float64 naive reference on identical inputs.
+
+    `reference`, when given, is a callable `(q, k, v, cfg) -> float64 output`
+    that replaces the naive oracle's own `reference()`. It exists for the one
+    case where the same float64 arithmetic can be done without the S x S
+    matrix: `blockwise_reference`, below. The tolerance, the elementwise bound
+    and the recorded errors are the same code either way.
 
     The error magnitudes are recorded even on pass, because numerical fidelity
     is an independent axis of the study: a low-precision kernel that drifts at
@@ -245,8 +252,11 @@ def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
 
     try:
         with torch.no_grad():
-            expected = ref_backend.reference(q.detach(), k.detach(),
-                                             v.detach(), cfg, mask=mask)
+            if reference is None:
+                expected = ref_backend.reference(q.detach(), k.detach(),
+                                                 v.detach(), cfg, mask=mask)
+            else:
+                expected = reference(q.detach(), k.detach(), v.detach(), cfg)
             got = backend.forward(q.detach(), k.detach(), v.detach(),
                                   cfg, mask=mask)
     except UnsupportedConfig as e:
@@ -328,6 +338,8 @@ def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
     if passed:
         detail = (f"{n_resolvable}/{n_total} elements above the "
                   f"rel_err floor {rel_floor:g}")
+        if reference is not None:
+            detail = "blockwise float64 reference; " + detail
     else:
         worst = int(abs_err.argmax())
         detail = (f"{n_violating}/{n_total} elements exceed "
@@ -347,6 +359,73 @@ def check_correctness(backend: AttentionBackend, cfg: AttnConfig,
         rel_err_floor=rel_floor,
         detail=detail[:300],
     )
+
+
+BLOCKWISE_Q_BLOCK = 512
+
+# The FA3 gate's long configurations: the model's own head layout (12:2, the
+# grid's "model-real" one), batch 1, causal, forward, at the lengths where the
+# naive float64 oracle cannot exist. Checked against `blockwise_reference`.
+GATE_LONG_LAYOUT = (12, 2)
+GATE_LONG_SEQ_LENS = (8192, 16384, 32768)
+
+
+def gate_long_configs() -> list[AttnConfig]:
+    """The configurations above, with the keys the sweep's own grid gives them."""
+    from .config import SweepGrid
+    return [c for c in SweepGrid().dense_configs()
+            if c.seq_len in GATE_LONG_SEQ_LENS and c.batch == 1
+            and (c.n_heads_q, c.n_heads_kv) == GATE_LONG_LAYOUT
+            and c.mask == "causal" and c.pass_kind == "fwd"]
+
+
+@torch.no_grad()
+def blockwise_reference(q, k, v, cfg: AttnConfig,
+                        q_block: int = BLOCKWISE_Q_BLOCK) -> torch.Tensor:
+    """The float64 causal softmax attention of `NaiveAttention.reference`,
+    computed a block of queries at a time so the S x S matrix never exists.
+
+    This is the same arithmetic, not an approximation: each query row's softmax
+    is taken over ALL of its keys (0..i) in one pass in float64, never as an
+    online or rescaled update. Only the rows are chunked, so the answer equals
+    the naive oracle's up to float64 rounding. It exists so the FA3 gate can
+    check the model's own head layout at 8192 to 32768 tokens, where the naive
+    oracle needs 16 to 256 GiB (gates.oracle_bytes) and the gate used to fall
+    back to a weaker cross-backend check. Causal only: that is what the gate
+    asks.
+    """
+    if cfg.mask != "causal":
+        raise UnsupportedConfig(f"blockwise_reference is causal only, not {cfg.mask!r}")
+    q, k, v = q.double(), k.double(), v.double()
+    b, hq, s, d = q.shape
+    hkv = k.shape[1]
+    if hq % hkv:
+        raise UnsupportedConfig(f"{hq} query heads are not a multiple of {hkv} kv heads")
+    group = hq // hkv
+    scale = 1.0 / math.sqrt(cfg.head_dim)
+    out = torch.empty_like(q)
+    for a in range(0, s, q_block):
+        e = min(a + q_block, s)
+        blocked = torch.ones(e - a, e - a, dtype=torch.bool, device=q.device).triu(1)
+        for h in range(hkv):
+            qs = q[:, h * group:(h + 1) * group, a:e]                 # (b, g, qb, d)
+            scores = (qs @ k[:, h:h + 1, :e].transpose(-2, -1)) * scale   # (b, g, qb, e)
+            scores[..., a:e].masked_fill_(blocked, float("-inf"))
+            out[:, h * group:(h + 1) * group, a:e] = (
+                torch.softmax(scores, dim=-1) @ v[:, h:h + 1, :e])
+    return out
+
+
+def check_correctness_blockwise(backend: AttentionBackend, cfg: AttnConfig,
+                                seed: int = 0, device: str = "cuda",
+                                q_block: int = BLOCKWISE_Q_BLOCK
+                                ) -> CorrectnessResult:
+    """`check_correctness` against `blockwise_reference`. The row's check_kind
+    is "exact": the reference is the float64 oracle's own arithmetic, and the
+    detail says "blockwise float64 reference" on a pass."""
+    return check_correctness(
+        backend, cfg, seed=seed, device=device,
+        reference=lambda q, k, v, c: blockwise_reference(q, k, v, c, q_block))
 
 
 def check_structural(backend: AttentionBackend, cfg: AttnConfig,
