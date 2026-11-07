@@ -17,8 +17,8 @@ session's code.
 
 - **Phase 0, the oracle replay rerun** (ruling 2), on the same instance and
   the same commit, before T3.2a starts. The exploratory session's step 6
-  again, from its own step 5 in the bucket: its ten oracle cells rerun, the
-  other 25 cells resume (they passed under the same libraries and instance
+  again, from its own step 5 in the bucket: its nine oracle cells rerun, the
+  other 26 cells resume (they passed under the same libraries and instance
   spec). It tests the step-6 fix below on the three cells that left 16
   positions unpriced. **T3.2a starts only if the oracle passes the pricing
   gate here.** If it does not, the session stops, the instance is torn down,
@@ -63,7 +63,7 @@ session's code.
 |---|---|---|---|---|
 | Setup: launch, deploy, preflight, write gate, bootstrap | 6 | 6 | 8 | the exploratory session |
 | Phase 0: fetch the exploratory session | 3 | 5 | 10 | not measured |
-| Phase 0: step 6's ten oracle cells, 25 resumed | 31 | 33 | 40 | the exploratory session's oracle cells: 31.2 min |
+| Phase 0: step 6's nine oracle cells, 26 resumed | 31 | 33 | 40 | the exploratory session's oracle cells: 31.2 min |
 | Steps 1 to 4 | 21 | 22 | 24 | measured: 21.4 min |
 | Step 5, 35 cells | 74 | 77 | 89 | measured: 77.3 min |
 | Step 6, 35 cells | 44 | 46 | 53 | measured: 43.8 min, plus the per-segment report's pass over each isolated stream |
@@ -107,7 +107,7 @@ On the instance, from `~/attnbench_scaffold`. Phase 0:
 ```bash
 EXP=t31_exp_20261107T0953Z; EXPHOST=attnbench-l4-exp-20261107-1518
 python3 scripts/t31_debug.py fetch --instance $EXPHOST --donor-session $EXP --dest results/$EXP
-rm results/$EXP/06_device_components/oracle_*/cell_manifest.json      # these ten rerun
+rm results/$EXP/06_device_components/oracle_*/cell_manifest.json      # these nine rerun
 bash scripts/run_phase.sh t31_06_oracle_rerun -- python3 scripts/t31_steps.py device_components \
     --out results/$EXP/06_device_components --session results/$EXP \
     --config results/$EXP/debug_config.json

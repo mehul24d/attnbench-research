@@ -1,0 +1,113 @@
+"""Gate A's inputs from one P1 session's banked files (T3.3;
+`attnbench/analysis/gate_a.py`).
+
+The committed prediction is read with `load_committed` against the store
+(`--remote`, its local copy `--local`), the start being the earliest stamp
+of the session's ground-truth groups (`--ground-truth`, a step-9 directory
+with a `stamps.json` and `gt_*.json` per group). Step 6's priced cells
+(`--cells`, `cells.json`) and, per cell, step 5's recording
+(`--recordings`, a directory with one `<cell>/` per step-6 cell, named as
+`t31_steps.cell_dir` names it, holding `trace.json` and `sequence.json`)
+give leg 2. `--family-bound` is a lock value; before the lock pass
+`--family-bound-provisional` with it, or leave it out and read the
+distribution. Writes `gate_a.json` and `gate_a.md` into `--out`.
+
+    python3 scripts/gate_a.py --label "T3.2a alone, dry run" \\
+        --remote gs://<bucket>/predictions/P1-T3.2a/<session>/prediction_P1_<t>.json \\
+        --local prediction_P1_<t>.json --ground-truth 09_ground_truth \\
+        --cells 06_device_components/cells.json --recordings 05_host_components \\
+        --relative-floor 0 --resolution-floor-ms 0 --out gate_a_t32a
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts" / "figures"))
+
+from attnbench.analysis import gate_a as G  # noqa: E402
+from attnbench.figures import results as RS  # noqa: E402
+from attnbench.predict import commit as C  # noqa: E402
+from attnbench.predict.commit import REQUIRED_SYNC_GAP_S  # noqa: E402
+from attnbench.predict.recursion import CostModelError  # noqa: E402
+import _load  # noqa: E402
+
+
+def parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--label", required=True, help="what this run is (shown on every output)")
+    ap.add_argument("--remote", required=True)
+    ap.add_argument("--local", required=True)
+    ap.add_argument("--ground-truth", required=True)
+    ap.add_argument("--cells", required=True)
+    ap.add_argument("--recordings", required=True)
+    ap.add_argument("--dense-arm", default="dense")
+    ap.add_argument("--relative-floor", type=float, required=True,
+                    help="the noise floor, a relative error (a lock value)")
+    ap.add_argument("--resolution-floor-ms", type=float, required=True,
+                    help="the resolution floor for the sign agreement (a lock value)")
+    ap.add_argument("--family-bound", type=float, default=None)
+    ap.add_argument("--family-bound-provisional", action="store_true")
+    ap.add_argument("--clock-skew-s", type=float, default=REQUIRED_SYNC_GAP_S)
+    ap.add_argument("--out", required=True)
+    return ap
+
+
+def ground_truth(d: Path) -> tuple[list, list]:
+    """([(name, result)], [start stamps]) from a step-9 directory."""
+    results, starts = [], []
+    for stamps in sorted(d.glob("*/stamps.json")) or sorted(d.glob("stamps.json")):
+        s = json.loads(stamps.read_text())
+        starts += [s["clock_not_before"], *s["first_clocked_block_started_at"]]
+        for p in sorted(stamps.parent.glob("gt_*.json")):
+            results.append((f"{stamps.parent.name}/{p.name}", json.loads(p.read_text())))
+    if not results:
+        raise G.GateAError(f"no ground truth under {d}")
+    return results, starts
+
+
+def family_reports(cells_json: Path, recordings: Path) -> dict:
+    import t31_steps as st
+    from attnbench.components import op_sequence as ops
+    out = {}
+    for e in json.loads(cells_json.read_text())["cells"]:
+        name = st.cell_dir(Path(), *st.device_cell_key(e)).name
+        rec = recordings / name
+        seq = G.recorded_sequence(rec / "trace.json", rec / "sequence.json")
+        trace_s = ops.device_durations(rec / "trace.json", seq)
+        out[name] = G.replay_report(seq, trace_s, e["ops"])
+    return out
+
+
+def main(argv=None, store=None) -> int:
+    args = parser().parse_args(argv)
+    if args.family_bound is None and args.family_bound_provisional:
+        print("gate_a: --family-bound-provisional needs --family-bound", file=sys.stderr)
+        return 2
+    try:
+        results, starts = ground_truth(Path(args.ground_truth))
+        cp = _load.load(args.remote, args.local, started_at=starts,
+                        clock_skew_s=args.clock_skew_s, banked_at=None, store=store)
+        rep = G.report(label=args.label, cp=cp, results=results, dense_arm=args.dense_arm,
+                       relative_floor=args.relative_floor,
+                       resolution_floor_s=args.resolution_floor_ms / 1e3,
+                       family_reports=family_reports(Path(args.cells), Path(args.recordings)),
+                       family_bound=args.family_bound,
+                       family_bound_provisional=args.family_bound_provisional)
+        j, md = G.write(rep, Path(args.out))
+    except (G.GateAError, RS.ResultsError, C.PredictionCommitError, CostModelError,
+            OSError, KeyError, TypeError, ValueError) as e:
+        print(f"gate_a: {e}", file=sys.stderr)
+        return 2
+    print(f"wrote {j} and {md}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
