@@ -52,6 +52,17 @@ the task. `prereqs`, the first step, reads the deployed plan's Section 8 and
 refuses a real session while any task the session depends on is not Done,
 so a missing piece stops the session before anything is measured.
 
+**Blocks** (researcher's rulings, 7 Nov 2026; `attnbench.lock.blocks`): with
+`--lock FILE --block ID` the session is one block of the pairing's spec in
+the lock file, on its own boot and in its own directory. It runs the boot
+steps and the block's own; an earlier block's results come in with
+`--import-block DIR` (that block's session directory, from the bucket), each
+checked before anything runs: the same block spec and code commit, every
+step passed, not discarded. After this block's preflight, its instance type,
+GPU and CPU model must be the earlier blocks'. Ground truth runs the block's
+cells and the anchor cell, and every row carries the block's id. A block whose
+instance restarted is discarded alone (`INTERRUPTED_DISCARD.md`).
+
 **Dry run** (`--dry-run`, on a CPU): every step's GPU work is replaced by a
 fake that writes the same files; the order, the hold, the stamp checks, the
 commit, the sync (to a directory store) and the late check are the real
@@ -63,6 +74,7 @@ Usage, on the A100 from the repo root:
     python3 scripts/t61_session.py run --from STEP --session results/t61_p2_<UTC> ...
     python3 scripts/t61_session.py run --dry-run --session /tmp/t61_dry
     python3 scripts/t61_session.py run --list
+    python3 scripts/t61_session.py run --lock LOCK.json --block b2 --import-block DIR ...
 """
 
 from __future__ import annotations
@@ -106,6 +118,9 @@ RECEIPT = "prediction_receipt.json"
 OPENED = "ground_truth_opened.json"
 STAMPS = "ground_truth_stamps.json"
 DRY_CLOCK = "dry_clock.json"
+DISCARD = "INTERRUPTED_DISCARD.md"
+# What a later block's preflight must share with every block it imports.
+BLOCK_IDENTITY = ("instance_type", "gpu_name", "cpu_model")
 
 
 class Skip(Exception):
@@ -162,6 +177,7 @@ class SessionConfig:
     preflight_findings: Optional[Callable] = None   # row -> extra findings (P4's floor)
     step_args: tuple = ()         # passed to every step's process (P4's --gate-only)
     discard_on_restart: bool = False   # a resume on another boot discards the session (P4, Spot)
+    boot_steps: tuple = ("prereqs", "preflight", "host_speed_end")   # every block's own (blocks.py)
 
     @property
     def names(self) -> tuple:
@@ -337,7 +353,11 @@ def store_for(args):
     """(store, prefix) where prefix + receipt path is the remote URI."""
     if args.dry_run:
         session = Path(args.session)
-        return DirStore(session / "dry_store", lambda: now(session, True)), DirStore.PREFIX
+        # a block reads the prediction from the dry store of the block that committed it,
+        # as every real block reads the one bucket
+        b = load_manifest(session).get("block") or {}
+        home = Path((b.get("imported") or {}).get(b.get("predict_block"), session))
+        return DirStore(home / "dry_store", lambda: now(session, True)), DirStore.PREFIX
     from attnbench.predict.commit import GsutilStore
     return GsutilStore(), results_bucket() + "/"
 
@@ -462,6 +482,7 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
         problems.append("triton does not import, so XAttention cannot take its Triton path")
     findings = {"provisioning_model": row.get("provisioning_model"),
                 "instance_type": row.get("instance_type"), "gpu_name": row.get("gpu_name"),
+                "cpu_model": row.get("cpu_model"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
                 "triton": tri.stdout.strip() or None, "problems": problems}
     if cfg.preflight_findings is not None:
@@ -489,7 +510,9 @@ def fake_preflight(cfg: SessionConfig, args) -> dict:
     if problems:
         raise StepFailed(f"the fake row fails its own checks: {problems}")
     write_json(Path(args.out) / "host_speed_start.json", row)
-    findings = {"provisioning_model": row["provisioning_model"], "fake": True}
+    findings = {"provisioning_model": row["provisioning_model"], "fake": True,
+                "instance_type": row["instance_type"], "gpu_name": row["gpu_name"],
+                "cpu_model": os.environ.get("ATTNBENCH_FAKE_CPU_MODEL", "fake cpu")}
     if cfg.preflight_findings is not None:
         findings.update(cfg.preflight_findings(row))
     return findings
@@ -707,16 +730,22 @@ class FakeHarness:
     def __init__(self, session: Path, *, warmup_s: float = 0.5, rounds_s: float = 2.0):
         self.session, self.warmup_s, self.rounds_s = session, warmup_s, rounds_s
 
-    def __call__(self, cfg, args) -> dict:
+    def __call__(self, cfg, args, block=None) -> dict:
         first = now(self.session, True)
         advance(self.session, True, self.warmup_s + self.rounds_s)
-        rows = [{"arm": a, "context_length": 2048, "batch": 1, "median_ms": m, "fake": True}
-                for a, m in (("dense", 4.0), ("xattention", 2.5))]
+        if block is None:
+            rows = [{"arm": a, "context_length": 2048, "batch": 1, "median_ms": m, "fake": True}
+                    for a, m in (("dense", 4.0), ("xattention", 2.5))]
+        else:
+            drift = float(os.environ.get("ATTNBENCH_FAKE_DRIFT", "0") or 0)
+            rows = [dict(zip(("arm", "density", "context_length", "batch"), c),
+                         median_ms=(4.0 if c[0] == "dense" else 2.5) * (1 + drift), fake=True)
+                    for c in block["run_cells"]]
         return {STRICT_KEY: first, "complete": True, "untraced": {"rows": rows},
                 "traced": {"rows": rows}, "overhead": {"fake": True}, "traces": []}
 
 
-def real_harness(cfg, args) -> dict:
+def real_harness(cfg, args, block=None) -> dict:
     raise NotBuilt("T2.13, with the T2.12, T2.17 and T2.21 arms",
                    "the ground-truth grid driver: every arm, density, length and batch, "
                    "untraced then traced, with the dense control")
@@ -742,8 +771,11 @@ def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
     earlier = session_start(session)
     if harness is None:
         harness = FakeHarness(session) if args.dry_run else real_harness
-    result = harness(cfg, args)
+    block = block_plan(session)
+    result = harness(cfg, args, block) if block else harness(cfg, args)
     ended = now(session, args.dry_run)
+    if block:
+        tag_rows(result, block)
     stamp = result.get(STRICT_KEY)
     if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
         append_json(session / STAMPS, {"stamp": iso(float(stamp)), "opened_at": iso(opened_at)})
@@ -755,6 +787,36 @@ def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
                          findings)
     write_json(Path(args.out) / "traces.json", result.get("traces", []))
     return findings
+
+
+def block_plan(session: Path) -> Optional[dict]:
+    """This block's ground-truth plan from its manifest: its id, its own cells,
+    the anchor, and the cells it runs (the anchor first); None outside blocks."""
+    b = load_manifest(session).get("block")
+    if not b or b.get("cells") is None and b.get("anchor") is None:
+        return None
+    cells = [tuple(c) for c in b.get("cells") or ()]
+    anchor = None if b.get("anchor") is None else tuple(b["anchor"])
+    return {"id": b["id"], "cells": cells, "anchor": anchor,
+            "run_cells": ([anchor] if anchor is not None else []) + cells}
+
+
+def tag_rows(result: dict, block: dict) -> None:
+    """Every ground-truth row carries the block's id and whether it is the
+    anchor; the rows must be exactly the block's cells and its anchor."""
+    from attnbench.lock.blocks import cell_key
+    want = set(block["run_cells"])
+    for part in ("untraced", "traced"):
+        rows = (result.get(part) or {}).get("rows") or []
+        got = set()
+        for r in rows:
+            k = cell_key(r)
+            r["block"] = block["id"]
+            r["anchor"] = k == block["anchor"]
+            got.add(k)
+        if rows and got != want:
+            raise StepFailed(f"the {part} rows are cells {sorted(got, key=str)}, not this block's "
+                             f"{sorted(want, key=str)}")
 
 
 def body_late_check(cfg: SessionConfig, args) -> dict:
@@ -974,22 +1036,27 @@ def tree_clean() -> bool:
     return r.returncode == 0 and not r.stdout.strip()
 
 
-def refuse_start(cfg: SessionConfig, start: str, manifest: dict, dry_run: bool) -> Optional[str]:
-    """Why `--from start` is refused in this session, or None."""
+def refuse_start(cfg: SessionConfig, start: str, manifest: dict, dry_run: bool,
+                 steps: Optional[tuple] = None) -> Optional[str]:
+    """Why `--from start` is refused in this session, or None. `steps`: the
+    steps this session holds (a block's own and those it imported)."""
     done = last_status(manifest)
     first = cfg.names.index(start)
-    if done.get("predict") == PASSED and first <= cfg.names.index("predict"):
+    own = steps if steps is not None else cfg.names
+    imported = {a["step"] for a in manifest["attempts"] if a.get("imported_from")}
+    if done.get("predict") == PASSED and "predict" not in imported \
+            and first <= cfg.names.index("predict"):
         return (f"predict has passed in this session, so --from {start} would make a second "
                 f"prediction for {cfg.pairing} (or recompute what it was made from); start a "
                 f"new session")
-    unpassed = [s for s in cfg.names[:first] if done.get(s) != PASSED]
+    unpassed = [s for s in cfg.names[:first] if s in own and done.get(s) != PASSED]
     if unpassed and not (dry_run and all(done.get(s) == SKIPPED for s in unpassed)):
         return f"earlier steps have not passed in this session: {unpassed}"
     return None
 
 
 def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, dry_run: bool,
-                sync: bool, runner=run_logged) -> int:
+                sync: bool, runner=run_logged, block: Optional["BlockRun"] = None) -> int:
     session = Path(session)
     session.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(session)
@@ -999,15 +1066,36 @@ def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, d
         print(f"REFUSING: {session} is a {'dry' if manifest['dry_run'] else 'real'} "
               f"{manifest['task']} session", file=sys.stderr)
         return 2
-    why = refuse_start(cfg, start, manifest, dry_run)
+    had = manifest.get("block")
+    begun = bool(manifest["attempts"]) or had is not None
+    if begun and ((had is None) != (block is None) or (
+            block is not None and (had["id"], had["spec_sha256"]) != (block.id, block.spec.sha256))):
+        print(f"REFUSING: {session} is "
+              f"{'block ' + manifest['block']['id'] if manifest.get('block') else 'not a block'} "
+              f"of its spec; this run is {'block ' + block.id if block else 'not a block'}",
+              file=sys.stderr)
+        return 2
+    steps = cfg.names if block is None else block.steps
+    if start not in steps:
+        print(f"REFUSING --from {start}: block {block.id} does not run it", file=sys.stderr)
+        return 2
+    if block is not None and manifest.get("block") is None:
+        why = start_block(cfg, session, manifest, block, dry_run)
+        if why:
+            print(f"REFUSING: {why}", file=sys.stderr)
+            return 2
+    held = steps + tuple(a["step"] for a in manifest["attempts"] if a.get("imported_from"))
+    why = refuse_start(cfg, start, manifest, dry_run, held)
     if why:
         print(f"REFUSING --from {start}: {why}", file=sys.stderr)
         return 2
-    if cfg.discard_on_restart and not dry_run:
+    if (cfg.discard_on_restart or block is not None) and not dry_run:   # every block, P2's too
         now = boot_id()
         if interrupted(manifest, now):
-            (session / "INTERRUPTED_DISCARD.md").write_text(
-                f"# Discarded in full: the instance restarted\n\nThis session began on boot "
+            (session / DISCARD).write_text(
+                f"# Discarded in full: the instance restarted\n\n"
+                f"{'Block ' + block.id + ' of ' + cfg.pairing + '. ' if block else ''}"
+                f"This session began on boot "
                 f"`{manifest['boot_id']}` and `--from {start}` was tried on boot `{now}`. A "
                 f"session that was interrupted is discarded in full (Appendix A, 7 Nov 2026): "
                 f"none of its rows is evidence. Start a new session on a new instance.\n")
@@ -1020,7 +1108,7 @@ def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, d
             write_json(session / "manifest.json", manifest)
     done = last_status(manifest)
     total = len(cfg.steps)
-    for step in cfg.names[cfg.names.index(start):]:
+    for step in steps[steps.index(start):]:
         d = step_dir(session, step, cfg)
         if d.exists():
             kept = d.with_name(f"{d.name}.{done.get(step, 'previous')}."
@@ -1057,14 +1145,147 @@ def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, d
         manifest["attempts"].append(attempt)
         write_json(session / "manifest.json", manifest)
         print(f"----- {step}: {status.upper()}{': ' + reason if reason else ''}", flush=True)
+        if status == PASSED and step == "preflight" and block is not None:
+            differ = block_identity_problems(cfg, session, block)
+            if differ:
+                attempt.update(status=FAILED, reason="; ".join(differ))
+                write_json(session / "manifest.json", manifest)
+                status = FAILED
+                print(f"----- {step}: FAILED: {'; '.join(differ)}", flush=True)
         if status == FAILED:
             print(f"\nSTOPPED at step {n} ({step}). Log: {d / 'step.log'}\n"
                   f"After the fix: python3 scripts/{cfg.script} run --from {step} "
                   f"--session {session}", flush=True)
             return 1
     statuses = last_status(manifest)
-    print(f"\n{cfg.title}: " + ", ".join(f"{s} {statuses.get(s)}" for s in cfg.names))
+    print(f"\n{cfg.title}{' block ' + block.id if block else ''}: " +
+          ", ".join(f"{s} {statuses.get(s)}" for s in steps))
     return 0
+
+
+# --- blocks (researcher's rulings, 7 Nov 2026; attnbench.lock.blocks) -------------------------
+
+@dataclass(frozen=True)
+class BlockRun:
+    spec: object                 # blocks.BlockSpec
+    id: str
+    steps: tuple                 # what this block runs, in the session's order
+    imports: tuple               # (block id, session directory), every earlier block
+    lock_sha256: str
+
+
+def code_commit(dry_run: bool) -> str:
+    if dry_run:
+        return "dry"
+    r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    return r.stdout.strip() or "unknown"
+
+
+def verify_import(cfg: SessionConfig, block: BlockRun, block_id: str, d: Path,
+                  dry_run: bool) -> list:
+    """Why the session directory `d` cannot stand as block `block_id` of this
+    spec for this block, or nothing."""
+    m = read_json(Path(d) / "manifest.json")
+    if not m:
+        return [f"{d}: no manifest"]
+    b = m.get("block") or {}
+    out = []
+    if b.get("id") != block_id or b.get("spec_sha256") != block.spec.sha256:
+        out.append(f"{d}: it is block {b.get('id')!r} of spec {str(b.get('spec_sha256'))[:12]}, "
+                   f"not {block_id} of {block.spec.sha256[:12]}")
+    if m.get("task") != cfg.task or bool(m.get("dry_run")) != dry_run:
+        out.append(f"{d}: a {'dry' if m.get('dry_run') else 'real'} {m.get('task')} session")
+    if (Path(d) / DISCARD).exists():
+        out.append(f"{d}: block {block_id} was interrupted and is discarded ({DISCARD})")
+    if m.get("code_commit") != code_commit(dry_run):
+        out.append(f"{d}: block {block_id} ran commit {m.get('code_commit')}, this one "
+                   f"{code_commit(dry_run)}; every block runs one commit")
+    done = last_status(m)
+    unpassed = [s for s in b.get("steps") or () if done.get(s) != PASSED
+                and not (dry_run and done.get(s) == SKIPPED)]   # a dry run skips prereqs
+    if unpassed:
+        out.append(f"{d}: block {block_id}'s steps {unpassed} did not pass")
+    return out
+
+
+def start_block(cfg: SessionConfig, session: Path, manifest: dict, block: BlockRun,
+                dry_run: bool) -> Optional[str]:
+    """A new block's manifest: the spec it runs, and every earlier block's
+    results imported after `verify_import`; or why not."""
+    own = block.spec.block(block.id)
+    problems = []
+    for bid, d in block.imports:
+        problems += verify_import(cfg, block, bid, d, dry_run)
+    if problems:
+        return "; ".join(problems)
+    for bid, d in block.imports:
+        earlier = read_json(Path(d) / "manifest.json")
+        for step in block.spec.block(bid).steps:
+            if step not in cfg.names or step in cfg.boot_steps or step in block.steps:
+                continue
+            src = step_dir(Path(d), step, cfg)
+            shutil.copytree(src, step_dir(session, step, cfg))
+            a = next(x for x in reversed(earlier["attempts"]) if x["step"] == step)
+            manifest["attempts"].append(dict(a, imported_from=bid))
+        if (Path(d) / RECEIPT).exists() and not (session / RECEIPT).exists():
+            shutil.copy2(Path(d) / RECEIPT, session / RECEIPT)
+    manifest["block"] = {
+        "id": block.id, "pairing": cfg.pairing, "spec_sha256": block.spec.sha256,
+        "lock_sha256": block.lock_sha256, "steps": list(block.steps),
+        "cells": None if own.cells is None else [list(c) for c in own.cells],
+        "anchor": None if block.spec.anchor is None or "ground_truth" not in own.steps
+        else list(block.spec.anchor),
+        "imported": {bid: str(d) for bid, d in block.imports},
+        "predict_block": block.spec.predict_block()}
+    manifest["code_commit"] = code_commit(dry_run)
+    write_json(session / "manifest.json", manifest)
+    return None
+
+
+def block_identity_problems(cfg: SessionConfig, session: Path, block: BlockRun) -> list:
+    """This block's preflight against every block it imported: the same
+    instance type, GPU and CPU model, or the blocks are not one pairing."""
+    mine = (read_json(step_dir(session, "preflight", cfg) / "result.json") or {}).get("findings", {})
+    out = []
+    for bid, d in block.imports:
+        theirs = (read_json(step_dir(Path(d), "preflight", cfg) / "result.json") or {}) \
+            .get("findings", {})
+        for k in BLOCK_IDENTITY:
+            if mine.get(k) != theirs.get(k):
+                out.append(f"{k} is {mine.get(k)!r} here and {theirs.get(k)!r} in block {bid}")
+    return out
+
+
+def block_run(cfg: SessionConfig, args) -> tuple:
+    """(BlockRun, None) for `--lock --block`, or (None, why it is refused)."""
+    import hashlib
+    from attnbench.lock import blocks as B
+    if not (args.lock and args.block):
+        return None, "--lock and --block go together"
+    raw = Path(args.lock).read_bytes()
+    try:
+        spec = B.parse(json.loads(raw), cfg.pairing)
+    except (ValueError, B.BlockSpecError) as e:
+        return None, str(e)
+    problems = B.check(spec, cfg.names, cfg.boot_steps, complete=not args.dry_run)
+    if problems:
+        return None, f"the block spec in {args.lock}: " + "; ".join(problems)
+    try:
+        spec.block(args.block)
+    except B.BlockSpecError as e:
+        return None, str(e)
+    given = {}
+    for d in args.import_block:
+        bid = ((read_json(Path(d) / "manifest.json") or {}).get("block") or {}).get("id")
+        if bid is None or bid in given:
+            return None, f"--import-block {d}: not a block's session, or a block given twice"
+        given[bid] = Path(d)
+    need = [b.id for b in spec.before(args.block)]
+    if sorted(given) != sorted(need):
+        return None, (f"block {args.block} imports every earlier block once: needs {need}, "
+                      f"given {sorted(given)}")
+    return BlockRun(spec, args.block, spec.run_steps(args.block, cfg.names, cfg.boot_steps),
+                    tuple((b, given[b]) for b in need), hashlib.sha256(raw).hexdigest()), None
 
 
 def run_step(cfg: SessionConfig, name: str, args) -> int:
@@ -1109,6 +1330,10 @@ def parser(cfg: SessionConfig) -> argparse.ArgumentParser:
     r.add_argument("--no-sync", action="store_true",
                    help="do not wrap steps in run_phase.sh (implied by --dry-run)")
     r.add_argument("--list", action="store_true", help="print the steps and exit")
+    r.add_argument("--lock", default=None, help="the lock file holding the block spec")
+    r.add_argument("--block", default=None, help="the block of the spec this session is")
+    r.add_argument("--import-block", action="append", default=[], metavar="DIR",
+                   help="an earlier block's session directory (every earlier block, once)")
     add_step_options(r, cfg)
     s = sub.add_parser("step", help="one step (the runner calls this)")
     s.add_argument("name", choices=cfg.names)
@@ -1165,18 +1390,25 @@ def main(argv=None, cfg: Optional[SessionConfig] = None) -> int:
         for i, s in enumerate(cfg.steps, 1):
             print(f"{i:2d} {s.name:18s} {s.task:12s} {s.what}")
         return 0
+    block = None
+    if args.lock or args.block or args.import_block:
+        block, why = block_run(cfg, args)
+        if why:
+            print(f"REFUSING: {why}", file=sys.stderr)
+            return 2
     if args.session is None:
         if args.start != cfg.names[0]:
             print("REFUSING: --from needs the --session it continues", file=sys.stderr)
             return 2
         args.session = str(ROOT / "results" /
-                           f"{cfg.session_prefix}_{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}")
+                           f"{cfg.session_prefix}_{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}"
+                           f"{'_' + block.id if block else ''}")
     why = start_refusal(cfg, args)
     if why:
         print(f"REFUSING: {why}", file=sys.stderr)
         return 2
     return run_session(cfg, Path(args.session), start=args.start, extra=_passthrough(args, cfg),
-                       dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync))
+                       dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync), block=block)
 
 
 T61 = _t61()

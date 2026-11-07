@@ -96,6 +96,8 @@ def _t64() -> S.SessionConfig:
         script="t64_session.py", phase_prefix="t64", session_prefix="t64_p4",
         gpu="H100", instance_type="a3-highgpu-1g", provisioning=("FLEX_START", "SPOT"),
         discard_on_restart=True,
+        # the wheel is installed on each boot, so every block runs its own import
+        boot_steps=("prereqs", "preflight", "fa3_import", "host_speed_end"),
         code_path={"gpu": "H100", "implementation": "xattention:triton",
                    "libraries": [["torch", "dry"], ["triton", "dry"], ["flash_attn_3", "dry"]],
                    "python_optimize": 0},

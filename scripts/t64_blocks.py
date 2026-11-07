@@ -1,30 +1,39 @@
 #!/usr/bin/env python3
-"""The P4 timed session on Spot, planned as short blocks (researcher, 7 Nov 2026).
+"""A pairing's timed session on Spot, planned as short blocks (researcher,
+7 Nov 2026), and the block spec it gives the lock file.
 
 A Spot VM can be preempted, no cell-level resume crosses instances, and an
-interrupted session's rows are discarded in full, so a preemption late in one
-long session loses all of it. The session is planned as 2 to 3 blocks of about
-two hours or less. The prediction is committed once at lock.
+interrupted session's rows are discarded, so the session runs in blocks of
+about two hours or less, each on its own boot (`attnbench.lock.blocks`). For
+P4 the ruling is 3 blocks of at most 2.2 hours; P2's card is planned the same
+way. From the card's step table (its minutes per step, its setup and
+teardown hours) each block is:
 
-For each block this prints the numbers the card needs, from the step table of
-`docs/launch_cards/t64_p4_h100.md` (the plan's minutes per step, its setup and
-teardown hours):
+    planned hours   setup + the boot steps + its steps + teardown
+    cap (Rs)        Spot rate x planned hours x CAP_FACTOR                (1.3)
+    halt (min)      HALT_FACTOR x planned hours, rounded down             (1.3)
+    hard delete     the halt + DELETE_AFTER_HALT_MIN                      (10)
 
-    planned hours   setup + the block's steps + teardown
-    cap (Rs)        Spot rate x planned hours x CAP_FACTOR   (1.3)
-    halt (min)      HALT_FACTOR x planned hours               (1.5)
+so the cost at the halt is never above the cap (rounded down, the halt's
+minutes cost at most rate x planned hours x 1.3); `plan_blocks` refuses a
+block where it would be. The hard delete is the backstop if the halt fails.
 
-`predict`, `ground_truth` and `late_check` stay together in one block as the
-runner is built (ground truth follows the sync of the prediction, and a second
-prediction in a session is refused): splitting ground truth across blocks needs
-block-aware cells that do not exist yet.
+Every block runs the boot steps (`prereqs`, `preflight`, the end host-speed
+probe, and P4's `fa3_import`), and the steps between them in order. Ground
+truth is split across blocks by its minutes: each block with ground truth
+also measures the anchor cell (`ANCHOR_MIN`, an estimate: no anchor has been
+timed) and runs the late check and the trace checks after it; `predict` is in
+the block where ground truth starts. The block spec (`--spec`) lists each
+block's steps and minutes; its cells and the anchor are fixed at lock with
+the grid, so the skeleton leaves them null.
 
-    python3 scripts/t64_blocks.py [--rate 668.04] [--max-hours 2.0]
+    python3 scripts/t64_blocks.py [--pairing P4] [--max-hours 2.2] [--blocks 3] [--spec]
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
 import sys
@@ -32,22 +41,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CARD = ROOT / "docs" / "launch_cards" / "t64_p4_h100.md"
-SPOT_RATE_INR_HR = 668.04      # plan Section 5.2, the higher Spot region
+CARDS = {"P4": ROOT / "docs" / "launch_cards" / "t64_p4_h100.md",
+         "P2": ROOT / "docs" / "launch_cards" / "t61_p2_a100.md"}
+CARD = CARDS["P4"]
+SPOT_RATES = {"P4": 668.04,    # plan Section 5.2, the higher H100 Spot region
+              "P2": 350.14}    # plan Section 5.2, A100 Spot in asia-southeast1
+SPOT_RATE_INR_HR = SPOT_RATES["P4"]
+BOOT = {"P4": ("prereqs", "preflight", "fa3_import", "host_speed_end"),
+        "P2": ("prereqs", "preflight", "host_speed_end")}
 CAP_FACTOR = 1.3
-HALT_FACTOR = 1.5
-MAX_BLOCK_HOURS = 2.0
-ATOMIC = ("predict", "ground_truth", "late_check")
+HALT_FACTOR = 1.3
+DELETE_AFTER_HALT_MIN = 10
+MAX_BLOCK_HOURS = 2.2
+ANCHOR_MIN = 2.0               # the anchor cell's ground truth per block: an estimate
+SPLIT_FOLLOWERS = ("late_check", "trace_checks")
 
 
 @dataclass(frozen=True)
 class Block:
-    steps: tuple
-    run_min: float
+    steps: tuple                # its own steps (no boot step), in order
+    ground_truth_min: float     # its share of the ground truth, the anchor excluded
+    run_min: float              # every minute of steps on the instance: boot, own, anchor
     planned_h: float
     cap_inr: int
     halt_min: int
+    delete_min: int
     cost_at_halt_inr: int
+    cost_at_delete_inr: int
 
     @property
     def halt_exceeds_cap(self) -> bool:
@@ -66,51 +86,89 @@ def card_numbers(text: str) -> dict:
     return {"steps": steps, "setup_h": float(setup.group(1)), "teardown_h": float(tear.group(1))}
 
 
-def plan_blocks(steps, setup_h: float, teardown_h: float, *, rate: float = SPOT_RATE_INR_HR,
-                max_hours: float = MAX_BLOCK_HOURS) -> list:
-    """Greedy blocks in step order, each at most `max_hours` planned hours."""
-    room = max_hours * 60 - (setup_h + teardown_h) * 60
-    if room <= 0:
-        raise ValueError("setup and teardown alone exceed the block length")
-    groups, i = [], 0
-    while i < len(steps):
-        if steps[i][0] == ATOMIC[0]:
-            j = i
-            while j < len(steps) and steps[j][0] in ATOMIC:
-                j += 1
-            groups.append(steps[i:j])
-            i = j
-        else:
-            groups.append([steps[i]])
-            i += 1
-    blocks, cur = [], []
-    for g in groups:
-        gmin = sum(m for _, m in g)
-        if gmin > room:
-            raise ValueError(f"{[n for n, _ in g]} take {gmin:.0f} min, more than a block's {room:.0f}")
-        if sum(m for _, m in cur) + gmin > room:
-            blocks.append(cur)
-            cur = []
-        cur += g
-    blocks.append(cur)
+def _block(steps, gt_min, run_min, setup_h, teardown_h, rate) -> Block:
+    planned = setup_h + run_min / 60 + teardown_h
+    halt = math.floor(HALT_FACTOR * planned * 60)
+    b = Block(tuple(steps), gt_min, run_min, round(planned, 3),
+              math.ceil(rate * planned * CAP_FACTOR), halt, halt + DELETE_AFTER_HALT_MIN,
+              math.ceil(rate * halt / 60), math.ceil(rate * (halt + DELETE_AFTER_HALT_MIN) / 60))
+    if b.halt_exceeds_cap:
+        raise ValueError(f"a block's halt costs Rs {b.cost_at_halt_inr}, above its cap "
+                         f"Rs {b.cap_inr}")
+    return b
+
+
+def plan_blocks(steps, setup_h: float, teardown_h: float, *, boot=BOOT["P4"],
+                rate: float = SPOT_RATE_INR_HR, max_hours: float = MAX_BLOCK_HOURS,
+                anchor_min: float = ANCHOR_MIN) -> list:
+    """Greedy blocks in step order, each at most `max_hours` planned hours,
+    ground truth split across them by its minutes."""
+    mins = dict(steps)
+    boot_min = sum(mins.get(s, 0.0) for s in boot)
+    room = max_hours * 60 - (setup_h + teardown_h) * 60 - boot_min
+    followers = [s for s in SPLIT_FOLLOWERS if s in mins]
+    gt_extra = anchor_min + sum(mins[s] for s in followers)
+    if room <= gt_extra:
+        raise ValueError("setup, teardown and the boot steps alone fill the block")
+    order = [n for n, _ in steps if n not in boot and n not in followers]
+    blocks, cur, used = [], [], 0.0
+    gt_used = 0.0
+
+    def close():
+        nonlocal cur, used, gt_used
+        if cur:
+            blocks.append(_block(cur, gt_used, boot_min + used, setup_h, teardown_h, rate))
+        cur, used, gt_used = [], 0.0, 0.0
+
+    for name in order:
+        m = mins[name]
+        if name != "ground_truth":
+            if m > room:
+                raise ValueError(f"{name} takes {m:.0f} min, more than a block's {room:.0f}")
+            if used + m > room:
+                close()
+            cur.append(name)
+            used += m
+            continue
+        left = m
+        while left > 1e-9:
+            free = room - used - gt_extra
+            if free <= 1e-9:
+                if "predict" in cur and cur[-1] == "predict":
+                    raise ValueError("predict's block has no room for its ground truth")
+                close()
+                continue
+            take = min(left, free)
+            cur += ["ground_truth", *followers]
+            used += take + gt_extra
+            gt_used, left = take, left - take
+            if left > 1e-9:
+                close()
+    close()
+    return blocks
+
+
+def spec(blocks, *, max_hours: float) -> dict:
+    """The lock file's block spec for these blocks (`attnbench.lock.blocks`);
+    cells and the anchor null until the grid is locked."""
     out = []
-    for b in blocks:
-        run = sum(m for _, m in b)
-        planned = setup_h + run / 60 + teardown_h
-        out.append(Block(tuple(n for n, _ in b), run, round(planned, 3),
-                         math.ceil(rate * planned * CAP_FACTOR),
-                         math.ceil(HALT_FACTOR * planned * 60),
-                         math.ceil(rate * HALT_FACTOR * planned)))
-    return out
+    for n, b in enumerate(blocks, 1):
+        e = {"id": f"b{n}", "steps": list(b.steps), "planned_hours": b.planned_h}
+        if "ground_truth" in b.steps:
+            e.update(ground_truth_minutes=round(b.ground_truth_min, 1), cells=None)
+        out.append(e)
+    return {"max_hours": max_hours, "anchor": None, "blocks": out}
 
 
 def report(blocks, rate: float) -> str:
-    lines = [f"Spot rate Rs {rate}/h; cap = rate x planned hours x {CAP_FACTOR}; "
-             f"halt = {HALT_FACTOR} x planned hours", ""]
+    lines = [f"Spot rate Rs {rate}/h; cap = rate x planned hours x {CAP_FACTOR}; halt = "
+             f"{HALT_FACTOR} x planned hours (rounded down); hard delete = the halt + "
+             f"{DELETE_AFTER_HALT_MIN} min", ""]
     for n, b in enumerate(blocks, 1):
-        lines.append(f"block {n}: {b.run_min:.0f} min of steps, planned {b.planned_h:.2f} h, "
-                     f"cap Rs {b.cap_inr}, halt {b.halt_min} min (Rs {b.cost_at_halt_inr} if it "
-                     f"runs to the halt{', ABOVE the cap' if b.halt_exceeds_cap else ''}); "
+        gt = f", ground truth {b.ground_truth_min:.0f} min + the anchor" if b.ground_truth_min else ""
+        lines.append(f"block b{n}: {b.run_min:.0f} min of steps{gt}, planned {b.planned_h:.2f} h, "
+                     f"cap Rs {b.cap_inr}, halt {b.halt_min} min (Rs {b.cost_at_halt_inr}), "
+                     f"hard delete {b.delete_min} min (Rs {b.cost_at_delete_inr}); "
                      f"steps: {', '.join(b.steps)}")
     tot = sum(b.planned_h for b in blocks)
     lines += ["", f"{len(blocks)} blocks, {tot:.2f} planned hours, expected Rs {math.ceil(tot * rate)}, "
@@ -120,12 +178,22 @@ def report(blocks, rate: float) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--rate", type=float, default=SPOT_RATE_INR_HR)
+    ap.add_argument("--pairing", default="P4", choices=sorted(CARDS))
+    ap.add_argument("--rate", type=float, default=None)
     ap.add_argument("--max-hours", type=float, default=MAX_BLOCK_HOURS)
+    ap.add_argument("--blocks", type=int, default=None, help="refuse unless the plan has this many")
+    ap.add_argument("--spec", action="store_true", help="print the lock file's block spec")
     args = ap.parse_args(argv)
-    n = card_numbers(CARD.read_text())
-    print(report(plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], rate=args.rate,
-                             max_hours=args.max_hours), args.rate))
+    rate = args.rate or SPOT_RATES[args.pairing]
+    n = card_numbers(CARDS[args.pairing].read_text())
+    blocks = plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=BOOT[args.pairing],
+                         rate=rate, max_hours=args.max_hours)
+    if args.blocks is not None and len(blocks) != args.blocks:
+        print(f"REFUSING: {len(blocks)} blocks at {args.max_hours} h, not {args.blocks}",
+              file=sys.stderr)
+        return 2
+    print(json.dumps({args.pairing: spec(blocks, max_hours=args.max_hours)}, indent=1)
+          if args.spec else report(blocks, rate))
     return 0
 
 
