@@ -346,27 +346,58 @@ def replay_nodes(trace: Union[str, Path, Mapping], *, region: str = REPLAY_REGIO
     those whose host call sits inside an `exclude` annotation are dropped.
     A compact stream (`trace_stream.is_compact`, written with
     `DEVICE_FIELDS`) is read lazily, in passes, never held whole."""
+    rows = _rows(trace)
+    keep, _ = _kept_launches(rows, region, exclude)
+    acts = [(ts, cat, name, end, corr, stream, nbytes)
+            for cat, name, pid, tid, ts, end, corr, stream, nbytes in rows()
+            if cat in op_sequence._DEVICE_CATS and corr is not None and int(corr) in keep]
+    acts.sort(key=lambda a: a[0])
+    return [Node(cat, name, (end - ts) * 1e-6, int(corr), stream, nbytes)
+            for ts, cat, name, end, corr, stream, nbytes in acts]
+
+
+# The host calls that put work on the device, each with an activity of its own.
+_ACTIVITY_LAUNCHES = op_sequence._LAUNCH_PREFIXES + ("cudaMemcpy", "cudaMemset",
+                                                     "cuMemcpy", "cuMemset")
+
+
+def launches_without_activity(trace: Union[str, Path, Mapping], *, region: str = REPLAY_REGION,
+                              exclude: Optional[str] = None) -> list[int]:
+    """The correlations of the launches `replay_nodes` keeps (a kernel launch,
+    a copy or a memset, inside `region` and outside every `exclude`) that no
+    device activity in the trace answers: work the device did and the trace
+    lost (researcher's ruling 2 of 7 Nov 2026, per segment in
+    `segment_report`)."""
+    rows = _rows(trace)
+    keep, names = _kept_launches(rows, region, exclude)
+    answered = {int(corr) for cat, _, _, _, _, _, corr, *_ in rows()
+                if cat in op_sequence._DEVICE_CATS and corr is not None}
+    return sorted(c for c in keep - answered if names[c].startswith(_ACTIVITY_LAUNCHES))
+
+
+def _rows(trace) -> Callable:
+    """A fresh iterator of (cat, name, pid, tid, ts, end, correlation, stream,
+    bytes) per call, from a trace or a compact stream with `DEVICE_FIELDS`.
+    `end` is `ts + dur` as `op_sequence._events` takes it, so both readers
+    give a node the same duration, `end - ts`."""
     from . import trace_stream
     if trace_stream.is_compact(trace):
         if trace_stream.fields_of(trace) != trace_stream.DEVICE_FIELDS:
             raise ReplayError(f"{Path(trace).name}: a compact stream without the device "
                               f"fields; its nodes cannot be read")
-        return _nodes(lambda: ((c, n, pid, tid, float(ts), float(ts) + float(dur), *rest)
-                               for _, c, n, pid, tid, ts, dur, *rest
-                               in trace_stream.iter_rows(trace)), region, exclude)
+        return lambda: ((c, n, pid, tid, float(ts), float(ts) + float(dur), *rest)
+                        for _, c, n, pid, tid, ts, dur, *rest in trace_stream.iter_rows(trace))
     trace = op_sequence.load_trace(trace)
     arg = op_sequence._int_arg
     rows = [(e.cat, e.name, e.pid, e.tid, e.ts, e.end, arg(e.args, "correlation"),
              arg(e.args, "stream"), arg(e.args, "bytes")) for e in op_sequence._events(trace)]
-    return _nodes(lambda: iter(rows), region, exclude)
+    return lambda: iter(rows)
 
 
-def _nodes(rows: Callable, region: str, exclude: Optional[str]) -> list[Node]:
-    """`replay_nodes` over `rows()`, a fresh iterator of (cat, name, pid, tid,
-    ts, end, correlation, stream, bytes) per call, in three passes: the
-    region and the skips, the kept launches' correlations, their activities.
-    `end` is `ts + dur` as `op_sequence._events` takes it, so both readers
-    give a node the same duration, `end - ts`."""
+def _kept_launches(rows: Callable, region: str, exclude: Optional[str]) -> tuple[set, dict]:
+    """The correlations of the host calls inside `region` on its thread and
+    outside every `exclude`, and each one's call name, in two passes over
+    `rows()`: the region and the skips, then the calls."""
     regions, skips = [], []
     for cat, name, pid, tid, ts, end, *_ in rows():
         if cat == "user_annotation":
@@ -387,7 +418,7 @@ def _nodes(rows: Callable, region: str, exclude: Optional[str]) -> list[Node]:
     del skips
     # an isolated replay has one flush per operator, so a scan of every skip for every
     # host event is quadratic (an 8192-token oracle cell ran 14 minutes in it, 2 Nov 2026)
-    keep: set = set()
+    names: dict = {}
     for cat, name, pid, tid, a, b, corr, *_ in rows():
         if cat not in op_sequence._HOST_CATS or (pid, tid) != (rpid, rtid) or corr is None:
             continue
@@ -396,13 +427,8 @@ def _nodes(rows: Callable, region: str, exclude: Optional[str]) -> list[Node]:
         i = bisect.bisect_right(starts, a)
         if i > 0 and b <= reach[i - 1]:
             continue
-        keep.add(int(corr))
-    acts = [(ts, cat, name, end, corr, stream, nbytes)
-            for cat, name, pid, tid, ts, end, corr, stream, nbytes in rows()
-            if cat in op_sequence._DEVICE_CATS and corr is not None and int(corr) in keep]
-    acts.sort(key=lambda a: a[0])
-    return [Node(cat, name, (end - ts) * 1e-6, int(corr), stream, nbytes)
-            for ts, cat, name, end, corr, stream, nbytes in acts]
+        names[int(corr)] = name
+    return set(names), names
 
 
 # --- matching nodes to positions -------------------------------------------------------
@@ -417,6 +443,7 @@ class Match:
     n_nodes: int
     variant_matched: tuple = ()    # positions matched with a name that differs (VARIANT_DIFFERS)
     extra_s: float = 0.0           # the device seconds of the extra nodes
+    by_segment: tuple = ()         # `match_segmented`: per segment, what it holds and lost
 
     @property
     def complete(self) -> bool:
@@ -511,44 +538,143 @@ def match(seq: OpSequence, nodes: Sequence[Node]) -> Match:
     kernel for one) is matched, and its positions marked `variant_matched`.
     A host-device copy is never a device position (T2.5 prices it), so such
     nodes (an eager run's) are left out of the comparison and are extra."""
+    return _match(seq, nodes, None)
+
+
+def match_segmented(seq: OpSequence, nodes: Sequence[Node], segments: Sequence[Mapping]) -> Match:
+    """`match` within each segment of a replay run in blocks of layers
+    (`isolated_replay_compact`; researcher's ruling 2 of 7 Nov 2026): a
+    segment's positions (`position_segments`) are compared only with the
+    nodes of the profiler session that ran them, told by their correlations
+    (`segments[k]["correlations"]`, as `trace_stream.stitch_compact` offset
+    them), so no stretch runs across a cut and a loss is reported in the
+    segment that lost it. The layers are one structure repeated, so a match
+    of the whole stream reports a layer's worth of nodes lost anywhere at
+    the last layers (the exploratory session's oracle cells, 7 Nov 2026).
+    `by_segment` holds each segment's layers, positions, nodes and unmatched
+    positions. A node no segment's correlations hold is refused."""
+    where = position_segments(seq, segments)
+    owner = _node_segments(nodes, segments)
+    exp = expected_nodes(seq)
+    groups = [([i for i, (p, _) in enumerate(exp) if where[p] == k],
+               [j for j in range(len(nodes)) if owner[j] == k]) for k in range(len(segments))]
+    return _match(seq, nodes, groups, segments)
+
+
+def position_segments(seq: OpSequence, segments: Sequence[Mapping]) -> dict[int, int]:
+    """Each position's segment: its layer's, for a layered position; for one
+    outside the layers, the segment of the last layered position before it
+    (an operator between two layers runs before the roll at the next), or the
+    first segment. Refused unless the segments' layers are the sequence's
+    layers in order, each in one segment."""
+    layers = seq.layers
+    bounds = [tuple(int(x) for x in s["layers"]) for s in segments]
+    ok = (bool(bounds) and bool(layers) and bounds[0][0] == layers[0]
+          and bounds[-1][1] == layers[-1] and all(a <= b for a, b in bounds)
+          and all(bounds[k + 1][0] == bounds[k][1] + 1 for k in range(len(bounds) - 1)))
+    if not ok:
+        raise ReplayError(f"segments of layers {bounds} are not the sequence's layers "
+                          f"{layers[0] if layers else None} to {layers[-1] if layers else None} "
+                          f"in order")
+    seg_of = {l: k for k, (a, b) in enumerate(bounds) for l in range(a, b + 1)}
+    out, cur = {}, 0
+    for p, op in enumerate(seq.ops):
+        if op.layer is not None:
+            cur = seg_of[op.layer]
+        out[p] = cur
+    return out
+
+
+def _node_segments(nodes: Sequence[Node], segments: Sequence[Mapping]) -> list[int]:
+    ranges = sorted((int(s["correlations"][0]), int(s["correlations"][1]), k)
+                    for k, s in enumerate(segments) if s.get("correlations"))
+    starts = [a for a, _, _ in ranges]
+    out = []
+    for n in nodes:
+        i = bisect.bisect_right(starts, n.correlation) - 1 if n.correlation is not None else -1
+        if i < 0 or n.correlation > ranges[i][1]:
+            raise ReplayError(f"node {n.name!r} (correlation {n.correlation}): no segment holds "
+                              f"its correlation")
+        out.append(ranges[i][2])
+    return out
+
+
+def segments_from_counts(counts: Mapping) -> Optional[list[dict]]:
+    """The segments of `isolated_replay_compact`'s counts, for
+    `match_segmented`; None for a replay in one session."""
+    if "segment_layer_ranges" not in counts:
+        return None
+    layers, corrs = counts["segment_layer_ranges"], counts.get("segment_correlations")
+    if corrs is None or len(corrs) != len(layers) or len(layers) != counts.get("segments", len(layers)):
+        raise ReplayError(f"{len(layers)} segments of layers, "
+                          f"{None if corrs is None else len(corrs)} of correlations: "
+                          f"the segments cannot be told apart")
+    return [{"layers": list(l), "correlations": None if c is None else list(c)}
+            for l, c in zip(layers, corrs)]
+
+
+def segment_report(m: Match, segments: Sequence[Mapping], orphans: Sequence[int]) -> list[dict]:
+    """`m.by_segment` with each segment's count of launches no device activity
+    answered (`launches_without_activity`), by correlation."""
+    out = []
+    for s, seg in zip(m.by_segment, segments):
+        c = seg.get("correlations")
+        n = sum(c[0] <= o <= c[1] for o in orphans) if c else 0
+        out.append(dict(s, launches_without_activity=n))
+    return out
+
+
+def _match(seq: OpSequence, nodes: Sequence[Node], groups, segments=None) -> Match:
+    """`match` over `groups`, (indices into `expected_nodes`, indices into
+    `nodes`) compared one group at a time; None is one group of everything."""
     exp = expected_nodes(seq)
     ka, kb_all = structural_keys(seq), node_keys(nodes)
-    cand = [k for k, key in enumerate(kb_all) if not key[0].startswith("copy:")]
-    kb = [kb_all[k] for k in cand]
-    a = [_same_activity(name) for _, name in exp]
-    b = [_same_activity(nodes[k].name) for k in cand]
-    got = [False] * len(a)
+    copy = {k for k, key in enumerate(kb_all) if key[0].startswith("copy:")}
+    if groups is None:
+        groups = [(list(range(len(exp))), list(range(len(nodes))))]
+    got = [False] * len(exp)
     used = [False] * len(nodes)
     device: dict = defaultdict(float)
     varied: set = set()
+    n_cand = 0
+    for ea, nb in groups:
+        nb = [j for j in nb if j not in copy]
+        n_cand += len(nb)
+        a = [_same_activity(exp[i][1]) for i in ea]
+        b = [_same_activity(nodes[j].name) for j in nb]
 
-    def pair(i, j, named):
-        pos, j = exp[i][0], cand[j]
-        device[pos] += nodes[j].duration_s
-        got[i] = used[j] = True
-        if not named:
-            varied.add(pos)
+        def pair(x, y, named):
+            i, j = ea[x], nb[y]
+            device[exp[i][0]] += nodes[j].duration_s
+            got[i] = used[j] = True
+            if not named:
+                varied.add(exp[i][0])
 
-    ia = ib = 0
-    for blk in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_matching_blocks():
-        ga, gb = range(ia, blk.a), range(ib, blk.b)
-        if len(ga) == len(gb) and all(ka[i] == kb[j] for i, j in zip(ga, gb)):
-            for i, j in zip(ga, gb):
-                pair(i, j, False)
-        for k in range(blk.size):
-            if ka[blk.a + k] == kb[blk.b + k]:
-                pair(blk.a + k, blk.b + k, True)
-        ia, ib = blk.a + blk.size, blk.b + blk.size
-    missing = sorted({exp[k][0] for k in range(len(a)) if not got[k]})
+        ia = ib = 0
+        for blk in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_matching_blocks():
+            ga, gb = range(ia, blk.a), range(ib, blk.b)
+            if len(ga) == len(gb) and all(ka[ea[x]] == kb_all[nb[y]] for x, y in zip(ga, gb)):
+                for x, y in zip(ga, gb):
+                    pair(x, y, False)
+            for k in range(blk.size):
+                if ka[ea[blk.a + k]] == kb_all[nb[blk.b + k]]:
+                    pair(blk.a + k, blk.b + k, True)
+            ia, ib = blk.a + blk.size, blk.b + blk.size
+    missing = sorted({exp[k][0] for k in range(len(exp)) if not got[k]})
     fam: dict = defaultdict(int)
     for p in missing:
         fam[operation_family(seq.ops[p])] += 1
     for p in missing:
         device.pop(p, None)
     extra = [k for k in range(len(nodes)) if not used[k]]
+    by_segment = () if segments is None else tuple(
+        {"segment": k, "layers": list(segments[k]["layers"]),
+         "positions": len({exp[i][0] for i in ea}), "nodes": len([j for j in nb if j not in copy]),
+         "unmatched": sorted({exp[i][0] for i in ea if not got[i]})}
+        for k, (ea, nb) in enumerate(groups))
     return Match(dict(device), tuple(missing), tuple(nodes[k].name for k in extra),
-                 dict(fam), len(a), len(b), tuple(sorted(varied - set(missing))),
-                 sum(nodes[k].duration_s for k in extra))
+                 dict(fam), len(exp), n_cand, tuple(sorted(varied - set(missing))),
+                 sum(nodes[k].duration_s for k in extra), by_segment)
 
 
 def device_costs(m: Match) -> dict[int, float]:
@@ -757,6 +883,12 @@ class _Rolled:
     prefill's (the oracle's trace at 32768 tokens is 3.1 GB at density 0.25,
     and the profiler's host memory about five times that).
 
+    Each roll records the layer it was made before (`starts`), and
+    `check_cuts` refuses a replay whose rolls were not made once each before
+    layers `per`, `2 per`, ... in order (researcher's ruling 2 of 7 Nov 2026:
+    a cut only at a layer boundary), so each segment is the whole layers
+    `layer_ranges` names.
+
     A roll is made before layer `j` for j a multiple of `per`, from the
     layer's forward pre-hook: in Python, between operators, with no aten
     call open, so no operator's event is cut. The dispatch mode is paused
@@ -770,7 +902,7 @@ class _Rolled:
         self.cats = trace_stream.ISOLATED_CATS if cats is None else cats
         self.fields = trace_stream.FIELDS if fields is None else fields
         self.path, self.layers, self.per = Path(path), list(layers), int(per)
-        self.parts, self.exported, self.hooks = [], [], []
+        self.parts, self.exported, self.hooks, self.starts = [], [], [], []
         self.prof = self.region = None
 
     def open(self):
@@ -794,8 +926,9 @@ class _Rolled:
         self.exported.append(info)
         self.parts.append(Path(info["path"]))
 
-    def roll(self):
+    def roll(self, layer: int):
         from torch.utils._python_dispatch import _disable_current_modes
+        self.starts.append(layer)
         with _disable_current_modes():
             self.close()
             self.open()
@@ -803,12 +936,23 @@ class _Rolled:
     def attach(self):
         for j, layer in enumerate(self.layers):
             if j and j % self.per == 0:
-                self.hooks.append(layer.register_forward_pre_hook(lambda m, a: self.roll()))
+                self.hooks.append(layer.register_forward_pre_hook(lambda m, a, j=j: self.roll(j)))
 
     def detach(self):
         for h in self.hooks:
             h.remove()
         self.hooks = []
+
+    def layer_ranges(self) -> list[list[int]]:
+        n = len(self.layers)
+        return [[lo, min(lo + self.per, n) - 1] for lo in range(0, n, self.per)]
+
+    def check_cuts(self):
+        want = list(range(self.per, len(self.layers), self.per))
+        if self.starts != want:
+            raise ReplayError(f"the replay rolled before layers {self.starts}, not {want}: "
+                              f"a cut not at its layer boundary, or a layer run other than "
+                              f"once in order")
 
 
 def isolated_replay_compact(run_prefill: Callable[[], None], tape: SyncTape, path, *, device,
@@ -827,7 +971,11 @@ def isolated_replay_compact(run_prefill: Callable[[], None], tape: SyncTape, pat
     the whole replay is the segment. With `device_nodes` (step 6's isolated
     original, 6 Nov 2026 ruling 3) the stream keeps what `replay_nodes`
     reads (`trace_stream.REPLAY_CATS`, `DEVICE_FIELDS`) in place of what
-    `host_profile.read_isolated` reads."""
+    `host_profile.read_isolated` reads. The counts name each segment's
+    layers and correlations (`segment_layer_ranges`,
+    `segment_correlations`), which `segments_from_counts` gives
+    `match_segmented`; a roll not at its layer boundary is refused
+    (`_Rolled.check_cuts`)."""
     from torch.profiler import ProfilerActivity
     from . import trace_stream
     layers = list(layers)
@@ -848,6 +996,7 @@ def isolated_replay_compact(run_prefill: Callable[[], None], tape: SyncTape, pat
         with _bank_capture(banked, kernel_module) as cap, mode:
             run_prefill()
         _check_calls(cap, banked)
+        roller.check_cuts()
         roller.close()
     except BaseException:
         if roller.prof is not None:      # a failed replay leaves no profiler running
@@ -863,6 +1012,8 @@ def isolated_replay_compact(run_prefill: Callable[[], None], tape: SyncTape, pat
     for p in roller.parts:
         p.unlink()
     return dst, {"stream": dst.name, "segments": len(roller.parts), "segment_layers": segment_layers,
+                 "segment_layer_ranges": roller.layer_ranges(),
+                 "segment_correlations": info["correlations"],
                  "events": sum(i["events"] for i in roller.exported),
                  "kept": info["kept"],
                  "source_bytes": sum(i["source_bytes"] for i in roller.exported),

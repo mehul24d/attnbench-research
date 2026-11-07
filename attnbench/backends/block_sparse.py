@@ -44,6 +44,8 @@ only on the rented 4090/A100.
 
 from __future__ import annotations
 
+import contextlib
+
 import torch
 
 from .. import bsa_contract
@@ -51,6 +53,25 @@ from ..config import AttnConfig
 from ..masks import BlockSparseMask
 from .base import AttentionBackend, Capability, UnsupportedConfig, register
 from .impls import _expand_kv
+
+
+# The host annotation around the kernel interface's call, in the untimed
+# compiled checks only (`annotated`, `compiled_checks`; researcher's ruling 1 of
+# 7 Nov 2026): what a compiled call launches outside it is its estimator's.
+KERNEL_INTERFACE = "attnbench::kernel_interface"
+_ANNOTATE = False
+
+
+@contextlib.contextmanager
+def annotated():
+    """Every kernel-interface call inside `KERNEL_INTERFACE` while open. The
+    call runs outside Dynamo, so the annotation is never traced."""
+    global _ANNOTATE
+    _ANNOTATE = True
+    try:
+        yield
+    finally:
+        _ANNOTATE = False
 
 
 def kernel_interface(*args, unsupported: bool = False, **kwargs):
@@ -73,7 +94,14 @@ def kernel_interface(*args, unsupported: bool = False, **kwargs):
     excluded call: a break inside a `try` in a traced frame is a break of its
     own (`step_unsupported`, the L4 report of Shakedown 2)."""
     if torch.compiler.is_compiling():
-        return torch.compiler.disable(_call)(*args, unsupported=unsupported, **kwargs)
+        return torch.compiler.disable(_annotated)(*args, unsupported=unsupported, **kwargs)
+    return _annotated(*args, unsupported=unsupported, **kwargs)
+
+
+def _annotated(*args, unsupported: bool, **kwargs):
+    if _ANNOTATE:
+        with torch.autograd.profiler.record_function(KERNEL_INTERFACE):
+            return _call(*args, unsupported=unsupported, **kwargs)
     return _call(*args, unsupported=unsupported, **kwargs)
 
 

@@ -176,6 +176,8 @@ def project(which: int, cfg=None) -> dict:
     gt = 0.0
     rounds = cfg["reps"] + cfg.get("warmup", 3) + 1        # clean rounds, warm-up, the twin
     for group, arms in cfg["gt_groups"].items():
+        if not arms:                                       # a group the session does not run
+            continue
         for (L, b), cell_arms in by_lb.items():
             present = [x for x in cell_arms if x in arms or x == "dense"]
             n = sum(len(cfg["densities"][x]) for x in set(present))

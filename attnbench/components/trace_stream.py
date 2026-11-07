@@ -211,9 +211,10 @@ def load_compact(path: Union[str, Path]) -> list:
 
 
 def _bounds(path: Path, region: str) -> dict:
-    """One pass over a part: its header, event count, highest index and
-    correlation, and the replay region it holds (exactly one)."""
+    """One pass over a part: its header, event count, highest index, lowest
+    and highest correlation, and the replay region it holds (exactly one)."""
     n = hi = corr = 0
+    low = None
     regions = []
     with open(path, encoding="utf-8") as f:
         head = read_header(f, path)
@@ -224,12 +225,13 @@ def _bounds(path: Path, region: str) -> dict:
             hi = max(hi, i)
             if len(row) > 7 and isinstance(row[7], int):
                 corr = max(corr, row[7])
+                low = row[7] if low is None else min(low, row[7])
             if cat == "user_annotation" and name == region:
                 regions.append((i, pid, tid, float(ts), float(ts) + float(dur)))
     if len(regions) != 1:
         raise TraceStreamError(f"{path}: {len(regions)} {region!r} regions, expected one per segment")
     return {"head": head, "events": n, "max_index": hi, "max_correlation": corr,
-            "region": regions[0]}
+            "min_correlation": low, "region": regions[0]}
 
 
 def stitch_compact(parts, dst: Union[str, Path], *, region: str) -> dict:
@@ -244,7 +246,11 @@ def stitch_compact(parts, dst: Union[str, Path], *, region: str) -> dict:
     indices offset to stay unique, and the segments' regions replaced by one
     region from the first's start to the last's end, on the first's thread.
     A stream with `DEVICE_FIELDS` has its correlations offset the same way,
-    so a launch and its activity stay paired and no two segments share one.
+    so a launch and its activity stay paired and no two segments share one;
+    each segment's range of correlations after the offset is kept, in the
+    header (`segment_correlations`) and the counts (`correlations`, None for
+    a segment with none), so a reader can tell the segments' events apart
+    (`replay.match_segmented`, researcher's ruling 2 of 7 Nov 2026).
     Refused if the segments' fields differ, a segment is not a `SCHEMA`
     stream, does not hold exactly one region, is on another thread than the
     first, or starts before the one before it ended (the segments are not on
@@ -268,7 +274,13 @@ def stitch_compact(parts, dst: Union[str, Path], *, region: str) -> dict:
                                    f"({prev_end}); not one timeline")
         prev_end = r1
     first, last = info[0]["region"], info[-1]["region"]
-    head = dict(info[0]["head"], source=dst.name, segments=len(parts))
+    ranges, off = [], 0
+    for b in info:
+        lo = b["min_correlation"]
+        ranges.append(None if lo is None else [lo + off, b["max_correlation"] + off])
+        off += b["max_correlation"] + 1
+    head = dict(info[0]["head"], source=dst.name, segments=len(parts),
+                segment_correlations=ranges)
     tmp = dst.with_name(dst.name + ".part")
     offset = corr_offset = 0
     kept = 0
@@ -298,4 +310,5 @@ def stitch_compact(parts, dst: Union[str, Path], *, region: str) -> dict:
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, dst)
-    return {"path": str(dst), "segments": len(parts), "kept": kept, "bytes": dst.stat().st_size}
+    return {"path": str(dst), "segments": len(parts), "kept": kept, "bytes": dst.stat().st_size,
+            "correlations": ranges}

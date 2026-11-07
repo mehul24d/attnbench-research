@@ -25,6 +25,8 @@ from test_t64_session import SHA  # noqa: E402
 
 from attnbench.analysis import block_drift as BD  # noqa: E402
 
+ROOT = Path(__file__).resolve().parent.parent
+
 T64 = P4.T64
 EXTRA = ["--fa3-sha256", SHA]
 
@@ -207,3 +209,47 @@ def test_the_p2_session_runs_in_the_same_blocks(tmp_path):
     rc3, d3 = run_block(T61, tmp_path, lock, "b3", [d1, d2])
     assert (rc1, rc2, rc3) == (0, 0, 0)
     assert {r["block"] for r in gt_rows(T61, d3)["untraced"]["rows"]} == {"b3"}
+
+
+# --- the drift rule (researcher's ruling 3 of 7 Nov 2026) ------------------------------------------
+
+def _anchor_rows(medians):
+    rows = []
+    for b, m in medians.items():
+        rows.append({"block": b, "anchor": True, "arm": "dense", "nominal_density": 1.0,
+                     "context_length": 8192, "batch": 1, "median_ms": m})
+        rows.append({"block": b, "anchor": False, "arm": "oracle", "nominal_density": 0.5,
+                     "context_length": 16384, "batch": 1, "median_ms": 2 * m})
+    return rows
+
+
+def test_the_drift_bound_is_the_working_three_percent_by_default():
+    assert BD.WORKING_BOUND == 0.03
+    rows = _anchor_rows({"b1": 100.0, "b2": 103.0, "b3": 96.9})
+    dr = BD.drift(rows, order=["b1", "b2", "b3"])
+    assert dr["bound"] == 0.03 and dr["above"] == ["b3"] and not dr["passed"]
+    assert BD.drift(_anchor_rows({"b1": 100.0, "b2": 103.0}), order=["b1", "b2"])["passed"]
+
+
+def test_a_block_above_the_bound_is_labelled_and_kept_out_of_the_claims():
+    rows = _anchor_rows({"b1": 100.0, "b2": 104.0, "b3": 101.0})
+    dr = BD.drift(rows, order=["b1", "b2", "b3"])
+    labelled = BD.labelled(rows, dr)
+    assert {r["block"] for r in labelled if r.get("drift_label") == BD.DRIFT_LABEL} == {"b2"}
+    assert all("drift_label" not in r for r in labelled if r["block"] != "b2")
+    assert {r["block"] for r in BD.claimable(rows, dr)} == {"b1", "b3"}
+    assert all("drift_label" not in r for r in rows)            # the input is not changed
+
+
+def test_with_one_block_of_the_anchor_nothing_is_compared_and_nothing_is_dropped():
+    rows = _anchor_rows({"b1": 100.0})
+    dr = BD.drift(rows, order=["b1", "b2"])
+    assert dr["passed"] is None
+    assert BD.claimable(rows, dr) == rows and BD.labelled(rows, dr) == rows
+
+
+def test_the_lock_table_states_the_working_bound_and_the_rule():
+    table = (ROOT / "docs" / "lock_value_table.md").read_text()
+    row = next(l for l in table.splitlines() if l.startswith("| 36 |"))
+    assert "Block drift bound" in row and "Working: 3%" in row
+    assert BD.DRIFT_LABEL in row and "never widened to pass" in row
