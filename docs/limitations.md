@@ -3047,3 +3047,36 @@ and with the fixed one, and the outputs were bitwise identical:
 So the results banked before the fix are unaffected by the read, and the
 queued `qa_1` re-check is dropped (the researcher's rule, plan Appendix A,
 2 Nov 2026). The fix stays mandatory, because the read can still fault.*
+
+## P1's device pricing at T3.2a: what the traces do not record, and a cell not measured (2026-11-08)
+
+**`oracle_d0.5_L32768` is not measured, on any pairing.** Step 5 of that cell
+ran P1's pinned host (`g2-standard-8`) out of memory at 31.6 GB, twice
+(T3.1's third and fourth sessions). The drop fallback (plan Appendix A,
+2 Nov 2026, kept by the ruling of 6 Nov 2026) removes the cell from the grid:
+the oracle at 32768 tokens has a density-0.25 row only, in the exploratory
+session, in T3.2a and in T3.2b. Step 6's segment match, which now prices the
+oracle's other cells, was never run on this one. Any statement about the
+oracle at 32768 tokens is at density 0.25 alone.
+
+**Memsets with no device record at 32768 tokens.** At 32768 tokens the
+model's q, k and v projections (`aten::linear > aten::addmm`, with a bias)
+each launch a `cudaMemsetAsync` before their GEMM that no device activity
+answers: 84 per cell, three per layer, in every arm, in step 5's eager
+recording and in step 6's isolated replay alike. At 16384 tokens the same
+projections launch two per layer, each with a 1024-byte device record. The
+trace gives no size for a memset without a device record, so whether these
+are zero-length, or work the device did and the trace did not write, is not
+known. The primary prediction adds nothing for them; T2.3's sensitivity
+bound adds the memset zoo's largest duration to each, 0.35 ms per cell, which
+bounds the effect at about 0.01% of a 32768-token prefill.
+
+**A trace that lost the first records after a profiler restart.** In T3.2a's
+`oracle_d0.5_L8192`, the isolated replay's last segment (layers 26 and 27)
+has no device activity for its first three kernel launches (layer 26's input
+RMSNorm). Step 6 priced those three positions from the in-order graph
+replay, so no position went unpriced, but the isolated original's price for
+them does not exist. One segment in 406 (29 cells with an isolated replay,
+14 segments each) lost records this way in T3.2a. If it happened in a
+segment's positions that only the isolated original prices, those positions
+would be unpriced, and the arm's pricing gate would refuse the arm.

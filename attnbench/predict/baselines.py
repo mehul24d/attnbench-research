@@ -61,12 +61,26 @@ FITTED_TERMS = ("host", "link", "device")
 LOSS = "sum of absolute relative errors"
 
 
+def plain_sum(xs) -> float:
+    """Left-to-right addition, as `sum` was before Python 3.12, which made
+    `sum` of floats compensated. A committed prediction is recomputed from
+    its components and compared exactly (`commit.verify_bytes`); the
+    instance runs Python 3.10, and under 3.12 the T3.2a file's sums differed
+    from it by up to 1.2e-14 relative, 96 values, and the analysis refused
+    the file (8 Nov 2026). The same order on every version keeps the check
+    exact."""
+    total = 0
+    for x in xs:
+        total = total + x
+    return total
+
+
 def sum_as_written(priced: PricedSequence) -> float:
-    return float(sum(priced.host) + sum(priced.link) + sum(priced.device))
+    return float(plain_sum(priced.host) + plain_sum(priced.link) + plain_sum(priced.device))
 
 
 def sum_plus_s0(priced: PricedSequence) -> float:
-    return sum_as_written(priced) + float(sum(priced.sync_cost))
+    return sum_as_written(priced) + float(plain_sum(priced.sync_cost))
 
 
 def steps(priced: PricedSequence) -> list[tuple[int, float, float]]:
@@ -90,13 +104,13 @@ def steps(priced: PricedSequence) -> list[tuple[int, float, float]]:
 
 
 def step_form(priced: PricedSequence) -> float:
-    body = sum(max(h, ld) for _, h, ld in steps(priced))
-    return float(body + sum(priced.sync_cost))
+    body = plain_sum(max(h, ld) for _, h, ld in steps(priced))
+    return float(body + plain_sum(priced.sync_cost))
 
 
 def fitted_terms(priced: PricedSequence) -> tuple[float, float, float]:
-    return (float(sum(priced.host)), float(sum(priced.link)),
-            float(sum(priced.device)))
+    return (float(plain_sum(priced.host)), float(plain_sum(priced.link)),
+            float(plain_sum(priced.device)))
 
 
 @dataclass(frozen=True)
@@ -126,7 +140,7 @@ class FittedSum:
 
     def predict(self, priced: PricedSequence) -> float:
         H, L, D = fitted_terms(priced)
-        tail = float(sum(priced.sync_cost)) if self.add_s0 else 0.0
+        tail = float(plain_sum(priced.sync_cost)) if self.add_s0 else 0.0
         return self.a * H + self.b * L + self.c * D + tail
 
 
@@ -150,7 +164,7 @@ def fit_fitted_sum(training: TrainingSet, *, add_s0: bool = False) -> FittedSum:
         raise CostModelError("an empty training set fits nothing")
     A = np.array([fitted_terms(r.cell.priced) for r in training.rows])
     y = np.array([r.measured for r in training.rows], dtype=float)
-    S = np.array([float(sum(r.cell.priced.sync_cost)) if add_s0 else 0.0
+    S = np.array([float(plain_sum(r.cell.priced.sync_cost)) if add_s0 else 0.0
                   for r in training.rows])
     X = A / y[:, None]
     rhs = (y - S) / y
