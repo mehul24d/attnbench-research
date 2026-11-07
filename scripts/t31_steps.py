@@ -107,7 +107,8 @@ REQUIRED = ("densities", "reps", "dense_rounds")
 WORKING_TABLE = ROOT / "docs" / "lock_value_table.md"
 WORKING_FENCE = "```json t31-working-values"
 WORKING_KEYS = ("densities", "gt_groups", "reps", "dense_rounds", "sampler_interval_s",
-                "chain_check_tolerance", "residual_spread_tolerance")
+                "chain_check_tolerance", "residual_spread_tolerance",
+                "pricing_mismatch_share")
 WORKING_STATUS = "working, pre-lock"
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
@@ -270,9 +271,10 @@ def cpu_boundary_config(path=None) -> dict:
     return dict(CPU_BOUNDARY_CONFIG, densities=vals["densities"], gt_groups=vals["gt_groups"],
                 chain_check_tolerance=vals["chain_check_tolerance"],
                 residual_spread_tolerance=vals["residual_spread_tolerance"],
+                pricing_mismatch_share=vals["pricing_mismatch_share"],
                 working_values={"sha256": sha, "status": WORKING_STATUS,
                                 "filled": ["densities", "gt_groups", "chain_check_tolerance",
-                                           "residual_spread_tolerance"]})
+                                           "residual_spread_tolerance", "pricing_mismatch_share"]})
 
 
 def load_config(path, *, dry_run: bool, cpu_boundary: bool = False) -> dict:
@@ -698,9 +700,10 @@ def prediction_dir(cfg, session: Path) -> str:
     if bool(cfg.get("rehearsal")) != prefix.endswith("-rehearsal"):
         raise StepFailed(f"a rehearsal's prediction goes under a '-rehearsal' prefix, and only "
                          f"a rehearsal's: rehearsal={cfg.get('rehearsal')!r}, prefix {prefix!r}")
-    if bool(cfg.get("debug")) != prefix.endswith("-debug"):
-        raise StepFailed(f"a debug session's prediction goes under a '-debug' prefix, and only "
-                         f"a debug session's: debug={cfg.get('debug')!r}, prefix {prefix!r}")
+    if bool(cfg.get("debug")) != prefix.endswith(("-debug", "-exploratory")):
+        raise StepFailed(f"a debug or exploratory session's prediction goes under a '-debug' or "
+                         f"'-exploratory' prefix, and only theirs: debug={cfg.get('debug')!r}, "
+                         f"prefix {prefix!r}")
     return f"{prefix}/{Path(session).name}"
 
 
@@ -1129,6 +1132,8 @@ def staged_accept(session, cfg) -> dict | None:
     staged = _read_json(Path(session) / STAGED_INPUTS)
     if not staged:
         raise StepFailed(f"a debug session needs {STAGED_INPUTS} in {session}")
+    if staged.get("donor") is None:          # an exploratory session stages nothing
+        return None
     return {"identity": staged["donor"]["identity"], "instance": staged["donor"]["instance"],
             "cells": {c["dir"]: c["cell_index_sha256"] for c in staged["cells"]}}
 
@@ -1290,15 +1295,47 @@ def step_device_components(args, cfg) -> dict:
     at the memset zoo's duration (`memset_flags`), for the upper-bound
     sensitivity `predict` reports; the prediction itself prices them at
     zero device cost. Each cell runs in its own process under the RSS
-    ceiling, with manifests and resume as step 5's (`device_components_real`)."""
+    ceiling, with manifests and resume as step 5's (`device_components_real`).
+
+    The step then gates the pricing per arm (`pricing_gate`, researcher's
+    ruling 1 of 6 Nov 2026): an arm whose share of priced device time priced
+    from the isolated original is above the T4.1 working value, or with a
+    position neither replay matches, is labelled "pricing not validated" in
+    `cells.json` and `pricing_gate.json`, and step 7 leaves it out of the
+    prediction. The step itself does not fail on it."""
     if not args.dry_run:
         return device_components_real(args, cfg)
-    entries = [{"arm": a, "density": d, "context_length": L, "batch": b,
-                "code_path": FAKE_CODE_PATH,
-                "ops": [op_to_dict(op) for op in fake_ops(a, d, L, b)]}
-               for a, d, L, b in cells(cfg)]
-    _write_json(Path(args.out) / "cells.json", {"fake": True, "cells": entries})
-    return {"fake": True, "cells": len(entries)}
+    entries = []
+    for a, d, L, b in cells(cfg):
+        ops = fake_ops(a, d, L, b)
+        entries.append({"arm": a, "density": d, "context_length": L, "batch": b,
+                        "code_path": FAKE_CODE_PATH, "ops": [op_to_dict(op) for op in ops],
+                        "pricing": {"priced_s": sum(o.device for o in ops), "mismatch_s": 0.0,
+                                    "unpriced": []}})
+    gate = pricing_gate(Path(args.out), cfg, entries, fake=True)
+    return {"fake": True, "cells": len(entries), "pricing_gate": gate_brief(gate)}
+
+
+def pricing_gate(out: Path, cfg, entries, *, fake: bool) -> dict:
+    """The aggregate pricing gate over step 6's entries (`replay.pricing_gate`
+    at the working value `pricing_mismatch_share`, T4.1 row 35); writes it
+    to `pricing_gate.json` and into `cells.json` beside the entries. A dry
+    run's own config does not carry it; it takes the table's."""
+    from attnbench.components import replay
+    share = cfg.get("pricing_mismatch_share")
+    if share is None:
+        share = working_values()[0]["pricing_mismatch_share"]
+    gate = replay.pricing_gate(entries, float(share))
+    _write_json(out / "pricing_gate.json", gate)
+    _write_json(out / "cells.json", {"fake": fake, "cells": entries, "pricing_gate": gate})
+    return gate
+
+
+def gate_brief(gate: dict) -> dict:
+    """Each arm's share and whether it is priced, for the step's result."""
+    return {arm: {"share": g["share"], "validated": g["validated"],
+                  **({"label": g["label"], "why": g["why"]} if not g["validated"] else {})}
+            for arm, g in gate.items()}
 
 
 def device_components_real(args, cfg) -> dict:
@@ -1320,8 +1357,8 @@ def device_components_real(args, cfg) -> dict:
     run = guarded_cells(args, cfg, [k for k in map(device_cell_key, index) if k not in dropped],
                         spawn=spawn_device_cell, inputs=inputs)
     entries = run["index"]
-    _write_json(out / "cells.json", {"fake": False, "cells": entries})
-    return {"cells": len(entries),
+    gate = pricing_gate(out, cfg, entries, fake=False)
+    return {"cells": len(entries), "pricing_gate": gate_brief(gate),
             "cost_sources": {cell_dir(Path(), *device_cell_key(e)).name: e["cost_sources"]
                              for e in entries},
             "resumed": run["resumed"], "peak_rss_mb": run["peak_rss_mb"],
@@ -1359,8 +1396,36 @@ def memset_zoo(out: Path) -> dict[int, float]:
     return zoo
 
 
-def device_cell(h, out: Path, session: Path, cell, *, lenient: bool = False) -> dict:
-    """One cell of step 6, in this process: its `cells.json` entry."""
+def isolated_original(a, rec, cd: Path) -> tuple[Path, dict]:
+    """Step 6's isolated replay of the original operators as a compact stream
+    with the device fields `replay.replay_nodes` reads (researcher's ruling 3
+    of 6 Nov 2026: its 3 GB trace at `oracle_d0.25_L32768` was killed at
+    26 GiB in a full read), in blocks of `ISOLATED_SEGMENT_LAYERS` layers as
+    step 5's; a prefill of no more layers than that is one block, compacted
+    after its export. (stream, counts)."""
+    from attnbench.components import replay, trace_stream
+    path = Path(cd) / "isolated_original.json"
+    if len(a.layers) > ISOLATED_SEGMENT_LAYERS:
+        return replay.isolated_replay_compact(
+            a.run_prefill, rec.tape, path, device=_device(), layers=a.layers,
+            segment_layers=ISOLATED_SEGMENT_LAYERS, masks=rec.masks, device_nodes=True)
+    trace = replay.isolated_replay(a.run_prefill, rec.tape, path, device=_device(),
+                                   masks=rec.masks, substitute=False)
+    info = trace_stream.write_compact(trace, cats=trace_stream.REPLAY_CATS,
+                                      fields=trace_stream.DEVICE_FIELDS)
+    Path(trace).unlink()
+    stream = Path(info.pop("path"))
+    return stream, {"stream": stream.name, **info}
+
+
+def device_cell(h, out: Path, session: Path, cell) -> dict:
+    """One cell of step 6, in this process: its `cells.json` entry. Every
+    device position is priced by structure and labelled (`replay.
+    price_positions`, researcher's ruling 1 of 6 Nov 2026); the isolated
+    original is replayed in blocks of layers into a compact stream and read
+    lazily (ruling 3). Nothing here refuses the pricing: the entry carries
+    its summary, and the step's aggregate gate decides per arm. A cell with a
+    position neither replay matches has no operations."""
     import pandas as pd
     import torch
     from attnbench.components import host_profile as hp
@@ -1391,17 +1456,22 @@ def device_cell(h, out: Path, session: Path, cell, *, lenient: bool = False) -> 
         raise StepFailed(f"{c['dir']}: {failure}", {"mask_diagnosis": md.summaries(diag)})
     m = replay.match(rec.sequence, replay.replay_nodes(
         replay.profile_replay(cap, cd / "replay_trace.json")))
-    original = None
-    if not m.complete:
+    original, stream = None, None
+    if m.unmatched_positions:
         torch.cuda.synchronize()
-        orig = replay.isolated_replay(a.run_prefill, rec.tape, cd / "isolated_original.json",
-                                      device=_device(), masks=rec.masks, substitute=False)
-        original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH),
-                                variants=lenient)
-    try:
-        pricing = replay.price_positions(rec.sequence, m, original, lenient=lenient)
-    except replay.ReplayError as e:
-        raise StepFailed(f"{c['dir']}: {e}")
+        orig, stream = isolated_original(a, rec, cd)
+        original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH))
+    pricing = replay.price_positions(rec.sequence, m, original)
+    summary = {**pricing.summary(rec.sequence),
+               **({"isolated_original_stream": stream} if stream else {})}
+    head = {"arm": c["arm"], "density": c["density"],
+            "nominal_density": c["nominal_density"],
+            "context_length": c["context_length"], "budget": c["budget"],
+            "batch": c["batch"], "prompt_id": c["prompt_id"],
+            "code_path": c["code_path"], "cost_sources": pricing.counts(),
+            "pricing": summary}
+    if pricing.unpriced:
+        return {**head, "ops": None}
     prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
     costs = dict(host=hp.host_costs(prof, rec.sequence), device=pricing.device_s,
                  link=link_costs(rec.sequence, row))
@@ -1416,13 +1486,7 @@ def device_cell(h, out: Path, session: Path, cell, *, lenient: bool = False) -> 
         memsets = {"count": len(upper), "sources": sorted(set(src.values())),
                    "ops_upper": [op_to_dict(op) for op in label_outside_layers(
                        ops.to_operations(rec.sequence, **costs, flagged_memset_s=upper))]}
-    return {"arm": c["arm"], "density": c["density"],
-            "nominal_density": c["nominal_density"],
-            "context_length": c["context_length"], "budget": c["budget"],
-            "batch": c["batch"], "prompt_id": c["prompt_id"],
-            "code_path": c["code_path"], "cost_sources": pricing.counts(),
-            **({"original_extra_nodes": pricing.original_extra_nodes} if lenient else {}),
-            "ops": [op_to_dict(op) for op in priced],
+    return {**head, "ops": [op_to_dict(op) for op in priced],
             **({"memset_flags": memsets} if memsets else {})}
 
 
@@ -1435,8 +1499,7 @@ def run_device_cell(args, cfg, cell):
 def _device_cell_entry(args, cfg, cell) -> dict:
     _need_gpu("the CUDA-graph replay")
     h = _harness(args)
-    entry = device_cell(h, Path(args.out), Path(args.session), cell,
-                        **({"lenient": True} if cfg.get("debug") else {}))
+    entry = device_cell(h, Path(args.out), Path(args.session), cell)
     h.unwrap()
     return entry
 
@@ -1482,9 +1545,12 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None)
     dev = json.loads((step_dir(session, "device_components") / "cells.json").read_text())
     if dev["fake"] != dry_run or rin["fake"] != dry_run:
         raise StepFailed("fake components in a real session, or real ones in a dry run")
+    refused = not_priced(dev)
     hw = HardwareFeatures(**rin["hardware"])
     code_paths, out = {}, []
     for e in dev["cells"]:
+        if e["arm"] in refused:
+            continue
         label = C.code_path_label(e["code_path"])
         code_paths[label] = e["code_path"]
         # The link table is per grid length; a prompt lands at or below its budget.
@@ -1496,19 +1562,55 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None)
         out.append(Cell(pairing=cfg["pairing"], model_name=cfg["model"], code_path=label,
                         arm=e["arm"], context_length=e["context_length"],
                         density=e["density"], batch=e["batch"], priced=priced, hardware=hw))
-    want = {(a, d, L, b) for a, d, L, b in cells(cfg)}
+    want = {(a, d, L, b) for a, d, L, b in cells(cfg) if a not in refused}
     # A cell is named by its setting: the nominal density (None where the
     # estimator sets it) and the length budget (the prompt lands at or below it).
     got = {(e["arm"], e.get("nominal_density", e["density"]),
-            e.get("budget", e["context_length"]), e["batch"]) for e in dev["cells"]}
+            e.get("budget", e["context_length"]), e["batch"])
+           for e in dev["cells"] if e["arm"] not in refused}
     if want != got:
         raise StepFailed(f"priced cells differ from the grid: missing {sorted(want - got)}, "
                          f"extra {sorted(got - want)}")
+    if not out:
+        raise StepFailed(f"no arm is priced: the pricing gate refused {sorted(refused)}")
     code = C.CodeStamp("0" * 40, False) if (dry_run if local is None else local) \
         else C.current_code_stamp()
     return C.build_record(cfg["pairing"], out, rin["queue_depth"], code_paths=code_paths,
                           banked=[], fitted_sum=None, learned=None, code=code,
-                          written_at=now or datetime.now(timezone.utc))
+                          written_at=now or datetime.now(timezone.utc), not_priced=refused)
+
+
+def not_priced(dev: dict) -> dict:
+    """The arms step 6's pricing gate refused, by arm: the label and why
+    (researcher's ruling 1 of 6 Nov 2026). Step 6 always writes the gate."""
+    gate = dev.get("pricing_gate")
+    if gate is None:
+        raise StepFailed("step 6's cells.json has no pricing gate; rerun step 6")
+    return {arm: {k: g[k] for k in ("label", "why", "share", "max_share")}
+            for arm, g in gate.items() if not g["validated"]}
+
+
+def isolated_share(session: Path, record: dict) -> dict:
+    """Each priced arm's share of prediction time priced from the isolated
+    replay (researcher's ruling 1 of 6 Nov 2026, "itself a data point"): per
+    cell, the device seconds priced from the isolated original over the
+    committed recursion prediction, and per arm their sums' ratio. Written
+    beside the committed prediction, never into it."""
+    dev = json.loads((step_dir(session, "device_components") / "cells.json").read_text())
+    mis = {(e["arm"], e["density"], e["context_length"], e["batch"]): e["pricing"]["mismatch_s"]
+           for e in dev["cells"]}
+    rows, arms = [], {}
+    for c in record["cells"]:
+        k = (c["arm"], c["density"], c["context_length"], c["batch"])
+        pred = c["predictions"]["recursion"]
+        rows.append(dict(zip(("arm", "density", "context_length", "batch"), k),
+                         isolated_s=mis[k], prediction_s=pred, share=mis[k] / pred))
+        a = arms.setdefault(c["arm"], {"isolated_s": 0.0, "prediction_s": 0.0})
+        a["isolated_s"] += mis[k]
+        a["prediction_s"] += pred
+    for a in arms.values():
+        a["share"] = a["isolated_s"] / a["prediction_s"]
+    return {"arms": arms, "cells": rows, "not_priced": record.get("not_priced", {})}
 
 
 def step_predict(args, cfg) -> dict:
@@ -1521,6 +1623,8 @@ def step_predict(args, cfg) -> dict:
     committed = C.write_prediction(record, out)
     sensitivity = memset_sensitivity(session)
     _write_json(out / "memset_sensitivity.json", sensitivity)
+    shares = isolated_share(session, record)
+    _write_json(out / "isolated_share.json", shares)
     store, base = make_store(session, dry_run=_local(args))
     receipt = C.sync_prediction(committed, store, f"{base}/{prediction_dir(cfg, session)}")
     d = receipt.to_dict()
@@ -1532,7 +1636,9 @@ def step_predict(args, cfg) -> dict:
     return {"file": committed.path.name, "sha256": committed.sha256,
             "synced_at": d["synced_at"], "remote_in_bucket": d["remote"],
             "flagged_memsets": sensitivity["flagged_memsets"],
-            "memset_max_shift_s": sensitivity["max_shift_s"]}
+            "memset_max_shift_s": sensitivity["max_shift_s"],
+            "isolated_share": {a: v["share"] for a, v in shares["arms"].items()},
+            "not_priced": record.get("not_priced", {})}
 
 
 def memset_sensitivity(session: Path) -> dict:
@@ -1549,9 +1655,10 @@ def memset_sensitivity(session: Path) -> dict:
                        rin["queue_depth"]).end_to_end
 
     rows = []
+    refused = not_priced(dev)
     for e in dev["cells"]:
         m = e.get("memset_flags")
-        if not m:
+        if not m or e["arm"] in refused:
             continue
         mech = {k: MechanismCost(**v)
                 for k, v in rin["by_length"][str(e.get("budget", e["context_length"]))].items()}
@@ -1797,10 +1904,10 @@ def run_step(name: str, args) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     started = time.time()
-    debug = False
+    debug = None
     try:
         cfg = load_config(args.config, dry_run=args.dry_run, cpu_boundary=args.cpu_boundary)
-        debug = bool(cfg.get("debug"))
+        debug = (cfg.get("debug_label") or DEBUG_LABEL) if cfg.get("debug") else None
         status, reason, findings = PASSED, "", STEP_FUNCS[name](args, cfg)
     except Skip as e:
         status, reason, findings = SKIPPED, str(e), {}
@@ -1812,7 +1919,7 @@ def run_step(name: str, args) -> int:
     _write_json(out / "result.json", {
         "step": name, "status": status, "reason": reason, "dry_run": args.dry_run,
         "cpu_boundary": args.cpu_boundary, "seconds": round(time.time() - started, 1),
-        **({"debug": DEBUG_LABEL} if debug else {}), "findings": findings})
+        **({"debug": debug} if debug else {}), "findings": findings})
     print(f"[{name}] {status.upper()}{': ' + reason if reason else ''}", flush=True)
     return EXIT[status]
 

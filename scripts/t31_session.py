@@ -178,7 +178,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
     for step in STEPS[first:last + 1]:
         d = step_dir(session, step)
         if cap_s is not None and clock() - session_t0 > cap_s:
-            print(f"\nSTOPPED before {step}: the debug session's cap of {cap_s / 60:.0f} min "
+            print(f"\nSTOPPED before {step}: the session's cap of {cap_s / 60:.0f} min "
                   f"has passed", flush=True)
             manifest["attempts"].append({
                 "step": step, "n": STEPS.index(step) + 1, "status": "not_run",
@@ -247,7 +247,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
             return 1
     statuses = last_status(manifest)
     label = ("T3.1 rehearsal (results discarded)" if rehearsal else
-             "T3.1 DEBUG session (debug, not T3.1 data)" if debug else "T3.1 session")
+             f"T3.1 DEBUG session ({manifest['debug']})" if debug else "T3.1 session")
     print(f"\n{label}: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS[:last + 1]))
     return 1 if failed_steps else 0
 
@@ -289,7 +289,9 @@ def keep_attempt(d: Path, kept: Path, *, in_place: bool) -> None:
 def debug_main(args) -> int:
     """`--debug`: the session staged by `t31_debug.py stage`, from where it was
     staged, on its debug config; the cap is 1.5 times the projected duration
-    of the steps it runs (not applied on a CPU, where nothing is timed)."""
+    of the steps it runs (not applied on a CPU, where nothing is timed). An
+    exploratory session (`t31_debug.py explore`) starts at step 1 and its cap
+    is the card's."""
     import json
     from t31_debug import DEBUG_CONFIG, DEBUG_STARTS
     from t31_steps import DEBUG_LABEL, STAGED_INPUTS
@@ -307,6 +309,9 @@ def debug_main(args) -> int:
         print(f"REFUSING: {session} was not staged by `t31_debug.py stage`", file=sys.stderr)
         return 2
     rec = json.loads(staged.read_text())
+    if not rec.get("exploratory") and rec["start"] not in DEBUG_STARTS:
+        print(f"REFUSING: a debug session starts at one of {DEBUG_STARTS}", file=sys.stderr)
+        return 2
     start = rec["start"] if args.start == STEPS[0] else args.start
     if STEPS.index(start) < STEPS.index(rec["start"]):
         print(f"REFUSING: this debug session was staged to start at {rec['start']}; it "
@@ -325,7 +330,11 @@ def debug_main(args) -> int:
               file=sys.stderr)
         return 2
     cap_s = None
-    if not cpu:
+    if not cpu and rec.get("exploratory"):
+        cap_s = 60.0 * float(rec["cap_min"])
+        print(f"{rec['debug'].upper()}: from {start}, cap {cap_s / 60:.0f} min (the card's)",
+              flush=True)
+    elif not cpu:
         from t31_projection import debug_cap_min
         cap_s = 60.0 * debug_cap_min(start, rec["not_measured"], rec["run_in_this_session"])
         print(f"{DEBUG_LABEL.upper()}: from {start}, cap {cap_s / 60:.0f} min "

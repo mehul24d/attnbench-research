@@ -290,6 +290,19 @@ def test_a_naive_write_time_is_refused():
         p1_record(written_at=datetime(2026, 11, 2, 3, 0))
 
 
+def test_an_arm_the_pricing_gate_refused_is_recorded_with_its_label_and_has_no_cell():
+    # T2.4's aggregate gate (researcher's ruling 1 of 6 Nov 2026)
+    why = {"label": C.NOT_PRICED_LABEL, "why": ["mismatch share 0.0600 above 0.05"],
+           "share": 0.06, "max_share": 0.05}
+    rec = p1_record(not_priced={"meanpool": why})
+    assert rec["not_priced"] == {"meanpool": why}
+    assert "not_priced" not in p1_record()
+    with pytest.raises(PredictionCommitError, match="not 'pricing not validated'"):
+        p1_record(not_priced={"meanpool": {**why, "label": "fine"}})
+    with pytest.raises(PredictionCommitError, match="have cells in the file"):
+        p1_record(not_priced={"xattn": why})
+
+
 def test_cells_must_be_this_pairings_unique_and_closed():
     with pytest.raises(PredictionCommitError, match="at least one cell"):
         p1_record(cells=[])

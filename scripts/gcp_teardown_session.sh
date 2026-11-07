@@ -12,8 +12,14 @@
 # Order is load-bearing:
 #   1. serial console log FIRST -- it is destroyed with the instance and is
 #      the only diagnostic channel that survives losing SSH
-#   2. results second -- they need SSH, which may already be gone; a failure
-#      here must not prevent step 4
+#   2. results second -- they stay in the bucket (researcher's ruling, 6 Nov
+#      2026: the 2 Nov debug session's recursive copy was 25+ GB onto a Mac
+#      with 33 GiB free). The instance syncs once more (`run_phase.sh
+#      --sync-only`, the phases' own sync), and only its logs and manifests
+#      are pulled, as one archive, after a check that the local disk holds
+#      them. A sync that fails while SSH works refuses the delete (the disk
+#      would be the only copy) unless TEARDOWN_DELETE_WITHOUT_BUCKET_SYNC
+#      names the reason; with SSH gone, step 2b's override covers it
 #   2b. every ~/*.log on the instance -- the one step the delete waits for
 #      (researcher's ruling, 2 Nov 2026, after T3.1's first session lost
 #      ~/t31_session.log and ~/t31_driver.log). Without them the delete is
@@ -25,7 +31,7 @@
 #   5. verify nothing is left billing, including machine images, which
 #      gcp_cleanup_check.sh does not cover
 #
-# Steps 1 and 2 are allowed to fail without aborting the run: an instance
+# Steps 1 and 2's pull are allowed to fail without aborting the run: an instance
 # whose SSH is dead is precisely when deletion matters most. Step 2b is not:
 # the instance's own clocks (the in-guest halt, the hard delete) bound what a
 # refused delete can bill, and a log lost to the delete is lost for good. An
@@ -77,6 +83,22 @@ fi
 FOUND="${FOUND:-1}"
 mkdir -p "$S"
 
+# Every copy below is checked against the local disk first (ruling, 6 Nov
+# 2026): what it will write, twice over for the archive and its contents,
+# plus a reserve (TEARDOWN_DISK_RESERVE_GB, default 2), must fit what `df`
+# says is free where it lands.
+RESERVE_GB="${TEARDOWN_DISK_RESERVE_GB:-2}"
+disk_ok() {   # disk_ok BYTES WHAT
+  local need=$(( $1 * 2 + RESERVE_GB * 1024 * 1024 * 1024 ))
+  local free_kb
+  free_kb="$(df -Pk "$S" 2>/dev/null | awk 'NR == 2 {print $4}')"
+  if [[ ! "$free_kb" =~ ^[0-9]+$ ]] || (( free_kb * 1024 < need )); then
+    echo "   REFUSING TO COPY $2: it needs $(( need / 1048576 )) MiB with the reserve, and" \
+         "$(( ${free_kb:-0} / 1024 )) MiB is free at $S"
+    return 1
+  fi
+}
+
 echo "== 1/5 serial console log -> $S/serial_console.log (before anything can destroy it)"
 # Fetched to a temporary file and moved into place only on success: a
 # redirect straight onto the log truncates it first, so a failed fetch on a
@@ -94,14 +116,49 @@ else
   echo "   WARNING: could not fetch serial output -- continuing to deletion anyway"
 fi
 
-echo "== 2/5 results"
-gcloud compute scp --recurse "$NAME:~/attnbench_scaffold/results" "$S/" --zone="$ZONE" --project="$PROJECT" 2>/dev/null \
-  && echo "   copied" \
-  || echo "   WARNING: scp failed (SSH may be gone) -- continuing to deletion"
-for LOG in fa_build.log bsa_build.log batch_probe.log anchor16k.log; do
-  gcloud compute scp "$NAME:~/$LOG" "$S/$LOG" --zone="$ZONE" --project="$PROJECT" 2>/dev/null \
-    && echo "   copied $LOG" || true
-done
+echo "== 2/5 results stay in the bucket: the instance's last sync, then its logs and manifests"
+BUCKET_SYNC="no ssh"
+if [[ "$FOUND" == 0 ]]; then
+  BUCKET_SYNC="no instance"
+else
+  SYNC_LINE="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet \
+    --command='cd ~/attnbench_scaffold && bash scripts/run_phase.sh --sync-only teardown >/dev/null 2>&1; echo "SYNC_RC=$?"' \
+    2>/dev/null | tr -d '\r' | grep '^SYNC_RC=' | tail -1)"
+  case "$SYNC_LINE" in
+    SYNC_RC=0) BUCKET_SYNC=synced; echo "   synced to the bucket (run_phase.sh --sync-only)";;
+    SYNC_RC=*) BUCKET_SYNC=failed; echo "   WARNING: the instance's sync FAILED (${SYNC_LINE}): its disk holds the only copy";;
+    *)         echo "   could not reach the instance to sync (SSH may be gone)";;
+  esac
+fi
+# What is pulled: every log, manifest, step result, receipt and discard note
+# under results/ and logs/, never the bulk (traces, parquets, recordings).
+PULL_FIND='find results logs -type f \( -name "*.log" -o -iname "*manifest*.json" -o -name result.json -o -name "*receipt*.json" -o -name cell_exit.json -o -name INTERRUPTED_DISCARD.md \)'
+if [[ "$FOUND" == 1 ]]; then
+  PULL_LIST="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet \
+    --command="cd ~/attnbench_scaffold && $PULL_FIND -exec stat -c '%s %n' {} + 2>/dev/null; echo END" \
+    2>/dev/null | tr -d '\r')"
+  if [[ "$(printf '%s\n' "$PULL_LIST" | tail -1)" == END ]]; then
+    PULL_N="$(printf '%s\n' "$PULL_LIST" | grep -vc '^END$' || true)"
+    PULL_BYTES="$(printf '%s\n' "$PULL_LIST" | awk '$1 ~ /^[0-9]+$/ {s += $1} END {print s + 0}')"
+    echo "   ${PULL_N} logs and manifests on the instance, ${PULL_BYTES} bytes"
+    if (( PULL_N > 0 )) && disk_ok "$PULL_BYTES" "the logs and manifests"; then
+      if gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet \
+           --command="cd ~/attnbench_scaffold && $PULL_FIND -print0 | tar czf /tmp/teardown_pull.tgz --null -T -" \
+           >/dev/null 2>&1 \
+         && gcloud compute scp "$NAME:/tmp/teardown_pull.tgz" "$S/teardown_pull.tgz" \
+              --zone="$ZONE" --project="$PROJECT" >/dev/null 2>&1 \
+         && tar xzf "$S/teardown_pull.tgz" -C "$S"; then
+        printf '%s\n' "$PULL_LIST" > "$S/pulled_listing.txt"
+        rm -f "$S/teardown_pull.tgz"
+        echo "   pulled ${PULL_N} files (listing in pulled_listing.txt; the rest is in the bucket)"
+      else
+        echo "   WARNING: the logs and manifests were not pulled -- they are in the bucket if it synced"
+      fi
+    fi
+  else
+    echo "   WARNING: could not list the logs and manifests (SSH may be gone)"
+  fi
+fi
 
 echo "== 2b/5 every ~/*.log on the instance -> $S/home_logs/ (the delete waits for this)"
 # Listed with sizes on the instance, then copied one by one; a copy counts
@@ -114,7 +171,8 @@ else
   LISTING="$(gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --quiet \
     --command='for f in ~/*.log; do [ -f "$f" ] && echo "$(basename "$f") $(stat -c %s "$f")"; done; echo END' \
     2>/dev/null | tr -d '\r')"
-  if [[ "$(printf '%s\n' "$LISTING" | tail -1)" == END ]]; then
+  HOME_BYTES="$(printf '%s\n' "$LISTING" | awk '$2 ~ /^[0-9]+$/ {s += $2} END {print s + 0}')"
+  if [[ "$(printf '%s\n' "$LISTING" | tail -1)" == END ]] && disk_ok "$HOME_BYTES" "the home logs"; then
     mkdir -p "$S/home_logs"
     N=0; BAD=0
     while read -r F SIZE; do
@@ -237,6 +295,21 @@ print(int((b - a).total_seconds()))' "$CREATED" "$STOPPED" 2>/dev/null)"
 fi
 
 echo "== 4/5 delete (not stop -- a stopped instance still bills for its disk)"
+# An instance never reached for its sync is deleted under step 2b's override
+# (SSH gone: a halted VM, an OOM-killed sshd) or this one; a sync that ran and
+# failed only under this one.
+if [[ "$BUCKET_SYNC" == failed || ( "$BUCKET_SYNC" == "no ssh" && -z "${TEARDOWN_DELETE_WITHOUT_HOME_LOGS:-}" ) ]]; then
+  if [[ -z "${TEARDOWN_DELETE_WITHOUT_BUCKET_SYNC:-}" ]]; then
+    echo "REFUSING TO DELETE: the instance's last sync to the bucket ${BUCKET_SYNC/no ssh/could not run} (step 2)," >&2
+    echo "so its disk may hold the only copy of the results. $NAME is still there, bounded by its" >&2
+    echo "halt and hard delete. Fix the sync and re-run, or re-run with" >&2
+    echo "TEARDOWN_DELETE_WITHOUT_BUCKET_SYNC='<why>' to delete without it." >&2
+    exit 3
+  fi
+  printf '%s deleted after a failed bucket sync: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$TEARDOWN_DELETE_WITHOUT_BUCKET_SYNC" >> "$S/bucket_sync_missing.txt"
+  echo "   deleting AFTER A FAILED SYNC: $TEARDOWN_DELETE_WITHOUT_BUCKET_SYNC (bucket_sync_missing.txt)"
+fi
 if [[ "$HOME_LOGS" == missing ]]; then
   if [[ -z "${TEARDOWN_DELETE_WITHOUT_HOME_LOGS:-}" ]]; then
     echo "REFUSING TO DELETE: the instance's ~/*.log were not all pulled (step 2b)." >&2

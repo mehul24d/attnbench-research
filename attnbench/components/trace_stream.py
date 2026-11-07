@@ -23,6 +23,18 @@ one profiler session either (the profiler holds about five times the trace:
 `replay.isolated_replay_compact` runs it in blocks of layers, a profiler
 session each, and `stitch_compact` joins the blocks' compact streams.
 
+Step 6 prices the positions its CUDA graph does not hold from an isolated
+replay of the original operators (`replay.price_positions`), and that replay
+of `oracle_d0.25_L32768` is a 3 GB trace, killed at 26 GiB in its full read
+by the debug session (2 Nov 2026). It is written the same way, segmented and
+compacted (researcher's ruling 3 of 6 Nov 2026), with the fields
+`replay.replay_nodes` reads (`REPLAY_CATS`, `DEVICE_FIELDS`): the region and
+the flushes, the runtime and driver calls with their correlation, and the
+device activities with their correlation, stream and bytes. No operator
+(`cpu_op`) is kept. `replay.replay_nodes` reads such a stream in three passes,
+holding the flushes' bounds, a set of correlations and the nodes it returns,
+never the events.
+
 The recording's own trace (`recorder.record_arm_prefill`) is not compacted:
 the sequence parser reads its Python frames and the launch check its shapes,
 and `recording.json` pins it by sha256.
@@ -44,6 +56,13 @@ FIELDS = ("i", "cat", "name", "pid", "tid", "ts", "dur")
 # What `host_profile.read_isolated` reads: the replay region and the flushes
 # (user annotations), the operators (cpu_op) and the launches (runtime, driver).
 ISOLATED_CATS = frozenset({"user_annotation", "cpu_op", "cuda_runtime", "cuda_driver"})
+# What `replay.replay_nodes` reads (step 6's isolated original, 6 Nov 2026 ruling 3):
+# the region and the flushes, the calls that launch, and the device activities, each
+# with the three arguments the reader takes (absent: null).
+REPLAY_CATS = frozenset({"user_annotation", "cuda_runtime", "cuda_driver",
+                         "kernel", "gpu_memcpy", "gpu_memset"})
+ARG_FIELDS = ("correlation", "stream", "bytes")
+DEVICE_FIELDS = FIELDS + ARG_FIELDS
 SUFFIX = ".events.jsonl"
 
 _CHUNK = 1 << 22                      # characters read at a time
@@ -118,11 +137,16 @@ def is_compact(source) -> bool:
 
 
 def write_compact(src: Union[str, Path], dst: Union[str, Path, None] = None, *,
-                  cats=ISOLATED_CATS) -> dict:
+                  cats=ISOLATED_CATS, fields=FIELDS) -> dict:
     """Write `src`'s complete events of `cats` to `dst` (default
     `compact_path(src)`): a header line, then one array per event in
-    `FIELDS` order. The same events `op_sequence._events` takes: `ph` "X"
-    with a numeric `ts` and `dur`. Returns the counts."""
+    `fields` order (`FIELDS`, or `DEVICE_FIELDS` with the arguments after
+    them). The same events `op_sequence._events` takes: `ph` "X" with a
+    numeric `ts` and `dur`. Returns the counts."""
+    fields = tuple(fields)
+    if fields not in (FIELDS, DEVICE_FIELDS):
+        raise TraceStreamError(f"fields {fields}: FIELDS or DEVICE_FIELDS only")
+    extra = fields[len(FIELDS):]
     src = Path(src)
     dst = compact_path(src) if dst is None else Path(dst)
     tmp = dst.with_name(dst.name + ".part")
@@ -130,7 +154,7 @@ def write_compact(src: Union[str, Path], dst: Union[str, Path, None] = None, *,
     try:
         with open(tmp, "w", encoding="utf-8") as out:
             out.write(json.dumps({"schema": SCHEMA, "source": src.name, "cats": sorted(cats),
-                                  "fields": list(FIELDS)}) + "\n")
+                                  "fields": list(fields)}) + "\n")
             for idx, e in iter_trace_events(src):
                 total += 1
                 if not isinstance(e, dict) or e.get("ph") != "X" or e.get("cat") not in cats:
@@ -138,8 +162,11 @@ def write_compact(src: Union[str, Path], dst: Union[str, Path, None] = None, *,
                 ts, dur = e.get("ts"), e.get("dur", 0)
                 if not isinstance(ts, (int, float)) or not isinstance(dur, (int, float)):
                     continue
-                out.write(json.dumps([idx, e["cat"], e.get("name", ""), e.get("pid"),
-                                      e.get("tid"), ts, dur], separators=(",", ":")) + "\n")
+                row = [idx, e["cat"], e.get("name", ""), e.get("pid"), e.get("tid"), ts, dur]
+                if extra:
+                    args = e.get("args") or {}
+                    row += [args.get(k) for k in extra]
+                out.write(json.dumps(row, separators=(",", ":")) + "\n")
                 kept += 1
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -149,16 +176,34 @@ def write_compact(src: Union[str, Path], dst: Union[str, Path, None] = None, *,
             "source_bytes": src.stat().st_size, "bytes": dst.stat().st_size}
 
 
+def read_header(f, path) -> dict:
+    head = json.loads(f.readline() or "null")
+    if not isinstance(head, dict) or head.get("schema") != SCHEMA:
+        raise TraceStreamError(f"{path}: not a {SCHEMA} stream")
+    return head
+
+
+def iter_rows(path: Union[str, Path]) -> Iterator[list]:
+    """The stream's rows, one list per event in its header's field order."""
+    with open(path, encoding="utf-8") as f:
+        read_header(f, path)
+        for line in f:
+            yield json.loads(line)
+
+
+def fields_of(path: Union[str, Path]) -> tuple:
+    with open(path, encoding="utf-8") as f:
+        return tuple(read_header(f, path).get("fields") or FIELDS)
+
+
 def load_compact(path: Union[str, Path]) -> list:
     """The stream's events, as `op_sequence._Ev`, with no arguments."""
     names: dict = {}
     out = []
     with open(path, encoding="utf-8") as f:
-        head = json.loads(f.readline() or "null")
-        if not isinstance(head, dict) or head.get("schema") != SCHEMA:
-            raise TraceStreamError(f"{path}: not a {SCHEMA} stream")
+        read_header(f, path)
         for line in f:
-            i, cat, name, pid, tid, ts, dur = json.loads(line)
+            i, cat, name, pid, tid, ts, dur = json.loads(line)[:7]
             cat, name = names.setdefault(cat, cat), names.setdefault(name, name)
             ts = float(ts)
             out.append(_Ev(i, cat, name, pid, tid, ts, ts + float(dur), _NO_ARGS))
@@ -166,23 +211,25 @@ def load_compact(path: Union[str, Path]) -> list:
 
 
 def _bounds(path: Path, region: str) -> dict:
-    """One pass over a part: its header, event count, highest index, time span,
-    and the replay region it holds (exactly one)."""
-    n = hi = 0
+    """One pass over a part: its header, event count, highest index and
+    correlation, and the replay region it holds (exactly one)."""
+    n = hi = corr = 0
     regions = []
     with open(path, encoding="utf-8") as f:
-        head = json.loads(f.readline() or "null")
-        if not isinstance(head, dict) or head.get("schema") != SCHEMA:
-            raise TraceStreamError(f"{path}: not a {SCHEMA} stream")
+        head = read_header(f, path)
         for line in f:
-            i, cat, name, pid, tid, ts, dur = json.loads(line)
+            row = json.loads(line)
+            i, cat, name, pid, tid, ts, dur = row[:7]
             n += 1
             hi = max(hi, i)
+            if len(row) > 7 and isinstance(row[7], int):
+                corr = max(corr, row[7])
             if cat == "user_annotation" and name == region:
                 regions.append((i, pid, tid, float(ts), float(ts) + float(dur)))
     if len(regions) != 1:
         raise TraceStreamError(f"{path}: {len(regions)} {region!r} regions, expected one per segment")
-    return {"head": head, "events": n, "max_index": hi, "region": regions[0]}
+    return {"head": head, "events": n, "max_index": hi, "max_correlation": corr,
+            "region": regions[0]}
 
 
 def stitch_compact(parts, dst: Union[str, Path], *, region: str) -> dict:
@@ -196,14 +243,20 @@ def stitch_compact(parts, dst: Union[str, Path], *, region: str) -> dict:
     the whole is the segments' events in order: concatenated, their
     indices offset to stay unique, and the segments' regions replaced by one
     region from the first's start to the last's end, on the first's thread.
-    Refused if a segment is not a `SCHEMA` stream, does not hold exactly one
-    region, is on another thread than the first, or starts before the one
-    before it ended (the segments are not on one timeline). Returns the
-    counts."""
+    A stream with `DEVICE_FIELDS` has its correlations offset the same way,
+    so a launch and its activity stay paired and no two segments share one.
+    Refused if the segments' fields differ, a segment is not a `SCHEMA`
+    stream, does not hold exactly one region, is on another thread than the
+    first, or starts before the one before it ended (the segments are not on
+    one timeline). Returns the counts."""
     parts, dst = [Path(p) for p in parts], Path(dst)
     if not parts:
         raise TraceStreamError("no segments to stitch")
     info = [_bounds(p, region) for p in parts]
+    fields = tuple(info[0]["head"].get("fields") or FIELDS)
+    for p, b in zip(parts, info):
+        if tuple(b["head"].get("fields") or FIELDS) != fields:
+            raise TraceStreamError(f"{p}: its fields differ from the first segment's")
     thread = info[0]["region"][1:3]
     prev_end = float("-inf")
     for p, b in zip(parts, info):
@@ -217,25 +270,30 @@ def stitch_compact(parts, dst: Union[str, Path], *, region: str) -> dict:
     first, last = info[0]["region"], info[-1]["region"]
     head = dict(info[0]["head"], source=dst.name, segments=len(parts))
     tmp = dst.with_name(dst.name + ".part")
-    offset = 0
+    offset = corr_offset = 0
     kept = 0
+    pad = [None] * (len(fields) - len(FIELDS))
     try:
         with open(tmp, "w", encoding="utf-8") as out:
             out.write(json.dumps(head) + "\n")
             out.write(json.dumps([first[0], "user_annotation", region, first[1], first[2],
-                                  first[3], last[4] - first[3]], separators=(",", ":")) + "\n")
+                                  first[3], last[4] - first[3]] + pad,
+                                 separators=(",", ":")) + "\n")
             kept += 1
             for p, b in zip(parts, info):
                 with open(p, encoding="utf-8") as f:
                     f.readline()
                     for line in f:
-                        i, cat, name, pid, tid, ts, dur = json.loads(line)
-                        if cat == "user_annotation" and name == region:
+                        row = json.loads(line)
+                        if row[1] == "user_annotation" and row[2] == region:
                             continue
-                        out.write(json.dumps([i + offset, cat, name, pid, tid, ts, dur],
-                                             separators=(",", ":")) + "\n")
+                        row[0] += offset
+                        if pad and isinstance(row[7], int):
+                            row[7] += corr_offset
+                        out.write(json.dumps(row, separators=(",", ":")) + "\n")
                         kept += 1
                 offset += b["max_index"] + 1
+                corr_offset += b["max_correlation"] + 1
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

@@ -87,6 +87,9 @@ from .training import (COMMITTED, GROUND_TRUTH_STATISTIC, STATISTICS, Cell,
 # /2: the cell key gained its model and code path, and the file carries each
 # code path's definition. A /1 file has neither and is refused.
 SCHEMA = "attnbench.prediction/2"
+# An arm step 6's aggregate pricing gate refused (researcher's ruling 1 of 6 Nov
+# 2026, `replay.pricing_gate`): no cell of it is in the file, and the file says why.
+NOT_PRICED_LABEL = "pricing not validated"
 
 # Computed here from every cell's components.
 COMPUTED = ("recursion", "sum", "sum_plus_s0", "step_form")
@@ -384,7 +387,8 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
                  nearest: Optional[tuple[Nearest, Mapping]] = None,
                  intervals: Optional[Mapping[tuple, Mapping[str, Interval]]] = None,
                  dispatch: Optional[_dispatcher.DispatchSpec] = None,
-                 statistic: str = GROUND_TRUTH_STATISTIC) -> dict:
+                 statistic: str = GROUND_TRUTH_STATISTIC,
+                 not_priced: Optional[Mapping[str, Mapping]] = None) -> dict:
     """Check everything and compute every prediction for one pairing.
 
     `code_paths` defines every code path the cells name, by label
@@ -409,6 +413,11 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
     Optional, from T2.22: `dispatch`, a `dispatcher.DispatchSpec`, which adds
     the dispatcher's and the comparators' choices at every decision point,
     computed here from the committed predictions of `spec.predictor`.
+
+    Optional, from T2.4's pricing gate (6 Nov 2026): `not_priced`, by arm,
+    each arm the gate refused, with its `label` (`NOT_PRICED_LABEL`) and the
+    gate's reasons; such an arm has no cell here, so no hypothesis is scored
+    on it, and the file records why (`not_priced`, present only when given).
     """
     if not isinstance(pairing, str) or not pairing:
         raise PredictionCommitError(f"pairing must be a name, got {pairing!r}")
@@ -441,6 +450,16 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
         seen.add(k)
         _check_closing_sync(c.priced, f"cell {k}")
     code_paths = _check_code_paths(code_paths, {k.code_path for k in seen})
+    not_priced = {str(a): dict(v) for a, v in (not_priced or {}).items()}
+    for arm, v in not_priced.items():
+        if v.get("label") != NOT_PRICED_LABEL:
+            raise PredictionCommitError(
+                f"arm {arm!r} is listed as not priced with label {v.get('label')!r}, "
+                f"not {NOT_PRICED_LABEL!r}")
+    priced_arms = sorted({k.arm for k in seen} & set(not_priced))
+    if priced_arms:
+        raise PredictionCommitError(
+            f"arms {priced_arms} are listed as not priced and have cells in the file")
 
     training: dict[str, Any] = {}
     not_fitted: dict[str, str] = {}
@@ -554,6 +573,7 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
         "code_paths": code_paths,
         "cells": out_cells,
         "dispatch": dispatch_record,
+        **({"not_priced": not_priced} if not_priced else {}),
     }
 
 
