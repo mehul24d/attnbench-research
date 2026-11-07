@@ -115,6 +115,9 @@ SCORE_TARGETS = (
     ("attnbench.accuracy.model", "_scoring_forward_chunked"),
     ("attnbench.accuracy.model", "SwappableAttentionModel.compute_importance_scores"),
     ("attnbench.backends.xattention", "XAttentionBackend.estimate"),
+    # The subclass overrides `estimate` (the stripped package's estimator), so
+    # patching the base class's attribute does not reach it.
+    ("attnbench.backends.xattention_noassert", "XAttentionNoAssertBackend.estimate"),
 )
 MASK_TARGETS = (
     ("attnbench.masks", "importance_block_mask_device"),
@@ -131,6 +134,7 @@ BUILDER_OF_TARGET = {
     "attnbench.masks.importance_block_mask_device": "gpu",
     "attnbench.masks.mask_for": "cpu",
     "attnbench.backends.xattention.XAttentionBackend.estimate": "gpu",
+    "attnbench.backends.xattention_noassert.XAttentionNoAssertBackend.estimate": "gpu",
 }
 
 

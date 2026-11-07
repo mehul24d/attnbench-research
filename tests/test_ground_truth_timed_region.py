@@ -193,6 +193,30 @@ def test_the_probe_restores_what_it_patched():
     assert after == before
 
 
+def test_the_probe_sees_every_estimator_override():
+    """A backend subclass that overrides `estimate` is a target of its own:
+    the probe patches the class's own attribute, which the subclass shadows
+    (the exploratory session's ground truth, 7 Nov 2026, saw no scores for
+    `xattention_noassert`)."""
+    import attnbench.backends  # noqa: F401  registers every backend
+
+    def subclasses(c):
+        for s in c.__subclasses__():
+            yield s
+            yield from subclasses(s)
+    overriding = [c for c in subclasses(XAttentionBackend) if "estimate" in c.__dict__]
+    assert overriding, "no subclass overrides estimate; the test is vacuous"
+    targets = set(gt.SCORE_TARGETS)
+    for c in overriding:
+        assert (c.__module__, f"{c.__qualname__}.estimate") in targets, c
+        assert gt.BUILDER_OF_TARGET[f"{c.__module__}.{c.__qualname__}.estimate"] == "gpu"
+    with gt.ScoringProbe(gt.EventLog()):
+        for c in overriding:
+            assert hasattr(c.__dict__["estimate"], "__wrapped__"), c
+    for c in overriding:
+        assert not hasattr(c.__dict__["estimate"], "__wrapped__"), c
+
+
 def test_quantiles_match_numpy():
     np = pytest.importorskip("numpy")
     xs = [5.0, 1.0, 4.0, 2.0, 3.0, 9.0, 7.0]
