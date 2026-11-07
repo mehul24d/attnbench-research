@@ -146,6 +146,12 @@ code identity.
 
 Before the launch, on the Mac: the suite, and the CPU-boundary rehearsal
 (`t31_session.py --cpu-boundary`, steps 1 to 8 on the real arm classes).
-**Not yet run for this card** (7 Nov 2026): the rehearsal needs the
-x-attention clone at the pinned commit, and running it was held for the
-researcher.
+**Run for this card** (7 Nov 2026, on the researcher's yes): at `main`
+`6948ef3`, x-attention at `e379887`, torch 2.13.0 and transformers 4.46.0,
+the rehearsal passed steps 1 to 8 in 11.7 minutes, peak RSS 1.9 GiB. Step 6's
+pricing gate validated every arm (dense, mean-pool, oracle, XAttention and
+XAttention without asserts) at a share of 0.0 against the working 5%, and
+step 7's isolated share was 0.0 for each. On the CPU every graph replay
+matched the whole sequence, so the isolated original did not run; it is
+tested on the debug session's committed cells and was validated offline on
+the banked 3 GB trace, never yet on a GPU.
