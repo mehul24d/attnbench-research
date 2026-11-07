@@ -1,0 +1,209 @@
+"""The session runner in blocks (researcher's rulings, 7 Nov 2026): each
+block on its own boot and in its own directory, importing every earlier
+block after checking it, ground truth on the block's cells and the anchor
+with the block's id in every row, an interrupted block discarded alone, and
+the between-block drift check in the analysis. Dry runs on CPU, through the
+runner's own `main` per step (`test_t61_session.inproc`)."""
+
+from __future__ import annotations
+
+import json
+import sys
+from argparse import Namespace
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import t61_session as S  # noqa: E402
+import t64_session as P4  # noqa: E402
+from test_lock_blocks import A, B1, B2, B3, C1, C2  # noqa: E402
+from test_t61_session import inproc  # noqa: E402
+from test_t64_session import SHA  # noqa: E402
+
+from attnbench.analysis import block_drift as BD  # noqa: E402
+
+T64 = P4.T64
+EXTRA = ["--fa3-sha256", SHA]
+
+
+def write_lock(tmp_path, *, blocks=None, name="lock.json") -> Path:
+    spec = {"max_hours": 2.2, "anchor": A, "blocks": blocks or [
+        {"id": "b1", "steps": B1}, {"id": "b2", "steps": B2, "cells": [C1]},
+        {"id": "b3", "steps": B3, "cells": [C2]}]}
+    p = tmp_path / name
+    p.write_text(json.dumps({"blocks": {"P4": spec}}))
+    return p
+
+
+def block(cfg, lock, bid, imports=(), dry_run=True):
+    br, why = S.block_run(cfg, Namespace(lock=str(lock), block=bid,
+                                         import_block=[str(d) for d in imports], dry_run=dry_run))
+    assert why is None, why
+    return br
+
+
+def run_block(cfg, tmp_path, lock, bid, imports=(), calls=None, start=None):
+    d = tmp_path / bid
+    br = block(cfg, lock, bid, imports)
+    rc = S.run_session(cfg, d, start=start or "prereqs", extra=EXTRA if cfg is T64 else [],
+                       dry_run=True, sync=False, runner=inproc(cfg, calls), block=br)
+    return rc, d
+
+
+def gt_rows(cfg, d):
+    return json.loads((S.step_dir(d, "ground_truth", cfg) / "ground_truth.json").read_text())
+
+
+def three(tmp_path, monkeypatch=None):
+    lock = write_lock(tmp_path)
+    ran = {b: [] for b in ("b1", "b2", "b3")}
+    rc1, d1 = run_block(T64, tmp_path, lock, "b1", calls=ran["b1"])
+    rc2, d2 = run_block(T64, tmp_path, lock, "b2", [d1], calls=ran["b2"])
+    rc3, d3 = run_block(T64, tmp_path, lock, "b3", [d1, d2], calls=ran["b3"])
+    return lock, (rc1, rc2, rc3), (d1, d2, d3), ran
+
+
+def test_three_blocks_run_in_turn_on_their_own_boots_and_the_prediction_is_made_once(tmp_path):
+    lock, rcs, (d1, d2, d3), ran = three(tmp_path)
+    assert rcs == (0, 0, 0)
+    boot = ["prereqs", "preflight", "fa3_import"]
+    assert ran["b1"] == boot[:2] + ["link", "launch_queue", "probe", "masks", "host_components",
+                                    "fa3_import", "host_speed_end"]
+    assert ran["b2"] == ["prereqs", "preflight", "device_components", "fa3_import",
+                         "dense_select", "host_speed_mid", "predict", "ground_truth",
+                         "late_check", "trace_checks", "host_speed_end"]
+    assert ran["b3"] == boot + ["ground_truth", "late_check", "trace_checks", "host_speed_end"]
+    m3 = json.loads((d3 / "manifest.json").read_text())
+    assert m3["block"]["id"] == "b3" and set(m3["block"]["imported"]) == {"b1", "b2"}
+    imported = {a["step"]: a["imported_from"] for a in m3["attempts"] if a.get("imported_from")}
+    assert imported["predict"] == "b2" and imported["link"] == "b1"
+    # one prediction, made in b2 and reused by b3; b3's late check reads it
+    assert json.loads((d3 / S.RECEIPT).read_text()) == json.loads((d2 / S.RECEIPT).read_text())
+    assert S.last_status(m3)["late_check"] == "passed"
+    # the rows: the block's cells and the anchor, each with the block's id
+    for d, bid, cell in ((d2, "b2", C1), (d3, "b3", C2)):
+        rows = gt_rows(T64, d)["untraced"]["rows"]
+        assert {r["block"] for r in rows} == {bid}
+        assert sorted((r["arm"], r["anchor"]) for r in rows) == sorted(
+            [(A["arm"], True), (cell["arm"], False)])
+
+
+def test_the_drift_check_reads_every_block_and_names_one_that_moved(tmp_path, monkeypatch):
+    lock = write_lock(tmp_path)
+    _, d1 = run_block(T64, tmp_path, lock, "b1")
+    _, d2 = run_block(T64, tmp_path, lock, "b2", [d1])
+    monkeypatch.setenv("ATTNBENCH_FAKE_DRIFT", "0.08")
+    _, d3 = run_block(T64, tmp_path, lock, "b3", [d1, d2])
+    got = BD.collect([d1, d2, d3], ground_truth_dir=S.step_dir(Path(), "ground_truth", T64).name)
+    assert got["blocks"] == ["b1", "b2", "b3"] and got["discarded"] == []
+    assert len(got["rows"]) == 4 and got["code_commit"] == "dry"
+    dr = BD.drift(got["rows"], order=["b1", "b2", "b3"], bound=0.05)
+    assert dr["reference_block"] == "b2" and dr["anchor"] == ("dense", 1.0, 8192, 1)
+    assert dr["per_block"]["b3"]["relative_difference"] == pytest.approx(0.08)
+    assert not dr["passed"] and dr["above"] == ["b3"]
+    assert BD.drift(got["rows"], order=["b1", "b2", "b3"], bound=0.1)["passed"]
+
+
+def test_a_block_refuses_an_earlier_block_it_cannot_trust(tmp_path):
+    lock, _, (d1, d2, d3), _ = three(tmp_path)
+    args = lambda bid, imports, lk=lock: Namespace(lock=str(lk), block=bid, dry_run=True,  # noqa: E731
+                                                   import_block=[str(d) for d in imports])
+    _, why = S.block_run(T64, args("b3", [d2]))
+    assert "needs ['b1', 'b2'], given ['b2']" in why
+    _, why = S.block_run(T64, args("b2", [d1, d1]))
+    assert "given twice" in why
+    # every check before anything runs: discarded, another spec, another commit, a failed step
+    (d1 / S.DISCARD).write_text("restarted")
+    br = block(T64, lock, "b3", [d1, d2])
+    assert S.run_session(T64, tmp_path / "x", start="prereqs", extra=EXTRA, dry_run=True,
+                         sync=False, runner=inproc(T64), block=br) == 2
+    assert not (tmp_path / "x" / "manifest.json").exists() or \
+        not json.loads((tmp_path / "x" / "manifest.json").read_text()).get("block")
+    (d1 / S.DISCARD).unlink()
+    other = write_lock(tmp_path, name="other.json", blocks=[
+        {"id": "b1", "steps": B1}, {"id": "b2", "steps": B2, "cells": [C2]},
+        {"id": "b3", "steps": B3, "cells": [C1]}])
+    assert any("not b1 of" in p for p in S.verify_import(T64, block(T64, other, "b3", [d1, d2]),
+                                                          "b1", d1, True))
+    m = json.loads((d1 / "manifest.json").read_text())
+    (d1 / "manifest.json").write_text(json.dumps({**m, "code_commit": "abc"}))
+    assert any("every block runs one commit" in p
+               for p in S.verify_import(T64, block(T64, lock, "b3", [d1, d2]), "b1", d1, True))
+    m["attempts"].append({"step": "probe", "status": "failed"})
+    (d1 / "manifest.json").write_text(json.dumps(m))
+    assert any("['probe'] did not pass" in p
+               for p in S.verify_import(T64, block(T64, lock, "b3", [d1, d2]), "b1", d1, True))
+
+
+def test_a_later_block_on_another_cpu_stops_after_its_preflight(tmp_path, monkeypatch):
+    lock = write_lock(tmp_path)
+    _, d1 = run_block(T64, tmp_path, lock, "b1")
+    monkeypatch.setenv("ATTNBENCH_FAKE_CPU_MODEL", "another cpu")
+    calls = []
+    rc, d2 = run_block(T64, tmp_path, lock, "b2", [d1], calls=calls)
+    assert rc == 1 and calls == ["prereqs", "preflight"]
+    a = json.loads((d2 / "manifest.json").read_text())["attempts"][-1]
+    assert a["step"] == "preflight" and a["status"] == "failed"
+    assert "cpu_model is 'another cpu' here and 'fake cpu' in block b1" in a["reason"]
+
+
+def test_an_interrupted_block_is_discarded_alone(tmp_path, monkeypatch):
+    lock = write_lock(tmp_path)
+    _, d1 = run_block(T64, tmp_path, lock, "b1")
+    _, d2 = run_block(T64, tmp_path, lock, "b2", [d1])
+    _, d3 = run_block(T64, tmp_path, lock, "b3", [d1, d2])
+    # b3 as a real session that began on boot A and is resumed on boot B
+    m = json.loads((d3 / "manifest.json").read_text())
+    (d3 / "manifest.json").write_text(json.dumps({**m, "dry_run": False, "boot_id": "boot-A"}))
+    monkeypatch.setattr(S, "boot_id", lambda: "boot-B")
+    br = S.BlockRun(block(T64, lock, "b3", [d1, d2]).spec, "b3",
+                    block(T64, lock, "b3", [d1, d2]).steps, (), "x")
+    ran = []
+    assert S.run_session(T64, d3, start="prereqs", extra=EXTRA, dry_run=False, sync=False,
+                         runner=lambda cmd, log: ran.append(cmd) or 1, block=br) == 2
+    assert ran == [] and "Block b3 of P4" in (d3 / S.DISCARD).read_text()
+    got = BD.collect([d1, d2, d3], ground_truth_dir=S.step_dir(Path(), "ground_truth", T64).name)
+    assert got["blocks"] == ["b1", "b2"] and [x["block"] for x in got["discarded"]] == ["b3"]
+    assert {r["block"] for r in got["rows"]} == {"b2"}
+
+
+def test_a_block_and_a_whole_session_never_share_a_directory(tmp_path):
+    lock = write_lock(tmp_path)
+    _, d1 = run_block(T64, tmp_path, lock, "b1")
+    assert S.run_session(T64, d1, start="prereqs", extra=EXTRA, dry_run=True, sync=False,
+                         runner=inproc(T64)) == 2
+    whole = tmp_path / "whole"
+    S.run_session(T64, whole, start="prereqs", extra=EXTRA, dry_run=True, sync=False,
+                  runner=lambda c, l: 1)
+    assert S.run_session(T64, whole, start="prereqs", extra=EXTRA, dry_run=True, sync=False,
+                         runner=inproc(T64), block=block(T64, lock, "b1")) == 2
+    assert S.run_session(T64, d1, start="predict", extra=EXTRA, dry_run=True, sync=False,
+                         runner=inproc(T64), block=block(T64, lock, "b1")) == 2   # not b1's
+
+
+def test_rows_that_are_not_the_blocks_cells_are_refused(tmp_path):
+    block_ = {"id": "b2", "cells": [("xattention", None, 2048, 1)], "anchor": ("dense", 1.0, 8192, 1),
+              "run_cells": [("dense", 1.0, 8192, 1), ("xattention", None, 2048, 1)]}
+    good = {"untraced": {"rows": [dict(zip(("arm", "density", "context_length", "batch"), c))
+                                  for c in block_["run_cells"]]}}
+    S.tag_rows(good, block_)
+    assert [r["anchor"] for r in good["untraced"]["rows"]] == [True, False]
+    bad = {"untraced": {"rows": good["untraced"]["rows"][:1]}}
+    with pytest.raises(S.StepFailed, match="not this block's"):
+        S.tag_rows(bad, block_)
+
+
+def test_the_p2_session_runs_in_the_same_blocks(tmp_path):
+    lock = tmp_path / "p2.json"
+    lock.write_text(json.dumps({"blocks": {"P2": {"max_hours": 2.2, "anchor": A, "blocks": [
+        {"id": "b1", "steps": ["link", "launch_queue", "probe", "mask_gate", "host_components"]},
+        {"id": "b2", "steps": B2, "cells": [C1]}, {"id": "b3", "steps": B3, "cells": [C2]}]}}}))
+    T61 = S.T61
+    rc1, d1 = run_block(T61, tmp_path, lock, "b1")
+    rc2, d2 = run_block(T61, tmp_path, lock, "b2", [d1])
+    rc3, d3 = run_block(T61, tmp_path, lock, "b3", [d1, d2])
+    assert (rc1, rc2, rc3) == (0, 0, 0)
+    assert {r["block"] for r in gt_rows(T61, d3)["untraced"]["rows"]} == {"b3"}

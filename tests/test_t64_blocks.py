@@ -26,32 +26,71 @@ def test_a_card_without_its_tables_is_refused():
         B.card_numbers("nothing here")
 
 
-def test_cap_is_rate_times_planned_hours_times_1_3_and_halt_is_1_5_times_the_hours():
-    blocks = B.plan_blocks(N["steps"], N["setup_h"], N["teardown_h"], max_hours=2.2)
-    for b in blocks:
-        planned = N["setup_h"] + b.run_min / 60 + N["teardown_h"]
-        assert b.cap_inr == math.ceil(668.04 * planned * 1.3)
-        assert b.halt_min == math.ceil(1.5 * planned * 60)
-        assert b.planned_h <= 2.2 + 0.2          # only the atomic group may run over a little
-    assert [s for b in blocks for s in b.steps] == [n for n, _ in N["steps"]]
+def plan(h=2.2, pairing="P4"):
+    n = B.card_numbers(B.CARDS[pairing].read_text())
+    return B.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=B.BOOT[pairing],
+                         rate=B.SPOT_RATES[pairing], max_hours=h)
 
 
-def test_predict_ground_truth_and_late_check_stay_in_one_block():
-    for h in (2.0, 2.2, 2.5, 3.0):
-        blocks = B.plan_blocks(N["steps"], N["setup_h"], N["teardown_h"], max_hours=h)
-        holder = [b for b in blocks if "predict" in b.steps]
-        assert len(holder) == 1 and {"ground_truth", "late_check"} <= set(holder[0].steps)
+def test_the_spot_terms_are_cap_1_3_halt_1_3_rounded_down_and_delete_10_minutes_after():
+    # researcher, 7 Nov 2026: halt = 1.3 x planned hours, hard delete = halt + 10 min
+    for pairing in ("P4", "P2"):
+        n, rate = B.card_numbers(B.CARDS[pairing].read_text()), B.SPOT_RATES[pairing]
+        for b in plan(pairing=pairing):
+            planned = n["setup_h"] + b.run_min / 60 + n["teardown_h"]
+            assert b.cap_inr == math.ceil(rate * planned * 1.3)
+            assert b.halt_min == math.floor(1.3 * planned * 60)
+            assert b.delete_min == b.halt_min + 10
+            assert b.cost_at_halt_inr == math.ceil(rate * b.halt_min / 60)
 
 
-def test_the_halt_costs_more_than_the_cap_by_construction():
-    """1.5 x the hours against 1.3 x the cost: a flagged inconsistency, not a hidden one."""
-    b = B.plan_blocks(N["steps"], N["setup_h"], N["teardown_h"])[0]
-    assert b.halt_exceeds_cap and b.cost_at_halt_inr / b.cap_inr == pytest.approx(1.5 / 1.3, abs=0.01)
-    assert "ABOVE the cap" in B.report([b], 668.04)
+@pytest.mark.parametrize("h", [1.9, 2.0, 2.2, 2.5, 3.0])
+@pytest.mark.parametrize("pairing", ["P4", "P2"])
+def test_the_cost_at_the_halt_is_never_above_the_cap(h, pairing):
+    for b in plan(h, pairing):
+        assert b.cost_at_halt_inr <= b.cap_inr, b
+        assert not b.halt_exceeds_cap
+        assert b.cost_at_delete_inr > b.cap_inr          # the backstop is past the cap
 
 
-def test_a_group_longer_than_a_block_is_refused():
+def test_p4_is_three_blocks_of_at_most_2_2_hours_with_ground_truth_split():
+    blocks = plan(2.2)
+    assert len(blocks) == 3 and all(b.planned_h <= 2.2 + 1e-9 for b in blocks)
+    assert [b.planned_h for b in blocks] == [1.883, 2.2, 1.883]
+    assert sum(b.ground_truth_min for b in blocks) == dict(N["steps"])["ground_truth"]
+    gt = [b for b in blocks if "ground_truth" in b.steps]
+    assert len(gt) == 2 and all({"late_check", "trace_checks"} <= set(b.steps) for b in gt)
+    assert "predict" in gt[0].steps and "predict" not in gt[1].steps
+    assert B.main(["--blocks", "3"]) == 0 and B.main(["--blocks", "4"]) == 2
+
+
+def test_every_step_but_the_boot_steps_is_planned_once_in_order():
+    for pairing in ("P4", "P2"):
+        names = [n for n, _ in B.card_numbers(B.CARDS[pairing].read_text())["steps"]]
+        own = [s for b in plan(pairing=pairing) for s in b.steps
+               if s not in ("ground_truth", "late_check", "trace_checks")]
+        assert own == [n for n in names if n not in B.BOOT[pairing]
+                       and n not in ("ground_truth", "late_check", "trace_checks")]
+
+
+def test_each_block_pays_its_own_boot_steps_and_the_anchor():
+    b = plan(2.2)[2]
+    boot = sum(dict(N["steps"])[s] for s in B.BOOT["P4"])
+    tail = B.ANCHOR_MIN + dict(N["steps"])["late_check"] + dict(N["steps"])["trace_checks"]
+    assert b.run_min == pytest.approx(boot + b.ground_truth_min + tail)
+
+
+def test_the_spec_is_the_lock_files_skeleton():
+    import json
+    s = B.spec(plan(2.2), max_hours=2.2)
+    assert s["anchor"] is None and [b["id"] for b in s["blocks"]] == ["b1", "b2", "b3"]
+    assert all(b["cells"] is None for b in s["blocks"] if "ground_truth" in b["steps"])
+    assert "cells" not in s["blocks"][0]
+    assert json.loads(json.dumps(s)) == s
+
+
+def test_a_step_longer_than_a_block_is_refused():
     with pytest.raises(ValueError, match="more than a block"):
-        B.plan_blocks(N["steps"], N["setup_h"], N["teardown_h"], max_hours=1.5)
-    with pytest.raises(ValueError, match="exceed the block"):
+        B.plan_blocks(N["steps"], N["setup_h"], N["teardown_h"], max_hours=1.2)
+    with pytest.raises(ValueError, match="fill the block"):
         B.plan_blocks(N["steps"], 1.0, 1.0, max_hours=1.5)
