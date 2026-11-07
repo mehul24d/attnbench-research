@@ -116,6 +116,9 @@ EAGER_TWIN_LABEL = "eager twin, not the executed mask"
 # Compile events allowed after a compiled arm's warm-up (module docstring):
 # T4.1 lock table row 33, working value.
 RECOMPILE_GATE = 0
+# The host annotation around each layer's compiled call, in the untimed checks
+# only (`annotate`, `compiled_checks`; researcher's ruling 1 of 7 Nov 2026).
+COMPILED_CALL = "attnbench::compiled_call."
 
 
 class CompiledVariantError(RuntimeError):
@@ -203,6 +206,8 @@ class CompiledBackend:
         self._own_mask = hasattr(arm, "forward_and_mask")
         self._twin = False
         self._density: list = []
+        self._annotate = False
+        self._masks: Optional[list] = None
         if self._own_mask:
             fn = arm.forward_and_mask if mask_output else \
                 (lambda q, k, v, cfg, mask=None: arm.forward_and_mask(q, k, v, cfg, mask=mask)[0])
@@ -231,6 +236,41 @@ class CompiledBackend:
         if name in DENSITY_RECORD and "arm" in d and not d.get("_own_mask"):
             return getattr(d["arm"], name)
         raise AttributeError(f"{type(self).__name__} has no attribute {name!r}")
+
+    @property
+    def compiled_region_targets(self) -> tuple[tuple[str, str], ...]:
+        """The (module, attribute path) of each scoring function the compiled
+        function calls: an arm that builds its own mask (`forward_and_mask`)
+        runs its `estimate` inside it, the one its class or a parent defines.
+        The ground truth's probe patches none of them (researcher's ruling 1
+        of 7 Nov 2026): Dynamo traced the probe's wrapper and guarded on its
+        log, so the exploratory session's `compiled_default` XAttention
+        recompiled per call to the limit."""
+        if not self._own_mask:
+            return ()
+        return tuple((c.__module__, f"{c.__qualname__}.estimate")
+                     for c in type(self.arm).__mro__ if "estimate" in c.__dict__)
+
+    @contextlib.contextmanager
+    def annotate(self) -> Iterator[None]:
+        """Each forward's compiled call inside `COMPILED_CALL<layer>`, a host
+        annotation outside the compiled function, for the untimed Kineto
+        twin check (`compiled_checks`). A timed forward has none."""
+        self._annotate = True
+        try:
+            yield
+        finally:
+            self._annotate = False
+
+    @contextlib.contextmanager
+    def keep_masks(self) -> Iterator[list]:
+        """In the twin pass, each forward's cloned mask, kept in the list
+        yielded (the two-prompt mask dependence check, `compiled_checks`)."""
+        self._masks = kept = []
+        try:
+            yield kept
+        finally:
+            self._masks = None
 
     @contextlib.contextmanager
     def twin_pass(self) -> Iterator[None]:
@@ -262,11 +302,17 @@ class CompiledBackend:
             return self._call(self._forward, q, k, v, cfg, mask=mask)
         if self._twin:
             torch.compiler.cudagraph_mark_step_begin()
-        out, block_mask = self._call(self._forward, q, k, v, cfg, mask=mask)
+        if self._annotate:
+            with torch.autograd.profiler.record_function(f"{COMPILED_CALL}{self.layer_idx}"):
+                out, block_mask = self._call(self._forward, q, k, v, cfg, mask=mask)
+        else:
+            out, block_mask = self._call(self._forward, q, k, v, cfg, mask=mask)
         if self._twin:
             from .xattention import density_tensor
             m = block_mask.clone()                    # before any replay reuses it
             self._density.append(density_tensor(m, m.shape[-2], m.shape[-1]))
+            if self._masks is not None:
+                self._masks.append(m)
         return out
 
     @property

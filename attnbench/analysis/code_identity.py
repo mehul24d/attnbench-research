@@ -111,6 +111,7 @@ BUILD_CONSTANTS: dict[str, tuple[tuple[str, str], ...]] = {
 # repositories without the files are unaffected.
 _BSA_KERNEL_PATH = (
     ("attnbench/backends/block_sparse.py", "kernel_interface"),
+    ("attnbench/backends/block_sparse.py", "_annotated"),
     ("attnbench/backends/block_sparse.py", "_call"),
     ("attnbench/bsa_contract.py", "row_blockmask"),
     ("attnbench/bsa_contract.py", "install"),

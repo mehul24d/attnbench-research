@@ -25,6 +25,20 @@ every check pass, so a deployable arm must log at least one score event
 inside every timed rep: a probe pointing at the wrong function fails loudly
 instead of passing.
 
+**A compiled arm's estimator inside its compiled function** (researcher's
+ruling 1 of 7 Nov 2026). The probe is Python, and Dynamo traces what it
+wraps: in the exploratory session (7 Nov 2026) compiled XAttention's
+`forward_and_mask` guarded on the length of the probe's log and recompiled
+per call to the limit. So the probe patches nothing inside an arm's
+compiled region (`probe_for`, from `CompiledBackend.compiled_region_targets`),
+and such an arm (`needs_compiled_checks`: compiled, its estimator in the
+backend) logs no score event in its timed blocks. In their place
+`check_timed_region` requires the two untimed checks of `compiled_checks`,
+run after the timed blocks and the recompile gate (`time_arms`'
+`compiled_check_of`): the Kineto twin check and the two-prompt mask
+dependence check, both passed. A compiled arm whose estimator runs in the
+model's eager code (mean-pool) keeps its probe and its score events.
+
 **Copies and synchronisations.** Everything a forward does runs inside the
 block, including mask copies and the waits an estimator makes. The block
 synchronises the device on entry and again before the clock stops, so queued
@@ -263,6 +277,22 @@ class ScoringProbe:
         self._saved.clear()
 
 
+def needs_compiled_checks(arm: "Arm") -> bool:
+    """A compiled arm whose estimator runs inside its compiled function (its
+    backend's): the probe cannot see it, so `compiled_checks` stand in."""
+    return (arm.compile_setting is not None and arm.kind == IN_BACKEND
+            and bool(getattr(arm.backend, "compiled_region_targets", ())))
+
+
+def probe_for(log: EventLog, arm: "Arm") -> ScoringProbe:
+    """The arm's probe: every target, less those inside its compiled region
+    (module docstring)."""
+    inside = set(getattr(arm.backend, "compiled_region_targets", ())) \
+        if arm.compile_setting is not None else set()
+    return ScoringProbe(log, score_targets=[t for t in SCORE_TARGETS if t not in inside],
+                        mask_targets=[t for t in MASK_TARGETS if t not in inside])
+
+
 @contextlib.contextmanager
 def timed_block(log: EventLog, rep: int, *, synchronize: Callable[[], None],
                 clock: Callable[[], float], out: list,
@@ -299,8 +329,11 @@ def timed_block(log: EventLog, rep: int, *, synchronize: Callable[[], None],
         log.open_rep = None
 
 
-def check_timed_region(log: EventLog, arm: Arm, reps: list) -> None:
-    """Refuse a measurement that breaks the T2.13 requirement for `arm`."""
+def check_timed_region(log: EventLog, arm: Arm, reps: list, *,
+                       compiled_checks: Optional[dict] = None) -> None:
+    """Refuse a measurement that breaks the T2.13 requirement for `arm`. An
+    arm that `needs_compiled_checks` is held to `compiled_checks` (both
+    passed) in place of a score event in every timed block."""
     for rep in reps:
         last = [e for e in log.events if e.rep == rep]
         if not last or last[-1].kind != "sync":
@@ -316,7 +349,9 @@ def check_timed_region(log: EventLog, arm: Arm, reps: list) -> None:
                 f"build call(s) ran outside the timed block "
                 f"({sorted({e.what for e in outside})}). Its estimator must "
                 f"be timed (plan Section 5.3, T2.13)")
-        for rep in reps:
+        if needs_compiled_checks(arm):
+            _check_compiled(arm, compiled_checks)
+        for rep in reps if not needs_compiled_checks(arm) else ():
             if not any(e.kind == "score" and e.rep == rep for e in log.events):
                 raise TimedRegionError(
                     f"{arm.name} is deployable, but timed block {rep} computed "
@@ -341,6 +376,21 @@ def check_timed_region(log: EventLog, arm: Arm, reps: list) -> None:
             f"{arm.name} declares builder_kind={arm.builder_kind!r}, but the timed blocks "
             f"constructed its mask on {sorted(seen)}: builder_kind is where the timed "
             f"construction runs (rule 2)")
+
+
+def _check_compiled(arm: Arm, checks: Optional[dict]) -> None:
+    if checks is None:
+        raise TimedRegionError(
+            f"{arm.name} is compiled with its estimator inside its compiled function, which "
+            f"no probe sees, and it has no compiled checks (`compiled_checks`: the Kineto "
+            f"twin check and the two-prompt mask dependence check)")
+    failed = [(k, (checks.get(k) or {}).get("problems") or ["not run"])
+              for k in ("kineto_twin", "mask_dependence")
+              if not (checks.get(k) or {}).get("passed")]
+    if failed:
+        raise TimedRegionError(
+            f"{arm.name}: its compiled checks did not pass: "
+            + "; ".join(f"{k}: {', '.join(map(str, p))}" for k, p in failed))
 
 
 def untimed_setup(wrapped, input_ids, arm: Arm, *, score_kwargs: Optional[dict]) -> dict:
@@ -500,7 +550,9 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
               clock: Callable[[], float] = time.perf_counter,
               wall_clock: Callable[[], float] = time.time,
               score_kwargs: Optional[dict] = None,
-              tracer: Optional[Callable] = None) -> dict:
+              tracer: Optional[Callable] = None,
+              compiled_check_of: Optional[Callable[[Arm, Callable[..., None]], dict]] = None
+              ) -> dict:
     """Time `arms` interleaved per round, the order rotating each round, until
     `reps` clean rounds exist or the rerun budget is spent. Every arm's timed
     region is checked, the dense control's drift and the clock sampler decide
@@ -517,6 +569,12 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
     session's). Every row carries its context length and batch (the
     prompt's), both densities and the arm's builder kind, and is checked
     against `gt_schema` before anything is returned.
+
+    `compiled_check_of(arm, run)` gives the compiled checks of an arm that
+    `needs_compiled_checks` (`compiled_checks.run_checks` is the session's),
+    untimed, after its recompile gate; `run(backend=None, input_ids=None)`
+    is one forward, on this prompt unless `input_ids` names another. Such an
+    arm is refused without them, and its row carries them.
     """
     if reps < 1:
         raise ValueError("reps must be >= 1")
@@ -549,7 +607,7 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
     first_started = None
     for a in arms:
         log = logs[a.name]
-        with ScoringProbe(log):
+        with probe_for(log, a):
             log.phase = SETUP
             kwargs[a.name] = untimed_setup(wrapped, input_ids, a, score_kwargs=score_kwargs)
             log.phase = WARMUP
@@ -577,7 +635,7 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
         round_ms, clocks = {}, {}
         for a in order:
             took, got = [], []
-            with ScoringProbe(logs[a.name]), _tracing(tracer):
+            with probe_for(logs[a.name], a), _tracing(tracer):
                 with timed_block(logs[a.name], r, synchronize=synchronize,
                                  clock=clock, out=took, sampler=sampler,
                                  clock_out=got):
@@ -602,17 +660,29 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
         r += 1
 
     for a in arms:
-        check_timed_region(logs[a.name], a, list(range(r)))
+        if not needs_compiled_checks(a):
+            check_timed_region(logs[a.name], a, list(range(r)))
     # Before the untimed twin pass: a compiled arm that recompiled after its
     # warm-up is refused (ruling, 1 Nov 2026, after Shakedown 5).
     recompiles = {a.name: a.backend.check_recompiles() for a in arms
                   if hasattr(a.backend, "check_recompiles")}
+
+    def runner(a):
+        def run(backend=None, input_ids=None, cell_ids=input_ids):
+            wrapped.run_measured(input_ids if input_ids is not None else cell_ids,
+                                 backend if backend is not None else a.backend,
+                                 cfg=a.cfg, logits_to_keep=1, **kwargs[a.name])
+        return run
+    compiled = {}
+    for a in arms:          # untimed, after the recompile gate (ruling 1 of 7 Nov 2026)
+        if needs_compiled_checks(a):
+            compiled[a.name] = (dict(compiled_check_of(a, runner(a)))
+                                if compiled_check_of is not None else None)
+            check_timed_region(logs[a.name], a, list(range(r)),
+                               compiled_checks=compiled[a.name])
     densities = {}
     for a in arms:          # untimed: after every block, outside the probe and the tracer
-        def run(backend=None, a=a):
-            wrapped.run_measured(input_ids, backend if backend is not None else a.backend,
-                                 cfg=a.cfg, logits_to_keep=1, **kwargs[a.name])
-        densities[a.name] = dict(density_of(a, run))
+        densities[a.name] = dict(density_of(a, runner(a)))
     batch, length = int(input_ids.shape[0]), int(input_ids.shape[-1])   # (batch, tokens)
     flagged_rounds = {x["round"] for x in rounds if x["flagged"]}
     rows = []
@@ -640,6 +710,7 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
             "context_length": length, "batch": batch, "builder_kind": a.builder_kind,
             **({"recompiles_after_warmup": recompiles[a.name],
                 "code_path_identity": a.backend.identity} if a.name in recompiles else {}),
+            **({"compiled_checks": compiled[a.name]} if a.name in compiled else {}),
             **{k: densities[a.name][k] for k in ("mask_density", "executed_density",
                                                   "eager_mask_density", "density_vs_eager",
                                                   "density_vs_eager_flagged")

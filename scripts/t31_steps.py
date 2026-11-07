@@ -1361,6 +1361,7 @@ def device_components_real(args, cfg) -> dict:
     return {"cells": len(entries), "pricing_gate": gate_brief(gate),
             "cost_sources": {cell_dir(Path(), *device_cell_key(e)).name: e["cost_sources"]
                              for e in entries},
+            "isolated_segments": segment_findings(entries),
             "resumed": run["resumed"], "peak_rss_mb": run["peak_rss_mb"],
             "rss_ceiling_gb": run["rss_ceiling_gb"]}
 
@@ -1418,6 +1419,33 @@ def isolated_original(a, rec, cd: Path) -> tuple[Path, dict]:
     return stream, {"stream": stream.name, **info}
 
 
+def match_original(seq, orig, counts) -> tuple:
+    """The isolated original's match and, for a replay in blocks of layers,
+    each segment's report (researcher's ruling 2 of 7 Nov 2026): matched
+    segment by segment (`replay.match_segmented`), so no stretch runs across
+    a cut and a loss is placed in the segment that lost it, with each
+    segment's launches no device activity answered. (match, report or None)."""
+    from attnbench.components import replay
+    nodes = replay.replay_nodes(orig, exclude=replay.FLUSH)
+    segments = replay.segments_from_counts(counts or {})
+    if segments is None:
+        return replay.match(seq, nodes), None
+    m = replay.match_segmented(seq, nodes, segments)
+    return m, replay.segment_report(
+        m, segments, replay.launches_without_activity(orig, exclude=replay.FLUSH))
+
+
+def segment_findings(entries) -> dict:
+    """For the step's result (pulled with the logs): each cell replayed in
+    segments, its count of segments and those with an unmatched position or
+    a launch with no device activity."""
+    return {cell_dir(Path(), *device_cell_key(e)).name: {
+                "segments": len(e["isolated_segments"]),
+                "with_loss": [s for s in e["isolated_segments"]
+                              if s["unmatched"] or s["launches_without_activity"]]}
+            for e in entries if e.get("isolated_segments")}
+
+
 def device_cell(h, out: Path, session: Path, cell) -> dict:
     """One cell of step 6, in this process: its `cells.json` entry. Every
     device position is priced by structure and labelled (`replay.
@@ -1456,11 +1484,11 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
         raise StepFailed(f"{c['dir']}: {failure}", {"mask_diagnosis": md.summaries(diag)})
     m = replay.match(rec.sequence, replay.replay_nodes(
         replay.profile_replay(cap, cd / "replay_trace.json")))
-    original, stream = None, None
+    original, stream, segments = None, None, None
     if m.unmatched_positions:
         torch.cuda.synchronize()
         orig, stream = isolated_original(a, rec, cd)
-        original = replay.match(rec.sequence, replay.replay_nodes(orig, exclude=replay.FLUSH))
+        original, segments = match_original(rec.sequence, orig, stream)
     pricing = replay.price_positions(rec.sequence, m, original)
     summary = {**pricing.summary(rec.sequence),
                **({"isolated_original_stream": stream} if stream else {})}
@@ -1469,7 +1497,7 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
             "context_length": c["context_length"], "budget": c["budget"],
             "batch": c["batch"], "prompt_id": c["prompt_id"],
             "code_path": c["code_path"], "cost_sources": pricing.counts(),
-            "pricing": summary}
+            "pricing": summary, **({"isolated_segments": segments} if segments else {})}
     if pricing.unpriced:
         return {**head, "ops": None}
     prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
@@ -1691,11 +1719,19 @@ def step_hold(args, cfg) -> dict:
             "skew_s": skew.total_seconds(), "guard_s": guard.total_seconds()}
 
 
+GROUP_NOT_RUN = "no arm: the session runs no arm of this group"
+
+
 def step_ground_truth(args, cfg) -> dict:
     """T2.13, one process per compile-setting group (Appendix A, 27 Oct 2026),
-    each with its own dense control."""
+    each with its own dense control. A group with no arm (`[]`, a T3.2a
+    repeat's compiled groups; researcher's ruling 4 of 7 Nov 2026) is not
+    run."""
     found = {}
-    for group in cfg["gt_groups"]:
+    for group, arms in cfg["gt_groups"].items():
+        if not arms:
+            found[group] = {"not_run": GROUP_NOT_RUN}
+            continue
         d = Path(args.out) / group
         cmd = _py("t31_steps.py", "ground-truth-one", "--group", group, "--out", str(d),
                   "--session", str(args.session), *(["--dry-run"] if args.dry_run else []),
@@ -1810,9 +1846,17 @@ def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
                 settings.append(setting)
             wrapped, ids, pid, arms, score_kwargs = h.timing_arms(
                 names, L, densities=dens, batch=b, backends=backends, compile_settings=settings)
+            check_of, pid_b = None, None
+            if setting is not None:        # ruling 1 of 7 Nov 2026: no probe in a compiled region
+                from attnbench import compiled_checks as cc
+                ids_b, pid_b = second_prompt(h, L, ids)
+                n_layers = int(h.model.config.num_hidden_layers)
+                check_of = lambda a, run, ids_b=ids_b: cc.run_checks(   # noqa: E731
+                    a, run, second_ids=ids_b, n_layers=n_layers)
             res = gt.time_arms(wrapped, ids, arms, reps=cfg["reps"], controls=controls,
                                warmup=cfg["warmup"], density_of=gt.kernel_densities,
-                               synchronize=torch.cuda.synchronize, score_kwargs=score_kwargs)
+                               synchronize=torch.cuda.synchronize, score_kwargs=score_kwargs,
+                               compiled_check_of=check_of)
             stamp = res["first_clocked_block_started_at"]
             ds.check_control(choice, choice.chosen, stamp, key=cell)
             first.append(stamp)
@@ -1820,10 +1864,24 @@ def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
                 row.update(model=cfg["model"], cell_arm=n, nominal_density=d, budget=L,
                            group=args.group, compile_setting=setting, prompt_id=pid,
                            session_receipt_sha256=receipt.sha256,
-                           working_values=cfg.get("working_values"))
+                           working_values=cfg.get("working_values"),
+                           **({"second_prompt_id": pid_b} if "compiled_checks" in row else {}))
             _write_json(out / f"gt_L{L}_b{b}.json", res)
             h.unwrap()
     return first
+
+
+def second_prompt(h, length: int, ids):
+    """The two-prompt mask dependence check's second prompt (researcher's
+    ruling 1 of 7 Nov 2026): the next prompt at the cell's budget, cut to the
+    cell prompt's tokens so every mask has the cell's shape, at the cell's
+    batch. Refused if it is shorter than the cell's prompt. (ids, prompt id)."""
+    other, pid = h.input_ids(length, index=1)
+    n = int(ids.shape[-1])
+    if int(other.shape[-1]) < n:
+        raise StepFailed(f"the second prompt {pid} has {int(other.shape[-1])} tokens, fewer "
+                         f"than the cell prompt's {n}: no mask of the cell's shape")
+    return other[..., :n].repeat(int(ids.shape[0]), 1), pid
 
 
 class SimpleChoice:

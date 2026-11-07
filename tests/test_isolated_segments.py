@@ -160,9 +160,9 @@ def test_a_roll_is_made_before_each_block_of_layers_and_nothing_stays_hooked(tmp
     rolls = []
     real = RP._Rolled.roll
 
-    def spy(self):
+    def spy(self, layer):
         rolls.append(len(self.parts))
-        return real(self)
+        return real(self, layer)
     with TapeRecorder("cpu") as rec:
         toy()
     RP._Rolled.roll = spy
@@ -204,13 +204,19 @@ def test_a_replay_in_blocks_holds_the_bank_as_the_whole_replay_does(tmp_path):
     import test_components_replay as tcr
     arm = tcr.Arm(torch.arange(4.0), layers=3)
     tape, bank = tcr.recorded(arm)
+    ids = [torch.nn.Identity() for _ in range(3)]
+
+    def prefill():                     # the blocks' layers run, so each roll is at its boundary
+        for layer in ids:
+            layer(torch.zeros(1))
+        arm()
     kw = dict(device="cpu", masks=bank, flush=lambda: None, sync=lambda: None, kernel_module=arm.mod,
-              layers=[torch.nn.Identity() for _ in range(3)], segment_layers=1)
-    RP.isolated_replay_compact(arm, tape, tmp_path / "a.json", **kw)
+              layers=ids, segment_layers=1)
+    RP.isolated_replay_compact(prefill, tape, tmp_path / "a.json", **kw)
     assert all(torch.equal(s, b) for s, b in zip(arm.mod.seen, bank.tensors()))
     arm.layers = 2
     with pytest.raises(RP.ReplayError, match="made 2 kernel calls; 3 masks are banked"):
-        RP.isolated_replay_compact(arm, tape, tmp_path / "b.json", **kw)
+        RP.isolated_replay_compact(prefill, tape, tmp_path / "b.json", **kw)
     assert not [p for p in tmp_path.iterdir() if p.name != "a.events.jsonl"]
 
 
@@ -338,3 +344,267 @@ def test_a_banked_stream_cut_and_stitched_reads_as_the_original(tmp_path, cell, 
     assert hp.isolated_host_s(stitched, seq, pos) == hp.isolated_host_s(src, seq, pos)
     assert len(pos) > 0 or cell.startswith("xattention")
     assert len(ts.load_compact(stitched)) == len(ts.load_compact(src))      # k regions became one
+
+
+# --- matching by segment (researcher's ruling 2 of 7 Nov 2026) ---------------------------------------
+#
+# The exploratory session's oracle cells left 16 positions unpriced (L8075 d0.5: the
+# `masked_fill_` of layers 25 and 26 and the `nonzero` of layers 26 and 27; L16370 and
+# L32700 d0.25: layer 26's `masked_fill_` and layer 27's `nonzero`). The layers are one
+# structure repeated, so a match of the whole stream reports a layer's worth of nodes
+# lost anywhere at the last layers, and a stretch can run across a cut. Matched within
+# its own segment, a position is compared only with the nodes of the profiler session
+# that ran it, and what is lost is reported where it was lost.
+
+from attnbench.components.op_sequence import CodePath, OpSequence, SeqKind, SeqOp  # noqa: E402
+from attnbench.components.replay import Node  # noqa: E402
+
+_CP = CodePath(arm="oracle", gpu="NVIDIA L4", implementation="oracle:bsa")
+_LAYER = ("q", "nz_a", "nz_b", "mf", "o")
+
+
+def _layered(n=6, *, between=None):
+    """`embed`, n layers of `_LAYER` (one kernel per position), `norm`; with
+    `between`, an unlayered position after that layer."""
+    ops = [SeqOp(SeqKind.KERNEL, aten_op="aten::embedding", kernels=("embed",))]
+    for l in range(n):
+        ops += [SeqOp(SeqKind.KERNEL, layer=l, aten_op=f"aten::{k}", kernels=(k,)) for k in _LAYER]
+        if between == l:
+            ops.append(SeqOp(SeqKind.KERNEL, aten_op="aten::add", kernels=("between",)))
+    ops.append(SeqOp(SeqKind.KERNEL, aten_op="aten::norm", kernels=("norm",)))
+    return OpSequence(code_path=_CP, context_length=2048, batch=1, streams=(7,), ops=tuple(ops))
+
+
+SEGMENTS = [{"layers": [0, 1], "correlations": [0, 99]},
+            {"layers": [2, 3], "correlations": [100, 199]},
+            {"layers": [4, 5], "correlations": [200, 299]}]
+
+
+def _seg_of_layer(layer, segments=SEGMENTS):
+    return next(k for k, s in enumerate(segments) if s["layers"][0] <= layer <= s["layers"][1])
+
+
+def _stream(seq, *, keep=lambda p: True, segments=SEGMENTS):
+    """The isolated original's nodes for `seq`, each with a correlation in the
+    range of the segment that ran its position; `keep` drops positions."""
+    out, seg, used = [], 0, {}
+    for p, op in enumerate(seq.ops):
+        if op.layer is not None:
+            seg = _seg_of_layer(op.layer, segments)
+        c = segments[seg]["correlations"][0] + used.get(seg, 0)
+        used[seg] = used.get(seg, 0) + 1
+        if keep(p):
+            out.append(Node("kernel", op.kernels[0], 1e-6, c, None))
+    return out
+
+
+def _positions(seq, layer, names=_LAYER):
+    return [p for p, op in enumerate(seq.ops) if op.layer == layer and op.kernels[0] in names]
+
+
+def _in_segment(seq, k, positions):
+    lo, hi = SEGMENTS[k]["layers"]
+    return all(seq.ops[p].layer is not None and lo <= seq.ops[p].layer <= hi for p in positions)
+
+
+def test_a_layer_lost_from_the_stream_is_reported_in_the_segment_that_lost_it():
+    seq = _layered()
+    lost = set(_positions(seq, 2))
+    nodes = _stream(seq, keep=lambda p: p not in lost)
+    whole = RP.match(seq, nodes)
+    # the defect: the whole stream's match puts the lost layer at the end
+    assert {seq.ops[p].layer for p in whole.unmatched_positions} == {5}
+    m = RP.match_segmented(seq, nodes, SEGMENTS)
+    # within a segment its layers are still one structure repeated, so the loss is
+    # placed in its segment (layers 2 and 3), not in its layer
+    assert len(m.unmatched_positions) == len(lost) and _in_segment(seq, 1, m.unmatched_positions)
+    assert [len(s["unmatched"]) for s in m.by_segment] == [0, 5, 0]
+    assert m.by_segment[1]["unmatched"] == list(m.unmatched_positions)
+    assert [s["layers"] for s in m.by_segment] == [[0, 1], [2, 3], [4, 5]]
+    assert [s["positions"] for s in m.by_segment] == [11, 10, 11]   # embed, norm at the ends
+    assert [s["nodes"] for s in m.by_segment] == [11, 5, 11]
+    assert m.device_s.keys() == {p for p in range(len(seq.ops)) if p not in m.unmatched_positions}
+
+
+def test_no_stretch_is_matched_across_a_cut():
+    seq = _layered()
+    # the last two nodes before the cut at layer 2 and the first two after it, lost
+    lost = set(_positions(seq, 1, ("mf", "o")) + _positions(seq, 2, ("q", "nz_a")))
+    m = RP.match_segmented(seq, _stream(seq, keep=lambda p: p not in lost), SEGMENTS)
+    assert set(m.unmatched_positions) == lost
+    assert m.by_segment[0]["unmatched"] == _positions(seq, 1, ("mf", "o"))
+    assert m.by_segment[1]["unmatched"] == _positions(seq, 2, ("q", "nz_a"))
+    assert m.by_segment[2]["unmatched"] == []
+
+
+def test_a_complete_stream_matches_by_segment_as_it_does_whole():
+    seq = _layered()
+    nodes = _stream(seq)
+    whole, seg = RP.match(seq, nodes), RP.match_segmented(seq, nodes, SEGMENTS)
+    assert seg.unmatched_positions == whole.unmatched_positions == ()
+    assert seg.device_s == whole.device_s and seg.extra_nodes == whole.extra_nodes == ()
+    assert (seg.n_expected, seg.n_nodes) == (whole.n_expected, whole.n_nodes)
+
+
+def test_an_unlayered_position_goes_with_the_segment_that_ran_it():
+    # an operator after layer 1's forward runs before the roll at layer 2's
+    seq = _layered(between=1)
+    where = RP.position_segments(seq, SEGMENTS)
+    first = {k: min(p for p, s in where.items() if s == k) for k in range(3)}
+    assert where[0] == 0 and where[len(seq.ops) - 1] == 2                  # embed, norm
+    b = next(p for p, op in enumerate(seq.ops) if op.kernels[0] == "between")
+    assert where[b] == 0 and first[1] == b + 1
+    assert RP.match_segmented(seq, _stream(seq), SEGMENTS).unmatched_positions == ()
+
+
+def test_a_node_outside_every_segment_is_refused():
+    seq = _layered()
+    nodes = _stream(seq)
+    stray = Node("kernel", "q", 1e-6, 5000, None)
+    with pytest.raises(RP.ReplayError, match="no segment holds"):
+        RP.match_segmented(seq, nodes + [stray], SEGMENTS)
+    with pytest.raises(RP.ReplayError, match="no segment holds"):
+        RP.match_segmented(seq, nodes + [Node("kernel", "q", 1e-6, None, None)], SEGMENTS)
+
+
+@pytest.mark.parametrize("bad", ["gap", "overlap", "short", "unordered"])
+def test_segments_that_do_not_cover_the_layers_in_order_are_refused(bad):
+    seq = _layered()
+    segs = [dict(s) for s in SEGMENTS]
+    if bad == "gap":
+        segs[1] = {"layers": [3, 3], "correlations": [100, 199]}
+    elif bad == "overlap":
+        segs[1] = {"layers": [1, 3], "correlations": [100, 199]}
+    elif bad == "short":
+        segs = segs[:2]
+    else:
+        segs[1], segs[2] = segs[2], segs[1]
+    with pytest.raises(RP.ReplayError, match="segments"):
+        RP.match_segmented(seq, _stream(seq), segs)
+
+
+def test_the_segments_come_from_the_replays_counts():
+    counts = {"segments": 3, "segment_layer_ranges": [[0, 1], [2, 3], [4, 5]],
+              "segment_correlations": [[0, 99], [100, 199], [200, 299]]}
+    assert RP.segments_from_counts(counts) == SEGMENTS
+    assert RP.segments_from_counts({"stream": "x"}) is None                # not segmented
+    with pytest.raises(RP.ReplayError, match="segments"):
+        RP.segments_from_counts(dict(counts, segment_correlations=[[0, 99]]))
+
+
+# --- the cuts are made at layer boundaries only, and each segment's bounds are kept -----------------
+
+def test_each_segment_is_a_block_of_whole_layers(tmp_path):
+    _, _, counts = _replay(tmp_path, 6, per=2)
+    assert counts["segment_layer_ranges"] == [[0, 1], [2, 3], [4, 5]]
+    assert len(counts["segment_correlations"]) == 3
+    _, _, counts = _replay(tmp_path, 7, per=3, name="seven")
+    assert counts["segment_layer_ranges"] == [[0, 2], [3, 5], [6, 6]]
+
+
+@pytest.mark.parametrize("how", ["a layer twice", "a layer skipped"])
+def test_a_roll_that_is_not_at_its_layer_boundary_is_refused(tmp_path, how):
+    toy = Toy(6)
+    with TapeRecorder("cpu") as rec:
+        toy()
+    order = [0, 1, 2, 2, 3, 4, 5] if how == "a layer twice" else [0, 1, 2, 3, 5]
+
+    def prefill():
+        x = toy.x
+        for j in order:
+            x = torch.relu(toy.layers[j](x))
+    with pytest.raises(RP.ReplayError, match="layer boundar"):
+        RP.isolated_replay_compact(prefill, rec.tape, tmp_path / "x.json", device="cpu",
+                                   layers=toy.layers, segment_layers=2, flush=lambda: None,
+                                   sync=lambda: None)
+    assert all(not l._forward_pre_hooks for l in toy.layers)
+    assert not list(tmp_path.iterdir())
+
+
+def test_the_stitch_keeps_each_segments_correlation_range(tmp_path):
+    import test_components_replay as tcr
+    parts = []
+    for k in range(3):
+        t = tcr.Trace()
+        base = 10_000 * k
+        t.dev_t = base
+        t.x("user_annotation", RP.REPLAY_REGION, base, 1000)
+        for i in range(4 + k):
+            t.launch(base + 10 + 10 * i, f"s{k}k{i}")
+        f = tmp_path / f"seg{k}.json"
+        f.write_text(json.dumps(t.dict()))
+        parts.append(ts.write_compact(f, cats=ts.REPLAY_CATS, fields=ts.DEVICE_FIELDS)["path"])
+    out = ts.stitch_compact(parts, tmp_path / ("all" + ts.SUFFIX), region=REGION)
+    # each session's correlations start at 1: 1..4, 1..5, 1..6, offset by the ones before
+    assert out["correlations"] == [[1, 4], [6, 10], [12, 17]]
+    head = json.loads(Path(out["path"]).open().readline())
+    assert head["segment_correlations"] == out["correlations"]
+    got = RP.replay_nodes(out["path"])
+    for k, (lo, hi) in enumerate(out["correlations"]):
+        assert [n.name for n in got if lo <= n.correlation <= hi] == [f"s{k}k{i}" for i in range(4 + k)]
+    host = [write_part(tmp_path / f"h{k}.jsonl", part_events(100.0 * (k + 1), 2)) for k in range(2)]
+    assert ts.stitch_compact(host, tmp_path / ("h" + ts.SUFFIX), region=REGION)["correlations"] == [None, None]
+
+
+def test_a_launch_with_no_device_activity_is_counted():
+    import test_components_replay as tcr
+    t = tcr.Trace()
+    t.x("user_annotation", RP.REPLAY_REGION, 10, 1000)
+    t.launch(20, "a")
+    lost = t.launch(30)                                   # launched, no activity in the trace
+    t.x("cuda_runtime", "cudaStreamSynchronize", 40, 1.0, correlation=t.corr)   # no activity, not a launch
+    t.corr += 1
+    t.x("user_annotation", RP.FLUSH, 49, 5)
+    t.launch(50)                                          # inside a flush: not the replay's
+    t.launch(60, "b")
+    assert RP.launches_without_activity(t.dict(), exclude=RP.FLUSH) == [lost]
+
+
+def test_the_segment_report_names_each_segments_losses():
+    seq = _layered()
+    lost = set(_positions(seq, 2))
+    m = RP.match_segmented(seq, _stream(seq, keep=lambda p: p not in lost), SEGMENTS)
+    rep = RP.segment_report(m, SEGMENTS, [150, 151, 250])
+    assert [r["launches_without_activity"] for r in rep] == [0, 2, 1]
+    assert [len(r["unmatched"]) for r in rep] == [0, 5, 0]
+    assert [r["layers"] for r in rep] == [[0, 1], [2, 3], [4, 5]]
+    assert RP.segment_report(m, SEGMENTS, [999])[0]["launches_without_activity"] == 0
+
+
+# --- the step: the isolated original matched by segment, its report in the step's result -----------
+
+def test_the_step_matches_a_segmented_original_by_segment_and_a_whole_one_whole(monkeypatch):
+    import t31_steps as st
+    seq = _layered()
+    lost = set(_positions(seq, 2))
+    nodes = _stream(seq, keep=lambda p: p not in lost)
+    monkeypatch.setattr(RP, "replay_nodes", lambda path, **k: nodes)
+    counts = {"stream": "iso", "segments": 3, "segment_layer_ranges": [[0, 1], [2, 3], [4, 5]],
+              "segment_correlations": [[0, 99], [100, 199], [200, 299]]}
+    monkeypatch.setattr(RP, "launches_without_activity", lambda path, **k: [150])
+    m, report = st.match_original(seq, "iso", counts)
+    assert len(m.unmatched_positions) == 5 and _in_segment(seq, 1, m.unmatched_positions)
+    assert [len(r["unmatched"]) for r in report] == [0, 5, 0]
+    assert [r["launches_without_activity"] for r in report] == [0, 1, 0]
+    m, report = st.match_original(seq, "iso", {"stream": "iso"})          # one session
+    assert {seq.ops[p].layer for p in m.unmatched_positions} == {5} and report is None
+
+
+def test_the_steps_result_names_only_the_segments_with_a_loss():
+    import t31_steps as st
+    entries = [
+        {"arm": "oracle", "nominal_density": 0.5, "budget": 8192, "batch": 1,
+         "isolated_segments": [{"segment": 0, "layers": [0, 1], "positions": 11, "nodes": 11,
+                                "unmatched": [], "launches_without_activity": 0},
+                               {"segment": 1, "layers": [2, 3], "positions": 10, "nodes": 5,
+                                "unmatched": [6, 7], "launches_without_activity": 3}]},
+        {"arm": "oracle", "nominal_density": 0.25, "budget": 8192, "batch": 1,
+         "isolated_segments": [{"segment": 0, "layers": [0, 1], "positions": 11, "nodes": 11,
+                                "unmatched": [], "launches_without_activity": 0}]},
+        {"arm": "dense", "nominal_density": 1, "budget": 8192, "batch": 1},
+    ]
+    assert st.segment_findings(entries) == {
+        "oracle_d0.5_L8192_b1": {"segments": 2, "with_loss": [
+            {"segment": 1, "layers": [2, 3], "positions": 10, "nodes": 5, "unmatched": [6, 7],
+             "launches_without_activity": 3}]},
+        "oracle_d0.25_L8192_b1": {"segments": 1, "with_loss": []}}

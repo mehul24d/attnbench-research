@@ -10,9 +10,12 @@ it is the anchor cell, which every block with ground truth measures.
 
 `drift` compares the anchor between blocks: each block's anchor statistic
 against the first block's that has one, as a relative difference. The bound
-is the caller's (a lock value; none is fixed yet), and a block above it is
-named. The check reads the untraced rows, the ones the hypotheses are scored
-on.
+is T4.1's block drift bound (lock table row 36), working 3% (`WORKING_BOUND`,
+researcher's ruling 3 of 7 Nov 2026), and the rule is the pricing gate's: a
+block above it is named, its rows are labelled `DRIFT_LABEL` (`labelled`) and
+kept out of the hypothesis claims (`claimable`), and the bound is never
+widened to pass. The check reads the untraced rows, the ones the hypotheses
+are scored on.
 """
 
 from __future__ import annotations
@@ -25,6 +28,9 @@ from ..lock.blocks import cell_key
 
 DISCARD = "INTERRUPTED_DISCARD.md"
 STATISTIC = "median_ms"
+# T4.1's block drift bound (lock table row 36): the working value until lock.
+WORKING_BOUND = 0.03
+DRIFT_LABEL = "drift above bound"
 
 
 class BlockDriftError(ValueError):
@@ -71,11 +77,11 @@ def collect(dirs: Sequence, *, ground_truth_dir: str) -> dict:
             "spec_sha256": next(iter(specs), None), "code_commit": next(iter(commits), None)}
 
 
-def drift(rows: Sequence[Mapping], *, order: Sequence[str], bound: float,
+def drift(rows: Sequence[Mapping], *, order: Sequence[str], bound: float = WORKING_BOUND,
           statistic: str = STATISTIC) -> dict:
     """The anchor's statistic per block, in `order` (the spec's), each block's
     relative difference from the first that has the anchor, and whether all
-    are within `bound`."""
+    are within `bound` (the lock's, `WORKING_BOUND` until then)."""
     if not bound > 0:
         raise ValueError("the bound is a positive relative difference, fixed at lock")
     anchors = [r for r in rows if r.get("anchor")]
@@ -97,3 +103,18 @@ def drift(rows: Sequence[Mapping], *, order: Sequence[str], bound: float,
     above = [b for b in present if abs(per[b]["relative_difference"]) > bound]
     return {"anchor": next(iter(keys)), "reference_block": present[0], "bound": bound,
             "per_block": per, "above": above, "passed": not above}
+
+
+def labelled(rows: Sequence[Mapping], result: Mapping) -> list[dict]:
+    """The rows, those of a block above the bound labelled `DRIFT_LABEL`
+    (`drift_label`); the input is not changed."""
+    above = set(result.get("above") or ())
+    return [dict(r, drift_label=DRIFT_LABEL) if r.get("block") in above else dict(r)
+            for r in rows]
+
+
+def claimable(rows: Sequence[Mapping], result: Mapping) -> list[Mapping]:
+    """The rows the hypothesis claims may read: none of a block above the
+    bound (module docstring)."""
+    above = set(result.get("above") or ())
+    return [r for r in rows if r.get("block") not in above]

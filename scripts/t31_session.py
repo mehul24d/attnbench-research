@@ -57,6 +57,13 @@ The same rehearsal on a CPU, with the real arms behind the stubbed GPU
 boundary (`attnbench.cpu_boundary`; x-attention from `ATTNBENCH_XATTN_DIR`),
 which must pass before a shakedown is launched (31 Oct 2026):
     python3 scripts/t31_session.py --cpu-boundary --session /tmp/t31_cpu
+A T3.2 repeat (researcher's ruling 4 of 7 Nov 2026): real data, the named
+ground-truth groups only, its config written into the session once
+(`repeat_config.json`, its own prediction prefix, `oracle_d0.5_L32768` not
+measured, the drop fallback in force) and its code identity frozen at the
+commit of its first start: a run of the session at any other commit is
+refused, so no fix is made within it:
+    python3 scripts/t31_session.py --repeat a --groups eager
 """
 
 from __future__ import annotations
@@ -99,6 +106,11 @@ FIRST_CLOCKED = "ground_truth"
 # A rehearsal ends before the first clocked step, and its prediction is
 # written where P1's never is.
 REHEARSAL_LAST = "hold"
+REPEAT_CONFIG = "repeat_config.json"
+
+
+class RepeatError(ValueError):
+    pass
 REHEARSAL_PREFIX = "predictions/P1-rehearsal"
 # Any values will do for a rehearsal (researcher, 31 Oct 2026); a short grid
 # that still has a batch above 1 keeps a shakedown inside its halt. The batch
@@ -267,6 +279,63 @@ def rehearsal_config(session: Path, source) -> Path:
     return path
 
 
+def repeat_config(session: Path, repeat: str, groups, source=None) -> Path:
+    """T3.2's repeat `repeat` ("a", "b") as the session's config, written
+    once (a resume reuses it, and a different repeat or groups is refused):
+    `"repeat": "T3.2<repeat>"`, the prediction prefix `predictions/P1-T3.2
+    <repeat>`, every ground-truth group not in `groups` set to run nothing
+    (`[]`; the others filled from the working values), and the drop
+    fallback's cell not measured (researcher's ruling 3 of 6 Nov 2026)."""
+    import json
+    from t31_debug import STUCK_CELL, debug_config
+    from t31_steps import DEFAULT_CONFIG
+    label, groups = f"T3.2{repeat}", sorted(groups)
+    path = Path(session) / REPEAT_CONFIG
+    if path.exists():
+        cfg = json.loads(path.read_text())
+        have = sorted(g for g, arms in cfg["gt_groups"].items() if arms != [])
+        if cfg.get("repeat") != label or have != groups:
+            raise RepeatError(f"{session} is {cfg.get('repeat')} with groups {have}, not "
+                              f"{label} with groups {groups}")
+        return path
+    cfg = json.loads(Path(source or DEFAULT_CONFIG).read_text())
+    for g in groups:
+        if g not in cfg["gt_groups"]:
+            raise RepeatError(f"the session config has no group {g!r}: {sorted(cfg['gt_groups'])}")
+    nm = debug_config(cfg)["not_measured"]
+    for e in nm:
+        if e["reason"] == STUCK_CELL["reason"]:
+            e["reason"] += " (the drop fallback in force, researcher's ruling 3 of 6 Nov 2026)"
+    cfg.update(repeat=label, prediction_prefix=f"predictions/P1-{label}", not_measured=nm,
+               gt_groups={g: (arms if g in groups else []) for g, arms in cfg["gt_groups"].items()})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg, indent=1))
+    return path
+
+
+def git_head() -> str:
+    import subprocess
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+
+def freeze_code(session: Path, label: str, *, head: str):
+    """The repeat's code identity, frozen at the commit of its first start
+    (recorded in the manifest as `frozen_commit`); the refusal for any other
+    commit, else None."""
+    session = Path(session)
+    session.mkdir(parents=True, exist_ok=True)
+    manifest = load_manifest(session)
+    have = manifest.get("frozen_commit")
+    if have and have != head:
+        return (f"REFUSING: {label}'s code identity is frozen at {have}; HEAD is {head}: "
+                f"no fix within the session (researcher's ruling 4 of 7 Nov 2026). Start a "
+                f"new session.")
+    manifest["frozen_commit"] = head
+    save_manifest(session, manifest)
+    return None
+
+
 def keep_attempt(d: Path, kept: Path, *, in_place: bool) -> None:
     """Keep a step's earlier attempt at `kept`. A step that resumes per cell
     (`in_place`) keeps its directory where it is, for its cells to resume
@@ -366,6 +435,10 @@ def main(argv=None) -> int:
                     help="with --debug: run every step whose inputs did not fail")
     ap.add_argument("--list", action="store_true",
                     help="print the steps, and what is not built yet, and exit")
+    ap.add_argument("--repeat", choices=("a", "b"), default=None,
+                    help="a T3.2 repeat: real data, frozen code identity (ruling 4 of 7 Nov 2026)")
+    ap.add_argument("--groups", default=None,
+                    help="with --repeat: the ground-truth groups it runs, comma-separated")
     args = ap.parse_args(argv)
     if args.list:
         for i, s in enumerate(STEPS, 1):
@@ -373,6 +446,38 @@ def main(argv=None) -> int:
             if s in NOT_BUILT:   # empty since 31 Oct 2026; kept for a step that regresses
                 print(f"   {'':18s} NOT BUILT: {NOT_BUILT[s]}")
         return 0
+    if args.repeat and (args.debug or args.rehearsal or args.cpu_boundary or args.dry_run):
+        print("REFUSING: a T3.2 repeat is real data: not a debug session, not a rehearsal, "
+              "not a dry run", file=sys.stderr)
+        return 2
+    if args.repeat and not args.groups:
+        print("REFUSING: a T3.2 repeat names its ground-truth groups (--groups)", file=sys.stderr)
+        return 2
+    if args.groups and not args.repeat:
+        print("REFUSING: --groups is for a T3.2 repeat (--repeat)", file=sys.stderr)
+        return 2
+    if args.repeat:
+        if args.session is None:
+            if args.start != STEPS[0]:
+                print("REFUSING: --from needs the --session it continues", file=sys.stderr)
+                return 2
+            args.session = str(ROOT / "results" / f"t32{args.repeat}_p1_"
+                                                  f"{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}")
+        try:
+            args.config = str(repeat_config(Path(args.session), args.repeat,
+                                            [g.strip() for g in args.groups.split(",") if g.strip()],
+                                            args.config))
+        except RepeatError as e:
+            print(f"REFUSING: {e}", file=sys.stderr)
+            return 2
+        if not tree_clean():
+            print("REFUSING: the tree is dirty, so no row could be banked with git_dirty = False",
+                  file=sys.stderr)
+            return 2
+        why = freeze_code(Path(args.session), f"T3.2{args.repeat}", head=git_head())
+        if why:
+            print(why, file=sys.stderr)
+            return 2
     if args.debug:
         return debug_main(args)
     if args.keep_going:
