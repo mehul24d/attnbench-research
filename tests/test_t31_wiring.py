@@ -181,7 +181,8 @@ def _grid():
     return {"pairing": "P1", "card": "NVIDIA L4", "model": "m", "lengths": [2048],
             "batches": {}, "arms": ["dense", "meanpool", "xattention"],
             "densities": {"dense": [1.0], "meanpool": [0.25], "xattention": ["calibrated"]},
-            "chain_check_tolerance": {"aggregate": 0.10}, "residual_spread_tolerance": 0.10}
+            "chain_check_tolerance": {"aggregate": 0.10}, "residual_spread_tolerance": 0.10,
+            "pricing_mismatch_share": 0.05}
 
 
 CHECK = {"passed": True, "share": 0.04, "aggregate_tol": 0.10, "checked_calls": 3,
@@ -269,9 +270,10 @@ def _components(monkeypatch, h, check=CHECK, gate_ok=True):
     monkeypatch.setattr(replay, "mask_agreement", lambda cap: None)
     monkeypatch.setattr(replay, "profile_replay", lambda cap, p: p)
     monkeypatch.setattr(replay, "replay_nodes", lambda p, **k: [])
-    monkeypatch.setattr(replay, "match", lambda seq, nodes, **k: SimpleNamespace(complete=True))
-    monkeypatch.setattr(replay, "price_positions", lambda seq, m, o, **k: SimpleNamespace(
-        device_s=dev, original_extra_nodes=0, counts=lambda: {"graph": len(dev)}))
+    monkeypatch.setattr(replay, "match", lambda seq, nodes, **k: SimpleNamespace(
+        complete=True, unmatched_positions=()))
+    monkeypatch.setattr(replay, "price_positions", lambda seq, m, o, **k: replay.Pricing(
+        dict(dev), {i: replay.GRAPH for i in dev}, (), {i: replay.GRAPH for i in dev}))
 
 
 def _session(tmp_path):
@@ -386,6 +388,55 @@ def test_a_cell_the_replay_cannot_price_stops_the_step(tmp_path, monkeypatch):
     a.out = str(st.step_dir(session, "device_components"))
     with pytest.raises(st.StepFailed, match="position 3 has no cost"):
         st.step_device_components(a, cfg)
+
+
+def test_an_arm_the_pricing_gate_refuses_is_labelled_and_left_out_of_the_prediction(
+        tmp_path, monkeypatch):
+    # researcher's ruling 1 of 6 Nov 2026: refused per arm, never the session
+    from attnbench.components import replay
+    from attnbench.predict import commit as C
+    h = FakeHarness()
+    _components(monkeypatch, h)
+    session, cfg = _session(tmp_path), _grid()
+    a = SimpleNamespace(dry_run=False, session=str(session),
+                        out=str(st.step_dir(session, "host_components")))
+    st.step_host_components(a, cfg)
+    dev = {i: 1e-5 for i, op in enumerate(SEQ.ops) if op.is_device}
+    first, *rest = sorted(dev)
+
+    def price(seq, m, o, **k):
+        arm = h.seen[-1][0]             # the cell `device_cell` readied last
+        src = {i: replay.GRAPH for i in dev}
+        if arm == "meanpool":           # every position but one from the isolated original
+            src = {i: replay.ISOLATED_ORIGINAL for i in dev}
+            src[first] = replay.GRAPH
+        if arm == "xattention":         # a position neither replay matches
+            return replay.Pricing({i: dev[i] for i in rest}, {i: src[i] for i in rest}, (),
+                                  {i: src[i] for i in rest}, (first,))
+        return replay.Pricing(dict(dev), src, (), dict(src))
+    monkeypatch.setattr(replay, "price_positions", price)
+    a.out = str(st.step_dir(session, "device_components"))
+    r = st.step_device_components(a, cfg)
+    assert r["pricing_gate"]["dense"] == {"share": 0.0, "validated": True}
+    mp, xa = r["pricing_gate"]["meanpool"], r["pricing_gate"]["xattention"]
+    assert not mp["validated"] and mp["label"] == replay.PRICING_NOT_VALIDATED
+    assert mp["why"][0].startswith("mismatch share") and mp["share"] > 0.05
+    assert xa["why"] == ["1 device positions neither replay matches"]
+    cells = json.loads((Path(a.out) / "cells.json").read_text())
+    assert cells["pricing_gate"]["meanpool"]["validated"] is False
+    assert [c["ops"] for c in cells["cells"] if c["arm"] == "xattention"] == [None]
+    (st.step_dir(session, "link") / "recursion_inputs.json").write_text(json.dumps(
+        {"queue_depth": 8, "fake": False,
+         "hardware": {"pinned_bandwidth": 1e10, "pageable_bandwidth": 5e9},
+         "by_length": {"2048": st.FAKE_MECHANISMS}}))
+    monkeypatch.setattr(C, "current_code_stamp", lambda: C.CodeStamp("0" * 40, False))
+    rec = st.build_prediction(cfg, session, dry_run=False)
+    assert {c["arm"] for c in rec["cells"]} == {"dense"}
+    assert set(rec["not_priced"]) == {"meanpool", "xattention"}
+    assert rec["not_priced"]["meanpool"]["label"] == C.NOT_PRICED_LABEL == replay.PRICING_NOT_VALIDATED
+    share = st.isolated_share(session, rec)
+    assert share["arms"]["dense"]["share"] == 0.0 and set(share["not_priced"]) == {
+        "meanpool", "xattention"}
 
 
 # --- ground truth --------------------------------------------------------------------------

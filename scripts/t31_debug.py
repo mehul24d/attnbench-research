@@ -27,6 +27,16 @@ runs the rest:
 
     python3 scripts/t31_debug.py stage --donor DIR --session DIR [--start STEP]
     python3 scripts/t31_debug.py fetch --instance NAME --donor-session NAME --dest DIR
+    python3 scripts/t31_debug.py explore --session DIR --cap-min MIN [--include-stuck-cell]
+
+`explore` (researcher's ruling 4 of 6 Nov 2026) sets up the session after the
+debug session: T3.1 live from step 1, nothing staged, every output labelled
+"T3.1 exploratory, code identity may change" (`EXPLORATORY_LABEL`), the
+prediction under `predictions/P1-exploratory`, `--keep-going`, and a fix
+committed and deployed on the instance resumed as a debug session's is (each
+step's passed cells resume under the session's own earlier commits). Its
+cap is the card's (`--cap-min`, from the ₹500 cap), not 1.5 times a
+projection. The T3.2 repeats are the real data, on the final code identity.
 
 `scripts/t31_session.py --debug --session DIR --keep-going` then runs it.
 """
@@ -48,6 +58,9 @@ from t31_steps import (CELL_INDEX, CELL_MANIFEST, DEBUG_LABEL, PRICE_CACHE,  # n
                        STAGED_INPUTS, STEPS, cell_dir, cells, nominal_density, step_dir)
 
 DEBUG_PREFIX = "predictions/P1-debug"
+EXPLORATORY_LABEL = "T3.1 exploratory, code identity may change"
+EXPLORATORY_PREFIX = "predictions/P1-exploratory"
+EXPLORATORY_NOTE = "T31_EXPLORATORY.txt"
 DEBUG_NOTE = "DEBUG_NOT_T31_DATA.txt"
 DEBUG_CONFIG = "debug_config.json"
 DEBUG_STARTS = ("host_components", "device_components")
@@ -57,8 +70,13 @@ STUCK_CELL = {"arm": "oracle", "density": 0.5, "length": 32768, "batch": 1,
               "reason": "not measured: host memory limit of P1's pinned machine"}
 # What a step needs from the others to mean anything: a step whose inputs
 # failed is skipped, not run, under --keep-going. Steps 1 to 5 are staged or
-# run in order, and a failure there stops the session as it always does.
+# run in order, and a failure there stops what follows (an exploratory session
+# runs them live: each needs every step before it).
 DEPENDS = {
+    "link": ("preflight",),
+    "dense_select": ("preflight", "link"),
+    "probe": ("preflight", "link", "dense_select"),
+    "host_components": ("preflight", "link", "dense_select", "probe"),
     "device_components": ("host_components", "link"),
     "predict": ("device_components", "link"),
     "hold": ("predict",),
@@ -237,6 +255,48 @@ def stage(donor: Path, session: Path, *, start: str = "host_components",
     return record
 
 
+def explore(session: Path, *, cap_min: float, config=None,
+            include_stuck_cell: bool = False) -> dict:
+    """Set up an exploratory session in `session` (new): its config (the
+    session config as a debug session's, labelled `EXPLORATORY_LABEL`, its
+    own prefix, `oracle_d0.5_L32768` not measured unless included: the 6 Nov
+    2026 ruling keeps the drop fallback in force), the staged-inputs record
+    with no donor and no cells, the note and the manifest."""
+    from t31_steps import DEFAULT_CONFIG
+    session = Path(session)
+    if session.exists() and any(session.iterdir()):
+        raise SystemExit(f"{session} is not empty; an exploratory session starts in a new directory")
+    if not cap_min > 0:
+        raise SystemExit("--cap-min is the card's, in minutes, > 0")
+    cfg = json.loads(Path(config or DEFAULT_CONFIG).read_text())
+    cfg.update(debug=True, debug_label=EXPLORATORY_LABEL, rehearsal=False,
+               prediction_prefix=EXPLORATORY_PREFIX)
+    if not include_stuck_cell:
+        cfg = debug_config(cfg)
+        cfg.update(prediction_prefix=EXPLORATORY_PREFIX)
+        for e in cfg["not_measured"]:
+            if e["reason"] == STUCK_CELL["reason"]:
+                e["reason"] += " (the drop fallback in force, researcher's ruling 3 of 6 Nov 2026)"
+    session.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(cfg, indent=1)
+    record = {"debug": EXPLORATORY_LABEL, "exploratory": True, "start": STEPS[0],
+              "donor": None, "cells": [], "not_measured": cfg.get("not_measured") or [],
+              "run_in_this_session": [], "cap_min": float(cap_min),
+              "debug_config_sha256": hashlib.sha256(text.encode()).hexdigest()}
+    (session / DEBUG_CONFIG).write_text(text)
+    (session / STAGED_INPUTS).write_text(json.dumps(record, indent=1))
+    (session / EXPLORATORY_NOTE).write_text(
+        f"{EXPLORATORY_LABEL.upper()}\n\nThis directory is the T3.1 exploratory session "
+        f"(researcher's ruling 4 of 6 Nov 2026): T3.1 live from step 1, fixed and resumed on the "
+        f"instance, so its code identity may change between steps (every cell manifest names "
+        f"its commit). Repeatability, the Gate A inputs and the floors come from the T3.2 "
+        f"repeats on the final code identity, not from here.\n")
+    (session / "manifest.json").write_text(json.dumps(
+        {"attempts": [], "dry_run": False, "rehearsal": False, "debug": EXPLORATORY_LABEL,
+         "exploratory": True}, indent=1))
+    return record
+
+
 def fetch_command(bucket: str, instance: str, donor_session: str, dest: Path) -> list[str]:
     """gsutil command for the donor's results in the bucket (layout of
     `run_phase.sh`: <hostname>/results/<session>), leaving out the event log.
@@ -260,11 +320,23 @@ def main(argv=None) -> int:
                    help="the donor is a CPU-boundary rehearsal (the CPU check only)")
     s.add_argument("--dry-run", action="store_true",
                    help="the donor is a --dry-run session, no cells (the CPU check only)")
+    e = sub.add_parser("explore", help="set up the exploratory session (6 Nov 2026 ruling 4)")
+    e.add_argument("--session", required=True)
+    e.add_argument("--cap-min", type=float, required=True,
+                   help="no step starts after this many minutes (the card's)")
+    e.add_argument("--include-stuck-cell", action="store_true",
+                   help="measure oracle_d0.5_L32768 too (the researcher's word only)")
     f = sub.add_parser("fetch", help="pull the donor session from the results bucket")
     f.add_argument("--instance", required=True)
     f.add_argument("--donor-session", required=True)
     f.add_argument("--dest", required=True)
     args = ap.parse_args(argv)
+    if args.cmd == "explore":
+        rec = explore(Path(args.session), cap_min=args.cap_min,
+                      include_stuck_cell=args.include_stuck_cell)
+        print(f"{rec['debug']}: from {rec['start']}, cap {rec['cap_min']:.0f} min; not measured: "
+              f"{[(e['arm'], e['density'], e['length']) for e in rec['not_measured']]}")
+        return 0
     if args.cmd == "fetch":
         from t31_steps import results_bucket
         Path(args.dest).mkdir(parents=True, exist_ok=True)

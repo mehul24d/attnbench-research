@@ -1,6 +1,6 @@
 # T4.1 lock values still blank (1 Nov 2026)
 
-One row per T4.1 item (34). "Plan default" is what the plan or code already states; "pilot value" is what banked data or a shakedown gives; "proposal" is Claude's, for the researcher to accept or change. A dash means nothing is stated yet. Nothing here is a decision.
+One row per T4.1 item (35). "Plan default" is what the plan or code already states; "pilot value" is what banked data or a shakedown gives; "proposal" is Claude's, for the researcher to accept or change. A dash means nothing is stated yet. Nothing here is a decision.
 
 | # | Value | Plan default | Pilot value | Proposal |
 |---|---|---|---|---|
@@ -38,6 +38,7 @@ One row per T4.1 item (34). "Plan default" is what the plan or code already stat
 | 32 | Chain-validator aggregate gate (T2.2) | over every composite the bare timer prices (every position launched by a child), the sum of \|chain - direct\|, the children's summed bare times against the composite's own, at most this share of the cell's bare host time; a cell that fails takes each composite's own time, labelled, and is not refused; per-call ratios reported (rulings, 1 Nov 2026, after Shakedowns 4 and 5; the instrumented check against the isolated replay is recorded, not gated) | Shakedown 4 (L4, 2048), instrumented: chain/direct 0.58-0.85 per operator, oracle 22-26% in aggregate; the bare form has no L4 value yet (Shakedown 6) | Working: 10%; to be set from T3.1 data |
 | 33 | Recompile gate (T2.21) | compile events a compiled arm may make after its warm-up, in the ground truth and the density probe; above it the cell is refused (ruling, 1 Nov 2026, after Shakedown 5) | Shakedown 5: compiled XAttention recompiled per call until its kernel interface ran outside Dynamo | Working: 0 |
 | 34 | Residual spread tolerance (T2.2) | a layer's per-layer residual (its uninstrumented span under the tape, less its bare prices) is added back over its positions; its spread over the timed repetitions, the interquartile range over the median, is at most this share; a layer above it keeps its residual and labels the cell, not refused (ruling, 1 Nov 2026, after Shakedown 6) | none: the span has not run on a GPU | Working: 10%, to be set from T3.1 data |
+| 35 | Pricing mismatch share (T2.4) | per arm over its cells, the share of priced device time priced from the isolated replay of the original operators, because the CUDA graph does not hold that structure as the eager sequence has it; positions matched by structure only (class, stream, order, payload class); an arm above it, or with a device position neither replay matches, is not priced, is labelled "pricing not validated" and is kept out of the hypothesis claims; never widened to pass (researcher's ruling 1 of 6 Nov 2026) | The debug session's banked 2048-token cells (2 Nov 2026, not T3.1 data): dense 0%, oracle 0.17% (d0.25) and 0.17% (d0.5), mean-pool 0.20% (d0.25), XAttention 0.97%, XAttention without asserts 0.99%; longer cells not yet read | Working: 5% |
 
 Also blank in `configs/t31/p1_session.json`: densities (row 3), ground-truth groups, repeats, dense rounds and the sampler interval, all filled for T3.1 from the block below; the resolution floor (row 16) and the rerun budget (row 23), which stay null as inputs.
 
@@ -55,6 +56,7 @@ T3.1 is pre-lock P1 data. It takes the values below, marked "working, pre-lock",
 | Chain-validator aggregate gate (row 32) | 10% of the cell's bare host time | The researcher's working value (1 Nov 2026), to be set from T3.1 data. No session stops on it: a cell that fails is labelled with its fallback (ruling, 1 Nov 2026, after Shakedown 5) |
 | Recompile gate (row 33) | 0 compile events after warm-up | The researcher's ruling (1 Nov 2026, after Shakedown 5); `compiled.RECOMPILE_GATE` |
 | Residual spread tolerance (row 34) | 10% of the layer's median span | The researcher's ruling (1 Nov 2026, after Shakedown 6), the chain gate's working share; to be set from T3.1 data. No session stops on it: a layer above it is labelled |
+| Pricing mismatch share (row 35) | 5% of an arm's priced device time | The researcher's ruling (6 Nov 2026), a working value to be set at lock. No session stops on it: an arm above it is not priced and is labelled "pricing not validated" (`replay.pricing_gate`) |
 
 ```json t31-working-values
 {
@@ -69,6 +71,7 @@ T3.1 is pre-lock P1 data. It takes the values below, marked "working, pre-lock",
  "dense_rounds": 5,
  "sampler_interval_s": 0.1,
  "chain_check_tolerance": {"aggregate": 0.10},
- "residual_spread_tolerance": 0.10
+ "residual_spread_tolerance": 0.10,
+ "pricing_mismatch_share": 0.05
 }
 ```

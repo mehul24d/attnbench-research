@@ -112,3 +112,38 @@ def test_a_tree_with_no_banked_results_syncs_everything(tmp_path):
     p, calls, ran, work = _run(tmp_path)
     rsync = next(c for c in calls if "rsync" in c and "/results" in c)
     assert " -x " not in rsync
+
+
+def _sync_only(tmp_path, fail=False):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gsutil").write_text(FAKE_GSUTIL.replace("exit 0", "exit 1" if fail else "exit 0"))
+    (bin_dir / "gsutil").chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+    (work / "untracked.txt").write_text("dirt")          # a dirty tree does not stop a sync
+    log = tmp_path / "gsutil.log"
+    log.write_text("")
+    real = [d for d in os.environ["PATH"].split(os.pathsep)
+            if not any((Path(d) / c).exists() for c in ("gcloud", "gsutil", "bq"))]
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("ATTNBENCH_", "GCP_"))}
+    env.update(PATH=os.pathsep.join([str(bin_dir), *real]), GSUTIL_LOG=str(log),
+               ATTNBENCH_BUCKET="gs://b", ATTNBENCH_SESSION="sess")
+    p = subprocess.run(["bash", str(SCRIPT), "--sync-only", "teardown"], cwd=work,
+                       capture_output=True, text=True, env=env, timeout=60)
+    return p, log.read_text().splitlines()
+
+
+def test_sync_only_runs_the_phases_own_sync_and_nothing_else(tmp_path):
+    # the teardown's last sync (6 Nov 2026 ruling: bulk results stay in the bucket)
+    p, calls = _sync_only(tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert any(c.startswith("-q -m rsync -r") and c.endswith("results gs://b/sess/results")
+               for c in calls), calls
+    assert "=== phase" not in p.stdout
+
+
+def test_a_failed_sync_only_says_so_with_its_status(tmp_path):
+    p, calls = _sync_only(tmp_path, fail=True)
+    assert p.returncode == 1 and "SYNC FAILED for results" in p.stderr

@@ -37,26 +37,31 @@ total (`time_replay`), so the profiler's effect on the node times is
 visible as the ratio of the two.
 
 **Positions.** `match` assigns replayed nodes to the positions of the
-recorded sequence by kernel name, in order (`op_sequence.OpSequence.
-device_ops`). A host-device copy and a synchronisation have no device cost
-in the recursion (l_i and s_0 are T2.5's), and the tape keeps them out of
-the graph. Whatever does not match is reported: positions with no node
-(the tape's substitutions, `nonzero_static` for `nonzero`, are the expected
-case) and nodes with no position. `device_costs` refuses an incomplete
-match, so a position never gets a device cost from a different kernel.
+recorded sequence by structure only (researcher's ruling 1 of 6 Nov 2026,
+after the debug session found the name rule refusing every sparse cell): an
+activity's class, stream, order and payload class, the strict "same
+sequence" definition's terms, so a renamed kernel (a CUDA graph runs a device
+copy as `memcpy32_post`) or a copy's other launch variant is not a mismatch.
+Names only place the comparison (`match`'s docstring). A host-device copy and
+a synchronisation have no device cost in the recursion (l_i and s_0 are
+T2.5's), and the tape keeps them out of the graph. Whatever does not match is
+reported: positions with no node (the tape's substitutions, `nonzero_static`
+for `nonzero`, are the expected case) and nodes with no position.
+`device_costs` refuses an incomplete match.
 
-**Substituted positions** (plan Section 5.1, Appendix A, 27 Oct 2026). A
-position the graph cannot hold as recorded is priced from an isolated
-replay of the original operator: `isolated_replay(..., substitute=False)`
-runs the prefill eagerly without the tape, so `nonzero` and the
-host-to-device copy run as recorded, each alone on a cold cache.
-`price_positions` takes every other position from the graph and these from
-that replay, and flags each position's cost source (`GRAPH` or
-`ISOLATED_ORIGINAL`). It refuses unless the original replay matches the
-whole sequence, every position the graph missed is an operator the tape
-substitutes (`SUBSTITUTED_ATEN_OPS`), and the graph has no extra node
-without such a position. The graph's extra nodes (the stand-in kernels)
-are recorded and priced nowhere.
+**Pricing** (plan Section 5.1, Appendix A, 27 Oct and 7 Nov 2026). A position
+the graph does not hold as recorded is priced from an isolated replay of the
+original operators: `isolated_replay(..., substitute=False)` runs the prefill
+eagerly without the tape, so `nonzero` and the host-to-device copy run as
+recorded, each alone on a cold cache (step 6 runs it segmented and compacted,
+`isolated_replay_compact` with `trace_stream.DEVICE_FIELDS`).
+`price_positions` labels every position by how it was priced (`GRAPH`,
+`ISOLATED_ORIGINAL`, `VARIANT_DIFFERS`) and counts the nodes it dropped
+(`EXTRA_NODE_DROPPED`). It refuses nothing: `pricing_gate` takes, per arm
+over its cells, the share of priced device time priced from the isolated
+original (structure the graph does not hold as eager), and an arm above the
+T4.1 lock value (working 5%), or with a position neither replay matches, is
+not priced and is labelled `PRICING_NOT_VALIDATED`.
 
 **Isolated replay.** The same prefill, eagerly, from the tape and the bank,
 with the device synchronised and the L2 cache flushed before every aten
@@ -67,9 +72,10 @@ kernels are excluded by their annotation.
 
 **The replay-versus-trace check** (Gate A, Section 5.6 "Replay mismatch")
 compares replayed device time with the device time in a recorded trace, per
-operation family (`op_sequence.operation_family`), and reports kernel-name
-mismatches. The bound is fixed at lock, so `replay_vs_trace` reports and
-`check_passes` takes the bound as an argument.
+operation family (`op_sequence.operation_family`), and reports the
+positions `match` leaves unmatched (by structure, since 7 Nov 2026; the key
+keeps its old name, `kernel_name_mismatch`). The bound is fixed at lock, so
+`replay_vs_trace` reports and `check_passes` takes the bound as an argument.
 
 The graph is behind `GraphBackend` so the bookkeeping is tested on CPU with
 `EagerBackend`; `CudaGraphBackend` is the real one.
@@ -101,13 +107,6 @@ FLUSH = "attnbench::isolation_flush"
 SCHEMA = "attnbench.replay/2"
 SCHEMAS_READ = ("attnbench.replay/1", SCHEMA)
 GRAPH, ISOLATED_ORIGINAL = "graph", "isolated_original"
-# a position priced from the isolated original's kernel of another launch
-# variant of the same copy (`match(variants=True)`); a debug session's, until ruled on
-ISOLATED_VARIANT = "isolated_original_variant"
-# a position the tape does not substitute that the graph still misses (a graph runs
-# some kernels under other names: `memcpy128` for a device copy), priced from the
-# isolated original in a lenient (debug) session
-ISOLATED_UNSUBSTITUTED = "isolated_original_unsubstituted"
 NEVER_WRITTEN = 2          # in a live-mask buffer: no replay has written it (a mask is 0 or 1)
 # The aten operators issuing the device work at a position the tape
 # substitutes (`sync_tape.SUBSTITUTED_KINDS`): `nonzero` (and `torch.where`
@@ -337,42 +336,73 @@ class Node:
     name: str
     duration_s: float
     correlation: Optional[int]
+    stream: Optional[int] = None       # the device's stream id, as the trace gives it
+    bytes: Optional[int] = None        # a copy's or a memset's, as the trace gives it
 
 
 def replay_nodes(trace: Union[str, Path, Mapping], *, region: str = REPLAY_REGION,
                  exclude: Optional[str] = None) -> list[Node]:
     """Device activities of the host calls inside `region`, in device order;
-    those whose host call sits inside an `exclude` annotation are dropped."""
+    those whose host call sits inside an `exclude` annotation are dropped.
+    A compact stream (`trace_stream.is_compact`, written with
+    `DEVICE_FIELDS`) is read lazily, in passes, never held whole."""
+    from . import trace_stream
+    if trace_stream.is_compact(trace):
+        if trace_stream.fields_of(trace) != trace_stream.DEVICE_FIELDS:
+            raise ReplayError(f"{Path(trace).name}: a compact stream without the device "
+                              f"fields; its nodes cannot be read")
+        return _nodes(lambda: ((c, n, pid, tid, float(ts), float(ts) + float(dur), *rest)
+                               for _, c, n, pid, tid, ts, dur, *rest
+                               in trace_stream.iter_rows(trace)), region, exclude)
     trace = op_sequence.load_trace(trace)
-    events = op_sequence._events(trace)
-    regions = [e for e in events if e.cat == "user_annotation" and e.name == region]
+    arg = op_sequence._int_arg
+    rows = [(e.cat, e.name, e.pid, e.tid, e.ts, e.end, arg(e.args, "correlation"),
+             arg(e.args, "stream"), arg(e.args, "bytes")) for e in op_sequence._events(trace)]
+    return _nodes(lambda: iter(rows), region, exclude)
+
+
+def _nodes(rows: Callable, region: str, exclude: Optional[str]) -> list[Node]:
+    """`replay_nodes` over `rows()`, a fresh iterator of (cat, name, pid, tid,
+    ts, end, correlation, stream, bytes) per call, in three passes: the
+    region and the skips, the kept launches' correlations, their activities.
+    `end` is `ts + dur` as `op_sequence._events` takes it, so both readers
+    give a node the same duration, `end - ts`."""
+    regions, skips = [], []
+    for cat, name, pid, tid, ts, end, *_ in rows():
+        if cat == "user_annotation":
+            if name == region:
+                regions.append((pid, tid, ts, end))
+            elif exclude and name == exclude:
+                skips.append((ts, end))
     if len(regions) != 1:
         raise ReplayError(f"{len(regions)} {region!r} regions in the trace, expected one")
-    reg = regions[0]
-    inside = lambda e: e.ts >= reg.ts - op_sequence._EPS and e.end <= reg.end + op_sequence._EPS
-    skips = sorted((e for e in events if exclude and e.cat == "user_annotation" and e.name == exclude),
-                   key=lambda s: s.ts)
-    starts = [s.ts for s in skips]
+    rpid, rtid, r0, r1 = regions[0]
+    eps = op_sequence._EPS
+    skips.sort()
+    starts = [a for a, _ in skips]
     reach, far = [], float("-inf")      # reach[i]: the latest end among the first i+1 skips
-    for s in skips:
-        far = max(far, s.end)
+    for _, b in skips:
+        far = max(far, b)
         reach.append(far)
+    del skips
     # an isolated replay has one flush per operator, so a scan of every skip for every
     # host event is quadratic (an 8192-token oracle cell ran 14 minutes in it, 2 Nov 2026)
-    skipped = lambda e: (i := bisect.bisect_right(starts, e.ts)) > 0 and e.end <= reach[i - 1]
     keep: set = set()
-    for e in events:
-        if e.cat in op_sequence._HOST_CATS and inside(e) and (e.pid, e.tid) == (reg.pid, reg.tid):
-            if skipped(e):
-                continue
-            c = op_sequence._int_arg(e.args, "correlation")
-            if c is not None:
-                keep.add(c)
-    acts = [e for e in events if e.cat in op_sequence._DEVICE_CATS
-            and op_sequence._int_arg(e.args, "correlation") in keep]
-    acts.sort(key=lambda e: e.ts)
-    return [Node(e.cat, e.name, (e.end - e.ts) * 1e-6, op_sequence._int_arg(e.args, "correlation"))
-            for e in acts]
+    for cat, name, pid, tid, a, b, corr, *_ in rows():
+        if cat not in op_sequence._HOST_CATS or (pid, tid) != (rpid, rtid) or corr is None:
+            continue
+        if a < r0 - eps or b > r1 + eps:
+            continue
+        i = bisect.bisect_right(starts, a)
+        if i > 0 and b <= reach[i - 1]:
+            continue
+        keep.add(int(corr))
+    acts = [(ts, cat, name, end, corr, stream, nbytes)
+            for cat, name, pid, tid, ts, end, corr, stream, nbytes in rows()
+            if cat in op_sequence._DEVICE_CATS and corr is not None and int(corr) in keep]
+    acts.sort(key=lambda a: a[0])
+    return [Node(cat, name, (end - ts) * 1e-6, int(corr), stream, nbytes)
+            for ts, cat, name, end, corr, stream, nbytes in acts]
 
 
 # --- matching nodes to positions -------------------------------------------------------
@@ -380,12 +410,13 @@ def replay_nodes(trace: Union[str, Path, Mapping], *, region: str = REPLAY_REGIO
 @dataclass(frozen=True)
 class Match:
     device_s: dict                 # position -> device seconds (matched nodes only)
-    unmatched_positions: tuple     # positions with at least one kernel not replayed
+    unmatched_positions: tuple     # positions with at least one activity not matched
     extra_nodes: tuple             # replayed node names with no position
     families_unmatched: dict       # family -> count of unmatched positions
     n_expected: int
     n_nodes: int
-    variant_matched: tuple = ()    # positions matched to a node of another launch variant
+    variant_matched: tuple = ()    # positions matched with a name that differs (VARIANT_DIFFERS)
+    extra_s: float = 0.0           # the device seconds of the extra nodes
 
     @property
     def complete(self) -> bool:
@@ -397,54 +428,127 @@ def expected_nodes(seq: OpSequence) -> list[tuple[int, str]]:
     return [(i, name) for i, op in seq.device_ops() for name in op.kernels]
 
 
-_COPY_TYPE = re.compile(r"\{lambda\(([^)]+)\)#\d+\}")
+# A CUDA graph runs a captured device-to-device copy as a copy kernel, which the
+# trace files as a kernel of this name (`memcpy32_post`, `memcpy128`): the debug
+# session's 84 oracle and 336 XAttention graph nodes, 2 Nov 2026, every one of
+# them in place of an eager "Memcpy DtoD (Device -> Device)".
+_GRAPH_COPY_KERNEL = re.compile(r"^memcpy\d+(?:_post)?$")
 
 
-def _same_activity(name: str, variants: bool = False) -> str:
-    """The name two activities are compared by. A memset's memory kind is
-    part of its name in a trace: "Memset (Device)" in an eager run and
-    "Memset (Unknown)" for a CUDA graph's memset node, which has no
-    allocation to name (found by the debug session, 2 Nov 2026: every
-    memset of `dense_d1_L2048_b1`, 140 of them, was unmatched on the name
-    alone). The kind is left out; nothing else is. With `variants`, a
-    device copy kernel is named by the element type it copies: PyTorch picks
-    `elementwise_kernel<128, 4, ...>` or `unrolled_elementwise_kernel<...>`
-    for the same copy by the operands' alignment (found by the debug session,
-    2 Nov 2026: 28 copies of an oracle cell's isolated original)."""
+def activity_class(name: str, cat: Optional[str] = None) -> str:
+    """The structural class of one device activity: a memset, a device copy,
+    a host-device copy by direction, or a kernel. From the trace's category
+    where there is one (a replayed node), else from the activity's name as
+    the trace writes a copy and a memset (a sequence position keeps names
+    only); a graph's copy kernel is the device copy it runs."""
+    if cat == "gpu_memset" or name.startswith("Memset ("):
+        return "memset"
+    if cat == "gpu_memcpy" or name.startswith("Memcpy "):
+        try:
+            direction = op_sequence.parse_memcpy_name(name)[0]
+        except op_sequence.SequenceError:
+            direction = "unknown"
+        return "device_copy:DtoD" if direction == "DtoD" else f"copy:{direction}"
+    if _GRAPH_COPY_KERNEL.match(name):
+        return "device_copy:DtoD"
+    return "kernel"
+
+
+def _stream_index(streams):
+    first: dict = {}
+    return [None if s is None else first.setdefault(s, len(first)) for s in streams]
+
+
+def structural_keys(seq: OpSequence) -> list[tuple]:
+    """(class, stream by order of first use, payload class) for each activity of
+    `expected_nodes`: what a position is matched by (researcher's ruling 1 of
+    6 Nov 2026), the strict definition's terms for one activity. A device
+    position's payload class is the sequence's ("none": payloads are a
+    host-device copy's)."""
+    exp = [(seq.ops[i], name) for i, name in expected_nodes(seq)]
+    idx = _stream_index([op.stream for op, _ in exp])
+    return [(activity_class(name), k, op_sequence.payload_class(op.payload_bytes))
+            for (op, name), k in zip(exp, idx)]
+
+
+def node_keys(nodes: Sequence[Node]) -> list[tuple]:
+    """`structural_keys` for replayed nodes: a payload class for a host-device
+    copy only, as the sequence keeps one for those only."""
+    idx = _stream_index([n.stream for n in nodes])
+    out = []
+    for n, k in zip(nodes, idx):
+        cls = activity_class(n.name, n.cat)
+        nbytes = n.bytes if cls.startswith("copy:") else 0
+        out.append((cls, k, op_sequence.payload_class(nbytes or 0)))
+    return out
+
+
+def _same_activity(name: str) -> str:
+    """The name two activities are anchored by: a memset's memory kind is left
+    out ("Memset (Device)" eagerly, "Memset (Unknown)" for a graph's memset
+    node, which has no allocation to name; the debug session, 2 Nov 2026)."""
     if name.startswith("Memset (") and name.endswith(")"):
         return "Memset"
-    if variants and "direct_copy_kernel_cuda" in name:
-        kinds = _COPY_TYPE.findall(name)
-        if kinds:
-            return f"direct_copy_kernel_cuda({kinds[0]})"
     return name
 
 
-def match(seq: OpSequence, nodes: Sequence[Node], *, variants: bool = False) -> Match:
+def match(seq: OpSequence, nodes: Sequence[Node]) -> Match:
+    """Replayed nodes to the sequence's positions, by structure only
+    (researcher's ruling 1 of 6 Nov 2026): an activity is matched by its
+    class, stream, order and payload class (`structural_keys`), and a name
+    or launch variant that differs is not a mismatch.
+
+    Names place the comparison, never decide it. Where the two lists agree
+    by name (`difflib`'s matching blocks) each pair must also agree in
+    structure; between two such blocks, the stretch of positions and the
+    stretch of nodes are paired in order only if they agree in structure
+    one for one, as a whole, and are otherwise all unmatched. A kernel stream
+    is one class on one stream, so pairing by structure alone across a stretch
+    whose counts differ (`nonzero`'s three kernels against the graph's eight
+    for `nonzero_static`) would give positions the time of other kernels.
+    A stretch with equal counts and structure (a copy's other launch
+    variant, a graph's copy kernel for a device copy, or a stand-in of one
+    kernel for one) is matched, and its positions marked `variant_matched`.
+    A host-device copy is never a device position (T2.5 prices it), so such
+    nodes (an eager run's) are left out of the comparison and are extra."""
     exp = expected_nodes(seq)
-    a = [_same_activity(name, variants) for _, name in exp]
-    b = [_same_activity(n.name, variants) for n in nodes]
-    sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
+    ka, kb_all = structural_keys(seq), node_keys(nodes)
+    cand = [k for k, key in enumerate(kb_all) if not key[0].startswith("copy:")]
+    kb = [kb_all[k] for k in cand]
+    a = [_same_activity(name) for _, name in exp]
+    b = [_same_activity(nodes[k].name) for k in cand]
     got = [False] * len(a)
-    used = [False] * len(b)
+    used = [False] * len(nodes)
     device: dict = defaultdict(float)
     varied: set = set()
-    for blk in sm.get_matching_blocks():
+
+    def pair(i, j, named):
+        pos, j = exp[i][0], cand[j]
+        device[pos] += nodes[j].duration_s
+        got[i] = used[j] = True
+        if not named:
+            varied.add(pos)
+
+    ia = ib = 0
+    for blk in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_matching_blocks():
+        ga, gb = range(ia, blk.a), range(ib, blk.b)
+        if len(ga) == len(gb) and all(ka[i] == kb[j] for i, j in zip(ga, gb)):
+            for i, j in zip(ga, gb):
+                pair(i, j, False)
         for k in range(blk.size):
-            pos = exp[blk.a + k][0]
-            device[pos] += nodes[blk.b + k].duration_s
-            got[blk.a + k] = used[blk.b + k] = True
-            if variants and _same_activity(exp[blk.a + k][1]) != _same_activity(nodes[blk.b + k].name):
-                varied.add(pos)
+            if ka[blk.a + k] == kb[blk.b + k]:
+                pair(blk.a + k, blk.b + k, True)
+        ia, ib = blk.a + blk.size, blk.b + blk.size
     missing = sorted({exp[k][0] for k in range(len(a)) if not got[k]})
     fam: dict = defaultdict(int)
     for p in missing:
         fam[operation_family(seq.ops[p])] += 1
     for p in missing:
         device.pop(p, None)
-    return Match(dict(device), tuple(missing),
-                 tuple(nodes[k].name for k in range(len(b)) if not used[k]),
-                 dict(fam), len(a), len(b), tuple(sorted(varied - set(missing))))
+    extra = [k for k in range(len(nodes)) if not used[k]]
+    return Match(dict(device), tuple(missing), tuple(nodes[k].name for k in extra),
+                 dict(fam), len(a), len(b), tuple(sorted(varied - set(missing))),
+                 sum(nodes[k].duration_s for k in extra))
 
 
 def device_costs(m: Match) -> dict[int, float]:
@@ -457,12 +561,20 @@ def device_costs(m: Match) -> dict[int, float]:
     return dict(m.device_s)
 
 
+# How each position was priced, and what was dropped (researcher's ruling 1 of 6 Nov 2026).
+VARIANT_DIFFERS = "variant_differs"          # matched by structure, its name differs
+EXTRA_NODE_DROPPED = "extra_node_dropped"    # a node no position owns, priced nowhere
+PRICING_NOT_VALIDATED = "pricing not validated"
+
+
 @dataclass(frozen=True)
 class Pricing:
-    device_s: dict                 # position -> device seconds, every device position
+    device_s: dict                 # position -> device seconds, every priced position
     source: dict                   # position -> GRAPH or ISOLATED_ORIGINAL
-    substitute_nodes: tuple        # the graph's stand-in kernels, priced nowhere
-    original_extra_nodes: int = 0  # nodes of the isolated original no position owns (lenient)
+    substitute_nodes: tuple        # the graph's nodes no position owns, priced nowhere
+    label: dict = field(default_factory=dict)   # position -> GRAPH, ISOLATED_ORIGINAL or VARIANT_DIFFERS
+    unpriced: tuple = ()           # device positions neither replay matches
+    dropped: dict = field(default_factory=dict)  # replay -> {"nodes", "s"}, EXTRA_NODE_DROPPED
 
     def counts(self) -> dict[str, int]:
         out: dict = defaultdict(int)
@@ -470,58 +582,112 @@ class Pricing:
             out[v] += 1
         return dict(out)
 
+    def label_counts(self) -> dict[str, int]:
+        out: dict = defaultdict(int)
+        for i, src in self.source.items():
+            out[f"{src}:{self.label.get(i, src)}"] += 1
+        return dict(out)
 
-def price_positions(seq: OpSequence, graph: Match, original: Optional[Match], *,
-                    lenient: bool = False) -> Pricing:
-    """c_dev for every device position: from the in-order graph where it
-    holds the position as recorded, else from the isolated replay of the
-    original operator (module docstring, "Substituted positions").
+    @property
+    def priced_s(self) -> float:
+        return sum(self.device_s.values())
 
-    `lenient` (a debug session's, 2 Nov 2026, until the researcher rules on
-    it): the original needs only to match the positions the graph misses, and
-    its nodes no position owns are counted, not refused (every sparse cell's
-    original has them: an eager run's host-to-device copies and syncs the
-    recording's trace does not hold); a position matched to another launch
-    variant of its copy is priced from it and marked `ISOLATED_VARIANT`; a
-    position the graph misses that the tape does not substitute is priced
-    from the original too, marked `ISOLATED_UNSUBSTITUTED` (the XAttention
-    graph's 644 of them)."""
-    if graph.complete:
-        return Pricing(dict(graph.device_s), {i: GRAPH for i in graph.device_s}, ())
+    @property
+    def mismatch_s(self) -> float:
+        """Priced device seconds at positions whose structure the graph does
+        not hold as the eager sequence has it: those priced from the isolated
+        original."""
+        return sum(v for i, v in self.device_s.items() if self.source[i] == ISOLATED_ORIGINAL)
+
+    def summary(self, seq: OpSequence) -> dict:
+        """What step 6 banks per cell and the aggregate gate reads."""
+        iso = [i for i, s in self.source.items() if s == ISOLATED_ORIGINAL]
+        by_family: dict = defaultdict(lambda: {"n": 0, "s": 0.0})
+        for i in iso:
+            f = by_family[operation_family(seq.ops[i])]
+            f["n"] += 1
+            f["s"] += self.device_s[i]
+        return {"priced_s": self.priced_s, "mismatch_s": self.mismatch_s,
+                "positions": len(self.source), "labels": self.label_counts(),
+                "isolated_substitutions": sum(seq.ops[i].aten_op in SUBSTITUTED_ATEN_OPS
+                                              for i in iso),
+                "isolated_families": dict(sorted(by_family.items())),
+                "unpriced": list(self.unpriced),
+                "unpriced_families": sorted({operation_family(seq.ops[i]) for i in self.unpriced}),
+                EXTRA_NODE_DROPPED: dict(self.dropped)}
+
+
+def _dropped(m: Match) -> dict:
+    return {"nodes": len(m.extra_nodes), "s": m.extra_s}
+
+
+def price_positions(seq: OpSequence, graph: Match, original: Optional[Match]) -> Pricing:
+    """c_dev for every device position (researcher's ruling 1 of 6 Nov 2026):
+    from the in-order graph where it matches the position by structure
+    (`match`), else from the isolated replay of the original operators
+    where that matches it, and each position labelled by how: `GRAPH`,
+    `ISOLATED_ORIGINAL`, or `VARIANT_DIFFERS` where the matched activity's
+    name differs (its `source` says which replay). Nodes no position owns are
+    dropped and counted (`EXTRA_NODE_DROPPED`): the graph's stand-ins, and an
+    eager run's host-device copies, which T2.5 prices. A position neither
+    matches is `unpriced`; nothing is refused here: the aggregate gate
+    (`pricing_gate`) decides whether the arm is priced at all."""
     missing = graph.unmatched_positions
-    if not missing:
-        raise ReplayError(f"the graph has {len(graph.extra_nodes)} nodes with no position "
-                          f"and substitutes nothing; no position is priced")
-    other = [i for i in missing if seq.ops[i].aten_op not in SUBSTITUTED_ATEN_OPS]
-    if other and not lenient:
-        raise ReplayError(
-            f"{len(other)} unmatched positions are not substitutions "
-            f"({sorted({operation_family(seq.ops[i]) for i in other})}); "
-            f"no device cost is taken from a different kernel")
-    if lenient and original is not None:
-        unpriced = sorted(set(missing) & set(original.unmatched_positions))
-        if not unpriced:
-            costs, source = dict(graph.device_s), {i: GRAPH for i in graph.device_s}
-            for i in missing:
-                costs[i] = original.device_s[i]
-                source[i] = (ISOLATED_VARIANT if i in original.variant_matched
-                             else ISOLATED_UNSUBSTITUTED if seq.ops[i].aten_op not in
-                             SUBSTITUTED_ATEN_OPS else ISOLATED_ORIGINAL)
-            return Pricing(dict(sorted(costs.items())), dict(sorted(source.items())),
-                           tuple(graph.extra_nodes), len(original.extra_nodes))
-        raise ReplayError(f"{len(unpriced)} of the {len(missing)} substituted positions are "
-                          f"not matched even by the isolated original's launch variants")
-    if original is None or not original.complete:
-        why = "was not run" if original is None else (
-            f"does not match the sequence ({len(original.unmatched_positions)} positions "
-            f"unmatched, {len(original.extra_nodes)} extra nodes)")
-        raise ReplayError(f"{len(missing)} substituted positions need the isolated replay "
-                          f"of the original operators, which {why}")
+    if missing and original is None:
+        raise ReplayError(f"{len(missing)} positions the graph does not hold need the "
+                          f"isolated replay of the original operators, which was not run")
     costs, source = dict(graph.device_s), {i: GRAPH for i in graph.device_s}
-    for i in missing:
-        costs[i], source[i] = original.device_s[i], ISOLATED_ORIGINAL
-    return Pricing(dict(sorted(costs.items())), dict(sorted(source.items())),
-                   tuple(graph.extra_nodes))
+    label = {i: VARIANT_DIFFERS if i in graph.variant_matched else GRAPH for i in graph.device_s}
+    dropped = {GRAPH: _dropped(graph)}
+    unpriced = []
+    if missing:
+        varied = set(original.variant_matched)
+        for i in missing:
+            if i in original.device_s:
+                costs[i], source[i] = original.device_s[i], ISOLATED_ORIGINAL
+                label[i] = VARIANT_DIFFERS if i in varied else ISOLATED_ORIGINAL
+            else:
+                unpriced.append(i)
+        dropped[ISOLATED_ORIGINAL] = _dropped(original)
+    order = sorted(costs)
+    return Pricing({i: costs[i] for i in order}, {i: source[i] for i in order},
+                   tuple(graph.extra_nodes), {i: label[i] for i in order}, tuple(unpriced),
+                   dropped)
+
+
+def pricing_gate(cells: Sequence[Mapping], max_share: float) -> dict:
+    """The aggregate gate (researcher's ruling 1 of 6 Nov 2026), per arm over
+    its cells: the share of priced device time whose structure the graph does
+    not hold (`Pricing.mismatch_s` over `priced_s`, each cell's `summary`)
+    must be at most `max_share`, a T4.1 lock value (working 5%), and every
+    device position must be priced. An arm that fails is not priced: it is
+    labelled `PRICING_NOT_VALIDATED` and kept out of the hypothesis claims.
+    `cells` are step 6's entries: "arm" and "pricing" (a `summary`). Never
+    widened to pass."""
+    if not 0 < max_share < 1:
+        raise ValueError("the share is a fraction in (0, 1), fixed at lock")
+    arms: dict = {}
+    for e in cells:
+        a = arms.setdefault(e["arm"], {"cells": 0, "priced_s": 0.0, "mismatch_s": 0.0,
+                                       "unpriced": 0})
+        p = e["pricing"]
+        a["cells"] += 1
+        a["priced_s"] += p["priced_s"]
+        a["mismatch_s"] += p["mismatch_s"]
+        a["unpriced"] += len(p["unpriced"])
+    out = {}
+    for arm, a in sorted(arms.items()):
+        share = a["mismatch_s"] / a["priced_s"] if a["priced_s"] > 0 else None
+        why = []
+        if a["unpriced"]:
+            why.append(f"{a['unpriced']} device positions neither replay matches")
+        if share is None:
+            why.append("no priced device time")
+        elif share > max_share:
+            why.append(f"mismatch share {share:.4f} above {max_share}")
+        out[arm] = {**a, "share": share, "max_share": max_share, "validated": not why,
+                    **({"label": PRICING_NOT_VALIDATED, "why": why} if why else {})}
+    return out
 
 
 # --- isolated replay ---------------------------------------------------------------------
@@ -597,9 +763,12 @@ class _Rolled:
     for it (`_disable_current_modes`), as the profiler's own calls are not
     the prefill's: left on, the mode puts its own events into the trace."""
 
-    def __init__(self, path, acts, sync, layers, per):
+    def __init__(self, path, acts, sync, layers, per, *, cats=None, fields=None):
         from torch.profiler import profile as _profile
+        from . import trace_stream
         self._profile, self.acts, self.sync = _profile, acts, sync
+        self.cats = trace_stream.ISOLATED_CATS if cats is None else cats
+        self.fields = trace_stream.FIELDS if fields is None else fields
         self.path, self.layers, self.per = Path(path), list(layers), int(per)
         self.parts, self.exported, self.hooks = [], [], []
         self.prof = self.region = None
@@ -620,7 +789,7 @@ class _Rolled:
         self.prof.export_chrome_trace(str(part))
         self.prof = self.region = None
         gc.collect()
-        info = trace_stream.write_compact(part)
+        info = trace_stream.write_compact(part, cats=self.cats, fields=self.fields)
         part.unlink()
         self.exported.append(info)
         self.parts.append(Path(info["path"]))
@@ -647,7 +816,7 @@ def isolated_replay_compact(run_prefill: Callable[[], None], tape: SyncTape, pat
                             masks: Optional[mask_bank.MaskRecord] = None,
                             flush: Optional[Callable[[], None]] = None,
                             sync: Optional[Callable[[], None]] = None,
-                            kernel_module=None) -> tuple:
+                            kernel_module=None, device_nodes: bool = False) -> tuple:
     """`isolated_replay(..., substitute=False)` with the profiler rolled every
     `segment_layers` layers (`_Rolled`), the segments' compact streams
     stitched (`trace_stream.stitch_compact`) into one at
@@ -655,7 +824,10 @@ def isolated_replay_compact(run_prefill: Callable[[], None], tape: SyncTape, pat
     flushes and synchronisations are the unsegmented replay's, and each
     operator is priced alone as before, so the stream is the whole replay's
     events in order. Refused with fewer than two blocks of layers, where
-    the whole replay is the segment."""
+    the whole replay is the segment. With `device_nodes` (step 6's isolated
+    original, 6 Nov 2026 ruling 3) the stream keeps what `replay_nodes`
+    reads (`trace_stream.REPLAY_CATS`, `DEVICE_FIELDS`) in place of what
+    `host_profile.read_isolated` reads."""
     from torch.profiler import ProfilerActivity
     from . import trace_stream
     layers = list(layers)
@@ -666,7 +838,9 @@ def isolated_replay_compact(run_prefill: Callable[[], None], tape: SyncTape, pat
     banked = masks.tensors(device) if masks is not None else None
     acts = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if torch.cuda.is_available() else [])
     mode = IsolationMode(flush, sync)
-    roller = _Rolled(path, acts, sync, layers, segment_layers)
+    roller = _Rolled(path, acts, sync, layers, segment_layers,
+                     **({"cats": trace_stream.REPLAY_CATS, "fields": trace_stream.DEVICE_FIELDS}
+                        if device_nodes else {}))
     sync()
     try:
         roller.open()
@@ -752,7 +926,7 @@ def check_passes(report: Mapping, bound: float) -> tuple[bool, list[str]]:
     why = []
     km = report.get("kernel_name_mismatch")
     if km and (km["unmatched_positions"] or km["extra_nodes"]):
-        why.append(f"kernel names do not match: {km}")
+        why.append(f"the replay does not match the sequence by structure: {km}")
     if report["positions_without_replay"]:
         why.append(f"{len(report['positions_without_replay'])} positions have no replay")
     for f, r in report["families"].items():

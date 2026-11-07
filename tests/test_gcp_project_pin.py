@@ -54,6 +54,8 @@ case "$*" in
   *"instances describe"*) echo inst; exit 0 ;;
   *"compute ssh"*"uptime -s"*) echo "2026-10-25 06:35:47|1792910147"; exit 0 ;;
   *"compute ssh"*"for f in ~/*.log"*) echo END; exit 0 ;;
+  *"compute ssh"*"--sync-only"*) echo "SYNC_RC=0"; exit 0 ;;
+  *"compute ssh"*"stat -c '%s %n'"*) echo END; exit 0 ;;
 esac
 # Resource URLs carry the project, as gcloud's do, on both streams.
 echo "Created [https://www.googleapis.com/compute/v1/projects/$proj/zones/z/instances/i]"

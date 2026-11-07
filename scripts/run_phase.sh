@@ -23,11 +23,21 @@
 #
 # Usage (on the instance):
 #   bash scripts/run_phase.sh stage0 -- python scripts/run_probe.py --out results/probe
+#   bash scripts/run_phase.sh --sync-only teardown
+#
+# `--sync-only` runs the sync alone, now, and exits with its status: the
+# teardown's last sync before it pulls logs and manifests only (researcher's
+# ruling, 6 Nov 2026: the bulk results stay in the bucket). A sync stamps no
+# rows, so the dirty-tree check is not made for it.
 set -euo pipefail
 
-PHASE="${1:?usage: run_phase.sh PHASE -- CMD...}"; shift
-[[ "${1:-}" == "--" ]] && shift
-[[ $# -gt 0 ]] || { echo "run_phase.sh: no command given" >&2; exit 2; }
+SYNC_ONLY=0
+if [[ "${1:-}" == "--sync-only" ]]; then SYNC_ONLY=1; shift; fi
+PHASE="${1:?usage: run_phase.sh PHASE -- CMD... | run_phase.sh --sync-only PHASE}"; shift
+if (( ! SYNC_ONLY )); then
+  [[ "${1:-}" == "--" ]] && shift
+  [[ $# -gt 0 ]] || { echo "run_phase.sh: no command given" >&2; exit 2; }
+fi
 
 # Refuse to run a phase in a tree git calls dirty.
 #
@@ -39,7 +49,7 @@ PHASE="${1:?usage: run_phase.sh PHASE -- CMD...}"; shift
 # logs` did exactly that until logs/ was gitignored).
 #
 # Checked before the phase, not after, because after is a wasted GPU hour.
-if command -v git >/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
+if (( ! SYNC_ONLY )) && command -v git >/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
   DIRT="$(git status --porcelain)"
   if [ -n "$DIRT" ]; then
     echo "REFUSING TO RUN PHASE -- working tree is dirty:" >&2
@@ -104,6 +114,11 @@ sync_now() {
   gsutil ls -r "$DEST/results" | tail -n 40 | _redact
   return 0
 }
+
+if (( SYNC_ONLY )); then
+  sync_now 0 sync-only
+  exit $?
+fi
 
 # The trap is the point. Whatever happens to the phase, the sync runs.
 RC=0

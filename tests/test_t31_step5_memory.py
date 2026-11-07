@@ -171,6 +171,23 @@ def test_the_chain_check_from_the_stream_is_the_banked_one(tmp_path, cell):
     assert _close(got, {k: v for k, v in banked.items() if k not in ("gated", "why_not_gated")})
 
 
+@pytest.mark.parametrize("cell", PARITY_CELLS)
+def test_the_device_field_stream_gives_the_nodes_and_match_of_the_full_trace(tmp_path, cell):
+    # step 6's isolated original (researcher's ruling 3 of 6 Nov 2026): the same kind
+    # of replay as step 5's, of the original operators, read lazily from its stream
+    from attnbench.components import recorder, replay
+    d = _banked(cell)
+    seq = recorder.load_recording(d / "recording").sequence
+    info = ts.write_compact(d / "isolated_host.json", tmp_path / ("x" + ts.SUFFIX),
+                            cats=ts.REPLAY_CATS, fields=ts.DEVICE_FIELDS)
+    full = replay.replay_nodes(d / "isolated_host.json", exclude=replay.FLUSH)
+    comp = replay.replay_nodes(info["path"], exclude=replay.FLUSH)
+    assert comp == full and full
+    # parity only: session 3's XAttention replay (an older commit) has no node for its
+    # embedding gather and arange; the debug session's step 6 holds every position
+    assert replay.match(seq, comp) == replay.match(seq, full)
+
+
 def _close(a, b, rel=1e-12) -> bool:
     if isinstance(a, dict) and isinstance(b, dict):
         return a.keys() == b.keys() and all(_close(a[k], b[k], rel) for k in a)

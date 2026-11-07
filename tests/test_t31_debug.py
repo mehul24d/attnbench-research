@@ -400,7 +400,9 @@ def test_a_debug_cpu_check_ends_at_hold(tmp_path):
 
 def test_the_dependencies_name_real_steps_and_every_later_step_is_covered():
     assert all(k in ORDER and all(d in ORDER for d in v) for k, v in dbg.DEPENDS.items())
-    assert set(dbg.DEPENDS) == set(ORDER[5:])
+    assert set(dbg.DEPENDS) == set(ORDER[1:])
+    for step in ORDER[1:5]:              # a live step 1 to 5 needs every step before it
+        assert set(dbg.DEPENDS[step]) == set(ORDER[:ORDER.index(step)])
     for step, deps in dbg.DEPENDS.items():
         assert all(ORDER.index(d) < ORDER.index(step) for d in deps)
     assert dbg.blocked("hold", {"predict": "failed"}) == ["predict"]
@@ -510,3 +512,63 @@ def test_step_6_does_not_run_a_cell_the_session_names_not_measured(tmp_path, mon
         {"arm": "oracle", "density": 0.25, "length": 2048, "batch": 1, "reason": "debug"}])
     assert ("oracle", 0.25, 2048, 1) in st.not_measured(extra)
     assert ("oracle", 0.25, 2048, 1) not in st.cells(extra)
+
+
+# --- the exploratory session (researcher's ruling 4 of 6 Nov 2026) ------------------------------
+
+def _explore(tmp_path, **kw):
+    s = tmp_path / "exp"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    cfgp = tmp_path / "p1.json"
+    cfgp.write_text(json.dumps(dict(_full_cfg(), prediction_prefix="predictions/P1")))
+    rec = dbg.explore(s, cap_min=230, config=cfgp, **kw)
+    return s, rec
+
+
+def test_an_exploratory_session_is_labelled_starts_at_step_one_and_drops_the_stuck_cell(tmp_path):
+    s, rec = _explore(tmp_path)
+    assert rec["debug"] == dbg.EXPLORATORY_LABEL == "T3.1 exploratory, code identity may change"
+    assert rec["start"] == "preflight" and rec["donor"] is None and rec["cap_min"] == 230
+    cfg = json.loads((s / dbg.DEBUG_CONFIG).read_text())
+    assert cfg["debug"] is True and cfg["debug_label"] == dbg.EXPLORATORY_LABEL
+    assert cfg["prediction_prefix"] == dbg.EXPLORATORY_PREFIX == "predictions/P1-exploratory"
+    assert st.prediction_dir(cfg, Path("x")) == "predictions/P1-exploratory/x"
+    assert [(e["arm"], e["density"], e["length"]) for e in cfg["not_measured"]] == [
+        ("oracle", 0.5, 32768)] and "fallback in force" in cfg["not_measured"][0]["reason"]
+    assert json.loads((s / "manifest.json").read_text())["debug"] == dbg.EXPLORATORY_LABEL
+    assert "EXPLORATORY" in (s / dbg.EXPLORATORY_NOTE).read_text()
+    assert st.staged_accept(s, cfg) is None           # it stages nothing from anywhere
+    s2, _ = _explore(tmp_path / "b", include_stuck_cell=True)
+    assert not json.loads((s2 / dbg.DEBUG_CONFIG).read_text()).get("not_measured")
+    with pytest.raises(SystemExit, match="not empty"):
+        dbg.explore(s, cap_min=230)
+    with pytest.raises(SystemExit, match="cap-min"):
+        dbg.explore(tmp_path / "c", cap_min=0)
+
+
+def test_an_exploratory_steps_result_carries_its_own_label(tmp_path):
+    out = tmp_path / "o"
+    args = sess_args(out, tmp_path)
+    cfgp = tmp_path / "c.json"
+    cfgp.write_text(json.dumps(dict(st.DRY_CONFIG, debug=True, debug_label=dbg.EXPLORATORY_LABEL,
+                                    prediction_prefix=dbg.EXPLORATORY_PREFIX)))
+    args.config = str(cfgp)
+    st.run_step("postflight", args)
+    assert json.loads((out / "result.json").read_text())["debug"] == dbg.EXPLORATORY_LABEL
+
+
+def test_an_exploratory_session_runs_from_step_one_under_the_cards_cap(tmp_path, monkeypatch):
+    s, _ = _explore(tmp_path)
+    seen = {}
+    monkeypatch.setattr(sess, "run_session", lambda session, **k: seen.update(k) or 0)
+    monkeypatch.setattr(sess, "tree_clean", lambda: True)
+    monkeypatch.setattr(sess, "load_config", lambda *a, **k: {})
+    assert sess.main(["--debug", "--keep-going", "--session", str(s), "--no-sync"]) == 0
+    assert seen["start"] == "preflight" and seen["cap_s"] == 230 * 60 and seen["debug"]
+    assert seen["keep_going"] is True
+
+
+def test_a_live_failure_in_steps_one_to_five_blocks_every_step_after_it_but_the_postflight(tmp_path):
+    s, _ = _explore(tmp_path)
+    rc, ran = _drun(s, {"link": ("failed", 1)}, start="preflight", keep_going=True)
+    assert rc == 1 and ran == ["preflight", "link", "postflight"]
