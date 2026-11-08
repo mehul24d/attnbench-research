@@ -521,8 +521,8 @@ def test_the_step_layout_names_this_runners_directories_for_t31s_steps(tmp_path)
     for step in S.T31_STEPS:
         assert st.step_dir(tmp_path, step) == S.step_dir(tmp_path, step, T61)
     assert st.step_dir(tmp_path, "link") != tmp_path / "02_link"          # T3.1's own numbering
-    with pytest.raises(st.StepFailed, match="names no directory for the step 'predict'"):
-        st.step_dir(tmp_path, "predict")
+    with pytest.raises(st.StepFailed, match="names no directory for the step 'verify'"):
+        st.step_dir(tmp_path, "verify")
     assert st.step_dir(tmp_path / "t31", "predict") == tmp_path / "t31" / "07_predict"
     assert S.write_step_layout(dataclasses.replace(T61, components_config=""), tmp_path / "x") is None
 
@@ -557,17 +557,156 @@ def test_the_launch_queue_reports_the_q_link_measured(tmp_path):
 
 
 def test_the_real_ground_truth_harness_is_not_built():
-    with pytest.raises(S.NotBuilt, match="T2.13"):
+    with pytest.raises(S.NotBuilt, match=r"traced pass.*\(T2\.13\)"):
         S.real_harness(T61, None)
 
 
-def test_the_real_record_needs_p1s_banking_time_first(tmp_path):
+def test_predict_leaves_t31s_receipt_where_t31s_steps_read_it(tmp_path):
+    import t31_steps as st
+    session = tmp_path / "s"
+    assert dry(T61, session) == 0
+    S.write_step_layout(T61, session)
+    receipt, local = st._receipt(session)
+    ours = json.loads((session / S.RECEIPT).read_text())
+    assert receipt.sha256 == ours["sha256"] and local == Path(ours["local"])
+    assert receipt.synced_at == datetime.fromisoformat(ours["synced_at"])
+    assert receipt.remote.endswith(ours["remote_path"])
+
+
+def t31_row(arm, label, density, budget, batch, tokens, median=1.0):
+    return {"arm": label, "cell_arm": arm, "nominal_density": density, "budget": budget,
+            "batch": batch, "context_length": tokens, "prefill_ms_samples": [median],
+            "prefill_ms_median": median}
+
+
+def test_a_t31_row_names_its_grid_cell_not_its_label_or_prompt_length():
+    assert S.t31_row_cell(t31_row("dense", "dense", None, 2048, 1, 1951)) == ["dense", 1.0, 2048, 1]
+    assert S.t31_row_cell(t31_row("oracle", "oracle@0.25", 0.25, 16384, 4, 16001)) == \
+        ["oracle", 0.25, 16384, 4]
+    assert S.t31_row_cell(t31_row("xattention", "xattention", None, 4096, 1, 4000)) == \
+        ["xattention", None, 4096, 1]
+
+
+def p1_grid():
+    import t31_steps as st
+    comp = st.load_config(str(ROOT / "configs" / "t31" / "p1_session.json"), dry_run=False)
+    return comp, st.cells(comp)
+
+
+def test_a_blocks_components_config_times_only_its_cells_and_the_anchor():
+    import t31_steps as st
+    comp, grid = p1_grid()
+    block = {"id": "b3", "anchor": grid[0], "cells": [grid[5], grid[9]]}
+    block["run_cells"] = [block["anchor"]] + block["cells"]
+    sub = S.block_config(comp, block)
+    assert st.cells(sub) == [grid[0], grid[5], grid[9]]
+    assert st.cells(comp) == grid                                   # the pairing's is untouched
+    assert {e["reason"] for e in sub["not_measured"][len(comp["not_measured"]):]} == \
+        {"another block's cell (this is block b3)"}
+    with pytest.raises(S.StepFailed, match="not in the grid"):
+        S.block_config(comp, dict(block, run_cells=[("dense", 1.0, 999, 1)]))
+
+
+def write_t31_gt(d, group, rows, *, not_before, firsts, traced=False, complete=True):
+    g = d / group
+    g.mkdir(parents=True, exist_ok=True)
+    S.write_json(g / "stamps.json", {"group": group, "clock_not_before": not_before,
+                                     "first_clocked_block_started_at": firsts})
+    S.write_json(g / "gt_L2048_b1.json", {"rows": rows, "traced": traced, "complete": complete})
+
+
+def test_t31s_ground_truth_reads_as_this_runners_result_with_the_earliest_stamp(tmp_path):
+    comp, grid = p1_grid()
+    a = t31_row("dense", "dense", None, 2048, 1, 1951)
+    b = t31_row("oracle", "oracle@0.25", 0.25, 2048, 1, 1951)
+    write_t31_gt(tmp_path, "eager", [a, b], not_before=T + 5, firsts=[T + 7])
+    write_t31_gt(tmp_path, "compiled", [], not_before=T + 3, firsts=[T + 4])
+    r = S.t31_ground_truth_result(tmp_path)
+    assert r[S.STRICT_KEY] == T + 3 and r["complete"] is True
+    assert [x["cell"] for x in r["untraced"]["rows"]] == [["dense", 1.0, 2048, 1],
+                                                          ["oracle", 0.25, 2048, 1]]
+    block = {"id": "b1", "anchor": grid[0], "cells": [grid[1]], "run_cells": [grid[0], grid[1]]}
+    S.tag_rows(r, block)
+    assert [x["anchor"] for x in r["untraced"]["rows"]] == [True, False]
+    with pytest.raises(S.StepFailed, match="not this block's"):
+        S.tag_rows(r, dict(block, run_cells=[grid[0], grid[2]]))
+
+
+def test_the_block_drift_check_reads_t31s_rows_by_their_grid_cell(tmp_path):
+    from attnbench.analysis import block_drift as BD
+    comp, grid = p1_grid()
+    rows = []
+    for bid, med, tokens in (("b1", 700.0, 8075), ("b2", 730.0, 8075)):
+        d = tmp_path / bid
+        write_t31_gt(d, "eager", [t31_row("dense", "dense", None, 8192, 1, tokens, med)],
+                     not_before=T, firsts=[T + 1])
+        r = S.t31_ground_truth_result(d)
+        anchor = ("dense", 1.0, 8192, 1)
+        S.tag_rows(r, {"id": bid, "anchor": anchor, "cells": [], "run_cells": [anchor]})
+        rows += r["untraced"]["rows"]
+    out = BD.drift(rows, order=["b1", "b2"])
+    assert out["anchor"] == ("dense", 1.0, 8192, 1)
+    assert out["per_block"]["b2"]["relative_difference"] == pytest.approx(30 / 700)
+    assert out["above"] == ["b2"] and out["passed"] is False
+
+
+def test_t31s_ground_truth_is_incomplete_if_any_group_is_and_never_traced(tmp_path):
+    row = t31_row("dense", "dense", None, 2048, 1, 1951)
+    write_t31_gt(tmp_path, "eager", [row], not_before=T, firsts=[T + 1])
+    write_t31_gt(tmp_path, "compiled", [row], not_before=T, firsts=[T + 1], complete=False)
+    assert S.t31_ground_truth_result(tmp_path)["complete"] is False
+    write_t31_gt(tmp_path, "compiled", [row], not_before=T, firsts=[T + 1], traced=True)
+    with pytest.raises(S.StepFailed, match="traced"):
+        S.t31_ground_truth_result(tmp_path)
+    with pytest.raises(S.StepFailed, match="no ground-truth rows"):
+        S.t31_ground_truth_result(tmp_path / "empty")
+
+
+def test_the_real_record_needs_p1s_banking_time_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "P1_TRAINING", tmp_path / "absent.json.gz")
     w = datetime(2026, 11, 20, tzinfo=timezone.utc)
     with pytest.raises(S.StepFailed, match="missing: \\['P1'\\]"):
         S.real_record(T61, args_for(tmp_path, tmp_path, dry_run=False), w)
-    with pytest.raises(S.NotBuilt, match="T2.11"):
-        S.real_record(T61, args_for(tmp_path, tmp_path, dry_run=False,
-                                    banked=["P1=2026-11-19T00:00:00+00:00"]), w)
+    banked = args_for(tmp_path, tmp_path, dry_run=False, banked=["P1=2026-11-19T00:00:00+00:00"])
+    with pytest.raises(S.StepFailed, match="no P1 training file"):
+        S.real_record(T61, banked, w)
+
+
+def _p1_training_file(tmp_path):
+    from attnbench.predict import p1_training as PT
+    import test_p1_training as TP
+    a = TP.session(tmp_path, "T3.2a", TP.gt([10, 20, 30], [5, 6, 7]))
+    b = TP.session(tmp_path, "T3.2b", TP.gt([40, 50, 60, 70], [8, 9]))
+    path = tmp_path / "p1_training.json.gz"
+    PT.dump(PT.to_record(PT.training_rows(a, b), TP.HW), path)
+    return path
+
+
+def test_the_real_record_fits_the_sums_on_p1s_pooled_rows_and_waits_for_the_learned_config(
+        tmp_path, monkeypatch):
+    from attnbench.predict import baselines as BL
+    monkeypatch.setattr(S, "P1_TRAINING", _p1_training_file(tmp_path))
+    rows = S.training_rows(T61)
+    assert sorted(r.measured for r in rows) == [pytest.approx(0.007), pytest.approx(0.040)]
+    fits = []
+    real = BL.fit_fitted_sum
+    monkeypatch.setattr(BL, "fit_fitted_sum", lambda ts, **kw: fits.append((ts, kw)) or real(ts, **kw))
+    a = args_for(tmp_path, tmp_path, dry_run=False, banked=["P1=2026-11-19T00:00:00+00:00"])
+    with pytest.raises(S.StepFailed, match="lock value \\(Gate B\\)"):
+        S.real_record(T61, a, datetime(2026, 11, 20, tzinfo=timezone.utc))
+    assert [kw for _, kw in fits] == [{}, {"add_s0": True}]
+    ts = fits[0][0]
+    assert ts.target == "P2" and ts.trained_on == ("P1",) and len(ts.rows) == 2
+
+
+def test_a_damaged_training_file_is_refused(tmp_path, monkeypatch):
+    import gzip
+    path = _p1_training_file(tmp_path)
+    raw = gzip.decompress(path.read_bytes()).replace(b'"target_s":0.04', b'"target_s":0.05')
+    path.write_bytes(gzip.compress(raw))
+    monkeypatch.setattr(S, "P1_TRAINING", path)
+    with pytest.raises(S.StepFailed, match="sha256"):
+        S.training_rows(T61)
 
 
 GOOD_ROW = {"cloud_provider": "gcp", "instance_type": "a2-ultragpu-1g",

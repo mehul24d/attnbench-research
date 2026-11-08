@@ -1,0 +1,337 @@
+{
+ "plan_sha256": "16dd2fb2eb84ca1c7fed8b6cdbfd2df34f5df1bdf68b49f38c7848e32ecbc3f6",
+ "values": {
+  "h0_to_h3_tolerances": {
+   "item": "H0 to H3 tolerances",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "Not before the floors are settled (rows 16, 17): a tolerance below the 6.77% noise floor cannot be met by construction",
+   "basis": "docs/t32_gate_a_repeats.md"
+  },
+  "h6_regret_bound": {
+   "item": "H6 regret bound",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "After T7.6's regret distribution",
+   "basis": "lock table row 2"
+  },
+  "ground_truth_density_set": {
+   "item": "the ground-truth density set",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "P1's working set (dense 1.0; block-sparse 0.25, 0.5; XAttention calibrated) for every pairing, oracle 0.5 at 32768 not measured",
+   "basis": "lock table row 3; configs/t31/p1_session.json"
+  },
+  "h4_equivalence_bound_with_its_justification_from_the_tasks": {
+   "item": "H4 equivalence bound with its justification from the tasks",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "10 points (lock table row 4)",
+   "basis": "T1.1: -4.3 and -6.0 points"
+  },
+  "h4_confirmatory_family": {
+   "item": "H4 confirmatory family",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "Count m from the declared family (audit D4 open)",
+   "basis": "lock table row 5"
+  },
+  "power_target_and_n": {
+   "item": "power target and n",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "alpha 0.025, power 0.90; n needs p from T1.5",
+   "basis": "lock table row 6"
+  },
+  "primary_cell_n_and_admissibility_n": {
+   "item": "primary cell n (at least 200) and admissibility n",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "200, raised if 1,300 x p is larger",
+   "basis": "lock table row 7"
+  },
+  "admissibility_holm_family": {
+   "item": "admissibility Holm family",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "The (arm, density) set T1.8 produces",
+   "basis": "lock table row 8"
+  },
+  "context_grid_checked_against_each_model_s_position_limit": {
+   "item": "the context grid checked against each model's position limit",
+   "value": null,
+   "source": null,
+   "status": "evidence in hand",
+   "proposed": "2048 to 32768 as run in T3.2a and T3.2b (35 cells, oracle 0.5 at 32768 not measured)",
+   "basis": "docs/t32_gate_a_repeats.md"
+  },
+  "delay_injection_slope_bound": {
+   "item": "delay-injection slope bound",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "No session has measured the slopes: Gate A leg 3 cannot be read",
+   "basis": "docs/t32_gate_a_repeats.md"
+  },
+  "mask_gate_bound": {
+   "item": "mask-gate bound",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "After P2's first masks",
+   "basis": "lock table row 11"
+  },
+  "cross_card_dense_task_score_bound": {
+   "item": "cross-card dense task-score bound",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "After the A100 dense control (audit B1 open)",
+   "basis": "lock table row 12"
+  },
+  "replay_versus_trace_bound_for_gate_a": {
+   "item": "replay-versus-trace bound for Gate A (set from the L4 shakedown's agreement distribution, Appendix A, 27 Oct 2026)",
+   "value": null,
+   "source": null,
+   "status": "evidence in hand",
+   "proposed": "From the two repeats' per-family distribution (overall +2.4%, +2.7%; masked_fill_ +116%, +120%): a bound that admits masked_fill_ needs a decision on that family first",
+   "basis": "docs/t32_gate_a_repeats.md"
+  },
+  "null_kernel_floor_multiple": {
+   "item": "null-kernel floor multiple",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "From T2.2's null pass",
+   "basis": "lock table row 14"
+  },
+  "probe_bounds": {
+   "item": "probe bounds",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "From the P1 repeats' probe records (not yet extracted)",
+   "basis": "lock table row 15"
+  },
+  "resolution_and_noise_floors": {
+   "item": "resolution and noise floors (from the measured run-to-run spread)",
+   "value": null,
+   "source": null,
+   "status": "evidence in hand",
+   "proposed": "Measured at the provisional 0.95: resolution 19.42 ms, noise 6.77%. The single absolute resolution floor is 16% of a dense 2048 prefill and 0.5% of a 32768 one; 8 of 12 sparse-vs-dense gaps at 2048 fall inside it. Decide per-length or relative before fixing",
+   "basis": "docs/t32_gate_a_repeats.md"
+  },
+  "floors_quantile": {
+   "item": "floors quantile (0.95 is provisional, for shakedowns only)",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "0.95 if the floors keep their form; with two sessions the noise floor's 0.95 quantile is close to the largest between-session gap",
+   "basis": "docs/t32_gate_a_repeats.md"
+  },
+  "hdbi_boundedness_threshold": {
+   "item": "the HDBI boundedness threshold (fitted on the training pairings)",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "Fit on P1 (two vs three classes, audit D3 open); the fit drops rows inside the resolution floor, which is most of 2048",
+   "basis": "attnbench/lock/hdbi_fit.py"
+  },
+  "learned_predictor_features": {
+   "item": "learned-predictor features",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "The frozen T2.10 set; a ModelShape for the primary model is owed before any learned feature can be computed",
+   "basis": "attnbench/predict/training.py"
+  },
+  "learned_predictor_hyperparameters": {
+   "item": "learned-predictor hyperparameters",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "LightGBM 4.6.0 defaults, pinned, num_threads=1",
+   "basis": "lock table row 20"
+  },
+  "k2_correctness_tolerance": {
+   "item": "K2 correctness tolerance (the gate's `TOL`)",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "Keep the gate's TOL",
+   "basis": "lock table row 21"
+  },
+  "head_type_criterion": {
+   "item": "head-type criterion (T1.3)",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "After T1.3",
+   "basis": "lock table row 22"
+  },
+  "rerun_budget": {
+   "item": "rerun budget (flagged rounds, and the minimum clean rounds)",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "One extra round, 3 clean rounds; check against T3.2's flag rate (not yet extracted)",
+   "basis": "lock table row 23"
+  },
+  "throttle_set": {
+   "item": "throttle set",
+   "value": null,
+   "source": null,
+   "status": "evidence in hand",
+   "proposed": "As decided 27 Oct 2026",
+   "basis": "lock table row 24"
+  },
+  "payload_class_edges": {
+   "item": "payload class edges (proposed 8 B, 4 KiB and 1 MiB)",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "8 B, 4 KiB, 1 MiB as proposed",
+   "basis": "lock table row 25"
+  },
+  "prompt_set_hash_and_tokenizer_version": {
+   "item": "prompt-set hash and tokenizer version",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "Record from T3.2's prompts and the image's transformers 4.46.0",
+   "basis": "lock table row 26"
+  },
+  "realised_length_key_rule": {
+   "item": "realised-length key rule",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "Key by the budget, the prompt's realised tokens kept as a field (as T3.1 rows do: budget 2048, 1951 tokens)",
+   "basis": "lock table row 27"
+  },
+  "budget_cut_order": {
+   "item": "budget cut order",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "As the plan",
+   "basis": "lock table row 28"
+  },
+  "compiled_versus_eager_density_flag_tolerance": {
+   "item": "the compiled-versus-eager density flag tolerance (working \u00b10.01 absolute)",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "Keep +-0.01; T3.2 ran eager only, so no new compiled rows",
+   "basis": "lock table row 29"
+  },
+  "probe_length_rule": {
+   "item": "the probe-length rule (T2.18: three lengths at or below 32768 with distinct chunk counts of at least two, else two plus a full recording at 32768)",
+   "value": null,
+   "source": null,
+   "status": "evidence in hand",
+   "proposed": "As ruled 31 Oct 2026",
+   "basis": "lock table row 30"
+  },
+  "flagged_memset_sensitivity_bound": {
+   "item": "the flagged-memset sensitivity bound (T2.3: each memset with no device record priced at the memset zoo's duration for its size)",
+   "value": null,
+   "source": null,
+   "status": "evidence in hand",
+   "proposed": "The record-less memsets are zero-length (both repeats): price them at zero, report the count",
+   "basis": "docs/limitations.md"
+  },
+  "chain_check_tolerance": {
+   "item": "the chain-check tolerance (T2.2, an aggregate gate since 1 Nov 2026, evaluated on the bare timer's prices since Shakedown 5: over every composite whose positions its children launched, the summed absolute difference between its children's bare times and its own, as a share of the cell's bare host time; working 10%, to be set from T3.1 data; per-call ratios reported; a cell that fails is labelled with its fallback, not refused)",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "Working 10%; set from T3.1/T3.2 chain records (not yet extracted)",
+   "basis": "lock table row 32"
+  },
+  "recompile_gate": {
+   "item": "the recompile gate (T2.21: compile events allowed after a compiled arm's warm-up; working 0)",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "0",
+   "basis": "lock table row 33"
+  },
+  "residual_spread_tolerance": {
+   "item": "the residual spread tolerance (T2.2: the per-layer residual, the arm's own Python between calls that the bare prices leave out, measured as a layer's uninstrumented span under the tape less its bare prices; its spread over repetitions, the interquartile range over the median, at most this share; working 10%; a layer above it keeps its residual and labels the cell, not refused; Appendix A, 1 Nov 2026)",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "Working 10%; set from T3.2 residual spreads (not yet extracted)",
+   "basis": "lock table row 34"
+  },
+  "pricing_mismatch_share": {
+   "item": "the pricing mismatch share (T2.4: per arm over its cells, the share of priced device time priced from the isolated replay of the original operators because the CUDA graph does not hold that structure as the eager sequence has it, positions matched by structure only; working 5%; an arm above it, or with a position neither replay matches, is not priced, is labelled \"pricing not validated\" and is kept out of the hypothesis claims; never widened to pass; Appendix A, 7 Nov 2026)",
+   "value": null,
+   "source": null,
+   "status": "owed: data",
+   "proposed": "Working 5%; set from T3.2's pricing gate records",
+   "basis": "lock table row 35"
+  },
+  "block_drift_bound": {
+   "item": "the block drift bound (T6.1 and T6.4: a pairing run in blocks compares the anchor cell's untraced median in each block with the first block's that has it, as a relative difference; working 3%; a block above it is named, its rows are labelled \"drift above bound\" and kept out of the hypothesis claims; never widened to pass; Appendix A, 7 Nov 2026)",
+   "value": null,
+   "source": null,
+   "status": "owed: decision",
+   "proposed": "Working 3% is below the 6.71% the anchor (dense L8192 b1) moved between the two L4 sessions; blocks are separate boots, so a 3% bound would label blocks on session noise. Decide before P4",
+   "basis": "docs/t32_gate_a_repeats.md"
+  }
+ },
+ "scored_pairings": {
+  "H0": [],
+  "H2": []
+ },
+ "status": "draft: proposals only, nothing fixed (8 Nov 2026)",
+ "pairing_values": {
+  "P2": {
+   "densities": null,
+   "gt_groups": null,
+   "reps": null,
+   "dense_rounds": null,
+   "sampler_interval_s": null,
+   "chain_check_tolerance": null,
+   "residual_spread_tolerance": null,
+   "pricing_mismatch_share": null,
+   "max_rerun_rounds": null
+  },
+  "P4": {
+   "densities": null,
+   "gt_groups": null,
+   "reps": null,
+   "dense_rounds": null,
+   "sampler_interval_s": null,
+   "chain_check_tolerance": null,
+   "residual_spread_tolerance": null,
+   "pricing_mismatch_share": null,
+   "max_rerun_rounds": null
+  }
+ },
+ "pairing_values_proposed": "P1's working values (docs/lock_value_table.md) for P2 and P4, max_rerun_rounds 1; P4's gt groups are its blocks' (configs/t64)",
+ "banked_files": {
+  "p1_training": {
+   "path": "results/p1_training/p1_training.json.gz",
+   "file_sha256": "083b66134ebd3e2e72ca9cd6d576ffe561b128a61a2de93418fde49978045bdf",
+   "record_sha256": "c363c0cbb3de3e5224f913e91fabe442f3c8cb9b49b2f8fb7e3112be16530d58",
+   "schema": "attnbench.p1_training/2",
+   "rows": 35,
+   "repeats": [
+    "T3.2a",
+    "T3.2b"
+   ],
+   "uploaded": null
+  }
+ }
+}

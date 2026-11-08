@@ -126,6 +126,7 @@ STRICT_KEY = "first_clocked_block_started_at"   # Appendix A, 27 Oct 2026
 OLD_KEY = "first_timed_block_started_at"        # the 25 Oct 2026 rule; refused
 
 RECEIPT = "prediction_receipt.json"
+T31_RECEIPT = "receipt.json"
 OPENED = "ground_truth_opened.json"
 STAMPS = "ground_truth_stamps.json"
 DRY_CLOCK = "dry_clock.json"
@@ -561,7 +562,7 @@ def fake_host_speed(tag: str):
 # writes, since this runner numbers its steps in its own order.
 
 T31_STEPS = ("link", "dense_select", "probe", "host_components", "device_components",
-             "ground_truth")
+             "predict", "ground_truth")
 
 
 def write_step_layout(cfg: SessionConfig, session: Path) -> Optional[Path]:
@@ -687,18 +688,57 @@ def fake_record(cfg: SessionConfig, written_at: datetime) -> dict:
                           written_at=written_at)
 
 
+P1_TRAINING = ROOT / "results" / "p1_training" / "p1_training.json.gz"
+
+
+def training_rows(cfg: SessionConfig, path: Optional[Path] = None) -> list:
+    """The banked pairings' ground-truth rows this pairing's committed fits
+    train on. P1's are its training file (`attnbench.predict.p1_training`,
+    researcher's decision, 8 Nov 2026: one row per cell, both repeats pooled);
+    no later pairing's rows are banked in a form a fit reads yet."""
+    from attnbench.predict import p1_training as PT
+    later = [p for p in cfg.banked if p != PT.PAIRING]
+    if later:
+        raise NotBuilt("T6.1", f"{later}'s training rows, which {cfg.pairing} is also trained on")
+    path = Path(path or P1_TRAINING)
+    if not path.exists():
+        raise StepFailed(f"no P1 training file at {path}: fetch it (its sha256 is the lock's)")
+    try:
+        return PT.rows_from_record(PT.load(path))
+    except PT.TrainingRowsError as e:
+        raise StepFailed(str(e)) from e
+
+
 def real_record(cfg: SessionConfig, args, written_at: datetime) -> dict:
-    """Assembly of every cell from the session's measured components, the
-    fitted baselines trained on the banked pairings, the intervals and the
-    dispatcher's choice. Not built: T2.11 is Built, but no code assembles a
-    pairing's cells from a session's component files."""
+    """Every cell from the session's measured components (T3.1's assembly,
+    `t31_steps.build_prediction`, on this pairing's components config), with
+    the fitted sums and the learned predictor trained on the banked pairings
+    (`training_rows`). The learned predictor's configuration is a lock value
+    (Gate B): until `learned.LOCKED_CONFIG` is set this refuses, naming it."""
+    from attnbench.predict import baselines as BL
+    from attnbench.predict import learned as LM
+    from attnbench.predict.training import committed_training_set
     banked = parse_banked_at(args.banked_at)
     missing = [p for p in cfg.banked if p not in banked]
     if missing:
         raise StepFailed(f"{cfg.pairing} is trained on {list(cfg.banked)}; give each one's "
                          f"banking time with --banked-at (missing: {missing})")
-    raise NotBuilt("T2.11, T2.9, T2.10, T2.19, T2.22",
-                   "assembling the pairing's cells from the session's components")
+    ts = committed_training_set(training_rows(cfg), cfg.pairing, cfg.banked)
+    fitted = {"banked": list(cfg.banked), "fitted_sum": BL.fit_fitted_sum(ts),
+              "fitted_sum_plus_s0": BL.fit_fitted_sum(ts, add_s0=True)}
+    if LM.LOCKED_CONFIG is None:
+        raise StepFailed("the learned predictor's configuration is a lock value (Gate B): "
+                         "learned.LOCKED_CONFIG is not set, so no committed prediction can "
+                         "carry the learned baseline")
+    fitted["learned"] = LM.fit_learned(ts, LM.LOCKED_CONFIG)
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    try:
+        comp = st.load_config(str(ROOT / cfg.components_config), dry_run=False)
+        return st.build_prediction(comp, Path(args.session), dry_run=False, now=written_at,
+                                   baselines=fitted)
+    except st.StepFailed as e:
+        raise StepFailed(str(e), e.findings) from e
 
 
 def body_predict(cfg: SessionConfig, args, *, record_fn=None) -> dict:
@@ -725,6 +765,9 @@ def body_predict(cfg: SessionConfig, args, *, record_fn=None) -> dict:
            "dry_run": args.dry_run}
     write_json(session / RECEIPT, out)
     write_json(Path(args.out) / RECEIPT, out)
+    # T3.1's steps read the receipt at <predict>/receipt.json, in its own form
+    # (`session_order.receipt_from_dict`, with the file's name in `local`).
+    write_json(Path(args.out) / T31_RECEIPT, {**receipt.to_dict(), "local": committed.path.name})
     return {k: out[k] for k in ("sha256", "remote_path", "synced_at", "written_at")}
 
 
@@ -806,10 +849,75 @@ class FakeHarness:
                 "traced": {"rows": rows}, "overhead": {"fake": True}, "traces": []}
 
 
+# The ground truth is T3.1's (`t31_steps.step_ground_truth`, T2.13): untraced,
+# one process per compile-setting group, each with its dense control, on this
+# pairing's components config. Section 5.3 step 8 (traced against untraced
+# per arm) has no T3.1 counterpart: P1's sessions never ran it, so the traced
+# pass is not built and the harness refuses before anything is clocked.
+
+def _cell_of(c) -> tuple:
+    from attnbench.lock.blocks import CELL_FIELDS, cell_key
+    return cell_key(dict(zip(CELL_FIELDS, c)))
+
+
+def block_config(comp: dict, block: dict) -> dict:
+    """The components config for one block: every grid cell outside the
+    block's run cells (its own and the anchor) named not measured here, so
+    T3.1's grid is the block's."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    want = {_cell_of(c) for c in block["run_cells"]}
+    out = json.loads(json.dumps(comp))
+    grid = st.cells(out)
+    missing = want - {_cell_of(c) for c in grid}
+    if missing:
+        raise StepFailed(f"block {block['id']} names cells not in the grid: "
+                         f"{sorted(missing, key=str)}")
+    out["not_measured"] = list(out.get("not_measured") or ()) + [
+        {"arm": a, "density": st.CALIBRATED if d is None else d, "length": L, "batch": b,
+         "reason": f"another block's cell (this is block {block['id']})"}
+        for a, d, L, b in grid if _cell_of((a, d, L, b)) not in want]
+    return out
+
+
+def t31_row_cell(row: dict) -> list:
+    """The grid cell a T3.1 ground-truth row times: its cell arm (not its
+    label), the density setting (dense's 1.0, which `density_setting` drops),
+    the token budget (not the prompt's tokens) and the batch."""
+    d = row["nominal_density"]
+    if row["cell_arm"] == "dense" and d is None:
+        d = 1.0
+    return [row["cell_arm"], d, int(row["budget"]), int(row["batch"])]
+
+
+def t31_ground_truth_result(d: Path) -> dict:
+    """T3.1's ground-truth step output (`<group>/gt_*.json` and
+    `<group>/stamps.json`) as this runner's result: every untraced row with
+    its grid cell (`cell`) and its median as `median_ms` (the statistic the
+    block drift check reads), the earliest stamp T3.1's session start reads
+    (each group's pre-forward stamp and first clocked blocks), complete only
+    if every result is."""
+    rows, stamps, complete = [], [], True
+    for st_path in sorted(Path(d).glob("*/stamps.json")):
+        s = json.loads(st_path.read_text())
+        stamps += [s["clock_not_before"], *s["first_clocked_block_started_at"]]
+        for g in sorted(st_path.parent.glob("gt_*.json")):
+            r = json.loads(g.read_text())
+            if r.get("traced"):
+                raise StepFailed(f"{g} is traced: ground truth is untraced")
+            complete = complete and r.get("complete") is True
+            rows += [dict(row, group=st_path.parent.name, cell=t31_row_cell(row),
+                          median_ms=row["prefill_ms_median"])
+                     for row in r["rows"]]
+    if not rows:
+        raise StepFailed(f"no ground-truth rows under {d}")
+    return {STRICT_KEY: min(stamps), "complete": complete, "untraced": {"rows": rows}}
+
+
 def real_harness(cfg, args, block=None) -> dict:
-    raise NotBuilt("T2.13, with the T2.12, T2.17 and T2.21 arms",
-                   "the ground-truth grid driver: every arm, density, length and batch, "
-                   "untraced then traced, with the dense control")
+    raise NotBuilt("T2.13", "Section 5.3 step 8 for this runner: the traced pass after the "
+                   "untraced one, per arm (T3.1's ground truth, which this runner will run "
+                   "through `block_config` and `t31_ground_truth_result`, is untraced only)")
 
 
 def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
@@ -864,16 +972,18 @@ def block_plan(session: Path) -> Optional[dict]:
 
 def tag_rows(result: dict, block: dict) -> None:
     """Every ground-truth row carries the block's id and whether it is the
-    anchor; the rows must be exactly the block's cells and its anchor."""
-    from attnbench.lock.blocks import cell_key
-    want = set(block["run_cells"])
+    anchor; the rows must be exactly the block's cells and its anchor. A
+    T3.1 row names its grid cell in `cell`."""
+    from attnbench.lock.blocks import row_key
+    want = {_cell_of(c) for c in block["run_cells"]}
+    anchor = None if block["anchor"] is None else _cell_of(block["anchor"])
     for part in ("untraced", "traced"):
         rows = (result.get(part) or {}).get("rows") or []
         got = set()
         for r in rows:
-            k = cell_key(r)
+            k = row_key(r)
             r["block"] = block["id"]
-            r["anchor"] = k == block["anchor"]
+            r["anchor"] = k == anchor
             got.add(k)
         if rows and got != want:
             raise StepFailed(f"the {part} rows are cells {sorted(got, key=str)}, not this block's "

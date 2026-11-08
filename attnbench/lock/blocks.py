@@ -64,6 +64,14 @@ def cell_key(c: Mapping) -> tuple:
             int(c["context_length"]), int(c["batch"]))
 
 
+def row_key(r: Mapping) -> tuple:
+    """A ground-truth row's cell: the grid cell it names in `cell` (a T3.1
+    row, whose own arm is a label and whose length is the prompt's tokens),
+    else its own fields."""
+    c = r.get("cell")
+    return cell_key(r) if c is None else cell_key(dict(zip(CELL_FIELDS, c)))
+
+
 @dataclass(frozen=True)
 class Block:
     id: str

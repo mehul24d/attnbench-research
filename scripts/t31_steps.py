@@ -110,6 +110,11 @@ WORKING_KEYS = ("densities", "gt_groups", "reps", "dense_rounds", "sampler_inter
                 "chain_check_tolerance", "residual_spread_tolerance",
                 "pricing_mismatch_share")
 WORKING_STATUS = "working, pre-lock"
+WORKING_PAIRING = "P1"
+# A later pairing's session values come from the lock file instead (T4.1):
+# its `pairing_values` block, the working keys plus the rerun budget.
+LOCK_FILE = ROOT / "docs" / "lock_values.json"
+LOCK_KEYS = WORKING_KEYS + ("max_rerun_rounds",)
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
 # oracle's scoring pass and the mean-pool estimator, which refuse a batch
@@ -277,6 +282,44 @@ def fill_working_values(cfg: dict, path=None) -> dict:
     return cfg
 
 
+def fill_lock_values(cfg: dict, path=None, plan_text=None) -> dict:
+    """A later pairing's null session values from the lock file's
+    `pairing_values` block for that pairing (T4.1, Gate B), recorded as
+    filled. With no lock file nothing is filled, and `fill_working_values`
+    refuses P1's values for it as before. A lock file the checker does not
+    find complete against this plan is refused: no pairing's values are taken
+    from a lock that is not one."""
+    from attnbench.lock import checklist
+    p = Path(path or LOCK_FILE)
+    if not p.exists():
+        return cfg
+    text = plan_text if plan_text is not None else checklist.PLAN.read_text(encoding="utf-8")
+    lock = json.loads(p.read_text(encoding="utf-8"))
+    res = checklist.check(lock, text)
+    if not res.complete:
+        raise StepFailed(f"{p.name} is not a complete lock, so no pairing's values come from "
+                         f"it:\n{res.report()}")
+    vals = (lock.get("pairing_values") or {}).get(cfg.get("pairing")) or {}
+    cfg = dict(cfg)
+    filled = []
+    for k in LOCK_KEYS:
+        if k == "gt_groups":
+            groups = dict(cfg.get(k) or {})
+            for g, arms in (vals.get(k) or {}).items():
+                if groups.get(g) is None:
+                    groups[g] = list(arms)
+                    filled.append(f"gt_groups.{g}")
+            cfg[k] = groups
+        elif cfg.get(k) is None and vals.get(k) is not None:
+            cfg[k] = vals[k]
+            filled.append(k)
+    if filled:
+        import hashlib
+        cfg["lock_values"] = {"source": p.name, "filled": filled,
+                              "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+    return cfg
+
+
 def cpu_boundary_config(path=None) -> dict:
     """`CPU_BOUNDARY_CONFIG` with the working table's densities and groups,
     labelled as taken from it."""
@@ -299,6 +342,8 @@ def load_config(path, *, dry_run: bool, cpu_boundary: bool = False) -> dict:
         return cpu_boundary_config()
     cfg = json.loads(Path(path or DEFAULT_CONFIG).read_text())
     if not dry_run:
+        if cfg.get("pairing") != WORKING_PAIRING:
+            cfg = fill_lock_values(cfg)
         cfg = fill_working_values(cfg)
         missing = [k for k in REQUIRED if cfg.get(k) is None]
         missing += [f"gt_groups.{g}" for g, arms in (cfg.get("gt_groups") or {}).items()
@@ -1576,8 +1621,12 @@ def check_payload_bound(ops, max_payload_bytes, label: str) -> None:
             f"{beyond[0][1]}, {beyond[0][2]} bytes. The payload term is never extrapolated.")
 
 
-def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None):
-    """The T2.11 record from the link and device-component steps' outputs."""
+def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
+                     baselines=None):
+    """The T2.11 record from the link and device-component steps' outputs.
+    `baselines`, for a pairing trained on banked ones (P2 on, a later
+    pairing's runner): {"banked": [...], "fitted_sum": ..., "learned": ...,
+    "fitted_sum_plus_s0": ...}; P1 has none."""
     from attnbench.predict import commit as C
     from attnbench.predict.recursion import MechanismCost, close_prefill, price
     from attnbench.predict.training import Cell, HardwareFeatures
@@ -1616,9 +1665,10 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None)
         raise StepFailed(f"no arm is priced: the pricing gate refused {sorted(refused)}")
     code = C.CodeStamp("0" * 40, False) if (dry_run if local is None else local) \
         else C.current_code_stamp()
+    fitted = baselines or {"banked": [], "fitted_sum": None, "learned": None}
     return C.build_record(cfg["pairing"], out, rin["queue_depth"], code_paths=code_paths,
-                          banked=[], fitted_sum=None, learned=None, code=code,
-                          written_at=now or datetime.now(timezone.utc), not_priced=refused)
+                          code=code, written_at=now or datetime.now(timezone.utc),
+                          not_priced=refused, **fitted)
 
 
 def not_priced(dev: dict) -> dict:
