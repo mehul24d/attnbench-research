@@ -1,6 +1,8 @@
 """The resolution floor per (context length, batch) by the amended rule
 (Appendix A, 8 Nov 2026, fifth paste; `gate_a_repeats.cell_floors`), from
-every P1 repeat's ground truth. Writes `<out>/cell_floors.json`, the
+the ground truth of the sessions named. Since 9 Nov 2026 (Appendix A, sixth
+paste) the rule's sessions are those whose timed ground-truth path is
+byte-identical (`scripts/timed_path.py`); any other set is a sensitivity. Writes `<out>/cell_floors.json`, the
 `scripts/gate_a.py --v2 --cell-floors` input ("<length>x<batch>" -> ms), and
 `<out>/cell_floors_detail.json` with each cell's within- and between-session
 spread and which one set it.
@@ -54,7 +56,8 @@ def main(argv=None) -> int:
                                                      indent=1))
     (out / "cell_floors_detail.json").write_text(json.dumps(
         {"sessions": names, "quantile": args.quantile, "provisional": args.provisional,
-         "rule": "max(within-session, between-session) per (length, batch); Appendix A, 8 Nov 2026",
+         "rule": "max(within-session, between-session) per (length, batch), over sessions with a "
+                 "byte-identical timed ground-truth path; Appendix A, 8 and 9 Nov 2026",
          "cells": fl}, indent=1))
     for k, v in fl.items():
         b = "-" if v["between_ms"] is None else f"{v['between_ms']:.2f}"
