@@ -1,47 +1,58 @@
 """The per-layer residual: the arm's own Python between calls, which the bare
-prices leave out (T2.2; researcher's ruling, 1 Nov 2026, after Shakedown 6).
+prices leave out (T2.2; researcher's ruling, 1 Nov 2026, after Shakedown 6;
+measured with the device idle since the adviser's ruling B1 of 8 Nov 2026).
 
 The bare timer (`bare_timer`) prices each call alone, so the host time the
 arm spends between calls (its Python, the dispatcher around calls that
-launch nothing) is in no price; the null pass's gaps held it, under
-instruments that put 5.5 to 11.5 times the bare total on Shakedown 6's
-cells. The residual adds it back per layer, measured uninstrumented.
+launch nothing) is in no price. The residual adds it back per layer.
 
-**The span** (`tape_spans`). The arm's prefill is run for real, device work
-and all, under the tape alone (`TapeReplayer(serve_setitem=False)`): every
-host-device interaction is served from the tape, so the host waits for no
-read and takes the recorded path, and no dispatch mode is on the stack. The
-only instrument is two clock reads per layer, at its forward pre-hook and
-forward hook; a layer's span is the time between them. A boolean-mask write
-(`x[mask] = v`) runs as written and waits for the device inside its
-`nonzero`; around it the layer's clock stops, the device is synchronised,
-and the write itself is timed and counted, as the bare timer times a call
-after a synchronise outside its timer, so no wait for earlier device work is
-in a span. One untimed run goes first, then `reps` timed ones, the median
-per layer.
+**Why the device is idle.** The first method (schema 1) timed each layer's
+whole span with real device work running and took the bare prices off. On
+both P1 repeats every residual layer was one where the device fell behind
+the host, so a span held the host's waits for the device: 5,021 ms at the
+oracle's 32768 cell against a measured prefill of 2,988 ms, charged as host
+time and serialised again by the recursion at every synchronisation (Gate A
+v1, Appendix A, 8 Nov 2026). This method times only the gaps between calls,
+each one opened after a synchronise, so no wait for the device can be in it.
 
-**The residual** (`residual`). Per layer, the median span less the sum of
-the bare prices of the layer's positions (host-compute regions keep the
-null pass's direct time there, as in the bare profile). It is added to the
-layer's call positions in proportion to the null pass's gaps there (each
-position's null-pass cost less the null launch floor; equal shares if they
-are all zero): the instrumented pass says where in the layer the Python is,
-the uninstrumented span says how much. A negative residual (the bare prices
-exceed the span) adds nothing and labels the layer (`NEGATIVE_LABEL`).
-Positions outside the layers get none: the hooks see no span there.
+**The gaps** (`idle_gaps`). The arm's prefill runs for real under the tape
+(`TapeReplayer(serve_setitem=False)`, so it takes the recorded path), under
+`_GapMode`, a dispatch mode that meets calls where the bare pass does (the
+recorded chains' operators, by the same device rule): every call it meets,
+every interaction the tape serves, every non-aten entry point (`NullEntry`)
+and every host-compute region is a call, each a priced position. Between
+calls the clock runs; at a call it stops, the call runs, the device is
+synchronised outside the clock, and the clock starts again. A layer's gaps
+run from its forward pre-hook to its forward hook, so a layer has one
+interval more than it has calls. A call nested in a met one is part of it.
+
+**The timer's overhead.** Each run first issues `CALIBRATION_CALLS`
+back-to-back one-element `add_` calls under the same stack; the median gap
+between two of them is the instrument's own time per interval (the modes'
+entry and exit, the clock reads, one Python statement), and it is taken off
+each interval of that run.
+
+**Reps.** One untimed run, then at least `MIN_REPS` timed ones, and more
+until the cell's median total is stable: the median of all n runs within
+`STABLE_REL` of the median of the first n - 2, at most `MAX_REPS` runs. A
+cell that does not settle keeps the median and is labelled
+(`UNSTABLE_LABEL`), as the spread tolerance does: labelled, never refused.
+
+**The residual** (`residual`). Per layer, the median over runs of its net
+gaps. It is added to the layer's call positions in proportion to the null
+pass's gaps there (each position's null-pass cost less the null launch
+floor; equal shares if they are all zero): the instrumented pass says where
+in the layer the Python is, the idle gaps say how much. A layer whose median
+is negative (its gaps are within the timer's overhead) adds nothing and is
+labelled (`NEGATIVE_LABEL`). Positions outside the layers get none.
 
 **The tolerance** (T4.1 lock table row 34, working 10%). A layer's spread is
-the interquartile range of its timed spans over their median. A layer above
-the tolerance keeps its residual and labels the cell (`SPREAD_LABEL`), as
-the chain gate's fallback does: labelled, never refused.
+the interquartile range of its runs over their median. A layer above the
+tolerance keeps its residual and labels the cell (`SPREAD_LABEL`).
 
-**The device check.** One more run records a device event at each hook. A
-layer through which the device's elapsed time since the first layer's
-pre-hook exceeds the host's by more than `DEVICE_BEHIND_MARGIN` is one where
-the device fell behind the host, and its span may hold launch-queue waits
-the recursion prices elsewhere: the layer is labelled (`DEVICE_BEHIND_LABEL`)
-and keeps its residual. Behind the CPU boundary there is no device clock and
-no check.
+**What it leaves out.** Python inside a call that a torch function wraps
+(`F.softmax`'s argument checks) runs inside the call and is in no gap; the
+bare price, which re-issues the aten operator, leaves it out too.
 """
 
 from __future__ import annotations
@@ -50,77 +61,172 @@ import contextlib
 import statistics
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Callable, Iterable, Mapping, Optional, Sequence
 
 import torch
-from torch.overrides import TorchFunctionMode
+from torch.autograd.profiler import record_function
+from torch.utils._python_dispatch import TorchDispatchMode
 
-from .host_profile import ISOLATED_REPLAY, HostProfile
-from .op_sequence import OpSequence, SeqKind
+from .host_profile import (ISOLATED_REPLAY, HostProfile, NullEntry, aten_name, device_call,
+                           launching_names)
+from .op_sequence import HOST_COMPUTE, OpSequence, SeqKind
 from .sync_tape import SyncTape, TapeReplayer, classify
 
-SCHEMA = "attnbench.layer_residual/1"
-RESIDUAL_REPS = 5
-DEVICE_BEHIND_MARGIN = 0.05
+SCHEMA = "attnbench.layer_residual/2"
+METHOD = "idle_device_gaps"
+MIN_REPS, MAX_REPS, STABLE_REL = 7, 21, 0.01
+CALIBRATION_CALLS = 64
 SPREAD_LABEL = "per-layer residual spread above its T4.1 tolerance"
-NEGATIVE_LABEL = "bare prices exceed the layer's uninstrumented span: no residual added"
-DEVICE_BEHIND_LABEL = "the device fell behind the host in this layer: its span may hold waits"
+NEGATIVE_LABEL = "the layer's gaps are within the timer's overhead: no residual added"
+UNSTABLE_LABEL = f"the cell's median residual did not settle within {MAX_REPS} runs"
+_CALIBRATION = "calibration"
 
 
 @dataclass
-class Spans:
-    """Per layer, the host span of each timed run (seconds); the boolean-mask
-    writes timed in each; and, if a device clock was given, the device's and
-    the host's elapsed time from the first layer's pre-hook to each layer's
-    end in the device check's run."""
+class Gaps:
+    """Per layer, its net gaps in each timed run (seconds, the run's overhead
+    taken off each interval) and its intervals per run; each run's overhead
+    per interval; and whether the cell's median settled."""
 
-    spans_s: dict = field(default_factory=dict)          # layer -> (span per run)
-    setitems: dict = field(default_factory=dict)         # layer -> writes per run
-    device_cum_s: Optional[dict] = None
-    host_cum_s: Optional[dict] = None
+    gaps_s: dict = field(default_factory=dict)           # layer -> (net gaps per run)
+    intervals: dict = field(default_factory=dict)        # layer -> intervals in a run
+    overhead_s: tuple = ()
+    stable: bool = True
 
 
-class _PauseAtSetitem(TorchFunctionMode):
-    """Stops the layer's clock around a boolean-mask write, synchronises, and
-    times the write alone (module docstring)."""
+class _Timer:
+    """The gap clock (module docstring): `stop` at a call, `start` after it,
+    the device synchronised before the clock starts again."""
 
-    def __init__(self, device_type: str, sync: Callable[[], None], state: dict, clock):
+    def __init__(self, clock, sync):
+        self.clock, self.sync = clock, sync
+        self.layer = None
+        self.last: Optional[float] = None
+        self.sum, self.n, self.inside = 0.0, 0, 0
+        self.calibration: list = []
+
+    def stop(self) -> None:
+        if self.layer is not None and self.last is not None:
+            d = self.clock() - self.last
+            if self.layer == _CALIBRATION:
+                self.calibration.append(d)
+            self.sum += d
+            self.n += 1
+        self.last = None
+
+    def start(self) -> None:
+        if self.layer is None:
+            return
+        self.sync()
+        self.last = self.clock()
+
+    @contextlib.contextmanager
+    def call(self):
+        self.stop()
+        self.inside += 1
+        try:
+            yield
+        finally:
+            self.inside -= 1
+            self.start()
+
+
+class _GapMode(TorchDispatchMode):
+    """Meets calls where the bare pass does (`bare_timer.BareMode`) and runs
+    each as a call of the gap clock."""
+
+    def __init__(self, launching: Optional[frozenset], device_type: str, timer: _Timer):
         super().__init__()
-        self.device_type, self.sync, self.state, self.clock = device_type, sync, state, clock
+        self.launching, self.device_type, self.timer = launching, device_type, timer
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        t = self.timer
+        if t.inside or (t.layer != _CALIBRATION and self.launching is not None
+                        and aten_name(func) not in self.launching) or \
+                device_call(func, args, kwargs, self.device_type) is None:
+            return func(*args, **kwargs)
+        with t.call():
+            return func(*args, **kwargs)
+
+
+class _GapReplayer(TapeReplayer):
+    """The tape, with each interaction it serves a call of the gap clock."""
+
+    def __init__(self, tape: SyncTape, staged, timer: _Timer):
+        super().__init__(tape, staged, serve_setitem=False)
+        self.timer = timer
 
     def __torch_function__(self, func, types, args=(), kwargs=None):
-        kwargs = kwargs or {}
-        if classify(func, args, kwargs, self.device_type) != "bool_setitem" or \
-                self.state.get("open") is None:
-            return func(*args, **kwargs)
-        paused = self.clock()
-        self.sync()
-        t0 = self.clock()
-        out = func(*args, **kwargs)
-        self.state["excluded"] += t0 - paused        # the synchronise, out of the span
-        self.state["writes"] += 1
-        return out
+        if self.timer.inside or \
+                classify(func, args, kwargs or {}, self.tape.device_type) is None:
+            return super().__torch_function__(func, types, args, kwargs)
+        with self.timer.call():
+            return super().__torch_function__(func, types, args, kwargs)
 
 
 @contextlib.contextmanager
-def _hooks(layers: Sequence[torch.nn.Module], state: dict, clock, on_enter=None, on_exit=None):
+def _entries(entries: Sequence[NullEntry], timer: _Timer):
+    saved = []
+    try:
+        for e in entries:
+            original = getattr(e.module, e.attr)
+            saved.append((e, original))
+
+            def timed(*args, _orig=original, **kwargs):
+                if timer.inside:
+                    return _orig(*args, **kwargs)
+                with timer.call():
+                    return _orig(*args, **kwargs)
+            setattr(e.module, e.attr, timed)
+        yield
+    finally:
+        for e, original in saved:
+            setattr(e.module, e.attr, original)
+
+
+@contextlib.contextmanager
+def _host_compute(timer: _Timer):
+    """Each `attnbench::host_compute` region is a call: its time is priced
+    at its position (`bare_timer`, `host_compute_null_pass`)."""
+    enter, exit_ = record_function.__enter__, record_function.__exit__
+
+    def __enter__(self):
+        r = enter(self)
+        if self.name == HOST_COMPUTE and not timer.inside:
+            timer.stop()
+            timer.inside += 1
+            self._attnbench_gap = True
+        return r
+
+    def __exit__(self, *a):
+        if getattr(self, "_attnbench_gap", False):
+            timer.inside -= 1
+            timer.start()
+        return exit_(self, *a)
+
+    record_function.__enter__, record_function.__exit__ = __enter__, __exit__
+    try:
+        yield
+    finally:
+        record_function.__enter__, record_function.__exit__ = enter, exit_
+
+
+@contextlib.contextmanager
+def _hooks(layers: Sequence[torch.nn.Module], timer: _Timer, out: dict):
     handles = []
 
     def pre(i):
         def h(mod, args):
-            if on_enter is not None:
-                on_enter(i)
-            state.update(open=i, t0=clock(), excluded=0.0, writes=0)
+            timer.layer, timer.sum, timer.n = i, 0.0, 0
+            timer.start()
         return h
 
     def post(i):
-        def h(mod, args, out):
-            t1 = clock()
-            state["spans"][i] = t1 - state["t0"] - state["excluded"]
-            state["writes_by_layer"][i] = state["writes"]
-            state["open"] = None
-            if on_exit is not None:
-                on_exit(i)
+        def h(mod, args, result):
+            timer.stop()
+            out[i] = (timer.sum, timer.n)
+            timer.layer = None
         return h
     try:
         for i, m in enumerate(layers):
@@ -132,61 +238,73 @@ def _hooks(layers: Sequence[torch.nn.Module], state: dict, clock, on_enter=None,
             h.remove()
 
 
-def _one_run(run_prefill, tape: SyncTape, staged, layers, *, sync, clock, device_type,
-             on_enter=None, on_exit=None) -> dict:
-    state = {"open": None, "spans": {}, "writes_by_layer": {}, "excluded": 0.0, "writes": 0}
-    rep = TapeReplayer(tape, staged, serve_setitem=False)
-    with rep, _PauseAtSetitem(device_type, sync, state, clock), \
-            _hooks(layers, state, clock, on_enter, on_exit):
+def _calibrate(timer: _Timer, device_type: str, calls: int) -> float:
+    x = torch.zeros(1, device=device_type)
+    timer.layer, timer.calibration = _CALIBRATION, []
+    timer.start()
+    for _ in range(calls):
+        x.add_(1)
+    timer.stop()
+    timer.layer = None
+    return float(statistics.median(timer.calibration[1:-1] or timer.calibration))
+
+
+def _one_run(run_prefill, tape, staged, layers, launching, entries, *, sync, clock,
+             device_type, calls) -> tuple[dict, float]:
+    timer = _Timer(clock, sync)
+    raw: dict = {}
+    rep = _GapReplayer(tape, staged, timer)
+    with rep, _entries(entries, timer), _host_compute(timer), _hooks(layers, timer, raw), \
+            _GapMode(launching, device_type, timer):
+        overhead = _calibrate(timer, device_type, calls)
         run_prefill()
     rep.finish()
     sync()
-    return state
+    return {i: (s - n * overhead, n) for i, (s, n) in raw.items()}, overhead
 
 
-def tape_spans(run_prefill: Callable[[], None], tape: SyncTape,
-               layers: Sequence[torch.nn.Module], *, reps: int = RESIDUAL_REPS,
-               device_type: str = "cuda", staged_device=None,
-               sync: Callable[[], None] = torch.cuda.synchronize,
-               clock: Callable[[], float] = time.perf_counter,
-               event: Optional[Callable[[], object]] = None) -> Spans:
-    """One untimed run, `reps` timed runs and, given a device `event`
-    factory (`torch.cuda.Event(enable_timing=True)`), one device-check run
-    (module docstring)."""
-    if isinstance(reps, bool) or not isinstance(reps, int) or reps < 1:
-        raise ValueError("reps must be an int >= 1")
+def _settled(totals: Sequence[float], min_reps: int, rel: float) -> bool:
+    if len(totals) < max(min_reps, 3):
+        return False
+    a, b = statistics.median(totals), statistics.median(totals[:-2])
+    return abs(a - b) <= rel * abs(a) if a else a == b
+
+
+def idle_gaps(run_prefill: Callable[[], None], tape: SyncTape,
+              layers: Sequence[torch.nn.Module], *, seq: Optional[OpSequence] = None,
+              entries: Sequence[NullEntry] = (), device_type: str = "cuda",
+              staged_device=None, sync: Callable[[], None] = torch.cuda.synchronize,
+              clock: Callable[[], float] = time.perf_counter, min_reps: int = MIN_REPS,
+              max_reps: int = MAX_REPS, stable_rel: float = STABLE_REL,
+              calibration_calls: int = CALIBRATION_CALLS) -> Gaps:
+    """One untimed run, then timed runs until the median settles (module
+    docstring). With no `seq`, every call that touches the device is met."""
+    for name, v in (("min_reps", min_reps), ("max_reps", max_reps)):
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            raise ValueError(f"{name} must be an int >= 1")
+    if max_reps < min_reps:
+        raise ValueError("max_reps is below min_reps")
     if not layers:
         raise ValueError("no layers: the residual is per layer")
+    launching = None if seq is None else launching_names(seq)
     staged = tape.stage(staged_device if staged_device is not None
                         else torch.device(device_type))
-    kw = dict(sync=sync, clock=clock, device_type=device_type)
-    _one_run(run_prefill, tape, staged, layers, **kw)
-    out = Spans()
-    for _ in range(reps):
-        s = _one_run(run_prefill, tape, staged, layers, **kw)
-        for i, v in s["spans"].items():
-            out.spans_s.setdefault(i, []).append(v)
-            out.setitems.setdefault(i, []).append(s["writes_by_layer"][i])
-    out.spans_s = {i: tuple(v) for i, v in sorted(out.spans_s.items())}
-    out.setitems = {i: tuple(v) for i, v in sorted(out.setitems.items())}
-    if event is not None:
-        marks: dict = {}
-        start = {}
-
-        def enter(i):
-            if not start:
-                ev = event()
-                ev.record()
-                start.update(event=ev, host=clock())
-
-        def leave(i):
-            ev = event()
-            ev.record()
-            marks[i] = (ev, clock())
-        _one_run(run_prefill, tape, staged, layers, on_enter=enter, on_exit=leave, **kw)
-        out.device_cum_s = {i: start["event"].elapsed_time(ev) * 1e-3
-                            for i, (ev, _) in sorted(marks.items())}
-        out.host_cum_s = {i: h - start["host"] for i, (_, h) in sorted(marks.items())}
+    kw = dict(sync=sync, clock=clock, device_type=device_type, calls=calibration_calls)
+    _one_run(run_prefill, tape, staged, layers, launching, entries, **kw)
+    runs, overheads, totals = [], [], []
+    while len(runs) < max_reps and not _settled(totals, min_reps, stable_rel):
+        r, ov = _one_run(run_prefill, tape, staged, layers, launching, entries, **kw)
+        runs.append(r)
+        overheads.append(ov)
+        totals.append(sum(v for v, _ in r.values()))
+    out = Gaps(overhead_s=tuple(overheads), stable=_settled(totals, min_reps, stable_rel))
+    for i in sorted(runs[0]):
+        out.gaps_s[i] = tuple(r[i][0] for r in runs)
+        ns = {r[i][1] for r in runs}
+        if len(ns) != 1:
+            raise ValueError(f"layer {i} had {sorted(ns)} intervals in different runs: "
+                             f"the prefill did not take one path")
+        out.intervals[i] = ns.pop()
     return out
 
 
@@ -198,7 +316,7 @@ def _spread(xs: Sequence[float]) -> float:
     return (q3 - q1) / med
 
 
-def residual(seq: OpSequence, bare: HostProfile, null: HostProfile, spans: Spans, *,
+def residual(seq: OpSequence, bare: HostProfile, null: HostProfile, gaps: Gaps, *,
              spread_tol: float) -> tuple[HostProfile, dict]:
     """(the bare profile with each layer's residual added, the record written
     beside it) (module docstring)."""
@@ -207,16 +325,14 @@ def residual(seq: OpSequence, bare: HostProfile, null: HostProfile, spans: Spans
         layer = seq.ops[i].layer
         if layer is not None:
             by_layer.setdefault(layer, []).append(i)
-    if set(spans.spans_s) != set(by_layer):
-        raise ValueError(f"the spans cover layers {sorted(spans.spans_s)} and the sequence's "
+    if set(gaps.gaps_s) != set(by_layer):
+        raise ValueError(f"the gaps cover layers {sorted(gaps.gaps_s)} and the sequence's "
                          f"priced positions layers {sorted(by_layer)}")
     added: dict[int, float] = {}
     rows = []
     for layer, positions in sorted(by_layer.items()):
-        xs = spans.spans_s[layer]
-        span = float(statistics.median(xs))
-        priced = sum(bare.host_s[i] for i in positions)
-        rho = span - priced
+        xs = gaps.gaps_s[layer]
+        rho = float(statistics.median(xs))
         calls = [i for i in positions if seq.ops[i].kind is not SeqKind.HOST_COMPUTE
                  and null.source(i) != ISOLATED_REPLAY]
         w = {i: max(null.host_s.get(i, 0.0) - null.launch_floor_s, 0.0) for i in calls}
@@ -230,39 +346,34 @@ def residual(seq: OpSequence, bare: HostProfile, null: HostProfile, spans: Spans
         spread = _spread(xs)
         if spread > spread_tol:
             labels.append(SPREAD_LABEL)
-        behind = None
-        if spans.device_cum_s is not None:
-            d, h = spans.device_cum_s[layer], spans.host_cum_s[layer]
-            behind = d > h * (1 + DEVICE_BEHIND_MARGIN)
-            if behind:
-                labels.append(DEVICE_BEHIND_LABEL)
-        rows.append({"layer": layer, "span_s": span, "spans_s": list(xs),
-                     "bare_s": priced, "residual_s": rho,
+        rows.append({"layer": layer, "residual_s": rho, "gaps_s": list(xs),
+                     "intervals": gaps.intervals.get(layer),
                      "added_s": max(rho, 0.0) if calls else 0.0, "positions": len(calls),
-                     "spread": spread, "setitems": list(spans.setitems.get(layer, ())),
-                     "device_behind": behind, "labels": labels})
+                     "spread": spread, "labels": labels})
     host = {i: v + added.get(i, 0.0) for i, v in bare.host_s.items()}
     profile = HostProfile(
         host_s=host, reps_s={}, launch_floor_s=bare.launch_floor_s, reps=bare.reps,
         sequence_sha256=bare.sequence_sha256, cost_source=dict(bare.cost_source),
         met_at=dict(bare.met_at), empty_calls=bare.empty_calls, pricing=bare.pricing,
         price_route=dict(bare.price_route), residual_s=dict(sorted(added.items())))
-    labels = sorted({l for r in rows for l in r["labels"]})
-    record = {"schema": SCHEMA, "reps": len(next(iter(spans.spans_s.values()), ())),
-              "spread_tol": spread_tol, "device_behind_margin": DEVICE_BEHIND_MARGIN,
-              "device_checked": spans.device_cum_s is not None,
-              "span_total_s": sum(r["span_s"] for r in rows),
-              "bare_in_layers_s": sum(r["bare_s"] for r in rows),
+    labels = sorted({l for r in rows for l in r["labels"]} |
+                    (set() if gaps.stable else {UNSTABLE_LABEL}))
+    ov = gaps.overhead_s
+    record = {"schema": SCHEMA, "method": METHOD,
+              "reps": len(next(iter(gaps.gaps_s.values()), ())), "stable": gaps.stable,
+              "min_reps": MIN_REPS, "max_reps": MAX_REPS, "stable_rel": STABLE_REL,
+              "overhead_s": float(statistics.median(ov)) if ov else 0.0,
+              "overhead_s_per_run": list(ov), "spread_tol": spread_tol,
+              "gap_total_s": sum(r["residual_s"] for r in rows),
               "residual_added_s": sum(added.values()),
               "layers_over_spread": [r["layer"] for r in rows if SPREAD_LABEL in r["labels"]],
               "layers_negative": [r["layer"] for r in rows if NEGATIVE_LABEL in r["labels"]],
-              "layers_device_behind": [r["layer"] for r in rows if r["device_behind"]],
               "labels": labels, "layers": rows}
     return profile, record
 
 
 def summary(record: Mapping) -> dict:
     """The cell index's view of a residual record."""
-    return {k: record[k] for k in ("residual_added_s", "span_total_s", "bare_in_layers_s",
-                                   "spread_tol", "layers_over_spread", "layers_negative",
-                                   "layers_device_behind", "labels", "device_checked")}
+    return {k: record[k] for k in ("method", "residual_added_s", "gap_total_s", "overhead_s",
+                                   "reps", "stable", "spread_tol", "layers_over_spread",
+                                   "layers_negative", "labels")}

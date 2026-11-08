@@ -3075,9 +3075,13 @@ timeline has no room for them: a memset that runs occupies at least 2.62 µs
 between its neighbours (5,656 recorded memsets), and the gap where these
 would sit is at most 1.95 µs (1,064 calls; median 1.1 µs, the ordinary gap
 between kernels). Device time at the headline length is not understated. The
-primary prediction adds nothing for them, as it should; T2.3's sensitivity
-bound still adds the memset zoo's largest duration to each (0.35 ms per
-cell, about 0.01% of a 32768-token prefill).
+primary prediction adds nothing for them, as it should. Under the revised
+identity of 8 Nov 2026, T2.3's sensitivity bound prices each flagged memset
+by its realised size, and a zero-byte memset is zero device time (host cost
+stays at its measured API cost). Recomputed on both P1 repeats: 532
+flagged memsets in 7 cells each, every one with realised size 0, so the
+bound is 0 s (it was the memset zoo's largest duration, 0.35 ms per cell,
+before).
 
 **A trace that lost the first records after a profiler restart.** Three
 isolated-replay segments in 812 (29 cells with an isolated replay, 14

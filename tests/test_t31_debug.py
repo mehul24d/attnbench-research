@@ -558,6 +558,7 @@ def test_an_exploratory_steps_result_carries_its_own_label(tmp_path):
 
 
 def test_an_exploratory_session_runs_from_step_one_under_the_cards_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv(sess.EXIT_WRAPPER_ENV, "armed")
     s, _ = _explore(tmp_path)
     seen = {}
     monkeypatch.setattr(sess, "run_session", lambda session, **k: seen.update(k) or 0)

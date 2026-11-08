@@ -237,13 +237,11 @@ def _components(monkeypatch, h, check=CHECK, gate_ok=True):
     from attnbench.components import layer_residual as lr
     from attnbench.components import recorder, replay
     _bare(monkeypatch, gate_ok)
-    # each layer's uninstrumented span: 10 us above its bare prices (1 us each)
-    per_layer: dict = {}
-    for op in SEQ.ops:
-        if op.layer is not None and op.kind is not ops.SeqKind.SYNC:
-            per_layer[op.layer] = per_layer.get(op.layer, 0.0) + 1e-6
-    monkeypatch.setattr(lr, "tape_spans", lambda *a, **k: lr.Spans(
-        spans_s={l: (v + 10e-6,) * 3 for l, v in per_layer.items()}))
+    # each layer's idle gaps: 10 us of the arm's Python
+    layers = {op.layer for op in SEQ.ops if op.layer is not None}
+    monkeypatch.setattr(lr, "idle_gaps", lambda *a, **k: lr.Gaps(
+        gaps_s={l: (10e-6,) * 7 for l in layers}, intervals={l: 4 for l in layers},
+        overhead_s=(1e-7,) * 7))
     monkeypatch.setattr(st, "_cuda", lambda: True)
     monkeypatch.setattr(st, "_harness", lambda args: h)
     sha = ops.record_sha256(ops.to_record(SEQ))
@@ -273,7 +271,7 @@ def _components(monkeypatch, h, check=CHECK, gate_ok=True):
     monkeypatch.setattr(replay, "profile_replay", lambda cap, p: p)
     monkeypatch.setattr(replay, "replay_nodes", lambda p, **k: [])
     monkeypatch.setattr(replay, "match", lambda seq, nodes, **k: SimpleNamespace(
-        complete=True, unmatched_positions=()))
+        complete=True, unmatched_positions=(), variant_matched=()))
     monkeypatch.setattr(replay, "price_positions", lambda seq, m, o, **k: replay.Pricing(
         dict(dev), {i: replay.GRAPH for i in dev}, (), {i: replay.GRAPH for i in dev}))
 
@@ -463,10 +461,17 @@ def test_each_group_times_its_arms_with_the_k2_choice_as_the_control(tmp_path, m
         return "w", "ids", f"p{L}", [SimpleNamespace(name=n) for n in names], {}
     h = SimpleNamespace(timing_arms=timing_arms, _backend=lambda spec: spec.name,
                         unwrap=lambda: None)
-    monkeypatch.setattr(gt, "time_arms", lambda w, ids, arms, **k: {
-        "first_clocked_block_started_at": 1.0, "rows": [{} for _ in arms]})
+    calls = []
+
+    def time_arms(w, ids, arms, **k):
+        calls.append(k.get("tracer") is not None)
+        return {"first_clocked_block_started_at": 1.0 + calls[-1], "traced": calls[-1],
+                "rows": [{"arm": a.name, "prefill_ms_median": 10.0 + calls[-1],
+                          "clean_rounds": 3} for a in arms]}
+    monkeypatch.setattr(gt, "time_arms", time_arms)
     args = SimpleNamespace(group="eager", session=str(session))
-    first = st._real_cells(h, gt, cfg, controls=None, args=args,
+    first = st._real_cells(h, gt, cfg, controls=SimpleNamespace(resolution_floor_ms=19.42),
+                           args=args,
                            receipt=SimpleNamespace(sha256="abc"), out=tmp_path)
     assert first == [1.0, 1.0, 1.0]
     assert seen[0][:2] == (("dense", "meanpool", "xattention"), (None, 0.25, None))
@@ -475,6 +480,12 @@ def test_each_group_times_its_arms_with_the_k2_choice_as_the_control(tmp_path, m
     assert checked == [("sdpa_cudnn", 2048, 1), ("sdpa_cudnn", 16384, 1), ("sdpa_cudnn", 16384, 4)]
     row = json.loads((tmp_path / "gt_L16384_b1.json").read_text())["rows"][1]
     assert row["nominal_density"] == 0.25 and row["group"] == "eager"
+    # Section 5.3 step 8: each cell untraced first, then traced, kept apart from ground truth
+    assert calls == [False, True] * 3
+    assert all(json.loads(p.read_text())["traced"] is False for p in tmp_path.glob("gt_*.json"))
+    tr = json.loads((tmp_path / "traced_L16384_b1.json").read_text())
+    assert tr["traced"]["traced"] is True and tr["cell_arms"][1] == "meanpool"
+    assert [o["overhead_ms"] for o in tr["overhead"]] == [1.0, 1.0, 1.0]
 
 
 def test_every_step_is_wired_on_a_gpu():

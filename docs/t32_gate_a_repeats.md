@@ -102,6 +102,44 @@ Sessions: T3.2a (prediction `80e4696400f6`), T3.2b (prediction `db104506753f`). 
 | xattention_noassert L16384 b1 | 2106.5 | 2039.8 | 0.0322 | 0.0101 | 0.0065 |
 | xattention_noassert L32768 b1 | 5164.6 | 4988.7 | 0.0347 | 0.0090 | 0.0037 |
 
+### The noise floor read as n = 2 (adviser's ruling E2 of 8 Nov 2026)
+
+The 6.77% is the 0.95 quantile over 35 cells of the gap between **two**
+sessions. It is the largest systematic gap observed in those sessions, not
+an interval.
+
+- Over the 35 cells the between-session spread has median 2.24%, p90 6.58%
+  and max 7.02% (oracle@0.5 L8192).
+- The shift (T3.2b − T3.2a) / median is not one sign: 24 cells negative,
+  11 positive, median −2.24%. It splits by length. Every cell at 2048 is
+  positive (T3.2b slower, +1.6% to +2.0%). At 4096, four are positive and
+  three negative. Every cell from 8192 up is negative (T3.2b faster, up to
+  −7.0%).
+- A between-session factor that scaled every cell alike would carry one
+  sign. This one depends on length.
+
+### The resolution floor per (length, batch) (rule committed in `2b08e0d`, Appendix A, 8 Nov 2026)
+
+Quantile 0.95, every arm's series at the cell, both repeats
+(`floors.resolution_floors_by_length`; script `scratchpad/tools/floors_e12.py`,
+outside git). The scored share was computed after the rule was committed.
+
+| Cell | Floor ms | Series | Sparse-vs-dense gaps | Unscored (inside the floor) |
+|---|---|---|---|---|
+| L2048 b1 | 1.60 | 14 | 12 | 0 |
+| L4096 b1 | 10.02 | 14 | 12 | 3 |
+| L8192 b1 | 25.49 | 14 | 12 | 5 |
+| L16384 b1 | 15.95 | 14 | 12 | 0 |
+| L16384 b4 | 16.76 | 2 | 0 (dense only) | 0 |
+| L32768 b1 | 25.94 | 12 | 10 | 0 |
+| **All** | pooled 19.42 | 70 | 58 | **8; scored 50 of 58 (86.2%)** |
+
+- At 2048 the cell floor (1.60 ms) is below the dense series' own 0.95
+  deviation (6.3 to 6.7 ms). The pool is dominated by the sparse arms'
+  tighter series.
+- The floor is not monotone in length (8192 is above 16384). Each cell is
+  read against its own floor.
+
 ## Per session
 
 ### T3.2a leg 1

@@ -85,6 +85,7 @@ def test_the_code_identity_is_frozen_at_the_first_start(tmp_path):
 
 
 def test_a_repeat_runs_at_its_frozen_commit_and_refuses_any_other(tmp_path, monkeypatch):
+    monkeypatch.setenv(TS.EXIT_WRAPPER_ENV, "armed")
     seen = []
     monkeypatch.setattr(TS, "tree_clean", lambda: True)
     monkeypatch.setattr(TS, "run_session", lambda session, **kw: seen.append((session, kw)) or 0)
@@ -109,3 +110,35 @@ def test_a_repeat_is_neither_debug_nor_rehearsal_and_names_its_groups(tmp_path, 
         argv += ["--groups", "eager"]
     assert TS.main(argv) == 2
     assert why in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [
+    ["--repeat", "c", "--groups", "eager"],
+    ["--rehearsal"],
+    [],
+])
+def test_a_session_on_the_card_refuses_to_start_outside_the_exit_wrapper(tmp_path, argv,
+                                                                         monkeypatch, capsys):
+    """Ruling B4 of 8 Nov 2026: the sync and the halt are the session's own
+    last act, never a watcher's; a dry run and the CPU boundary need neither."""
+    monkeypatch.delenv(TS.EXIT_WRAPPER_ENV, raising=False)
+    seen = []
+    monkeypatch.setattr(TS, "run_session", lambda session, **kw: seen.append(kw) or 0)
+    monkeypatch.setattr(TS, "tree_clean", lambda: True)
+    monkeypatch.setattr(TS, "git_head", lambda: "c1")
+    s = tmp_path / "s"
+    assert TS.main([*argv, "--session", str(s)]) == 2 and seen == []
+    assert "scripts/session_exit.sh" in capsys.readouterr().err
+    assert not (s / "manifest.json").exists()           # nothing frozen by a refused start
+    monkeypatch.setenv(TS.EXIT_WRAPPER_ENV, "armed")
+    assert TS.main([*argv, "--session", str(s)]) == 0 and len(seen) == 1
+
+
+def test_t32c_is_a_repeat_of_its_own():
+    import json
+    from pathlib import Path as P
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        cfg = json.loads(TS.repeat_config(P(d), "c", ["eager"]).read_text())
+    assert cfg["repeat"] == "T3.2c" and cfg["prediction_prefix"] == "predictions/P1-T3.2c"
+    assert [g for g, arms in cfg["gt_groups"].items() if arms != []] == ["eager"]

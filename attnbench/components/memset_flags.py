@@ -1,23 +1,28 @@
-"""Memsets with no device record: count, and an upper-bound sensitivity
-(researcher's ruling, 31 Oct 2026).
+"""Memsets with no device record: count, and a sensitivity bound
+(researcher's ruling, 31 Oct 2026; priced by realised bytes since the
+adviser's ruling B2 of 8 Nov 2026).
 
 Shakedown 2's XAttention traces held 84 `cudaMemsetAsync` calls, three per
 layer under `addmm`, with no device activity. `op_sequence.parse_trace`
 keeps each one as an operation flagged `NO_DEVICE_RECORD`: its host cost is
-counted and its device cost is zero. This module gives the two numbers the
-paper reports beside that choice:
+the measured API call's and its device cost is zero. This module gives the
+two numbers the paper reports beside that choice:
 
   - `count`: the flagged memsets in a sequence;
   - the shift in the prediction when each flagged memset is priced instead
-    at the memset zoo's measured duration for its size (`upper_bound_s`,
-    `prediction_shift`). That is an upper bound: a memset with no device
-    record did no more work than the zoo's memset of the same size.
+    at the memset zoo's measured duration for its realised size
+    (`realised_sizes`, `upper_bound_s`, `prediction_shift`).
 
-**Sizes.** The host call carries no size; only a device activity has
-`bytes`. A flagged memset takes the largest size recorded by a memset under
-the same aten operator in the same trace (`flagged_sizes`); where there is
-none, it is priced at the zoo's largest memset. Both choices can only raise
-the bound.
+**Realised bytes.** A memset's device time is priced by the bytes it set,
+which only a device activity records (`bytes`). A flagged memset is one no
+device activity answers, so it set nothing: its realised size is zero and
+zero bytes is zero device time (both T3.2 repeats, read offline, 8 Nov 2026:
+such a call costs 0.54 us of CPU against about 9 us for one that enqueues
+work, and the device timeline has no room for it; `docs/limitations.md`).
+Where no trace is at hand a size is unknown (None) and the bound takes the
+zoo's largest memset, which can only raise it. Until 8 Nov 2026 a flagged
+memset took the largest size its aten operator's recorded memsets had,
+which priced work that never ran (0.35 ms per cell at 32768 tokens).
 
 **The memset zoo.** `run_memset_zoo` issues `cudaMemsetAsync` itself (the
 call cuBLAS makes), at `ZOO_SIZES`, under the profiler, and `zoo_durations`
@@ -37,6 +42,7 @@ from .op_sequence import OpSequence, SeqKind
 ZOO_SIZES = (64, 256, 1024, 4096, 16384, 65536, 262144, 1 << 20, 1 << 22)
 ZOO_REPEATS = 5
 LARGEST = "largest zoo memset"
+ZERO_BYTES = "zero bytes: no device work"
 
 
 def flagged(seq: OpSequence) -> tuple[int, ...]:
@@ -65,22 +71,27 @@ def _memset_events(trace) -> tuple[list, dict]:
     return calls, nbytes
 
 
-def flagged_sizes(trace, seq: OpSequence) -> dict[int, Optional[int]]:
-    """Per flagged position, the bytes to price it at (module docstring),
-    or None. The k-th memset of the sequence is the k-th memset call of the
-    trace, in issue order: a recording read back keeps no correlation ids."""
+def realised_sizes(trace, seq: OpSequence) -> dict[int, int]:
+    """Per flagged position, the bytes its device activity set (module
+    docstring): zero, as no device activity answers it. The k-th memset of
+    the sequence is the k-th memset call of the trace, in issue order: a
+    recording read back keeps no correlation ids. A flagged memset that a
+    device activity does answer is not the same recording, and is refused."""
     calls, nbytes = _memset_events(trace)
     positions = [i for i, op in enumerate(seq.ops) if op.kind is SeqKind.MEMSET]
     if len(calls) != len(positions):
         raise ops.SequenceError(f"the trace's region has {len(calls)} memset calls, the "
                                 f"sequence {len(positions)} memsets; not the same recording")
-    known: dict = {}
+    flags = set(flagged(seq))
+    out = {}
     for pos, call in zip(positions, calls):
-        b = nbytes.get(ops._int_arg(call.args, "correlation"))
-        if b is not None:
-            key = seq.ops[pos].aten_op
-            known[key] = max(known.get(key, 0), b)
-    return {i: known.get(seq.ops[i].aten_op) for i in flagged(seq)}
+        if pos in flags:
+            b = nbytes.get(ops._int_arg(call.args, "correlation"))
+            if b is not None:
+                raise ops.SequenceError(f"position {pos} is flagged as having no device "
+                                        f"record and the trace has one ({b} bytes)")
+            out[pos] = 0
+    return out
 
 
 def zoo_durations(trace) -> dict[int, float]:
@@ -99,13 +110,18 @@ def zoo_durations(trace) -> dict[int, float]:
 
 def upper_bound_s(sizes: Mapping[int, Optional[int]],
                   zoo: Mapping[int, float]) -> tuple[dict, dict]:
-    """(position -> seconds, position -> source): the zoo's duration at the
-    smallest zoo size not below the memset's, else the zoo's largest."""
+    """(position -> seconds, position -> source): zero for a memset of zero
+    bytes; else the zoo's duration at the smallest zoo size not below the
+    memset's, else (a size that is unknown or above the zoo) the zoo's
+    largest."""
     if not zoo:
         raise ValueError("an empty memset zoo prices nothing")
     biggest = max(zoo.values())
     secs, source = {}, {}
     for i, b in sizes.items():
+        if b == 0:
+            secs[i], source[i] = 0.0, ZERO_BYTES
+            continue
         at = [z for z in sorted(zoo) if b is not None and z >= b]
         if at:
             secs[i], source[i] = zoo[at[0]], f"zoo at {at[0]} bytes"

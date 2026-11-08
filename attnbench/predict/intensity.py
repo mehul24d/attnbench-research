@@ -47,7 +47,10 @@ count does not enter the ratio.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..config import AttnConfig
 from .recursion import CostModelError
@@ -78,6 +81,39 @@ class ModelShape:
             raise CostModelError(
                 f"n_heads_q={self.n_heads_q} is not a multiple of "
                 f"n_heads_kv={self.n_heads_kv}")
+
+
+# The primary model's shape, read from its pinned snapshot's config.json
+# (adviser's ruling E of 8 Nov 2026): the record names the repository, the
+# revision and the file's sha256, and the loader refuses a file that does not
+# hash to it.
+PRIMARY_SHAPE = Path(__file__).resolve().parents[2] / "configs" / "models" / \
+    "qwen2.5-1.5b-instruct_shape.json"
+_DTYPE_BYTES = {"bfloat16": 2, "float16": 2, "float32": 4}
+
+
+def model_shape_from_config(path, *, sha256=None) -> tuple[ModelShape, int, str]:
+    """(shape, layers, the file's sha256) from a Hugging Face config.json; a
+    config without `head_dim` has hidden / heads. With `sha256`, a file that
+    does not hash to it is refused."""
+    raw = Path(path).read_bytes()
+    got = hashlib.sha256(raw).hexdigest()
+    if sha256 is not None and got != sha256:
+        raise CostModelError(f"{path} hashes to {got}, not the pinned {sha256}")
+    c = json.loads(raw)
+    heads = int(c["num_attention_heads"])
+    shape = ModelShape(hidden=int(c["hidden_size"]), n_heads_q=heads,
+                       n_heads_kv=int(c["num_key_value_heads"]),
+                       head_dim=int(c.get("head_dim") or c["hidden_size"] // heads),
+                       intermediate=int(c["intermediate_size"]), vocab=int(c["vocab_size"]),
+                       itemsize=_DTYPE_BYTES[c.get("torch_dtype", "bfloat16")])
+    return shape, int(c["num_hidden_layers"]), got
+
+
+def primary_shape(record=PRIMARY_SHAPE) -> ModelShape:
+    """The primary model's shape from the pinned record, no file read."""
+    r = json.loads(Path(record).read_text())
+    return ModelShape(**r["shape"])
 
 
 def _check_cell(context_length: int, batch: int, density: float) -> None:

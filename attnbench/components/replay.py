@@ -121,6 +121,14 @@ SUBSTITUTED_ATEN_OPS = frozenset({
     # (found by the debug session, 2 Nov 2026: 28 of them in the oracle's
     # recording, none in its graph)
     "aten::masked_fill_"})
+# Where the tape serves a boolean mask (`nonzero`, boolean indexing and
+# assignment) the graph runs its stand-in (`nonzero_static`, an `index_put_`),
+# so a node of another name matched one for one to such a position is the
+# stand-in's kernel, not the position's work (`stand_in_positions`; ruling B3
+# of 8 Nov 2026: T3.2's eager `masked_fill_` after an `eq` was priced at the
+# stand-in's `index_put_`, 3.2 to 4.0 times its traced time). A copy is left
+# out: a graph's copy kernel does the copy the eager one does.
+STAND_IN_ATEN_OPS = SUBSTITUTED_ATEN_OPS - {"aten::copy_"}
 
 
 class ReplayError(RuntimeError):
@@ -747,6 +755,17 @@ def _dropped(m: Match) -> dict:
     return {"nodes": len(m.extra_nodes), "s": m.extra_s}
 
 
+def stand_in_positions(seq: OpSequence, graph: Match) -> tuple:
+    """Positions the graph matched only to its stand-in's kernel
+    (`STAND_IN_ATEN_OPS`): priced from the isolated original instead."""
+    return tuple(i for i in graph.variant_matched if seq.ops[i].aten_op in STAND_IN_ATEN_OPS)
+
+
+def needs_original(seq: OpSequence, graph: Match) -> bool:
+    """Whether step 6 must run the isolated replay of the original operators."""
+    return bool(graph.unmatched_positions or stand_in_positions(seq, graph))
+
+
 def price_positions(seq: OpSequence, graph: Match, original: Optional[Match]) -> Pricing:
     """c_dev for every device position (researcher's ruling 1 of 6 Nov 2026):
     from the in-order graph where it matches the position by structure
@@ -755,15 +774,19 @@ def price_positions(seq: OpSequence, graph: Match, original: Optional[Match]) ->
     `ISOLATED_ORIGINAL`, or `VARIANT_DIFFERS` where the matched activity's
     name differs (its `source` says which replay). Nodes no position owns are
     dropped and counted (`EXTRA_NODE_DROPPED`): the graph's stand-ins, and an
-    eager run's host-device copies, which T2.5 prices. A position neither
-    matches is `unpriced`; nothing is refused here: the aggregate gate
-    (`pricing_gate`) decides whether the arm is priced at all."""
-    missing = graph.unmatched_positions
+    eager run's host-device copies, which T2.5 prices. A position the graph
+    matched only to its stand-in's kernel (`stand_in_positions`) is priced as
+    one the graph does not hold. A position neither matches is `unpriced`;
+    nothing is refused here: the aggregate gate (`pricing_gate`) decides
+    whether the arm is priced at all."""
+    stand_in = set(stand_in_positions(seq, graph))
+    missing = tuple(sorted(set(graph.unmatched_positions) | stand_in))
     if missing and original is None:
         raise ReplayError(f"{len(missing)} positions the graph does not hold need the "
                           f"isolated replay of the original operators, which was not run")
-    costs, source = dict(graph.device_s), {i: GRAPH for i in graph.device_s}
-    label = {i: VARIANT_DIFFERS if i in graph.variant_matched else GRAPH for i in graph.device_s}
+    held = {i: v for i, v in graph.device_s.items() if i not in stand_in}
+    costs, source = dict(held), {i: GRAPH for i in held}
+    label = {i: VARIANT_DIFFERS if i in graph.variant_matched else GRAPH for i in held}
     dropped = {GRAPH: _dropped(graph)}
     unpriced = []
     if missing:

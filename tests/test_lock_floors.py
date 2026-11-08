@@ -25,6 +25,22 @@ def test_the_resolution_floor_is_a_quantile_of_pooled_deviations():
     assert f.quantile == 1.0 and "pooled" in f.procedure
 
 
+def test_the_resolution_floor_per_length_pools_only_that_lengths_series():
+    # 2048: deviations 1, 0, 1 and 0, 1, 1, 0 -> max 1. 32768: 0, 10, 10 -> max 10.
+    series = {("s1", "dense", 2048, 1): [9.0, 10.0, 11.0],
+              ("s2", "dense", 2048, 1): [20.0, 21.0, 19.0, 20.0],
+              ("s1", "dense", 32768, 1): [100.0, 110.0, 90.0]}
+    by = F.resolution_floors_by_length(series, length_of=lambda k: (k[2], k[3]),
+                                       quantile=1.0, pairing="P1")
+    assert list(by) == [(2048, 1), (32768, 1)]
+    assert by[(2048, 1)].floor_ms == 1.0 and by[(2048, 1)].n_series == 2
+    assert by[(32768, 1)].floor_ms == 10.0
+    assert resolution_floor(series, quantile=1.0, pairing="P1").floor_ms == 10.0
+    with pytest.raises(FloorsError, match="P1"):
+        F.resolution_floors_by_length(series, length_of=lambda k: k[2], quantile=1.0,
+                                      pairing="P2")
+
+
 def test_the_noise_floor_is_a_quantile_of_between_session_spreads():
     sessions = {
         "s1": {"dense@16k": [10.0, 10.0, 10.0], "meanpool@16k": [20.0, 21.0, 22.0]},

@@ -915,9 +915,9 @@ def t31_ground_truth_result(d: Path) -> dict:
 
 
 def real_harness(cfg, args, block=None) -> dict:
-    raise NotBuilt("T2.13", "Section 5.3 step 8 for this runner: the traced pass after the "
-                   "untraced one, per arm (T3.1's ground truth, which this runner will run "
-                   "through `block_config` and `t31_ground_truth_result`, is untraced only)")
+    raise NotBuilt("T2.13", "this runner's harness: T3.1's ground truth (untraced, then "
+                   "the traced pass of Section 5.3 step 8, 8 Nov 2026), run through "
+                   "`block_config` and `t31_ground_truth_result`")
 
 
 def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:

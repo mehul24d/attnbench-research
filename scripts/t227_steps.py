@@ -489,7 +489,7 @@ def step_replay(args) -> dict:
     iso = replay.match(seq, replay.replay_nodes(iso_path, exclude=replay.FLUSH))
     ce = replay.cache_effect(seq, m.device_s, iso.device_s)
     original, pricing, pricing_error = None, None, None
-    if not m.complete:
+    if not m.complete or replay.needs_original(seq, m):
         # Substituted positions, priced from the original operators alone.
         torch.cuda.synchronize()
         orig_path = replay.isolated_replay(arm.run_prefill, rec.tape,

@@ -536,6 +536,32 @@ def test_a_variant_is_labelled_whichever_replay_priced_it():
                                 "graph:graph": 2}
 
 
+MASK_SEQ = OpSequence(code_path=CP, context_length=4096, batch=1, streams=(7,), ops=(
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::eq", kernels=("eq",)),
+    SeqOp(SeqKind.KERNEL, layer=0, aten_op="aten::masked_fill_", kernels=("fill_masked",)),
+    SeqOp(SeqKind.DEVICE_COPY, layer=0, aten_op="aten::copy_",
+          kernels=("Memcpy DtoD (Device -> Device)",)),
+))
+
+
+def test_a_mask_write_matched_only_to_the_stand_ins_kernel_is_priced_from_the_original():
+    # the graph serves `x[x == v] = s` with an index_put_: one kernel for one, another
+    # name, 4x the eager masked_fill_ (T3.2, 8 Nov 2026); a copy kernel's variant stays
+    g = RP.match(MASK_SEQ, nodes(("eq", 1.0), ("index_put", 4.0), ("memcpy32_post", 2.0)))
+    assert g.complete and set(g.variant_matched) == {1, 2}
+    assert RP.stand_in_positions(MASK_SEQ, g) == (1,) and RP.needs_original(MASK_SEQ, g)
+    with pytest.raises(ReplayError, match="which was not run"):
+        RP.price_positions(MASK_SEQ, g, None)
+    o = RP.match(MASK_SEQ, nodes(("eq", 1.5), ("fill_masked", 1.0),
+                                 ("Memcpy DtoD (Device -> Device)", 2.5)))
+    p = RP.price_positions(MASK_SEQ, g, o)
+    assert p.device_s == {0: 1.0, 1: 1.0, 2: 2.0}
+    assert p.source == {0: RP.GRAPH, 1: RP.ISOLATED_ORIGINAL, 2: RP.GRAPH}
+    assert p.label[2] == RP.VARIANT_DIFFERS
+    assert not RP.needs_original(MASK_SEQ, RP.match(MASK_SEQ, nodes(
+        ("eq", 1.0), ("fill_masked", 1.0), ("Memcpy DtoD (Device -> Device)", 2.0))))
+
+
 def test_without_the_original_replay_a_position_the_graph_misses_is_refused():
     with pytest.raises(ReplayError, match="which was not run"):
         RP.price_positions(SEQ, RP.match(SEQ, GRAPH_SUB), None)

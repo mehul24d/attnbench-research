@@ -141,17 +141,24 @@ def test_device_durations_skip_what_the_trace_never_held():
 
 # --- the upper-bound sensitivity ---------------------------------------------------
 
-def test_a_flagged_memset_takes_the_size_of_its_operators_recorded_memset():
-    tb = xattn_like(bare=3, sized=(1024, 256))
-    seq = parse(tb)
-    sizes = M.flagged_sizes(tb.trace(), seq)
-    assert set(sizes) == set(M.flagged(seq)) and set(sizes.values()) == {1024}   # the largest
+def test_a_flagged_memsets_realised_size_is_zero_whatever_its_siblings_set():
+    for tb in (xattn_like(bare=3, sized=(1024, 256)), xattn_like(bare=3)):
+        seq = parse(tb)
+        sizes = M.realised_sizes(tb.trace(), seq)
+        assert set(sizes) == set(M.flagged(seq)) and set(sizes.values()) == {0}
 
 
-def test_a_flagged_memset_with_no_recorded_sibling_has_no_size():
-    tb = xattn_like(bare=3)
-    seq = parse(tb)
-    assert set(M.flagged_sizes(tb.trace(), seq).values()) == {None}
+def test_zero_bytes_is_zero_device_time_in_the_bound():
+    zoo = {256: 1e-6, 1024: 2e-6}
+    secs, src = M.upper_bound_s({1: 0, 2: 0}, zoo)
+    assert secs == {1: 0.0, 2: 0.0} and set(src.values()) == {M.ZERO_BYTES}
+    seq = parse(xattn_like(bare=3, sized=(1024,)))
+    host, dev = _costs(seq)
+    sizes = {i: 0 for i in M.flagged(seq)}
+    upper, _ = M.upper_bound_s(sizes, zoo)
+    got = M.prediction_shift(seq, host=host, device=dev, link={},
+                             predict=lambda o: sum(x.host + x.device for x in o), upper=upper)
+    assert got["shift_s"] == 0.0 and got["flagged_memsets"] == len(sizes) == 6   # 3 x 2 layers
 
 
 def test_the_bound_takes_the_smallest_zoo_size_not_below_else_the_largest():

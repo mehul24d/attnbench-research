@@ -83,8 +83,9 @@ item with a proposal, its basis and its status, and leaves every value null.
 8. **P2 cannot commit a prediction yet.** Three things block it:
    - the learned predictor's configuration (Gate B);
    - a `ModelShape` for the primary model, which the learned features need;
-   - the traced pass (Section 5.3 step 8), which this runner does not build.
-     T3.1's ground truth is untraced only.
+   - this runner's harness. The traced pass (Section 5.3 step 8) is now in
+     T3.1's ground-truth step (revised identity, 8 Nov 2026), which the
+     harness will run; the harness itself is P2 assembly.
 9. **The P1 training file is outside git.** Its integrity rests on the lock
    pinning its sha256 (recorded in the draft) and on uploading it. Until the
    upload, the only copy is on the Mac.
