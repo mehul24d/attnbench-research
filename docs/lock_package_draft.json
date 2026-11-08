@@ -134,7 +134,7 @@
    "value": null,
    "source": null,
    "status": "owed: decision",
-   "proposed": "0.95 if the floors keep their form; with two sessions the noise floor's 0.95 quantile is close to the largest between-session gap",
+   "proposed": "0.95, for both floors (the resolution floor per length since 8 Nov 2026); with two sessions the noise floor's 0.95 quantile is close to the largest between-session gap",
    "basis": "docs/t32_gate_a_repeats.md"
   },
   "hdbi_boundedness_threshold": {
@@ -142,7 +142,7 @@
    "value": null,
    "source": null,
    "status": "owed: decision",
-   "proposed": "Fit on P1 (two vs three classes, audit D3 open); the fit drops rows inside the resolution floor, which is most of 2048",
+   "proposed": "Fit on P1 (two vs three classes, audit D3 open); the fit drops rows inside their cell's resolution floor (per length since 8 Nov 2026: 1.60 ms at 2048)",
    "basis": "attnbench/lock/hdbi_fit.py"
   },
   "learned_predictor_features": {
