@@ -61,9 +61,8 @@ upper ends, too thin for a session that cannot be resumed past ground truth.
 The session's own exit, `session_exit.sh`, syncs and halts on any exit, so
 the limits only bound a hang.
 
-Spend before the session: ₹3,816 of ₹14,000 (₹3,367 in the ledger and
-T3.2b's ₹449, whose row is pending). With this session the spend is at most
-₹4,376.
+Spend before the session: ₹3,816 of ₹14,000 (`docs/spend_ledger.md`, T3.2b's
+₹449 included). With this session the spend is at most ₹4,376.
 
 ## The commands
 
