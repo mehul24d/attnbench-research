@@ -41,7 +41,12 @@ earlier is refused: a new prediction written after timed data exists would
 not be a prediction. Such a session ends there, and a new one starts.
 
 Usage, on the L4 from the repo root (after deploy, preflight, write gate and
-`gcp_bootstrap_instance.sh`):
+`gcp_bootstrap_instance.sh`). Every session on the card runs under the exit
+wrapper, whose last act on any exit is to sync the logs and manifests and
+halt the VM; without it the runner refuses (ruling B4 of 8 Nov 2026):
+    nohup bash scripts/session_exit.sh --log ~/t31.log -- \
+        python3 scripts/t31_session.py ... >/dev/null 2>&1 &
+The commands below are what goes after the `--`:
     python3 scripts/t31_session.py
     python3 scripts/t31_session.py --from link --session results/t31_p1_...
     python3 scripts/t31_session.py --list      # the steps, and what is not built
@@ -64,6 +69,8 @@ measured, the drop fallback in force) and its code identity frozen at the
 commit of its first start: a run of the session at any other commit is
 refused, so no fix is made within it:
     python3 scripts/t31_session.py --repeat a --groups eager
+T3.2c is the repeat on the revised identity (ruling D of 8 Nov 2026):
+    python3 scripts/t31_session.py --repeat c --groups eager
 """
 
 from __future__ import annotations
@@ -107,6 +114,11 @@ FIRST_CLOCKED = "ground_truth"
 # written where P1's never is.
 REHEARSAL_LAST = "hold"
 REPEAT_CONFIG = "repeat_config.json"
+# Set by scripts/session_exit.sh, whose exit path syncs the logs and manifests
+# to the bucket and then halts the VM; a session on the card refuses to start
+# without it (adviser's ruling B4 of 8 Nov 2026, after T3.2b's idle hour).
+EXIT_WRAPPER_ENV = "ATTNBENCH_SESSION_EXIT"
+REPEATS = ("a", "b", "c")
 
 
 class RepeatError(ValueError):
@@ -280,7 +292,7 @@ def rehearsal_config(session: Path, source) -> Path:
 
 
 def repeat_config(session: Path, repeat: str, groups, source=None) -> Path:
-    """T3.2's repeat `repeat` ("a", "b") as the session's config, written
+    """T3.2's repeat `repeat` ("a", "b", "c") as the session's config, written
     once (a resume reuses it, and a different repeat or groups is refused):
     `"repeat": "T3.2<repeat>"`, the prediction prefix `predictions/P1-T3.2
     <repeat>`, every ground-truth group not in `groups` set to run nothing
@@ -435,7 +447,7 @@ def main(argv=None) -> int:
                     help="with --debug: run every step whose inputs did not fail")
     ap.add_argument("--list", action="store_true",
                     help="print the steps, and what is not built yet, and exit")
-    ap.add_argument("--repeat", choices=("a", "b"), default=None,
+    ap.add_argument("--repeat", choices=REPEATS, default=None,
                     help="a T3.2 repeat: real data, frozen code identity (ruling 4 of 7 Nov 2026)")
     ap.add_argument("--groups", default=None,
                     help="with --repeat: the ground-truth groups it runs, comma-separated")
@@ -455,6 +467,11 @@ def main(argv=None) -> int:
         return 2
     if args.groups and not args.repeat:
         print("REFUSING: --groups is for a T3.2 repeat (--repeat)", file=sys.stderr)
+        return 2
+    if not (args.dry_run or args.cpu_boundary) and os.environ.get(EXIT_WRAPPER_ENV) != "armed":
+        print("REFUSING: a session on the card runs under scripts/session_exit.sh, so that its "
+              "last act on any exit is the sync of its logs and manifests and then the halt",
+              file=sys.stderr)
         return 2
     if args.repeat:
         if args.session is None:

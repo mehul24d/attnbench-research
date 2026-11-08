@@ -269,29 +269,30 @@ def _profiles(seq, *, gap=None):
     return bare, null
 
 
-def test_the_residual_is_the_span_less_the_bare_prices_spread_by_the_null_gaps():
+def test_the_residual_is_the_median_idle_gap_spread_by_the_null_gaps():
     seq = _fixture()
     bare, null = _profiles(seq)
     layer0 = [i for i in bare.host_s if seq.ops[i].layer == 0]
-    span = sum(bare.host_s[i] for i in layer0) + 500e-6        # 500 us of the arm's Python
-    spans = lr.Spans(spans_s={0: (span - 1e-6, span, span + 1e-6)}, setitems={0: (0, 0, 0)})
-    prof, rec = lr.residual(seq, bare, null, spans, spread_tol=0.10)
+    gaps = lr.Gaps(gaps_s={0: (499e-6, 500e-6, 501e-6)}, intervals={0: 9},
+                   overhead_s=(1e-7,) * 3)              # 500 us of the arm's Python
+    prof, rec = lr.residual(seq, bare, null, gaps, spread_tol=0.10)
     assert sum(prof.residual_s.values()) == pytest.approx(500e-6)
     assert prof.total_s == pytest.approx(bare.total_s + 500e-6)
     # in proportion to the null pass's gaps; none outside the layers
-    gaps = {i: null.host_s[i] - null.launch_floor_s for i in layer0}
+    w = {i: null.host_s[i] - null.launch_floor_s for i in layer0}
     for i in layer0:
-        assert prof.residual_s.get(i, 0.0) == pytest.approx(500e-6 * gaps[i] / sum(gaps.values()))
+        assert prof.residual_s.get(i, 0.0) == pytest.approx(500e-6 * w[i] / sum(w.values()))
     assert all(seq.ops[i].layer == 0 for i in prof.residual_s)
     assert rec["labels"] == [] and rec["layers"][0]["residual_s"] == pytest.approx(500e-6)
+    assert rec["schema"] == lr.SCHEMA and rec["method"] == lr.METHOD
+    assert rec["overhead_s"] == pytest.approx(1e-7) and rec["layers"][0]["intervals"] == 9
     assert hp.from_record(hp.to_record(prof)).residual_s == prof.residual_s
 
 
 def test_a_negative_residual_adds_nothing_and_is_labelled():
     seq = _fixture()
     bare, null = _profiles(seq)
-    spans = lr.Spans(spans_s={0: (1e-6,)}, setitems={0: (0,)})
-    prof, rec = lr.residual(seq, bare, null, spans, spread_tol=0.10)
+    prof, rec = lr.residual(seq, bare, null, lr.Gaps(gaps_s={0: (-1e-7,)}), spread_tol=0.10)
     assert prof.residual_s == {} and prof.host_s == bare.host_s
     assert rec["layers_negative"] == [0] and lr.NEGATIVE_LABEL in rec["labels"]
 
@@ -299,39 +300,40 @@ def test_a_negative_residual_adds_nothing_and_is_labelled():
 def test_a_spread_above_the_tolerance_keeps_the_residual_and_labels_the_cell():
     seq = _fixture()
     bare, null = _profiles(seq)
-    base = sum(v for i, v in bare.host_s.items() if seq.ops[i].layer == 0)
-    xs = tuple(base + d for d in (100e-6, 100e-6, 200e-6, 300e-6, 300e-6))
-    prof, rec = lr.residual(seq, bare, null, lr.Spans(spans_s={0: xs}), spread_tol=0.10)
+    xs = (100e-6, 100e-6, 200e-6, 300e-6, 300e-6)
+    prof, rec = lr.residual(seq, bare, null, lr.Gaps(gaps_s={0: xs}), spread_tol=0.10)
     assert rec["layers"][0]["spread"] > 0.10
     assert rec["layers_over_spread"] == [0] and lr.SPREAD_LABEL in rec["labels"]
     assert sum(prof.residual_s.values()) == pytest.approx(200e-6)      # kept, the median's
-    _, rec = lr.residual(seq, bare, null, lr.Spans(spans_s={0: xs}), spread_tol=10.0)
+    _, rec = lr.residual(seq, bare, null, lr.Gaps(gaps_s={0: xs}), spread_tol=10.0)
     assert rec["labels"] == []
 
 
-def test_a_layer_where_the_device_fell_behind_is_labelled():
+def test_a_cell_whose_median_did_not_settle_is_labelled():
     seq = _fixture()
     bare, null = _profiles(seq)
-    base = sum(v for i, v in bare.host_s.items() if seq.ops[i].layer == 0)
-    s = lr.Spans(spans_s={0: (base + 1e-4,)}, device_cum_s={0: 2e-3}, host_cum_s={0: 1e-3})
-    _, rec = lr.residual(seq, bare, null, s, spread_tol=0.10)
-    assert rec["layers_device_behind"] == [0] and lr.DEVICE_BEHIND_LABEL in rec["labels"]
-    s.device_cum_s = {0: 1.04e-3}                                # inside the margin
-    _, rec = lr.residual(seq, bare, null, s, spread_tol=0.10)
-    assert rec["layers_device_behind"] == [] and rec["device_checked"]
+    _, rec = lr.residual(seq, bare, null, lr.Gaps(gaps_s={0: (1e-4,)}, stable=False),
+                         spread_tol=0.10)
+    assert lr.UNSTABLE_LABEL in rec["labels"] and rec["stable"] is False
 
 
-def test_spans_are_taken_between_each_layers_hooks_with_a_write_timed_after_a_synchronise():
+class _Clock:
+    """A fake clock: the arm's Python advances it; a synchronise advances it
+    by a wait for the device, which must never reach a gap."""
+
+    def __init__(self):
+        self.t, self.syncs = 0.0, 0
+
+    def __call__(self):
+        return self.t
+
+    def sync(self):
+        self.syncs += 1
+        self.t += 50.0
+
+
+def _gap_prefill(clock, costs, write=()):
     import torch
-    t = [0.0]
-    log = []
-
-    def clock():
-        return t[0]
-
-    def sync():
-        log.append("sync")
-        t[0] += 50.0                     # a wait for the device: out of the span
 
     class Layer(torch.nn.Module):
         def __init__(self, cost, write):
@@ -339,28 +341,67 @@ def test_spans_are_taken_between_each_layers_hooks_with_a_write_timed_after_a_sy
             self.cost, self.write = cost, write
 
         def forward(self, x):
-            t[0] += self.cost            # the arm's own Python
+            clock.t += self.cost            # the arm's own Python, before its first call
+            x = x + 1                       # a call
+            clock.t += self.cost            # and between two calls
             if self.write:
-                x[x > 0] = 0.0           # a boolean-mask write
-            return x
+                x[x > 0] = 0.0              # a boolean-mask write: one call
+            y = x * 2                       # a call
+            clock.t += 1.0                  # after its last call
+            return y
 
-    layers = [Layer(3.0, False), Layer(5.0, True)]
+    layers = [Layer(c, i in write) for i, c in enumerate(costs)]
 
     def prefill():
         x = torch.ones(4)
         for m in layers:
             x = m(x)
-        t[0] += 100.0                    # outside the layers: no span
+        clock.t += 100.0                    # outside the layers: no gap
+    return prefill, layers
 
+
+def test_gaps_are_the_python_between_calls_with_every_wait_outside_the_clock():
     from attnbench.components.sync_tape import TapeRecorder
+    clock = _Clock()
+    prefill, layers = _gap_prefill(clock, (3.0, 5.0), write={1})
     with TapeRecorder("cpu") as r:
         prefill()
-    spans = lr.tape_spans(prefill, r.tape, layers, reps=3, device_type="cpu", sync=sync,
-                          clock=clock)
-    assert spans.spans_s == {0: (3.0, 3.0, 3.0), 1: (5.0, 5.0, 5.0)}
-    assert spans.setitems == {0: (0, 0, 0), 1: (1, 1, 1)}
-    assert spans.device_cum_s is None
-    assert log.count("sync") == 4 * 2        # per run: before the write, and at its end
+    g = lr.idle_gaps(prefill, r.tape, layers, device_type="cpu", sync=clock.sync,
+                     clock=clock, min_reps=3, max_reps=5, calibration_calls=8)
+    # the fake clock does not move between back-to-back calls: no overhead
+    assert g.overhead_s == (0.0,) * len(g.overhead_s) and g.stable
+    assert len(g.gaps_s[0]) == 3                       # settled at the minimum
+    assert g.gaps_s == {0: (3.0 + 3.0 + 1.0,) * 3, 1: (5.0 + 5.0 + 1.0,) * 3}
+    # layer 0: pre-hook, add, mul, post-hook; layer 1 adds the comparison and
+    # the write (the tape serves it: one call)
+    assert g.intervals == {0: 3, 1: 5}
+
+
+def test_the_timers_overhead_is_taken_off_every_interval():
+    from attnbench.components.sync_tape import TapeRecorder
+
+    class Costly(_Clock):
+        def __call__(self):              # every read of the clock costs 0.25
+            t = self.t
+            self.t += 0.25
+            return t
+    clock = Costly()
+    prefill, layers = _gap_prefill(clock, (3.0, 5.0))
+    with TapeRecorder("cpu") as r:
+        prefill()
+    g = lr.idle_gaps(prefill, r.tape, layers, device_type="cpu", sync=clock.sync, clock=clock,
+                     min_reps=3, max_reps=3, calibration_calls=8)
+    assert g.overhead_s == (0.25,) * 3
+    assert g.gaps_s == {0: (7.0,) * 3, 1: (11.0,) * 3}
+
+
+def test_runs_continue_until_the_median_settles_or_the_cap():
+    totals = [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+    assert lr._settled(totals, 7, 0.01)
+    assert not lr._settled(totals[:6], 7, 0.01)        # below the minimum
+    assert not lr._settled([10.0, 10.0, 10.0, 30.0, 30.0, 30.0, 30.0], 7, 0.01)
+    with pytest.raises(ValueError):
+        lr.idle_gaps(lambda: None, None, [], min_reps=3)
 
 
 # --- the isolated trace read by bisection (null pass speed-up) -------------------------------

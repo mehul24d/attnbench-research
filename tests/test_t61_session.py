@@ -636,7 +636,7 @@ def test_the_block_drift_check_reads_t31s_rows_by_their_grid_cell(tmp_path):
     from attnbench.analysis import block_drift as BD
     comp, grid = p1_grid()
     rows = []
-    for bid, med, tokens in (("b1", 700.0, 8075), ("b2", 730.0, 8075)):
+    for bid, med, tokens in (("b1", 700.0, 8075), ("b2", 750.0, 8075)):
         d = tmp_path / bid
         write_t31_gt(d, "eager", [t31_row("dense", "dense", None, 8192, 1, tokens, med)],
                      not_before=T, firsts=[T + 1])
@@ -646,7 +646,7 @@ def test_the_block_drift_check_reads_t31s_rows_by_their_grid_cell(tmp_path):
         rows += r["untraced"]["rows"]
     out = BD.drift(rows, order=["b1", "b2"])
     assert out["anchor"] == ("dense", 1.0, 8192, 1)
-    assert out["per_block"]["b2"]["relative_difference"] == pytest.approx(30 / 700)
+    assert out["per_block"]["b2"]["relative_difference"] == pytest.approx(50 / 700)
     assert out["above"] == ["b2"] and out["passed"] is False
 
 

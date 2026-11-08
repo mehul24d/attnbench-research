@@ -1,5 +1,5 @@
 {
- "plan_sha256": "1addd07ec3e7b64053e0eef1555697bffa1df4eb4c9c8844248d8977596080cc",
+ "plan_sha256": "300cfbb735e0472d6c1ce6274dc0e1e48e749debc76558148daf81726cfc2029",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -102,7 +102,7 @@
    "value": null,
    "source": null,
    "status": "evidence in hand",
-   "proposed": "0.25: the smallest two-decimal value at or above every family's |relative difference| in the two passing L4 shakedowns (S4 max 0.2434 aten::sum, S5 0.2363), applied as replay.check_passes; written before it was applied to T3.2",
+   "proposed": "0.25: the smallest two-decimal value at or above every family's |relative difference| in the two passing L4 shakedowns (S4 max 0.2434 aten::sum, S5 0.2363), applied as replay.check_passes; written before it was applied to T3.2. Gate A v2 (post-data amendment, 8 Nov 2026) exempts a family below its cell's resolution floor, covered in aggregate by leg 1",
    "basis": "results/shakedown4_l4_20261101, results/shakedown5_l4_20261101 (06_replay/replay_vs_trace.json); Appendix A, 8 Nov 2026"
   },
   "null_kernel_floor_multiple": {
@@ -242,12 +242,12 @@
    "basis": "lock table row 30"
   },
   "flagged_memset_sensitivity_bound": {
-   "item": "the flagged-memset sensitivity bound (T2.3: each memset with no device record priced at the memset zoo's duration for its size)",
+   "item": "the flagged-memset sensitivity bound (T2.3: each memset with no device record priced at the memset zoo's duration for its realised size, zero bytes being zero device time; Appendix A, 8 Nov 2026)",
    "value": null,
    "source": null,
    "status": "evidence in hand",
-   "proposed": "The record-less memsets are zero-length (both repeats): price them at zero, report the count",
-   "basis": "docs/limitations.md"
+   "proposed": "Realised bytes (revised identity, 8 Nov 2026): zero bytes is zero device time, host cost at its measured API cost; both P1 repeats: 532 flagged memsets in 7 cells, all zero bytes, bound 0 s; report the count",
+   "basis": "docs/limitations.md; Appendix A, 8 Nov 2026 (revised identity)"
   },
   "chain_check_tolerance": {
    "item": "the chain-check tolerance (T2.2, an aggregate gate since 1 Nov 2026, evaluated on the bare timer's prices since Shakedown 5: over every composite whose positions its children launched, the summed absolute difference between its children's bare times and its own, as a share of the cell's bare host time; working 10%, to be set from T3.1 data; per-call ratios reported; a cell that fails is labelled with its fallback, not refused)",
@@ -266,12 +266,12 @@
    "basis": "lock table row 33"
   },
   "residual_spread_tolerance": {
-   "item": "the residual spread tolerance (T2.2: the per-layer residual, the arm's own Python between calls that the bare prices leave out, measured as a layer's uninstrumented span under the tape less its bare prices; its spread over repetitions, the interquartile range over the median, at most this share; working 10%; a layer above it keeps its residual and labels the cell, not refused; Appendix A, 1 Nov 2026)",
+   "item": "the residual spread tolerance (T2.2: the per-layer residual, the arm's own Python between calls that the bare prices leave out, measured as the layer's host gaps between calls with the device idle, each gap opened after a synchronise and the timer's overhead taken off, since 8 Nov 2026 per Appendix A; until then a layer's uninstrumented span under the tape less its bare prices, which held the host's waits for the device; its spread over repetitions, the interquartile range over the median, at most this share; working 10%; a layer above it keeps its residual and labels the cell, not refused; Appendix A, 1 Nov 2026)",
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Working 10%; set from T3.2 residual spreads (not yet extracted)",
-   "basis": "lock table row 34"
+   "proposed": "Working 10%; set from T3.2c's spreads under the idle-device residual (T3.2a/b spreads came from the superseded method and do not apply)",
+   "basis": "lock table row 34; Appendix A, 8 Nov 2026 (revised identity)"
   },
   "pricing_mismatch_share": {
    "item": "the pricing mismatch share (T2.4: per arm over its cells, the share of priced device time priced from the isolated replay of the original operators because the CUDA graph does not hold that structure as the eager sequence has it, positions matched by structure only; working 5%; an arm above it, or with a position neither replay matches, is not priced, is labelled \"pricing not validated\" and is kept out of the hypothesis claims; never widened to pass; Appendix A, 7 Nov 2026)",
@@ -282,12 +282,12 @@
    "basis": "lock table row 35"
   },
   "block_drift_bound": {
-   "item": "the block drift bound (T6.1 and T6.4: a pairing run in blocks compares the anchor cell's untraced median in each block with the first block's that has it, as a relative difference; working 3%; a block above it is named, its rows are labelled \"drift above bound\" and kept out of the hypothesis claims; never widened to pass; Appendix A, 7 Nov 2026)",
+   "item": "the block drift bound (T6.1 and T6.4: a pairing run in blocks compares the anchor cell's untraced median in each block with the first block's that has it, as a relative difference; working 6.77% since 8 Nov 2026 and 3% before; it is a flag, not an exclusion: a block above it is named and its rows are labelled \"drift above bound\", every non-interrupted block stays in primary scoring and each flagged block gets a sensitivity run without it; never widened to pass; Appendix A, 7 and 8 Nov 2026)",
    "value": null,
    "source": null,
-   "status": "owed: decision",
-   "proposed": "Working 3% is below the 6.71% the anchor (dense L8192 b1) moved between the two L4 sessions; blocks are separate boots, so a 3% bound would label blocks on session noise. Decide before P4",
-   "basis": "docs/t32_gate_a_repeats.md"
+   "status": "evidence in hand",
+   "proposed": "6.77% as a flag, not an exclusion (adviser's ruling of 8 Nov 2026): the largest systematic gap between T3.2a and T3.2b, n = 2; flagged blocks stay in primary scoring and each gets a sensitivity run without it",
+   "basis": "Appendix A, 8 Nov 2026; attnbench/analysis/block_drift.py"
   }
  },
  "scored_pairings": {

@@ -581,21 +581,20 @@ def bare_profile_cell(a, rec, out: Path, null, *, pricer, tolerance: dict, entri
     return bare, record
 
 
-def residual_cell(a, rec, out: Path, bare, null, *, tolerance: float):
+def residual_cell(a, rec, out: Path, bare, null, *, tolerance: float, entries=()):
     """The per-layer residual (`layer_residual`; ruling of 1 Nov 2026 after
-    Shakedown 6): the prefill's uninstrumented host span per layer, under the
-    tape alone, less the layer's bare prices, added back over the layer's
+    Shakedown 6, measured with the device idle since ruling B1 of 8 Nov
+    2026): the host gaps between the prefill's calls per layer, each opened
+    after a synchronise, under the tape alone, added back over the layer's
     positions. Writes `host_profile.json` (the bare prices with the
     residual: what the prediction reads), `host_profile_bare.json` and
     `layer_residual.json`; returns (profile, record)."""
-    import torch
     from attnbench.components import host_profile as hp
     from attnbench.components import layer_residual as lr
     dev = "cpu" if _boundary() else "cuda"
-    spans = lr.tape_spans(a.run_prefill, rec.tape, a.layers, device_type=dev, sync=_sync(),
-                          event=None if _boundary() else
-                          (lambda: torch.cuda.Event(enable_timing=True)))
-    prof, record = lr.residual(rec.sequence, bare, null, spans, spread_tol=float(tolerance))
+    gaps = lr.idle_gaps(a.run_prefill, rec.tape, a.layers, seq=rec.sequence, entries=entries,
+                        device_type=dev, sync=_sync())
+    prof, record = lr.residual(rec.sequence, bare, null, gaps, spread_tol=float(tolerance))
     out = Path(out)
     (out / "host_profile_bare.json").write_text(hp.dumps(bare))
     (out / "host_profile.json").write_text(hp.dumps(prof))
@@ -1055,7 +1054,11 @@ def step_host_components(args, cfg) -> dict:
     index = run["index"]
     _write_json(out / "cells_index.json", {"cells": index})
     prices = load_prices(SimpleNamespace(prices={}), out / PRICE_CACHE).prices
-    name = lambda c: f"{c['arm']}@{c['context_length']}x{c['batch']}"   # noqa: E731
+    # every cell its own key: arm, nominal density, budget, batch (the
+    # density was missing, so a 0.25 cell's entry was overwritten by its 0.5
+    # cell's in both T3.2 repeats)
+    name = lambda c: cell_dir(Path(), c["arm"], c["nominal_density"], c["budget"],  # noqa: E731
+                              c["batch"]).name
     return {"cells": len(index), "signatures_timed": len(prices),
             "resumed": run["resumed"], "peak_rss_mb": run["peak_rss_mb"],
             "rss_ceiling_gb": run["rss_ceiling_gb"],
@@ -1276,7 +1279,7 @@ def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
     bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
                                      tolerance=cfg["chain_check_tolerance"])
     seconds["bare_pass"], t0 = time.time() - t0, time.time()
-    priced, resid = residual_cell(a, rec, cd, bare, prof,
+    priced, resid = residual_cell(a, rec, cd, bare, prof, entries=entries,
                                   tolerance=cfg["residual_spread_tolerance"])
     seconds["residual"] = time.time() - t0
     realised = d
@@ -1543,7 +1546,7 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
     m = replay.match(rec.sequence, replay.replay_nodes(
         replay.profile_replay(cap, cd / "replay_trace.json")))
     original, stream, segments = None, None, None
-    if m.unmatched_positions:
+    if replay.needs_original(rec.sequence, m):
         torch.cuda.synchronize()
         orig, stream = isolated_original(a, rec, cd)
         original, segments = match_original(rec.sequence, orig, stream)
@@ -1566,7 +1569,7 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
     if msf.count(rec.sequence):
         zoo = memset_zoo(out)
         trace = rec.directory / "trace.json"
-        sizes = (msf.flagged_sizes(trace, rec.sequence) if trace.exists()
+        sizes = (msf.realised_sizes(trace, rec.sequence) if trace.exists()
                  else {i: None for i in msf.flagged(rec.sequence)})
         upper, src = msf.upper_bound_s(sizes, zoo)
         memsets = {"count": len(upper), "sources": sorted(set(src.values())),
@@ -1881,11 +1884,23 @@ def group_arms(cfg, group: str, length: int, batch: int):
     return names, dens
 
 
+def _tracer():
+    import torch
+    acts = [torch.profiler.ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        acts.append(torch.profiler.ProfilerActivity.CUDA)
+    return lambda: torch.profiler.profile(activities=acts)
+
+
 def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
     """Every (length, batch) of this group: the K2 choice as the dense
     control (checked with `check_control` against the session's record),
     the group's arms at their densities, compiled under the group's one
-    setting, timed with the session's sampler, and each row given its cell."""
+    setting, timed with the session's sampler, and each row given its cell.
+    Then the traced pass (Section 5.3 step 8; Appendix A, 8 Nov 2026), after
+    the cell's whole untraced measurement (`time_with_profiler_overhead`):
+    its result and the per-arm overhead go to `traced_L*_b*.json`, never to
+    `gt_*.json`, which stays untraced ground truth."""
     import torch
     from attnbench import dense_selection as ds
     from attnbench.components.shakedown_arms import ARMS
@@ -1916,10 +1931,12 @@ def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
                 n_layers = int(h.model.config.num_hidden_layers)
                 check_of = lambda a, run, ids_b=ids_b: cc.run_checks(   # noqa: E731
                     a, run, second_ids=ids_b, n_layers=n_layers)
-            res = gt.time_arms(wrapped, ids, arms, reps=cfg["reps"], controls=controls,
-                               warmup=cfg["warmup"], density_of=gt.kernel_densities,
-                               synchronize=torch.cuda.synchronize, score_kwargs=score_kwargs,
-                               compiled_check_of=check_of)
+            both = gt.time_with_profiler_overhead(
+                wrapped, ids, arms, reps=cfg["reps"], controls=controls, tracer=_tracer(),
+                warmup=cfg["warmup"], density_of=gt.kernel_densities,
+                synchronize=torch.cuda.synchronize, score_kwargs=score_kwargs,
+                compiled_check_of=check_of)
+            res = both["untraced"]
             stamp = res["first_clocked_block_started_at"]
             ds.check_control(choice, choice.chosen, stamp, key=cell)
             first.append(stamp)
@@ -1930,6 +1947,9 @@ def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
                            working_values=cfg.get("working_values"),
                            **({"second_prompt_id": pid_b} if "compiled_checks" in row else {}))
             _write_json(out / f"gt_L{L}_b{b}.json", res)
+            _write_json(out / f"traced_L{L}_b{b}.json", {
+                "cell_arms": names, "nominal_densities": dens, "budget": L, "batch": b,
+                "group": args.group, "overhead": both["overhead"], "traced": both["traced"]})
             h.unwrap()
     return first
 

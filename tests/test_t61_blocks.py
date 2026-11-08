@@ -223,21 +223,23 @@ def _anchor_rows(medians):
     return rows
 
 
-def test_the_drift_bound_is_the_working_three_percent_by_default():
-    assert BD.WORKING_BOUND == 0.03
-    rows = _anchor_rows({"b1": 100.0, "b2": 103.0, "b3": 96.9})
+def test_the_drift_bound_is_the_working_6_77_percent_by_default():
+    assert BD.WORKING_BOUND == 0.0677
+    rows = _anchor_rows({"b1": 100.0, "b2": 106.7, "b3": 93.2})
     dr = BD.drift(rows, order=["b1", "b2", "b3"])
-    assert dr["bound"] == 0.03 and dr["above"] == ["b3"] and not dr["passed"]
-    assert BD.drift(_anchor_rows({"b1": 100.0, "b2": 103.0}), order=["b1", "b2"])["passed"]
+    assert dr["bound"] == 0.0677 and dr["above"] == ["b3"] and not dr["passed"]
+    assert BD.drift(_anchor_rows({"b1": 100.0, "b2": 106.7}), order=["b1", "b2"])["passed"]
 
 
-def test_a_block_above_the_bound_is_labelled_and_kept_out_of_the_claims():
-    rows = _anchor_rows({"b1": 100.0, "b2": 104.0, "b3": 101.0})
+def test_a_block_above_the_bound_is_flagged_kept_in_scoring_and_given_a_sensitivity_run():
+    rows = _anchor_rows({"b1": 100.0, "b2": 107.0, "b3": 101.0})
     dr = BD.drift(rows, order=["b1", "b2", "b3"])
     labelled = BD.labelled(rows, dr)
     assert {r["block"] for r in labelled if r.get("drift_label") == BD.DRIFT_LABEL} == {"b2"}
     assert all("drift_label" not in r for r in labelled if r["block"] != "b2")
-    assert {r["block"] for r in BD.claimable(rows, dr)} == {"b1", "b3"}
+    assert BD.claimable(rows, dr) == rows                       # a flag, not an exclusion
+    sens = BD.sensitivity_sets(rows, dr)
+    assert list(sens) == ["b2"] and {r["block"] for r in sens["b2"]} == {"b1", "b3"}
     assert all("drift_label" not in r for r in rows)            # the input is not changed
 
 
@@ -246,10 +248,11 @@ def test_with_one_block_of_the_anchor_nothing_is_compared_and_nothing_is_dropped
     dr = BD.drift(rows, order=["b1", "b2"])
     assert dr["passed"] is None
     assert BD.claimable(rows, dr) == rows and BD.labelled(rows, dr) == rows
+    assert BD.sensitivity_sets(rows, dr) == {}
 
 
 def test_the_lock_table_states_the_working_bound_and_the_rule():
     table = (ROOT / "docs" / "lock_value_table.md").read_text()
     row = next(l for l in table.splitlines() if l.startswith("| 36 |"))
-    assert "Block drift bound" in row and "Working: 3%" in row
+    assert "Block drift bound" in row and "Working: 6.77%" in row
     assert BD.DRIFT_LABEL in row and "never widened to pass" in row

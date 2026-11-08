@@ -10,12 +10,15 @@ it is the anchor cell, which every block with ground truth measures.
 
 `drift` compares the anchor between blocks: each block's anchor statistic
 against the first block's that has one, as a relative difference. The bound
-is T4.1's block drift bound (lock table row 36), working 3% (`WORKING_BOUND`,
-researcher's ruling 3 of 7 Nov 2026), and the rule is the pricing gate's: a
-block above it is named, its rows are labelled `DRIFT_LABEL` (`labelled`) and
-kept out of the hypothesis claims (`claimable`), and the bound is never
-widened to pass. The check reads the untraced rows, the ones the hypotheses
-are scored on.
+is T4.1's block drift bound (lock table row 36), working 6.77%
+(`WORKING_BOUND`: the largest systematic gap observed between two L4
+sessions, T3.2a and T3.2b; adviser's ruling of 8 Nov 2026, replacing the 3%
+of 7 Nov 2026). It is a flag, not an exclusion: a block above it is named and
+its rows are labelled `DRIFT_LABEL` (`labelled`), every non-interrupted
+block stays in primary scoring (`claimable`), and each flagged block gets a
+sensitivity run without it (`sensitivity_sets`). The bound is never widened
+to pass. The check reads the untraced rows, the ones the hypotheses are
+scored on.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from ..lock.blocks import row_key
 DISCARD = "INTERRUPTED_DISCARD.md"
 STATISTIC = "median_ms"
 # T4.1's block drift bound (lock table row 36): the working value until lock.
-WORKING_BOUND = 0.03
+WORKING_BOUND = 0.0677
 DRIFT_LABEL = "drift above bound"
 
 
@@ -114,7 +117,12 @@ def labelled(rows: Sequence[Mapping], result: Mapping) -> list[dict]:
 
 
 def claimable(rows: Sequence[Mapping], result: Mapping) -> list[Mapping]:
-    """The rows the hypothesis claims may read: none of a block above the
-    bound (module docstring)."""
-    above = set(result.get("above") or ())
-    return [r for r in rows if r.get("block") not in above]
+    """The rows primary scoring reads: all of them, a block above the bound
+    included (the bound flags, it does not exclude; module docstring)."""
+    return list(rows)
+
+
+def sensitivity_sets(rows: Sequence[Mapping], result: Mapping) -> dict:
+    """{flagged block: the rows without it}, one sensitivity run per block
+    above the bound; empty when none is."""
+    return {b: [r for r in rows if r.get("block") != b] for b in result.get("above") or ()}

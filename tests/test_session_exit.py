@@ -23,6 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 WRAP = REPO / "scripts" / "session_exit.sh"
 T61 = REPO / "scripts" / "t61_session.py"
+T31 = REPO / "scripts" / "t31_session.py"
 
 FAKE_GSUTIL = r"""#!/usr/bin/env bash
 # gs://fake-bucket/<path> is $FAKE_GCS/<path>
@@ -168,3 +169,55 @@ def test_the_runner_under_the_wrapper_sees_it_armed(tmp_path):
            wrapped("bash", "-c", f'echo "$ATTNBENCH_SESSION_EXIT" > {out}')]
     assert subprocess.run(cmd, cwd=work, env=env, timeout=60).returncode == 0
     assert out.read_text().strip() == "armed"
+
+
+# --- the P1 runner (T3.2c; ruling B4 of 8 Nov 2026) -------------------------------------
+
+def t31_dry(name, tmp_path):
+    return [sys.executable, str(T31), "--dry-run", "--session",
+            str(tmp_path / "work" / "results" / name)]
+
+
+def test_a_p1_dry_run_is_synced_then_halted(tmp_path):
+    p, gcs, home = run(tmp_path, t31_dry("t31_dry", tmp_path))
+    assert p.returncode == 0, p.stderr
+    assert halted(tmp_path) == ["-n shutdown -h now"]
+    m = json.loads((gcs / "results" / "t31_dry" / "manifest.json").read_text())
+    last = {a["step"]: a["status"] for a in m["attempts"]}
+    assert len(last) == 11 and set(last.values()) == {"passed"}      # steps 1 to 11
+    assert bucket_marker(gcs)["rc"] == 0 and bucket_marker(gcs)["synced"] is True
+    log = (gcs / "logs" / "home" / "p2.log").read_text()
+    assert "SESSION_EXIT=0 " in log and "synced on try 1" in log
+    assert (home / "p2.log").read_text().rstrip().splitlines()[-1].startswith(
+        "--- session_exit: halting")
+
+
+def test_a_p1_session_that_fails_after_real_work_is_synced_and_halted(tmp_path):
+    # the simulated failure: the dry run's steps all run, then the session dies
+    # of an exception, as a step's uncaught error would end it
+    fail = ["bash", "-c", " ".join(t31_dry("t31_fail", tmp_path)) +
+            " && python3 -c 'raise RuntimeError(\"simulated failure\")'"]
+    p, gcs, _ = run(tmp_path, fail)
+    assert p.returncode == 1
+    assert halted(tmp_path) == ["-n shutdown -h now"]
+    assert (gcs / "results" / "t31_fail" / "manifest.json").exists()   # the work reached the bucket
+    assert bucket_marker(gcs)["rc"] == 1 and bucket_marker(gcs)["synced"] is True
+    log = (gcs / "logs" / "home" / "p2.log").read_text()
+    assert "simulated failure" in log and "SESSION_EXIT=1 " in log
+
+
+def test_a_p1_session_killed_mid_step_is_synced_and_halted(tmp_path):
+    crash = ["bash", "-c", " ".join(t31_dry("t31_crash", tmp_path)) + " >/dev/null 2>&1; kill -KILL $$"]
+    p, gcs, _ = run(tmp_path, crash)
+    assert p.returncode == 137
+    assert halted(tmp_path) == ["-n shutdown -h now"]
+    assert bucket_marker(gcs)["rc"] == 137
+
+
+def test_a_refused_p1_repeat_is_synced_and_halted(tmp_path):
+    # a T3.2c start in a work tree that is not a clean clone is refused, and still halts
+    p, gcs, _ = run(tmp_path, [sys.executable, str(T31), "--repeat", "c", "--groups", "eager",
+                               "--session", str(tmp_path / "work" / "results" / "t32c")])
+    assert p.returncode == 2
+    assert halted(tmp_path) == ["-n shutdown -h now"]
+    assert bucket_marker(gcs)["rc"] == 2 and "REFUSING" in (gcs / "logs" / "home" / "p2.log").read_text()
