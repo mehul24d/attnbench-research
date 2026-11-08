@@ -21,15 +21,15 @@ architecture-gated, and the harness must import on a machine where a kernel is
 unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
 learned baseline (T2.10); without it one more test skips.
 
-The 155 skips are the honest part, and they split six ways: **39** need CUDA
+The 156 skips are the honest part, and they split seven ways: **39** need CUDA
 or the GPU image's x-attention and block-sparse-attn, **86** read banked result
 files that `results/` keeps out of git, **12** are scripts
 `test_script_call_sites.py` has nothing to check because they import nothing
 from `attnbench`, **12** are the same scripts skipped again by
 `test_import_resolution.py`, **4** need the pinned RULER data directory
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
-`~/.cache/attnbench/ruler_data`; one of them wants a pinned build), and **2** need the pinned Llama tokenizer in the local Hugging
-Face cache. Each skip names the file or device it wanted.
+`~/.cache/attnbench/ruler_data`; one of them wants a pinned build), **2** need the pinned Llama tokenizer in the local Hugging
+Face cache, and **1** needs the primary model's pinned `config.json` there. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
