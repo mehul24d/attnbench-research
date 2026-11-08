@@ -353,7 +353,21 @@ def test_a_dry_session_is_not_resumed_as_a_real_one(tmp_path, capsys):
     assert rc == 2 and "dry T6.1 session" in capsys.readouterr().err
 
 
+def test_a_real_start_needs_the_exit_wrapper(monkeypatch):
+    monkeypatch.setattr(S, "tree_clean", lambda: True)
+    a = Namespace(dry_run=False, banked_at=["P1=2026-11-20T10:00:00+00:00"])
+    monkeypatch.delenv(S.EXIT_WRAPPER_ENV, raising=False)
+    assert "scripts/session_exit.sh" in S.start_refusal(T61, a)
+    monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "yes")
+    assert "scripts/session_exit.sh" in S.start_refusal(T61, a)
+    monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
+    assert S.start_refusal(T61, a) is None
+    monkeypatch.delenv(S.EXIT_WRAPPER_ENV)
+    assert S.start_refusal(T61, Namespace(dry_run=True, banked_at=[])) is None   # a dry run needs none
+
+
 def test_a_real_start_needs_a_clean_tree_and_the_banking_times(monkeypatch):
+    monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
     monkeypatch.setattr(S, "tree_clean", lambda: False)
     a = Namespace(dry_run=False, banked_at=["P1=2026-11-20T10:00:00+00:00"])
     assert "dirty" in S.start_refusal(T61, a)
@@ -472,12 +486,74 @@ def test_a_real_step_is_wrapped_in_run_phase_and_named_for_t61(tmp_path):
     assert d[0] == sys.executable and d[-1] == "--dry-run"
 
 
-@pytest.mark.parametrize("step, task", [
-    ("probe", "T2.18"), ("mask_gate", "T2.23"), ("host_components", "T2.2"),
-    ("device_components", "T2.4"), ("dense_select", "T2.16")])
-def test_real_bodies_not_yet_built_refuse_naming_their_task(tmp_path, step, task):
-    with pytest.raises(S.NotBuilt, match=task.replace(".", r"\.")):
+def test_the_mask_gate_is_not_yet_built_and_refuses_naming_its_task(tmp_path):
+    with pytest.raises(S.NotBuilt, match=r"T2\.23"):
+        T61.reals["mask_gate"](T61, args_for(tmp_path, tmp_path, dry_run=False))
+
+
+@pytest.mark.parametrize("step", ["probe", "host_components", "device_components",
+                                  "dense_select", "link"])
+def test_the_component_steps_are_t31s_and_refuse_p1s_working_values(tmp_path, step):
+    """T3.1's own steps on P2's config: its values are fixed at lock (T4.1),
+    and until then T3.1's guard refuses to fill them with P1's."""
+    body = T61.reals[step]
+    assert body is S.real_link or (body.func is S._t31_step and body.args == (step,))
+    with pytest.raises(S.StepFailed, match="the working values are P1's only; this session is 'P2'"):
         T61.reals[step](T61, args_for(tmp_path, tmp_path, dry_run=False))
+
+
+def test_each_pairing_names_its_components_config_with_the_dropped_cell():
+    from t64_session import T64
+    for cfg, card in ((T61, "A100"), (T64, "H100")):
+        c = json.loads((ROOT / cfg.components_config).read_text())
+        assert (c["pairing"], c["card"]) == (cfg.pairing, card)
+        assert c["prediction_prefix"] == f"predictions/{cfg.pairing}"
+        assert [(e["arm"], e["density"], e["length"], e["batch"]) for e in c["not_measured"]] == [
+            ("oracle", 0.5, 32768, 1)]
+        assert "every pairing" in c["not_measured"][0]["reason"]
+
+
+def test_the_step_layout_names_this_runners_directories_for_t31s_steps(tmp_path):
+    import t31_steps as st
+    p = S.write_step_layout(T61, tmp_path)
+    lay = json.loads(p.read_text())
+    assert set(lay) == set(S.T31_STEPS)
+    for step in S.T31_STEPS:
+        assert st.step_dir(tmp_path, step) == S.step_dir(tmp_path, step, T61)
+    assert st.step_dir(tmp_path, "link") != tmp_path / "02_link"          # T3.1's own numbering
+    with pytest.raises(st.StepFailed, match="names no directory for the step 'predict'"):
+        st.step_dir(tmp_path, "predict")
+    assert st.step_dir(tmp_path / "t31", "predict") == tmp_path / "t31" / "07_predict"
+    assert S.write_step_layout(dataclasses.replace(T61, components_config=""), tmp_path / "x") is None
+
+
+def test_a_real_run_writes_the_step_layout_before_its_first_step(tmp_path, monkeypatch):
+    import t31_steps as st
+    seen = []
+
+    def runner(cmd, log):
+        seen.append((tmp_path / "s" / st.STEP_LAYOUT).exists())
+        return 1
+    monkeypatch.setattr(S, "tree_clean", lambda: True)
+    monkeypatch.setattr(S, "boot_id", lambda: "boot-a")
+    S.run_session(T61, tmp_path / "s", start="prereqs", extra=[], dry_run=False, sync=False,
+                  runner=runner)
+    assert seen == [True]
+    assert not (tmp_path / "d" / st.STEP_LAYOUT).exists()
+    dry(T61, tmp_path / "d")
+    assert not (tmp_path / "d" / st.STEP_LAYOUT).exists()               # a dry run's fakes need none
+
+
+def test_the_launch_queue_reports_the_q_link_measured(tmp_path):
+    d = S.step_dir(tmp_path, "link", T61)
+    args = args_for(tmp_path, tmp_path / "o", dry_run=False)
+    with pytest.raises(S.StepFailed, match="`link` has not passed"):
+        S.real_launch_queue(T61, args)
+    S.write_json(d / "recursion_inputs.json", {"queue_depth": 1022, "fake": True})
+    with pytest.raises(S.StepFailed, match="`link` has not passed"):
+        S.real_launch_queue(T61, args)
+    S.write_json(d / "recursion_inputs.json", {"queue_depth": 1022, "fake": False})
+    assert S.real_launch_queue(T61, args) == {"q": 1022, "from": "link"}
 
 
 def test_the_real_ground_truth_harness_is_not_built():
@@ -524,14 +600,6 @@ def test_the_real_preflight_refuses_a_cpu_host(tmp_path):
     pytest.importorskip("torch")
     with pytest.raises(S.StepFailed):
         S.real_preflight(T61, args_for(tmp_path, tmp_path, dry_run=False))
-
-
-def test_the_real_launch_queue_body_fails_cleanly_on_a_cpu_host(tmp_path):
-    torch = pytest.importorskip("torch")
-    if torch.cuda.is_available():
-        pytest.skip("this checks the CPU refusal")
-    with pytest.raises(S.StepFailed):
-        S.real_launch_queue(T61, args_for(tmp_path, tmp_path, dry_run=False))
 
 
 # --- added after break-testing: the two guards no test killed --------------------------

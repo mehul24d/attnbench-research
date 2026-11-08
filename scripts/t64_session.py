@@ -101,7 +101,7 @@ def _t64() -> S.SessionConfig:
         code_path={"gpu": "H100", "implementation": "xattention:triton",
                    "libraries": [["torch", "dry"], ["triton", "dry"], ["flash_attn_3", "dry"]],
                    "python_optimize": 0},
-        banked=("P1", "P2"),
+        banked=("P1", "P2"), components_config="configs/t64/p4_session.json",
         steps=S.COMMON_STEPS_HEAD + (
             S.Step("masks", "T2.23, T2.24", "Triton masks recorded untimed at the grid "
                                             "lengths, for the comparison with P2's"),

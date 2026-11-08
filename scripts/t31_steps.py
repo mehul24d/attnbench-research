@@ -216,7 +216,20 @@ def _run(cmd: list[str]) -> int:
     return subprocess.run(cmd, cwd=ROOT).returncode
 
 
+# A session another runner owns names its steps' directories here (the P2 and
+# P4 runner, `t61_session.py`, numbers its steps in its own order).
+STEP_LAYOUT = "step_layout.json"
+
+
 def step_dir(session: Path, step: str) -> Path:
+    """A step's directory: T3.1's numbering, or the one the session's
+    `STEP_LAYOUT` names; a layout that does not name the step is refused."""
+    layout = Path(session) / STEP_LAYOUT
+    if layout.exists():
+        names = json.loads(layout.read_text())
+        if step not in names:
+            raise StepFailed(f"{layout} names no directory for the step {step!r}")
+        return Path(session) / names[step]
     return Path(session) / f"{STEPS.index(step) + 1:02d}_{step}"
 
 

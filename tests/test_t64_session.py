@@ -77,6 +77,7 @@ def test_a_session_without_the_recorded_wheel_hash_is_refused_at_the_start(sha):
 
 
 def test_a_real_start_needs_both_banking_times(monkeypatch):
+    monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
     monkeypatch.setattr(S, "tree_clean", lambda: True)
     one = Namespace(dry_run=False, banked_at=["P1=2026-11-20T00:00:00+00:00"], fa3_sha256=SHA)
     assert "missing: ['P2']" in S.start_refusal(T64, one)
@@ -205,6 +206,7 @@ def test_a_gate_run_cannot_start_from_a_session_step(tmp_path):
 
 
 def test_the_gate_needs_the_wheel_hash_and_no_banking_times(monkeypatch):
+    monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
     monkeypatch.setattr(S, "tree_clean", lambda: True)
     a = Namespace(dry_run=False, fa3_sha256=None, banked_at=[])
     assert "--fa3-sha256" in S.start_refusal(GATE, a)
