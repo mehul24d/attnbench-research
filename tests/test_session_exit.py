@@ -215,9 +215,23 @@ def test_a_p1_session_killed_mid_step_is_synced_and_halted(tmp_path):
 
 
 def test_a_refused_p1_repeat_is_synced_and_halted(tmp_path):
-    # a T3.2c start in a work tree that is not a clean clone is refused, and still halts
-    p, gcs, _ = run(tmp_path, [sys.executable, str(T31), "--repeat", "c", "--groups", "eager",
+    # A T3.2c start in a dirty tree is refused, and still syncs and halts. The runner
+    # checks the tree it runs from, so it runs from a clone of the working tree made dirty
+    # here: the repository running the tests may be clean (a fresh clone) or not.
+    clone = tmp_path / "repo"
+    subprocess.run(["git", "clone", "-q", "--shared", str(REPO), str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "checkout", "-q", "--detach",
+                    subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], check=True,
+                                   capture_output=True, text=True).stdout.strip()], check=True)
+    diff = subprocess.run(["git", "-C", str(REPO), "diff", "HEAD", "--binary"], check=True,
+                          capture_output=True).stdout
+    if diff:                         # the code under test is the working tree's
+        subprocess.run(["git", "-C", str(clone), "apply", "--binary", "-"], input=diff, check=True)
+    (clone / "untracked_change.txt").write_text("dirty\n")
+    p, gcs, _ = run(tmp_path, [sys.executable, str(clone / "scripts" / "t31_session.py"),
+                               "--repeat", "c", "--groups", "eager",
                                "--session", str(tmp_path / "work" / "results" / "t32c")])
     assert p.returncode == 2
     assert halted(tmp_path) == ["-n shutdown -h now"]
-    assert bucket_marker(gcs)["rc"] == 2 and "REFUSING" in (gcs / "logs" / "home" / "p2.log").read_text()
+    log = (gcs / "logs" / "home" / "p2.log").read_text()
+    assert bucket_marker(gcs)["rc"] == 2 and "REFUSING: the tree is dirty" in log
