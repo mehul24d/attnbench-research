@@ -209,3 +209,16 @@ def test_t41_names_every_value_the_plan_fixes_at_lock():
     needed = {k for _, keys in AT_LOCK for k in keys} - {THE_LIST} | set(NAMED_ALSO)
     missing = sorted(needed - set(L.lock_items(PLAN_TEXT)))
     assert not missing, f"T4.1 does not name: {missing}"
+
+
+def test_the_draft_lock_package_lists_every_item_and_fixes_none():
+    """docs/lock_package_draft.json (8 Nov 2026) holds proposals only: every
+    T4.1 item present, every value null, no pairing value set, so it can
+    never be read as a lock."""
+    path = L.PLAN.parent / "lock_package_draft.json"
+    draft = json.loads(path.read_text(encoding="utf-8"))
+    result = L.check(draft, PLAN_TEXT)
+    assert not result.missing and not result.unknown
+    assert set(result.unset) == set(result.items) and not result.complete
+    assert all(e["proposed"] and e["status"] for e in draft["values"].values())
+    assert all(v is None for vals in draft["pairing_values"].values() for v in vals.values())

@@ -24,7 +24,7 @@ import json
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
-from ..lock.blocks import cell_key
+from ..lock.blocks import row_key
 
 DISCARD = "INTERRUPTED_DISCARD.md"
 STATISTIC = "median_ms"
@@ -85,7 +85,7 @@ def drift(rows: Sequence[Mapping], *, order: Sequence[str], bound: float = WORKI
     if not bound > 0:
         raise ValueError("the bound is a positive relative difference, fixed at lock")
     anchors = [r for r in rows if r.get("anchor")]
-    keys = {cell_key(r) for r in anchors}
+    keys = {row_key(r) for r in anchors}
     if len(keys) > 1:
         raise BlockDriftError(f"the anchor rows are of {len(keys)} cells")
     by_block: dict = {}

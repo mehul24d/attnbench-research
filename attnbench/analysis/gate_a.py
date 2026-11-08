@@ -74,6 +74,25 @@ def _label(label: str) -> tuple[str, Optional[float]]:
         raise GateAError(f"row label {label!r}: {d!r} is not a density") from None
 
 
+def place_row(cp: CommittedPrediction, row: Mapping, name: str):
+    """The one committed cell a ground-truth row measures, or GateAError."""
+    label = row.get("arm")
+    if not isinstance(label, str):
+        raise GateAError(f"{name}: a row with no arm label")
+    arm, nominal = _label(label)
+    fits = [c for c in require_loaded(cp).cells
+            if c.arm == arm and c.model == row.get("model")
+            and c.context_length == row.get("context_length")
+            and c.batch == row.get("batch")
+            and (c.density == nominal if nominal is not None
+                 else abs(c.density - float(row.get("executed_density") or 0.0))
+                 <= DENSITY_TOL)]
+    if len(fits) != 1:
+        raise GateAError(f"{name}: row {label!r} at {row.get('context_length')} "
+                         f"x {row.get('batch')} fits {len(fits)} committed cells")
+    return fits[0]
+
+
 def measured(cp: CommittedPrediction, results: Sequence[tuple[str, Mapping]]) -> dict:
     """{"seconds": {cell key: seconds}, "unmeasured": [cell keys]} from
     (name, ground-truth result) pairs, each row placed on one committed cell."""
@@ -82,21 +101,8 @@ def measured(cp: CommittedPrediction, results: Sequence[tuple[str, Mapping]]) ->
     for name, result in results:
         RS.check_result(result, name)
         for row in result.get("rows", ()):
-            label = row.get("arm")
-            if not isinstance(label, str):
-                raise GateAError(f"{name}: a row with no arm label")
-            arm, nominal = _label(label)
-            fits = [c for c in cp.cells
-                    if c.arm == arm and c.model == row.get("model")
-                    and c.context_length == row.get("context_length")
-                    and c.batch == row.get("batch")
-                    and (c.density == nominal if nominal is not None
-                         else abs(c.density - float(row.get("executed_density") or 0.0))
-                         <= DENSITY_TOL)]
-            if len(fits) != 1:
-                raise GateAError(f"{name}: row {label!r} at {row.get('context_length')} "
-                                 f"x {row.get('batch')} fits {len(fits)} committed cells")
-            k = fits[0].key
+            k = place_row(cp, row, name).key
+            label = row["arm"]
             if k in out:
                 raise GateAError(f"cell {k} is measured twice")
             out[k] = RS.measured_seconds(result, label, cp.statistic, name)

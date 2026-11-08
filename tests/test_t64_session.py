@@ -162,6 +162,9 @@ def test_the_real_record_needs_both_banking_times(tmp_path):
     a.banked_at = ["P1=2026-11-19T00:00:00+00:00"]
     with pytest.raises(S.StepFailed, match=r"missing: \['P2'\]"):
         S.real_record(T64, a, datetime(2026, 12, 1, tzinfo=timezone.utc))
+    a.banked_at += ["P2=2026-11-25T00:00:00+00:00"]
+    with pytest.raises(S.NotBuilt, match=r"\['P2'\]'s training rows"):
+        S.real_record(T64, a, datetime(2026, 12, 1, tzinfo=timezone.utc))
 
 
 def test_an_in_process_dry_run_matches(tmp_path):
