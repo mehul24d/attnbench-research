@@ -83,6 +83,7 @@ DEPENDS = {
     "ground_truth": ("hold", "dense_select"),
     "verify": ("ground_truth", "predict"),
     "postflight": (),
+    "delay_injection": ("link", "host_components", "device_components", "ground_truth"),
 }
 NOT_STAGED = ("isolated_host.events.jsonl",)     # the donor's large event log; no step reads it
 

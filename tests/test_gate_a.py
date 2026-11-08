@@ -212,6 +212,38 @@ def test_leg_two_gives_the_spread_and_at_a_bound_the_failing_cells():
         G.families({}, bound=None, bound_provisional=False)
 
 
+def test_gate_a_v2_exempts_a_family_below_its_cells_floor_and_only_there():
+    reps, fam = _reports()
+    t = reps["b"]["families"][fam]["trace_s"]
+    above = {f: r["trace_s"] for f, r in reps["b"]["families"].items() if r["trace_s"] > t}
+    # b's failing family is exempt in b when b's floor is above its traced time
+    out = G.families(reps, bound=0.1, bound_provisional=True,
+                     cell_floors_s={"a": 0.0, "b": t * 1.01})
+    assert out["exempt"]["a"] == [] and fam in out["exempt"]["b"]
+    assert not set(out["exempt"]["b"]) & set(above)
+    assert out["failing_cells"] == {}
+    # at a floor equal to its traced time it is not below it, so it is scored
+    out = G.families(reps, bound=0.1, bound_provisional=True,
+                     cell_floors_s={"a": 0.0, "b": t})
+    assert fam not in out["exempt"]["b"] and list(out["failing_cells"]) == ["b"]
+    with pytest.raises(G.GateAError, match="no resolution floor"):
+        G.families(reps, bound=0.1, bound_provisional=True, cell_floors_s={"a": 0.0})
+
+
+def test_gate_a_v2_reads_leg_three_against_the_range_and_lists_a_missing_mechanism():
+    from types import SimpleNamespace as NS
+    lo, hi = G.V2_SLOPE_RANGE
+    assert lo == pytest.approx(0.7071, abs=1e-4) and hi == pytest.approx(1.4142, abs=1e-4)
+    got = {"item": NS(slope=1.41), "bool": NS(slope=1.42), "synchronize": NS(slope=0.70)}
+    out = G.slopes(got, bound=None, mechanisms=("item", "bool", "synchronize", "spin"),
+                   slope_range=G.V2_SLOPE_RANGE)
+    assert out["within_range"] == {"item": True, "bool": False, "synchronize": False,
+                                   "spin": False}
+    assert out["missing"] == ["spin"]
+    with pytest.raises(G.GateAError, match="not both"):
+        G.slopes(got, bound=0.1, mechanisms=("item",), slope_range=G.V2_SLOPE_RANGE)
+
+
 # --- leg 3 and the report -------------------------------------------------------------
 
 def test_leg_three_is_not_measured_without_slopes():

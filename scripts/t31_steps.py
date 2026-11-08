@@ -24,6 +24,7 @@ Steps, in the runner's order (plan Section 5.3):
   ground_truth       T2.13, one process per compile-setting group
   verify             the analysis's own late-prediction check, in session
   postflight         T2.1 host-speed probe `end`
+  delay_injection    T2.25, Gate A's leg 3, after ground truth (8 Nov 2026)
 
 **Nothing clocked runs before `hold` has passed.** The component steps time
 microbenchmarks, kernels and null-kernel passes, never the composed
@@ -91,7 +92,8 @@ PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
 EXIT = {PASSED: 0, FAILED: 1, SKIPPED: 3}
 
 STEPS = ("preflight", "link", "dense_select", "probe", "host_components",
-         "device_components", "predict", "hold", "ground_truth", "verify", "postflight")
+         "device_components", "predict", "hold", "ground_truth", "verify", "postflight",
+         "delay_injection")
 
 DEFAULT_CONFIG = ROOT / "configs" / "t31" / "p1_session.json"
 
@@ -164,6 +166,11 @@ DRY_CONFIG = {
     "sampler_interval_s": None,
     "clock_skew_s": 2, "hold_guard_s": 1,
     "prediction_prefix": "predictions/P1-dryrun",
+    "delay_injection": {"arm": "dense", "length": 64, "batch": 1,
+                        "mechanisms": ["synchronize", "item", "copy_to_host_pinned",
+                                       "event_synchronize"],
+                        "counts": {"busy": [0, 1, 2], "idle": [0, 2, 4]},
+                        "reps": 2, "warmup": 1, "payload_bytes": 0},
 }
 
 # The CPU boundary's own values: every arm at the working densities on a
@@ -182,6 +189,12 @@ CPU_BOUNDARY_CONFIG = {
     "sampler_interval_s": None,
     "clock_skew_s": 2, "hold_guard_s": 1,
     "prediction_prefix": "predictions/P1-cpu-boundary-rehearsal",
+    # Leg 3's real path behind the boundary (8 Nov 2026): every mechanism, small
+    # counts, the injections a stand-in that does nothing on the CPU.
+    "delay_injection": {"arm": "dense", "length": 2048, "batch": 1,
+                        "mechanisms": list(DRY_CONFIG["delay_injection"]["mechanisms"]),
+                        "counts": {"busy": [0, 2, 4], "idle": [0, 10, 20]},
+                        "reps": 2, "warmup": 1, "payload_bytes": 0},
 }
 
 # What each refusing step still needs (plan Section 8 rows), so a GPU run
@@ -2028,6 +2041,144 @@ def step_postflight(args, cfg) -> dict:
     return {"row": "host_speed_end.parquet"}
 
 
+LEG3_PLAN_REMOTE = "leg3_plan.json"
+
+
+def step_delay_injection(args, cfg) -> dict:
+    """Gate A's leg 3 (T2.25), the session's last step, after ground truth
+    (adviser's ruling 1 of 8 Nov 2026, fifth paste): the declared set
+    (`cfg["delay_injection"]`, `delay_session.declaration`) on the session's
+    own priced dense cell and mechanism table. The plan, every variant's
+    prediction, is written, put in the store beside the prediction and read
+    back before the first timed pass (`delay_session.run`). A dry run plans
+    on the fake dense cell and times fake passes against a clock only they
+    advance (`_dry_leg3`), so its slopes mean nothing and are labelled fake.
+    Behind the CPU boundary the real path runs on the random model with
+    injections that do nothing, so its slopes mean nothing either."""
+    from attnbench.components import delay_session as dls
+    from attnbench.predict.recursion import MechanismCost
+    if not cfg.get("delay_injection"):
+        raise StepFailed("the session config declares no leg-3 set (delay_injection)")
+    decl = dls.declaration(cfg["delay_injection"])
+    session, out = Path(args.session), Path(args.out)
+    rin = json.loads((step_dir(session, "link") / "recursion_inputs.json").read_text())
+    mech = {m: MechanismCost(**v) for m, v in rin["by_length"][str(decl.length)].items()}
+    store, base_uri = make_store(session, dry_run=_local(args))
+    rel = f"{prediction_dir(cfg, session)}/{LEG3_PLAN_REMOTE}"   # nothing banked names the bucket
+    remote = f"{base_uri}/{rel}"
+    stored = {}
+
+    def write_plan(rec):
+        p = _write_json(out / dls.PLAN, rec)
+        store.put(p, remote)
+        if store.get(remote) != p.read_bytes():
+            raise StepFailed(f"the leg-3 plan read back from {remote} differs from {p}")
+        # Read back and stored before `delay_session.run` times its first pass.
+        stored.update(sha256=rec["sha256"], remote=rel,
+                      store_created=store.created(remote).isoformat(),
+                      read_back_at=datetime.now(timezone.utc).isoformat())
+
+    if args.dry_run:
+        res = _dry_leg3(decl, mech, rin["queue_depth"], write_plan)
+    else:
+        res = _real_leg3(args, decl, mech, rin["queue_depth"], session, write_plan)
+    res["plan_stored"] = stored
+    _write_json(out / dls.RESULT, res)
+    m = res["mechanisms"]
+    return {"plan_sha256": stored["sha256"], "variants": len(res["samples_s"]) - 1,
+            "refused": sorted(res["plan"]["refused"]),
+            "measured": sorted(k for k, v in m.items() if v["status"] == "measured"),
+            "unresolved": sorted(k for k, v in m.items() if v["status"] != "measured"),
+            "fake": bool(args.dry_run), "cpu_boundary": _boundary()}
+
+
+def _real_leg3(args, decl, mech, queue_depth, session, write_plan) -> dict:
+    """The declared dense cell: its recording (step 5) and priced operations
+    (step 6), the arm's own prefill under the dispatch observer, the CUDA
+    mechanisms."""
+    from attnbench.components import delay_injector as di
+    from attnbench.components import delay_session as dls
+    from attnbench.components import recorder
+    from attnbench.predict.recursion import close_prefill
+    _need_gpu("the delay injection")
+    host_dir = step_dir(session, "host_components")
+    name = cell_dir(Path(), decl.arm, 1.0, decl.length, decl.batch).name
+    c = json.loads((host_dir / name / CELL_INDEX).read_text())
+    dev = json.loads((step_dir(session, "device_components") / "cells.json").read_text())
+    entry = [e for e in dev["cells"] if e["arm"] == decl.arm and e["batch"] == decl.batch
+             and e.get("budget", e["context_length"]) == decl.length]
+    if len(entry) != 1 or entry[0]["ops"] is None:
+        raise StepFailed(f"step 6 has no single priced {name}: leg 3 has no base")
+    base = list(close_prefill(op_from_dict(o) for o in entry[0]["ops"]))
+    rec = recorder.load_recording(host_dir / c["dir"] / "recording")
+    h = _harness(args)
+    a = ready_cell(h, decl.arm, c["nominal_density"], c["budget"], c["batch"])
+    if a.prompt_id != c["prompt_id"]:
+        raise StepFailed(f"{name}: the prompt is {a.prompt_id}, the recording's {c['prompt_id']}")
+    from attnbench.components import host_profile as hp
+    iso = hp.isolated_positions(rec.sequence, _isolated_ops())   # step 5's, seen by no call
+    observer = dls.recorded_observer(rec.sequence, skip=iso, device_type=_device(),
+                                     layers=a.layers)
+    # Behind the CPU boundary the injection is a stand-in that does nothing.
+    fire_of = (lambda m: (lambda: None)) if _boundary() else (lambda m: di.cuda_mechanism(m, 0))
+    try:
+        return dls.run(a.run_prefill, rec.sequence, base, mech, queue_depth, decl,
+                       observer=observer, fire_of=fire_of,
+                       synchronize=_sync(), clock=time.perf_counter,
+                       write_plan=write_plan, align=dls.recorded_alignment(iso),
+                       context={"cell": name, "prompt_id": c["prompt_id"],
+                                "isolated_positions": list(iso),
+                                "queue_depth": queue_depth,
+                                "code_path": c["code_path"]})
+    finally:
+        h.unwrap()
+
+
+DRY_LEG3_WAIT_S = 1e-4     # what a dry run's fake injection adds, besides s_fixed
+
+
+def _dry_leg3(decl, mech, queue_depth, write_plan) -> dict:
+    """The dry run's leg 3 (`step_delay_injection`): the real planning,
+    schedules, timing loop and scoring on the fake dense cell, with a fake
+    arm that makes one call per fake operation and a clock that only the
+    passes advance (the prefill by the base prediction, each injection by its
+    s_fixed plus `DRY_LEG3_WAIT_S`)."""
+    from attnbench.components import delay_session as dls
+    from attnbench.components.op_sequence import CodePath, OpSequence, SeqKind, SeqOp
+    from attnbench.predict.recursion import close_prefill, price, recurse
+    fake = fake_ops(decl.arm, 1.0, decl.length, decl.batch)
+    seq = OpSequence(code_path=CodePath(arm="dense", gpu="cpu", implementation="dryrun-fake"),
+                     context_length=decl.length, batch=decl.batch, streams=(0,),
+                     ops=tuple(SeqOp(SeqKind.KERNEL, layer=op.layer, aten_op=f"aten::op{i}",
+                                     kernels=(f"k{i}",), stream=0)
+                               for i, op in enumerate(fake)))
+    base = list(close_prefill(fake))
+    base_s = recurse(price(base, mech), queue_depth).end_to_end
+    now, hook = [0.0], [None]
+
+    def run_prefill():
+        now[0] += base_s
+        for op in seq.ops:
+            if hook[0] is not None:
+                hook[0](op.aten_op, op.layer)
+
+    def observer(run, on_call):
+        hook[0] = on_call
+        try:
+            run()
+        finally:
+            hook[0] = None
+
+    def fire_of(m):
+        return lambda: now.__setitem__(0, now[0] + mech[m].s_fixed + DRY_LEG3_WAIT_S)
+
+    res = dls.run(run_prefill, seq, base, mech, queue_depth, decl, observer=observer,
+                  fire_of=fire_of, synchronize=lambda: None, clock=lambda: now[0],
+                  write_plan=write_plan,
+                  context={"cell": "dryrun", "fake": True, "calls": len(seq.ops)})
+    return {**res, "fake": True}
+
+
 # --- entry point ---------------------------------------------------------------------
 
 STEP_FUNCS = {
@@ -2035,7 +2186,7 @@ STEP_FUNCS = {
     "probe": step_probe, "host_components": step_host_components,
     "device_components": step_device_components, "predict": step_predict,
     "hold": step_hold, "ground_truth": step_ground_truth, "verify": step_verify,
-    "postflight": step_postflight,
+    "postflight": step_postflight, "delay_injection": step_delay_injection,
 }
 if tuple(STEP_FUNCS) != STEPS:     # not `assert`: T2.17 keeps the harness free of them
     raise RuntimeError("STEP_FUNCS and STEPS disagree")
@@ -2092,8 +2243,8 @@ def main(argv=None) -> int:
             print("REFUSING: --cpu-boundary runs the real steps; it is not --dry-run",
                   file=sys.stderr)
             return 2
-        if args.step not in STEPS[:STEPS.index("hold") + 1] + CELL_CHILDREN:
-            print(f"REFUSING: the CPU boundary runs steps 1 to 8, not {args.step}",
+        if args.step not in STEPS[:STEPS.index("hold") + 1] + ("delay_injection",) + CELL_CHILDREN:
+            print(f"REFUSING: the CPU boundary runs steps 1 to 8 and 12, not {args.step}",
                   file=sys.stderr)
             return 2
         from attnbench import cpu_boundary

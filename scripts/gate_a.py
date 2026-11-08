@@ -12,6 +12,13 @@ give leg 2. `--family-bound` is a lock value; before the lock pass
 `--family-bound-provisional` with it, or leave it out and read the
 distribution. Writes `gate_a.json` and `gate_a.md` into `--out`.
 
+Gate A v2 (Appendix A, 8 Nov 2026): `--v2` with `--cell-floors` (a JSON
+file, "<length>x<batch>" -> that cell's resolution floor in ms) exempts, in
+each cell, a family below the cell's floor from leg 2, and reads leg 3 from
+`--delay-injection` (step 12's `delay_injection.json`, slopes recomputed
+from its raw repeats) against [1/sqrt 2, sqrt 2], every priced mechanism
+listed.
+
     python3 scripts/gate_a.py --label "T3.2a alone, dry run" \\
         --remote gs://<bucket>/predictions/P1-T3.2a/<session>/prediction_P1_<t>.json \\
         --local prediction_P1_<t>.json --ground-truth 09_ground_truth \\
@@ -54,6 +61,11 @@ def parser() -> argparse.ArgumentParser:
                     help="the resolution floor for the sign agreement (a lock value)")
     ap.add_argument("--family-bound", type=float, default=None)
     ap.add_argument("--family-bound-provisional", action="store_true")
+    ap.add_argument("--v2", action="store_true", help="Gate A v2 (Appendix A, 8 Nov 2026)")
+    ap.add_argument("--cell-floors", default=None,
+                    help="v2: JSON, '<length>x<batch>' -> resolution floor (ms)")
+    ap.add_argument("--delay-injection", default=None,
+                    help="step 12's delay_injection.json (leg 3)")
     ap.add_argument("--clock-skew-s", type=float, default=REQUIRED_SYNC_GAP_S)
     ap.add_argument("--out", required=True)
     return ap
@@ -85,8 +97,32 @@ def family_reports(cells_json: Path, recordings: Path) -> dict:
     return out
 
 
+def cell_floors_s(path: Path, names) -> dict:
+    """Report name (a `t31_steps.cell_dir` name) -> its cell's floor, seconds."""
+    import re
+    raw = json.loads(Path(path).read_text())
+    out = {}
+    for n in names:
+        m = re.search(r"_L(\d+)_b(\d+)$", n)
+        k = f"{m.group(1)}x{m.group(2)}" if m else None
+        if k not in raw:
+            raise G.GateAError(f"{path} has no floor for {n} ({k})")
+        out[n] = float(raw[k]) / 1e3
+    return out
+
+
+def leg3(path) -> dict | None:
+    if path is None:
+        return None
+    from attnbench.components import delay_session as dls
+    return dls.slopes_from_record(json.loads(Path(path).read_text()))
+
+
 def main(argv=None, store=None) -> int:
     args = parser().parse_args(argv)
+    if args.v2 and not args.cell_floors:
+        print("gate_a: --v2 needs --cell-floors", file=sys.stderr)
+        return 2
     if args.family_bound is None and args.family_bound_provisional:
         print("gate_a: --family-bound-provisional needs --family-bound", file=sys.stderr)
         return 2
@@ -94,12 +130,18 @@ def main(argv=None, store=None) -> int:
         results, starts = ground_truth(Path(args.ground_truth))
         cp = _load.load(args.remote, args.local, started_at=starts,
                         clock_skew_s=args.clock_skew_s, banked_at=None, store=store)
+        fams = family_reports(Path(args.cells), Path(args.recordings))
+        from attnbench.predict.recursion import PRICED_MECHANISMS
         rep = G.report(label=args.label, cp=cp, results=results, dense_arm=args.dense_arm,
                        relative_floor=args.relative_floor,
                        resolution_floor_s=args.resolution_floor_ms / 1e3,
-                       family_reports=family_reports(Path(args.cells), Path(args.recordings)),
-                       family_bound=args.family_bound,
-                       family_bound_provisional=args.family_bound_provisional)
+                       family_reports=fams, family_bound=args.family_bound,
+                       family_bound_provisional=args.family_bound_provisional,
+                       measured_slopes=leg3(args.delay_injection),
+                       mechanisms=PRICED_MECHANISMS if args.v2 else (),
+                       slope_range=G.V2_SLOPE_RANGE if args.v2 else None,
+                       cell_floors_s=(cell_floors_s(Path(args.cell_floors), fams)
+                                      if args.v2 else None))
         j, md = G.write(rep, Path(args.out))
     except (G.GateAError, RS.ResultsError, C.PredictionCommitError, CostModelError,
             OSError, KeyError, TypeError, ValueError) as e:

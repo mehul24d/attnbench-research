@@ -171,6 +171,13 @@ def _runs(seq: OpSequence) -> list[_Run]:
     return merged
 
 
+# The positions each observed call issued, one tuple per call, or
+# `InjectionError`: `call_positions` (the rule of 31 Oct 2026), or the null
+# pass's once-only alignment (`delay_session.recorded_alignment`, which a real
+# prefill needs: its calls meet the recording through call chains).
+Align = Callable[[OpSequence, Sequence["Call"]], tuple]
+
+
 def call_positions(seq: OpSequence, calls: Sequence[Call]) -> tuple[tuple[int, ...], ...]:
     """For each observed launching call, the sequence positions it issued.
     Raises `InjectionError` where the calls do not meet the sequence."""
@@ -263,19 +270,20 @@ def _base_matches(base: Sequence[recursion.Operation], seq: OpSequence) -> tuple
 
 
 def injectable_sites(base: Sequence[recursion.Operation], seq: OpSequence,
-                     calls: Sequence[Call]) -> tuple[int, ...]:
+                     calls: Sequence[Call], *, align: Optional[Align] = None) -> tuple[int, ...]:
     """The sites (indices into `base`) the injector can take: those that end a
     launching call. A site inside a call's operations, or on an operation no
     launching call issues, is refused by `schedule_for`; passing this to
     `plan_variants(sites_allowed=...)` keeps the plan to sites it accepts."""
     positions = _base_matches(base, seq)
-    last = {pos[-1] for pos in call_positions(seq, calls)}
+    last = {pos[-1] for pos in (align or call_positions)(seq, calls)}
     return tuple(k for k, p in enumerate(positions) if p in last)
 
 
 def schedule_for(variant: Variant, base: Sequence[recursion.Operation],
                  seq: OpSequence, calls: Sequence[Call], *,
-                 payload_bytes: int = 0, loaded: bool = False) -> Schedule:
+                 payload_bytes: int = 0, loaded: bool = False,
+                 align: Optional[Align] = None) -> Schedule:
     """The schedule for one planned variant. `base` is what the variant was
     planned on, `seq` the recorded sequence it came from, `calls` the
     calibration pass, and `payload_bytes` and `loaded` what `plan_variants`
@@ -298,7 +306,7 @@ def schedule_for(variant: Variant, base: Sequence[recursion.Operation],
             f"injecting at {variant.sites} into this base puts the synchronisations "
             f"at {planned}; the variant has them at {variant.positions}, so it was "
             f"planned on another base")
-    per_call = call_positions(seq, calls)
+    per_call = (align or call_positions)(seq, calls)
     last_of = {pos[-1]: j for j, pos in enumerate(per_call)}
     inside = {p: j for j, pos in enumerate(per_call) for p in pos[:-1]}
     at_start = 0
@@ -331,10 +339,10 @@ def schedule_for(variant: Variant, base: Sequence[recursion.Operation],
 
 def schedules(variants: Sequence[Variant], base, seq: OpSequence,
               calls: Sequence[Call], *, payload_bytes: int = 0,
-              loaded: bool = False) -> tuple[Schedule, ...]:
+              loaded: bool = False, align: Optional[Align] = None) -> tuple[Schedule, ...]:
     """`schedule_for` over every variant of one `plan_variants` call."""
     return tuple(schedule_for(v, base, seq, calls, payload_bytes=payload_bytes,
-                              loaded=loaded) for v in variants)
+                              loaded=loaded, align=align) for v in variants)
 
 
 def to_record(schedule: Schedule) -> dict:
@@ -356,12 +364,12 @@ Observer = Callable[[Callable[[], None], Callable[[str, Optional[int]], None]], 
 
 
 def calibrate(run_prefill: Callable[[], None], seq: OpSequence,
-              observer: Observer) -> tuple[Call, ...]:
+              observer: Observer, *, align: Optional[Align] = None) -> tuple[Call, ...]:
     """One untimed pass with nothing injected: the calls, checked against
-    the sequence."""
+    the sequence (`align`, by default `call_positions`)."""
     calls: list[Call] = []
     observer(run_prefill, lambda name, layer: calls.append(Call(name, layer)))
-    call_positions(seq, calls)
+    (align or call_positions)(seq, calls)
     return tuple(calls)
 
 
