@@ -126,7 +126,7 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread over T3.2a, T3.2b and T3.2c), amended 8 Nov 2026 before T3.2c (floors.resolution_floors_within_between); recomputed after T3.2c, before lock; the per-length within-session floors (slope 0.354) and the pooled 19.42 ms are provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap, n = 2, not an interval",
+   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread over T3.2a, T3.2b and T3.2c), amended 8 Nov 2026 before T3.2c (floors.resolution_floors_within_between); recomputed after T3.2c (9 Nov 2026, quantile 0.95: 2048x1 4.25, 4096x1 8.04, 8192x1 69.49, 16384x1 111.05, 16384x4 441.54, 32768x1 321.53 ms; docs/t32c_gate_a_v2.md; T3.2c's 16384 groups are incomplete), before lock; the per-length within-session floors (slope 0.354) and the pooled 19.42 ms are provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap, n = 2, not an interval",
    "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md"
   },
   "floors_quantile": {

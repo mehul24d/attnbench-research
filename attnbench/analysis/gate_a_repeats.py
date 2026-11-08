@@ -90,6 +90,22 @@ def floors(sessions: Mapping[str, Sequence[tuple[str, Mapping]]], *, quantile: f
                                     if sum(k in c for c in series.values()) < 2]}
 
 
+def cell_floors(sessions: Mapping[str, Sequence[tuple[str, Mapping]]], *, quantile: float,
+                pairing: str) -> dict:
+    """The resolution floor per (context length, batch) by the amended rule
+    (Appendix A, 8 Nov 2026, fifth paste; `floors.resolution_floors_within_between`)
+    over every session's ground truth: {"<length>x<batch>": {floor_ms,
+    within_ms, between_ms, n_between_series, source}}, keyed as
+    `scripts/gate_a.py --cell-floors` reads it."""
+    series = {(s, *k): xs for s, r in sessions.items() for k, xs in cell_series(r).items()}
+    got = F.resolution_floors_within_between(series, length_of=lambda k: (k[2], k[3]),
+                                             quantile=quantile, pairing=pairing)
+    return {f"{L}x{b}": {"floor_ms": c.floor_ms, "within_ms": c.within_ms,
+                         "between_ms": c.between_ms, "n_between_series": c.n_between_series,
+                         "source": c.source}
+            for (L, b), c in got.items()}
+
+
 def _leg1(reports: Mapping[str, Mapping]) -> dict:
     per = {}
     for s, rep in reports.items():
