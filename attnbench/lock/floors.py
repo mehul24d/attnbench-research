@@ -53,7 +53,7 @@ import json
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -148,6 +148,45 @@ def resolution_floors_by_length(series: Mapping, *, length_of: Callable, quantil
         raise FloorsError("no series")
     return {g: resolution_floor(s, quantile=quantile, pairing=pairing)
             for g, s in sorted(groups.items())}
+
+
+@dataclass(frozen=True)
+class CellFloor:
+    floor_ms: float                   # max(within_ms, between_ms)
+    within_ms: float                  # `resolution_floor` over the cell's series
+    between_ms: Optional[float]       # None: no series at the cell ran in two sessions
+    n_between_series: int
+    source: str                       # "within" or "between", whichever is larger
+
+
+def resolution_floors_within_between(series: Mapping, *, length_of: Callable,
+                                     quantile: float, pairing: str) -> dict:
+    """The resolution floor per (context length, batch) since the amendment
+    of 8 Nov 2026 (fifth paste; Appendix A): the larger of the within-session
+    spread (`resolution_floors_by_length`'s floor at the cell) and the
+    between-session spread, the `quantile` over the cell's series run in two
+    or more sessions of the range (max - min) of the series' per-session
+    medians. A key's first element is its session and the rest names the
+    series across sessions; `length_of(key)` gives its (length, batch).
+    {(L, b): CellFloor}"""
+    q = _quantile(quantile)
+    within = resolution_floors_by_length(series, length_of=length_of, quantile=q,
+                                         pairing=pairing)
+    medians: dict = {}
+    for k, xs in series.items():
+        session, cell = k[0], tuple(k[1:])
+        medians.setdefault(length_of(k), {}).setdefault(cell, {})[session] = \
+            statistics.median(_series(k, xs))
+    out = {}
+    for g, w in within.items():
+        ranges = [max(m.values()) - min(m.values()) for m in medians[g].values() if len(m) > 1]
+        between = float(np.quantile(ranges, q)) if ranges else None
+        floor = w.floor_ms if between is None else max(w.floor_ms, between)
+        out[g] = CellFloor(floor_ms=floor, within_ms=w.floor_ms, between_ms=between,
+                           n_between_series=len(ranges),
+                           source="between" if between is not None and between > w.floor_ms
+                           else "within")
+    return out
 
 
 @dataclass(frozen=True)

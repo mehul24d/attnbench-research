@@ -1,5 +1,5 @@
 {
- "plan_sha256": "cf790029dddb6a2535ff6f2f5597b1d74231c85f3fc59d265b79b7da9c2f4e26",
+ "plan_sha256": "75b0e5eae1b918b4f7855a1f5fc0c88e9d997bb773a4eb9633e56957e9e0b5ee",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -78,8 +78,8 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Each mechanism's pooled slope within [1/sqrt 2, sqrt 2] (0.707 to 1.414): the logarithmic midpoint between 1.0 and the about 2 double counting gives (Section 7); written 8 Nov 2026 before any slope is measured; no session has measured one",
-   "basis": "Section 7, Gate A; Appendix A, 8 Nov 2026 (legs 2 and 3 bounds)"
+   "proposed": "Each mechanism's pooled slope within [1/sqrt 2, sqrt 2] (0.707 to 1.414): the logarithmic midpoint between 1.0 and the about 2 double counting gives (Section 7); written 8 Nov 2026 before any slope is measured; T3.2c's step 12 measures it on the declared set (dense 2048 b1, every priced mechanism, busy 0/16/32/64, idle 0/1000/2000/4000)",
+   "basis": "Section 7, Gate A; Appendix A, 8 Nov 2026 (legs 2 and 3 bounds; leg 3 in T3.2c)"
   },
   "mask_gate_bound": {
    "item": "mask-gate bound",
@@ -125,8 +125,8 @@
    "item": "resolution and noise floors (from the measured run-to-run spread; the resolution floor per context length and batch since 8 Nov 2026, Appendix A)",
    "value": null,
    "source": null,
-   "status": "evidence in hand",
-   "proposed": "Resolution floor per (length, batch) by the declared slope criterion (slope 0.354, Appendix A 8 Nov 2026); pooled 19.42 ms provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap, n = 2, not an interval",
+   "status": "owed: data",
+   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread over T3.2a, T3.2b and T3.2c), amended 8 Nov 2026 before T3.2c (floors.resolution_floors_within_between); recomputed after T3.2c, before lock; the per-length within-session floors (slope 0.354) and the pooled 19.42 ms are provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap, n = 2, not an interval",
    "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md"
   },
   "floors_quantile": {
@@ -150,7 +150,7 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "The frozen T2.10 set; the primary ModelShape is read from the pinned config.json (989aa79, sha256 98d2ff8c...), cross-checked; the P1 training file's features came from the superseded residual",
+   "proposed": "The frozen T2.10 set; the primary ModelShape is read from the pinned config.json (989aa79, sha256 98d2ff8c...), cross-checked; features come from T3.2c (the final identity; training rule, Appendix A 8 Nov 2026); the P1 training file's came from the superseded residual",
    "basis": "attnbench/predict/training.py; configs/models/qwen2.5-1.5b-instruct_shape.json"
   },
   "learned_predictor_hyperparameters": {
@@ -158,8 +158,8 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Provisional: config 2 of 6 pre-declared (log_seconds; n_estimators 200, learning_rate 0.05, num_leaves 7, min_child_samples 3; seed 0, deterministic, one thread), 2.85% median held-out error in 7-fold cell-grouped CV on P1 (defaults 83%: min_child_samples 20 leaves no splits on 30 rows). Features from the superseded residual: rerun on T3.2c's before lock",
-   "basis": "docs/learned_cv_p1_20261108.json; lock table row 20"
+   "proposed": "Provisional: config 2 of 6 pre-declared (log_seconds; n_estimators 200, learning_rate 0.05, num_leaves 7, min_child_samples 3; seed 0, deterministic, one thread), 2.85% median held-out error in 7-fold cell-grouped CV on P1 (defaults 83%: min_child_samples 20 leaves no splits on 30 rows). Features from the superseded residual. Training rule (8 Nov 2026): features from T3.2c, targets pooled over every session whose timed ground-truth path is byte-identical (scripts/timed_path.py), the config re-selected from the same 6 after the rebuild; T3.2a/b targets with T3.2a features reported as sensitivities, never selected",
+   "basis": "docs/learned_cv_p1_20261108.json; lock table row 20; Appendix A, 8 Nov 2026"
   },
   "k2_correctness_tolerance": {
    "item": "K2 correctness tolerance (the gate's `TOL`)",
@@ -331,7 +331,12 @@
     "T3.2a",
     "T3.2b"
    ],
-   "uploaded": null
+   "uploaded": {
+    "bucket_path": "banked/p1_training/p1_training.json.gz",
+    "sha256": "083b66134ebd3e2e72ca9cd6d576ffe561b128a61a2de93418fde49978045bdf",
+    "bytes": 1378396,
+    "verified": "8 Nov 2026: downloaded copy's sha256 matches"
+   }
   }
  }
 }

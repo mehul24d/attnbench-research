@@ -335,11 +335,11 @@ def test_keep_going_runs_every_step_whose_inputs_did_not_fail(tmp_path):
     s = _staged_session(tmp_path)
     rc, ran = _drun(s, {"device_components": ("failed", 1)}, keep_going=True)
     assert rc == 1
-    # predict, hold, ground truth and verify need step 6; the postflight does not
+    # predict, hold, ground truth, verify and leg 3 need step 6; the postflight does not
     assert ran == ["host_components", "device_components", "postflight"]
     last = {a["step"]: a["status"] for a in json.loads((s / "manifest.json").read_text())["attempts"]}
     assert [last[x] for x in ORDER[4:]] == ["passed", "failed", "blocked", "blocked", "blocked",
-                                            "blocked", "passed"]
+                                            "blocked", "passed", "blocked"]
 
 
 def test_keep_going_after_a_late_failure_runs_what_does_not_need_it(tmp_path):

@@ -20,6 +20,7 @@ rules are the T2.27 runner's (`t227_shakedown.py`), whose helpers this uses.
    9 ground_truth       T2.13, one process per compile-setting group
   10 verify             the analysis's late-prediction check, in session
   11 postflight         T2.1 probe `end`
+  12 delay_injection    T2.25, Gate A's leg 3: the declared set, last (8 Nov 2026)
 
 **The order of the prediction and the clock** (plan Section 5.1; Appendix
 A, 25 and 27 Oct 2026). Nothing before `predict` times the composed
@@ -104,6 +105,7 @@ CHECKLIST = {
     "ground_truth": "T2.13 ground truth, one process per compile group",
     "verify": "late-prediction check (load_committed) in session",
     "postflight": "T2.1 probe end",
+    "delay_injection": "T2.25 Gate A leg 3, the declared set, plan stored first",
 }
 if tuple(CHECKLIST) != STEPS:      # not `assert`: T2.17 keeps the harness free of them
     raise RuntimeError("CHECKLIST and t31_steps.STEPS disagree")

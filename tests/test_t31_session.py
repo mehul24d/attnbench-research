@@ -33,7 +33,8 @@ UTC = timezone.utc
 T0 = datetime(2026, 11, 7, 3, 0, 0, tzinfo=UTC)
 SKEW, GUARD = so.REQUIRED_SKEW, so.PLANNED_GUARD
 ORDER = ("preflight", "link", "dense_select", "probe", "host_components",
-         "device_components", "predict", "hold", "ground_truth", "verify", "postflight")
+         "device_components", "predict", "hold", "ground_truth", "verify", "postflight",
+         "delay_injection")
 
 
 # --- the hold against the analysis's refusal -------------------------------------

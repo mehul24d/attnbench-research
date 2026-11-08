@@ -85,6 +85,13 @@ UNMEASURED = {
     "sparse_wall_over_dense": (0.8, 1.0, 1.5),
     "compile_s_per_arm_cell": (30.0, 60.0, 120.0),        # Dynamo + inductor + CUDA graphs
     "xattention_chunk_tokens": (16384, 16384, 8192),     # kernels grow per chunk
+    # step 12, Gate A's leg 3 (8 Nov 2026): the dispatch observer's wall over the
+    # bare prefill (the null pass's 2.1 to 2.5 on S4's leaf calls, rounded out), the
+    # largest injection's own time per pass (idle 4000 at up to 13 us; busy 64 at
+    # about 0.28 ms each, predicted), and the process, model load, calibration and plan
+    "observer_wall_factor": (1.5, 2.5, 3.5),
+    "leg3_injection_s_per_pass": (0.01, 0.02, 0.05),
+    "leg3_setup_s": (60.0, 120.0, 240.0),
 }
 SETUP_MIN, TEARDOWN_MIN = 6.0, 8.0                        # Shakedown 6: launch to first step; pull
 
@@ -188,6 +195,13 @@ def project(which: int, cfg=None) -> dict:
     m["9 ground_truth"] = gt / 60
     m["10 verify"] = 1.0
     m["11 postflight"] = 2.0
+    d = cfg.get("delay_injection")
+    if d:
+        variants = len(d["mechanisms"]) * sum(len(c) for c in d["counts"].values())
+        passes = (variants + 1) * (d["reps"] + d["warmup"]) + 1      # + unobserved, calibration
+        per = wall_s(d["length"], d["batch"]) * u["observer_wall_factor"] \
+            + u["leg3_injection_s_per_pass"]
+        m["12 delay_injection"] = (passes * per + u["leg3_setup_s"]) / 60
     return {"steps": m, "step5_phases": dict(phase),
             "cells": len(cells)}
 

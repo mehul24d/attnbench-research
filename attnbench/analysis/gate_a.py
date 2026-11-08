@@ -22,8 +22,11 @@ researcher's (T3.3), never made here.
      report gives the distribution either way.
   3. **The delay-injection slope check** (`slopes`): one predicted-over-
      measured slope per synchronisation mechanism (`predict.delay_injection`).
-     T3.1's session runs no delay injection, so a session without it reports
-     the leg as not measured, and Gate A cannot be read from it.
+     T3.1's step 12 runs it since 8 Nov 2026 (`components.delay_session`);
+     a session without it reports the leg as not measured, and Gate A cannot
+     be read from it. Gate A v2 (Appendix A, 8 Nov 2026) reads each slope
+     against [1/sqrt 2, sqrt 2] (`V2_SLOPE_RANGE`) and exempts, per cell, a
+     leg-2 family below the cell's resolution floor (`exempt_families`).
 
 Ground-truth rows name their cell by a label (`time_arms`' block names):
 `<arm>@<nominal density>` for an arm run at a nominal density (oracle,
@@ -216,11 +219,24 @@ def replay_report(seq, trace_s: Mapping[int, float], priced_ops: Sequence[Mappin
     return replay.replay_vs_trace(seq, trace_s, priced)
 
 
+V2_SLOPE_RANGE = (2 ** -0.5, 2 ** 0.5)   # Gate A v2's leg 3 (Appendix A, 8 Nov 2026)
+
+
+def exempt_families(rep: Mapping, floor_s: float) -> list[str]:
+    """Gate A v2's leg 2 exemption in one cell: the families whose traced
+    device time is below the cell's resolution floor."""
+    return sorted(f for f, r in rep["families"].items() if r["trace_s"] < floor_s)
+
+
 def families(reports: Mapping[str, Mapping], *, bound: Optional[float],
-             bound_provisional: bool) -> dict:
+             bound_provisional: bool,
+             cell_floors_s: Optional[Mapping[str, float]] = None) -> dict:
     """Leg 2 over every cell's report: per family, the cells and the spread
     of the relative difference, pooled sums, and, at a bound, each cell's
-    `replay.check_passes`."""
+    `replay.check_passes`. With `cell_floors_s` (report name -> that cell's
+    resolution floor, seconds) it is Gate A v2's leg 2: a family below its
+    cell's floor is exempt there (`exempt_families`), and listed; a cell
+    with no floor is refused."""
     from ..components import replay
     if not reports:
         raise GateAError("no cell's replay-versus-trace report")
@@ -244,9 +260,20 @@ def families(reports: Mapping[str, Mapping], *, bound: Optional[float],
              "q90": d[min(len(d) - 1, int(0.9 * len(d)))]} if d else None)
     out = {"families": dict(sorted(fam.items())), "cells": len(reports),
            "bound": bound, "bound_provisional": bound_provisional}
+    if cell_floors_s is not None:
+        missing = sorted(set(reports) - set(cell_floors_s))
+        if missing:
+            raise GateAError(f"no resolution floor for cells {missing}")
+        out["exempt"] = {n: exempt_families(rep, cell_floors_s[n])
+                         for n, rep in sorted(reports.items())}
+        out["cell_floors_s"] = {n: cell_floors_s[n] for n in sorted(reports)}
     if bound is not None:
         failing = {}
         for name, rep in sorted(reports.items()):
+            if cell_floors_s is not None:
+                drop = set(out["exempt"][name])
+                rep = {**rep, "families": {f: r for f, r in rep["families"].items()
+                                           if f not in drop}}
             ok, why = replay.check_passes(rep, bound)
             if not ok:
                 failing[name] = why
@@ -255,8 +282,19 @@ def families(reports: Mapping[str, Mapping], *, bound: Optional[float],
 
 
 def slopes(measured_slopes: Optional[Mapping], *, bound: Optional[float],
-           mechanisms: Sequence[str]) -> dict:
-    """Leg 3: `delay_injection.gate` on the measured slopes, or not measured."""
+           mechanisms: Sequence[str], slope_range: Optional[tuple] = None) -> dict:
+    """Leg 3: `delay_injection.gate` on the measured slopes, or not measured.
+    With `slope_range` (Gate A v2: `V2_SLOPE_RANGE`), each listed mechanism's
+    slope must lie in [low, high], and a listed mechanism with no slope is
+    outside it."""
+    if slope_range is not None and bound is not None:
+        raise GateAError("leg 3 takes a bound about 1.0 or a range, not both")
+    if measured_slopes and slope_range is not None:
+        lo, hi = slope_range
+        got = {m: s.slope for m, s in measured_slopes.items()}
+        return {"status": "measured", "range": [lo, hi],
+                "within_range": {m: m in got and lo <= got[m] <= hi for m in mechanisms},
+                "missing": [m for m in mechanisms if m not in got], "slopes": got}
     if not measured_slopes:
         return {"status": NOT_MEASURED,
                 "why": "the session ran no delay injection (T2.25); Gate A needs one slope "
@@ -274,7 +312,9 @@ def report(*, label: str, cp: CommittedPrediction, results: Sequence[tuple[str, 
            dense_arm: str, relative_floor: float, resolution_floor_s: float,
            family_reports: Mapping[str, Mapping], family_bound: Optional[float],
            family_bound_provisional: bool, measured_slopes: Optional[Mapping] = None,
-           slope_bound: Optional[float] = None, mechanisms: Sequence[str] = ()) -> dict:
+           slope_bound: Optional[float] = None, mechanisms: Sequence[str] = (),
+           cell_floors_s: Optional[Mapping[str, float]] = None,
+           slope_range: Optional[tuple] = None) -> dict:
     """Every leg, labelled; `decision` is always the researcher's."""
     m = measured(cp, results)
     secs = m["seconds"]
@@ -285,8 +325,10 @@ def report(*, label: str, cp: CommittedPrediction, results: Sequence[tuple[str, 
         "predictors": predictors(cp, secs, dense_arm=dense_arm,
                                  relative_floor=relative_floor),
         "families": families(family_reports, bound=family_bound,
-                             bound_provisional=family_bound_provisional),
-        "slopes": slopes(measured_slopes, bound=slope_bound, mechanisms=mechanisms),
+                             bound_provisional=family_bound_provisional,
+                             cell_floors_s=cell_floors_s),
+        "slopes": slopes(measured_slopes, bound=slope_bound, mechanisms=mechanisms,
+                         slope_range=slope_range),
         "sanity": sanity(cp, secs, dense_arm=dense_arm, resolution_floor_s=resolution_floor_s),
         "decision": "the researcher's (T3.3); this report gives the inputs only",
     }
@@ -324,10 +366,21 @@ def to_markdown(rep: Mapping) -> str:
                  f"{'n/a' if pooled is None else f'{pooled:+.4f}'} | "
                  f"{a.get('median', float('nan')):.4f} | {a.get('q90', float('nan')):.4f} | "
                  f"{a.get('max', float('nan')):.4f} |")
+    if "exempt" in fam:
+        n = sum(len(v) for v in fam["exempt"].values())
+        L += ["", f"Gate A v2: {n} (cell, family) pairs below their cell's resolution floor "
+                  f"are exempt (listed in the JSON)."]
     if "failing_cells" in fam:
         L += ["", f"Cells outside the bound: {len(fam['failing_cells'])}."]
     sl = rep["slopes"]
-    L += ["", "## Leg 3: delay-injection slopes", "", f"{sl['status']}: {sl.get('why', '')}".rstrip(": "),
+    L += ["", "## Leg 3: delay-injection slopes", "", f"{sl['status']}: {sl.get('why', '')}".rstrip(": ")]
+    if "within_range" in sl:
+        lo, hi = sl["range"]
+        L += ["", f"Range [{lo:.3f}, {hi:.3f}].", "", "| Mechanism | Slope | Within |", "|---|---|---|"]
+        for m, ok in sl["within_range"].items():
+            v = sl["slopes"].get(m)
+            L.append(f"| {m} | {'n/a' if v is None else f'{v:.3f}'} | {'yes' if ok else 'no'} |")
+    L += [
           "", f"## Per arm ({rep['sanity']['label']})", "",
           f"Sign agreement against the dense cell of the same length and batch; a measured "
           f"difference within {rep['sanity']['resolution_floor_s'] * 1e3:.1f} ms is not scored.",

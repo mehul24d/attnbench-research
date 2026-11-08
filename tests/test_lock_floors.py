@@ -41,6 +41,25 @@ def test_the_resolution_floor_per_length_pools_only_that_lengths_series():
                                       pairing="P2")
 
 
+def test_the_floor_per_cell_is_the_larger_of_within_and_between_session_spreads():
+    # 2048: within 1 (as above); dense medians 10 and 20 across s1, s2 -> between 10.
+    # 32768: one session only -> no between-session spread, the within floor stands.
+    series = {("s1", "dense", 2048, 1): [9.0, 10.0, 11.0],
+              ("s2", "dense", 2048, 1): [20.0, 21.0, 19.0, 20.0],
+              ("s1", "oracle", 2048, 1): [30.0, 30.5, 29.5],
+              ("s1", "dense", 32768, 1): [100.0, 110.0, 90.0]}
+    by = F.resolution_floors_within_between(series, length_of=lambda k: (k[2], k[3]),
+                                            quantile=1.0, pairing="P1")
+    a, b = by[(2048, 1)], by[(32768, 1)]
+    assert (a.within_ms, a.between_ms, a.floor_ms, a.source, a.n_between_series) == \
+        (1.0, 10.0, 10.0, "between", 1)
+    assert (b.within_ms, b.between_ms, b.floor_ms, b.source) == (10.0, None, 10.0, "within")
+    small = {**series, ("s2", "dense", 2048, 1): [10.5, 11.5, 9.5]}
+    s = F.resolution_floors_within_between(small, length_of=lambda k: (k[2], k[3]),
+                                           quantile=1.0, pairing="P1")[(2048, 1)]
+    assert (s.between_ms, s.floor_ms, s.source) == (0.5, 1.0, "within")
+
+
 def test_the_noise_floor_is_a_quantile_of_between_session_spreads():
     sessions = {
         "s1": {"dense@16k": [10.0, 10.0, 10.0], "meanpool@16k": [20.0, 21.0, 22.0]},

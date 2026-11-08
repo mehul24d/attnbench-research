@@ -50,5 +50,38 @@
    "batch": 1,
    "reason": "not measured: host memory limit of P1's pinned machine (the drop fallback, every pairing; plan Appendix A, 2 Nov 2026)"
   }
- ]
+ ],
+ "delay_injection": {
+  "_comment": "Gate A leg 3 (T2.25), declared 8 Nov 2026 before any run (adviser's ruling 1, fifth paste; Appendix A): the dense arm at 2048 tokens, batch 1 (the dense cell with the smallest absolute spread in T3.2a, median 121.3 ms, standard error of the median about 0.40 ms); every priced mechanism; counts chosen so the predicted increment at the top count is at least 10 times that standard error for every mechanism on T3.2a's priced dense cell (busy 17.1 to 17.8 ms at 64, idle 4.8 ms for event_synchronize at 4000 and 16 to 51 ms for the others); 10 timed repeats and 3 warm-ups per variant; payload 0.",
+  "arm": "dense",
+  "length": 2048,
+  "batch": 1,
+  "mechanisms": [
+   "synchronize",
+   "item",
+   "bool",
+   "copy_to_host_pinned",
+   "copy_to_host_pageable",
+   "event_synchronize",
+   "copy_from_host_pinned",
+   "copy_from_host_pageable"
+  ],
+  "counts": {
+   "busy": [
+    0,
+    16,
+    32,
+    64
+   ],
+   "idle": [
+    0,
+    1000,
+    2000,
+    4000
+   ]
+  },
+  "reps": 10,
+  "warmup": 3,
+  "payload_bytes": 0
+ }
 }

@@ -184,7 +184,7 @@ def test_a_p1_dry_run_is_synced_then_halted(tmp_path):
     assert halted(tmp_path) == ["-n shutdown -h now"]
     m = json.loads((gcs / "results" / "t31_dry" / "manifest.json").read_text())
     last = {a["step"]: a["status"] for a in m["attempts"]}
-    assert len(last) == 11 and set(last.values()) == {"passed"}      # steps 1 to 11
+    assert len(last) == 12 and set(last.values()) == {"passed"}      # steps 1 to 12
     assert bucket_marker(gcs)["rc"] == 0 and bucket_marker(gcs)["synced"] is True
     log = (gcs / "logs" / "home" / "p2.log").read_text()
     assert "SESSION_EXIT=0 " in log and "synced on try 1" in log
