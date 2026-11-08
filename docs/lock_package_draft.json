@@ -1,5 +1,5 @@
 {
- "plan_sha256": "16dd2fb2eb84ca1c7fed8b6cdbfd2df34f5df1bdf68b49f38c7848e32ecbc3f6",
+ "plan_sha256": "1addd07ec3e7b64053e0eef1555697bffa1df4eb4c9c8844248d8977596080cc",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -78,8 +78,8 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "No session has measured the slopes: Gate A leg 3 cannot be read",
-   "basis": "docs/t32_gate_a_repeats.md"
+   "proposed": "Each mechanism's pooled slope within [1/sqrt 2, sqrt 2] (0.707 to 1.414): the logarithmic midpoint between 1.0 and the about 2 double counting gives (Section 7); written 8 Nov 2026 before any slope is measured; no session has measured one",
+   "basis": "Section 7, Gate A; Appendix A, 8 Nov 2026 (legs 2 and 3 bounds)"
   },
   "mask_gate_bound": {
    "item": "mask-gate bound",
@@ -102,8 +102,8 @@
    "value": null,
    "source": null,
    "status": "evidence in hand",
-   "proposed": "From the two repeats' per-family distribution (overall +2.4%, +2.7%; masked_fill_ +116%, +120%): a bound that admits masked_fill_ needs a decision on that family first",
-   "basis": "docs/t32_gate_a_repeats.md"
+   "proposed": "0.25: the smallest two-decimal value at or above every family's |relative difference| in the two passing L4 shakedowns (S4 max 0.2434 aten::sum, S5 0.2363), applied as replay.check_passes; written before it was applied to T3.2",
+   "basis": "results/shakedown4_l4_20261101, results/shakedown5_l4_20261101 (06_replay/replay_vs_trace.json); Appendix A, 8 Nov 2026"
   },
   "null_kernel_floor_multiple": {
    "item": "null-kernel floor multiple",
