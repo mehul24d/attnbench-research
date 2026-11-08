@@ -200,7 +200,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
         print(f"REFUSING --from {start}: earlier steps have not passed in {session}: "
               f"{unpassed}", file=sys.stderr)
         return 2
-    failed_steps = []
+    failed_steps, incomplete_steps = [], []
     for step in STEPS[first:last + 1]:
         d = step_dir(session, step)
         if cap_s is not None and clock() - session_t0 > cap_s:
@@ -258,6 +258,11 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
             "dir": d.name, "log": f"{d.name}/step.log"})
         save_manifest(session, manifest)
         print(f"----- {step}: {status.upper()}{': ' + reason if reason else ''}", flush=True)
+        if status == "incomplete":       # ground truth ran to its end, short of clean rounds
+            print(f"\n{step} INCOMPLETE: the later steps still run; the session does not "
+                  f"pass. Log: {d / 'step.log'}", flush=True)
+            incomplete_steps.append(step)
+            continue
         if status == "failed" and keep_going:
             print(f"\n{step} FAILED; going on with the steps that do not need it. "
                   f"Log: {d / 'step.log'}", flush=True)
@@ -275,7 +280,7 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
     label = ("T3.1 rehearsal (results discarded)" if rehearsal else
              f"T3.1 DEBUG session ({manifest['debug']})" if debug else "T3.1 session")
     print(f"\n{label}: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS[:last + 1]))
-    return 1 if failed_steps else 0
+    return 1 if failed_steps or incomplete_steps else 0
 
 
 def rehearsal_config(session: Path, source) -> Path:
