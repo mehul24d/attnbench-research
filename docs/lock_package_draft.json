@@ -150,8 +150,8 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "The frozen T2.10 set; a ModelShape for the primary model is owed before any learned feature can be computed",
-   "basis": "attnbench/predict/training.py"
+   "proposed": "The frozen T2.10 set; the primary ModelShape is read from the pinned config.json (989aa79, sha256 98d2ff8c...), cross-checked; the P1 training file's features came from the superseded residual",
+   "basis": "attnbench/predict/training.py; configs/models/qwen2.5-1.5b-instruct_shape.json"
   },
   "learned_predictor_hyperparameters": {
    "item": "learned-predictor hyperparameters",

@@ -140,3 +140,45 @@ def test_model_shape_refusals(kw):
 def test_cell_refusals(L, B, density):
     with pytest.raises(CostModelError):
         flops_and_bytes(TOY, L, B, density)
+
+
+# --- the primary model's shape from its pinned config.json (8 Nov 2026) ------------------
+
+def test_the_shape_is_read_from_config_json_and_its_hash_is_checked(tmp_path):
+    import hashlib, json
+    from attnbench.predict.intensity import model_shape_from_config
+    cfg = {"num_hidden_layers": 2, "hidden_size": 64, "num_attention_heads": 4,
+           "num_key_value_heads": 2, "intermediate_size": 128, "vocab_size": 100,
+           "torch_dtype": "bfloat16"}
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(cfg))
+    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    shape, layers, got = model_shape_from_config(p, sha256=sha)
+    assert (layers, got) == (2, sha)
+    assert shape == ModelShape(hidden=64, n_heads_q=4, n_heads_kv=2, head_dim=16,
+                               intermediate=128, vocab=100, itemsize=2)
+    with pytest.raises(CostModelError, match="pinned"):
+        model_shape_from_config(p, sha256="0" * 64)
+
+
+def test_the_primary_shape_record_matches_the_cross_check():
+    import json
+    from attnbench.predict.intensity import PRIMARY_SHAPE, primary_shape
+    rec = json.loads(PRIMARY_SHAPE.read_text())
+    assert rec["revision"] == "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+    assert len(rec["config_sha256"]) == 64 and rec["layers"] == 28
+    assert primary_shape() == ModelShape(hidden=1536, n_heads_q=12, n_heads_kv=2, head_dim=128,
+                                         intermediate=8960, vocab=151936, itemsize=2)
+
+
+def test_the_primary_record_hashes_to_the_cached_snapshot_where_there_is_one():
+    import json
+    from pathlib import Path
+    from attnbench.predict.intensity import PRIMARY_SHAPE, model_shape_from_config, primary_shape
+    rec = json.loads(PRIMARY_SHAPE.read_text())
+    p = (Path.home() / ".cache" / "huggingface" / "hub" / "models--Qwen--Qwen2.5-1.5B-Instruct"
+         / "snapshots" / rec["revision"] / "config.json")
+    if not p.exists():
+        pytest.skip("no cached snapshot of the primary model")
+    shape, layers, _ = model_shape_from_config(p, sha256=rec["config_sha256"])
+    assert shape == primary_shape() and layers == rec["layers"]

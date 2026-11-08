@@ -1,0 +1,18 @@
+{
+ "repository": "Qwen/Qwen2.5-1.5B-Instruct",
+ "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+ "file": "config.json",
+ "config_sha256": "98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
+ "layers": 28,
+ "shape": {
+  "hidden": 1536,
+  "n_heads_q": 12,
+  "n_heads_kv": 2,
+  "head_dim": 128,
+  "intermediate": 8960,
+  "vocab": 151936,
+  "itemsize": 2
+ },
+ "cross_check": "28 layers, hidden 1536, 12:2 heads, head dim 128 (hidden / heads; the config has no head_dim), intermediate 8960, vocab 151936: all match",
+ "read": "8 Nov 2026, from the Mac's Hugging Face cache (the revision the archived pre-registration names); adviser's ruling E of 8 Nov 2026"
+}
