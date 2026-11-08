@@ -157,9 +157,9 @@
    "item": "learned-predictor hyperparameters",
    "value": null,
    "source": null,
-   "status": "owed: decision",
-   "proposed": "LightGBM 4.6.0 defaults, pinned, num_threads=1",
-   "basis": "lock table row 20"
+   "status": "owed: data",
+   "proposed": "Provisional: config 2 of 6 pre-declared (log_seconds; n_estimators 200, learning_rate 0.05, num_leaves 7, min_child_samples 3; seed 0, deterministic, one thread), 2.85% median held-out error in 7-fold cell-grouped CV on P1 (defaults 83%: min_child_samples 20 leaves no splits on 30 rows). Features from the superseded residual: rerun on T3.2c's before lock",
+   "basis": "docs/learned_cv_p1_20261108.json; lock table row 20"
   },
   "k2_correctness_tolerance": {
    "item": "K2 correctness tolerance (the gate's `TOL`)",
