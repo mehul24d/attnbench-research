@@ -82,8 +82,10 @@ def test_the_grid_runs_the_batch_one_arms_at_batch_one_and_names_calibrated_dens
     assert not [c for c in cs if c[0] in st.BATCH1_ONLY and c[3] > 1]
     assert set(st.BATCH1_ONLY) == {"xattention", "xattention_noassert", "oracle", "meanpool"}
     assert ("dense", 1.0, 16384, 4) in cs and ("meanpool", 0.25, 16384, 4) not in cs
-    # 5 lengths x (1 + 2 + 2 + 1 + 1) at batch 1, and the dense control at 16384 batch 4
-    assert len(cs) == 5 * 7 + 1
+    # 5 lengths x (1 + 2 + 2 + 1 + 1) at batch 1, and the dense control at 16384 batch 4,
+    # less the cell the config names not measured on any pairing (8 Nov 2026)
+    assert ("oracle", 0.5, 32768, 1) not in cs and ("oracle", 0.25, 32768, 1) in cs
+    assert len(cs) == 5 * 7 + 1 - 1
 
 
 def test_groups_and_their_settings():

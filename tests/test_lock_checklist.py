@@ -173,6 +173,7 @@ AT_LOCK = [
      ("mask_gate_bound",)),
     ("within a fixed multiple (set at lock)", ("null_kernel_floor_multiple",)),
     ("all **[lock]** values fixed", (THE_LIST,)),
+    ("p2's and p4's values are fixed at lock (t4.1)", (THE_LIST,)),
     ("cut in an order fixed at lock", ("budget_cut_order",)),
 ]
 

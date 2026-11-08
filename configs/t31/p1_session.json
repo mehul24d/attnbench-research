@@ -41,5 +41,14 @@
   "hw_power_brake_slowdown"
  ],
  "sampler_interval_s": null,
- "prediction_prefix": "predictions/P1"
+ "prediction_prefix": "predictions/P1",
+ "not_measured": [
+  {
+   "arm": "oracle",
+   "density": 0.5,
+   "length": 32768,
+   "batch": 1,
+   "reason": "not measured: host memory limit of P1's pinned machine (the drop fallback, every pairing; plan Appendix A, 2 Nov 2026)"
+  }
+ ]
 }

@@ -111,6 +111,10 @@ bash scripts/gcp_cleanup_check.sh
 
 The bulk results stay in the bucket under `<instance>/results/`.
 
+## Incident (8 Nov 2026)
+
+No teardown ran after the session ended (about 23:43Z): the Mac's watcher had expired while a question was pending, so the instance idled to its in-guest halt (01:04Z) and hard delete (01:12Z), about 80 minutes and ₹142 avoidable, and `~/t32b.log` went with the disk; every step had synced, and the P2 and P4 runner now ends every session itself, synced and then halted (`scripts/session_exit.sh`).
+
 ## What it settles, and what it does not
 
 T3.2b gives the second repeat of record for the eager group, on T3.2a's code

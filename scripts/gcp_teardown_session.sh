@@ -24,6 +24,10 @@
 #      (researcher's ruling, 2 Nov 2026, after T3.1's first session lost
 #      ~/t31_session.log and ~/t31_driver.log). Without them the delete is
 #      refused unless TEARDOWN_DELETE_WITHOUT_HOME_LOGS names the reason
+#   2c. from the bucket when 2 and 2b could not reach the instance (halted
+#      or gone): its logs and manifests, and the exit marker its exit wrapper
+#      (scripts/session_exit.sh) wrote; a marker that says the exit sync
+#      worked stands in for 2's sync and 2b's home logs
 #   3. age manifest third -- it also needs SSH, but unlike the results it can
 #      be reconstructed from nothing, so it never goes ahead of them. Copying
 #      does not alter mtimes on the instance, so it is just as accurate here
@@ -191,6 +195,51 @@ else
     fi
   else
     echo "   could not list ~/*.log (SSH may be gone)"
+  fi
+fi
+
+echo "== 2c/5 from the bucket when the instance's own copy could not be pulled"
+# The session's exit wrapper (scripts/session_exit.sh) syncs results/ and
+# logs/ -- the home logs in logs/home/, its marker in logs/session_exit.json
+# -- and then halts the VM, so a halted or deleted instance has no SSH but
+# its logs and manifests are in the bucket (researcher's item 4, 8 Nov 2026,
+# after T3.2b's ~/t32b.log went with its disk). Only logs and manifests are
+# pulled, as in step 2; the bulk stays there. A marker that says the exit
+# sync worked counts as the instance's last sync and its home logs, so the
+# delete needs no override; without one, nothing changes.
+BUCKET_DEST="gs://attnbench-results-${PROJECT}/${NAME}"
+if [[ "$HOME_LOGS" != pulled ]]; then
+  BLIST="$( { gcloud storage ls -l "$BUCKET_DEST/logs/**" --project="$PROJECT" 2>/dev/null;
+              gcloud storage ls -l "$BUCKET_DEST/results/**" --project="$PROJECT" 2>/dev/null \
+                | grep -E '(\.log|manifest[^/]*\.json|/result\.json|receipt[^/]*\.json|/cell_exit\.json|INTERRUPTED_DISCARD\.md)$'; } \
+            | awk '$1 ~ /^[0-9]+$/ && $NF ~ /^gs:\/\// {print $1, $NF}')"
+  BN="$(printf '%s\n' "$BLIST" | grep -c . || true)"
+  BBYTES="$(printf '%s\n' "$BLIST" | awk '{s += $1} END {print s + 0}')"
+  if (( BN == 0 )); then
+    echo "   nothing under $NAME/logs and no manifests in the bucket"
+  elif disk_ok "$BBYTES" "the bucket's logs and manifests"; then
+    BAD=0
+    # The gcloud wrapper redacts the project in what it prints, so each
+    # object is named again from its path under the instance's folder.
+    while read -r SIZE URL; do
+      REL="${URL#*"/${NAME}/"}"
+      mkdir -p "$S/$(dirname "$REL")"
+      gcloud storage cp "$BUCKET_DEST/$REL" "$S/$REL" --project="$PROJECT" >/dev/null 2>&1 || {
+        BAD=$((BAD + 1)); echo "   FAILED: $REL"; }
+    done <<< "$BLIST"
+    printf '%s\n' "$BLIST" > "$S/bucket_pulled_listing.txt"
+    echo "   pulled $((BN - BAD)) of $BN logs and manifests from the bucket (bucket_pulled_listing.txt)"
+    if (( BAD == 0 )) && [[ -f "$S/logs/session_exit.json" ]] \
+       && python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("synced") is True else 1)' \
+            "$S/logs/session_exit.json" 2>/dev/null; then
+      mkdir -p "$S/home_logs"
+      cp -p "$S"/logs/home/*.log "$S/home_logs/" 2>/dev/null || true
+      HOME_LOGS="pulled from the bucket"
+      [[ "$BUCKET_SYNC" == synced || "$BUCKET_SYNC" == failed ]] || BUCKET_SYNC="synced at exit"
+      echo "   the exit marker says the session synced at exit: $(tr -d '\n' < "$S/logs/session_exit.json")"
+    else
+      echo "   no exit marker saying the session synced: the delete still needs step 2b's override"
+    fi
   fi
 fi
 

@@ -1,0 +1,54 @@
+{
+ "_comment": "T6.1 (P2) component and ground-truth values for the T3.1 steps the session runner calls (scripts/t61_session.py). null = not decided; a real run fills them from the working values (docs/lock_value_table.md) and refuses any left null. The grid is P1's until the lock fixes each pairing's (T4.1); oracle_d0.5_L32768 is not measured on any pairing.",
+ "pairing": "P2",
+ "card": "A100",
+ "model": "primary",
+ "lengths": [
+  2048,
+  4096,
+  8192,
+  16384,
+  32768
+ ],
+ "batches": {
+  "16384": [
+   1,
+   4
+  ]
+ },
+ "arms": [
+  "dense",
+  "oracle",
+  "meanpool",
+  "xattention",
+  "xattention_noassert"
+ ],
+ "densities": null,
+ "gt_groups": {
+  "eager": null,
+  "compiled_default": null,
+  "compiled_capture": null
+ },
+ "reps": null,
+ "warmup": 3,
+ "max_rerun_rounds": null,
+ "resolution_floor_ms": null,
+ "dense_rounds": null,
+ "flag_reasons": [
+  "hw_slowdown",
+  "sw_thermal_slowdown",
+  "hw_thermal_slowdown",
+  "hw_power_brake_slowdown"
+ ],
+ "sampler_interval_s": null,
+ "prediction_prefix": "predictions/P2",
+ "not_measured": [
+  {
+   "arm": "oracle",
+   "density": 0.5,
+   "length": 32768,
+   "batch": 1,
+   "reason": "not measured: host memory limit of P1's pinned machine (the drop fallback, every pairing; plan Appendix A, 2 Nov 2026)"
+  }
+ ]
+}

@@ -18,6 +18,17 @@ step ends. The first failure stops the session. After the fix,
 `--from STEP --session DIR` resumes: every earlier step must have passed in
 that session, and the failed attempt's directory is kept beside the new one.
 
+**How it ends** (researcher's item 4, 8 Nov 2026, after T3.2b idled about
+80 minutes past its end and lost ~/t32b.log with its disk): a real session
+runs under `scripts/session_exit.sh` and refuses to start without it
+(`EXIT_WRAPPER_ENV`). On any exit of the session (passed, failed, refused,
+killed, or hung up on) the wrapper's last act is to sync the logs,
+manifests and every `~/*.log` to the bucket and then halt the VM, with no
+watcher on the Mac; a block ends the same way. The teardown pulls the logs
+and manifests from the bucket when the instance is halted or gone
+(`gcp_teardown_session.sh`, step 2c). `tests/test_session_exit.py` is the
+CPU dry run of it, failure exits included.
+
 **The order the runner enforces (plan Section 5.1; Appendix A, 25 and 27 Oct
 2026).**
 
@@ -119,6 +130,9 @@ OPENED = "ground_truth_opened.json"
 STAMPS = "ground_truth_stamps.json"
 DRY_CLOCK = "dry_clock.json"
 DISCARD = "INTERRUPTED_DISCARD.md"
+# Set by scripts/session_exit.sh, whose exit path syncs and halts; a real
+# session refuses to start without it (researcher's item 4, 8 Nov 2026).
+EXIT_WRAPPER_ENV = "ATTNBENCH_SESSION_EXIT"
 # What a later block's preflight must share with every block it imports.
 BLOCK_IDENTITY = ("instance_type", "gpu_name", "cpu_model")
 
@@ -178,6 +192,7 @@ class SessionConfig:
     step_args: tuple = ()         # passed to every step's process (P4's --gate-only)
     discard_on_restart: bool = False   # a resume on another boot discards the session (P4, Spot)
     boot_steps: tuple = ("prereqs", "preflight", "host_speed_end")   # every block's own (blocks.py)
+    components_config: str = ""   # the T3.1 steps' config for this pairing, from the repo root
 
     @property
     def names(self) -> tuple:
@@ -537,13 +552,51 @@ def fake_host_speed(tag: str):
     return functools.partial(_fake_host_speed, tag)
 
 
-def real_link(cfg, args) -> dict:
-    """T2.5: every field of the link row, one provenance-stamped row."""
-    out = Path(args.out)
-    if run(py("measure_link.py", "--out", str(out))):
-        raise StepFailed("measure_link.py failed")
-    import pandas as pd
-    row = pd.read_parquet(out / "link.parquet").iloc[0].to_dict()
+# --- the T3.1 steps, run for this pairing ------------------------------------------------
+#
+# The component steps are T3.1's (`scripts/t31_steps.py`), the code P1 ran,
+# called in this step's process with the pairing's config
+# (`SessionConfig.components_config`). Their cross-step reads find this
+# session's directories through `t31_steps.STEP_LAYOUT`, which `run_session`
+# writes, since this runner numbers its steps in its own order.
+
+T31_STEPS = ("link", "dense_select", "probe", "host_components", "device_components",
+             "ground_truth")
+
+
+def write_step_layout(cfg: SessionConfig, session: Path) -> Optional[Path]:
+    """`t31_steps.STEP_LAYOUT`: each T3.1 step this session runs, by its
+    directory here; none for a pairing with no components config."""
+    if not cfg.components_config:
+        return None
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    return write_json(Path(session) / st.STEP_LAYOUT,
+                      {s: step_dir(session, s, cfg).name for s in T31_STEPS if s in cfg.names})
+
+
+def _t31_step(name: str, cfg: SessionConfig, args) -> dict:
+    from types import SimpleNamespace
+    if not cfg.components_config:
+        raise StepFailed(f"{cfg.pairing} names no components config for T3.1's {name}")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    config = str(ROOT / cfg.components_config)
+    ns = SimpleNamespace(out=args.out, session=args.session, dry_run=False,
+                         cpu_boundary=False, config=config, step=name)
+    try:
+        return st.STEP_FUNCS[name](ns, st.load_config(config, dry_run=False))
+    except st.StepFailed as e:
+        raise StepFailed(str(e), e.findings) from e
+
+
+def t31_step(name: str):
+    """A real body that runs T3.1's step `name` on this pairing's config; a
+    T3.1 refusal is this step's, with its findings."""
+    return functools.partial(_t31_step, name)
+
+
+def _check_link_row(row: dict) -> dict:
     empty = sorted(k for k, v in row.items()
                    if (k.startswith("s_fixed_") or k.startswith("bw_")) and v is None)
     findings = {"empty_fields": empty, "gpu_numa_node": row.get("gpu_numa_node"),
@@ -553,16 +606,24 @@ def real_link(cfg, args) -> dict:
     return findings
 
 
-def real_launch_queue(cfg, args) -> dict:
-    """T2.6: Q, from the null kernel (Appendix A, 25 Oct 2026)."""
-    out = Path(args.out)
-    if run(py("measure_launch_queue.py", "--out", str(out))):
-        raise StepFailed("measure_launch_queue.py failed")
+def real_link(cfg, args) -> dict:
+    """T2.5 and T2.6 as T3.1's `link` measures them (the link row, Q, and the
+    recursion's mechanism table at each length), every field of the link row
+    filled."""
     import pandas as pd
-    row = pd.read_parquet(out / "launch_queue.parquet").iloc[0].to_dict()
-    if row.get("sleep0_q") is None:
-        raise StepFailed("the null kernel's Q was not agreed across trials")
-    return {"q": int(row["sleep0_q"])}
+    findings = t31_step("link")(cfg, args)
+    row = pd.read_parquet(Path(args.out) / "link" / "link.parquet").iloc[0].to_dict()
+    return {**findings, **_check_link_row(row)}
+
+
+def real_launch_queue(cfg, args) -> dict:
+    """T2.6: Q as `link` measured it (T3.1's `link` measures the launch queue
+    with the link), read and reported here, not measured twice."""
+    d = step_dir(Path(args.session), "link", cfg)
+    rin = read_json(d / "recursion_inputs.json")
+    if rin is None or rin.get("fake") is not False:
+        raise StepFailed(f"no measured recursion inputs in {d}: `link` has not passed")
+    return {"q": int(rin["queue_depth"]), "from": "link"}
 
 
 def _fake_files(names: tuple, findings: dict, cfg, args) -> dict:
@@ -927,11 +988,9 @@ def common_bodies() -> tuple[dict, dict]:
     reals = {
         "prereqs": body_prereqs, "preflight": real_preflight, "link": real_link,
         "launch_queue": real_launch_queue,
-        "probe": not_built("T2.18", "the structural probe over every arm on this code path"),
-        "host_components": not_built("T2.2", "the host components of every arm and cell"),
-        "device_components": not_built("T2.4", "the replay of every arm and cell, with the "
-                                               "replay-versus-trace check of record"),
-        "dense_select": not_built("T2.16", "the K2 selection over the session's cells"),
+        "probe": t31_step("probe"), "host_components": t31_step("host_components"),
+        "device_components": t31_step("device_components"),
+        "dense_select": t31_step("dense_select"),
         "host_speed_mid": real_host_speed("mid"), "predict": body_predict,
         "ground_truth": body_ground_truth, "late_check": body_late_check,
         "trace_checks": real_trace_checks, "host_speed_end": real_host_speed("end"),
@@ -961,7 +1020,7 @@ def _t61() -> SessionConfig:
         gpu="A100", instance_type="a2-ultragpu-1g", provisioning=("FLEX_START", "SPOT"),
         code_path={"gpu": "A100", "implementation": "xattention:triton",
                    "libraries": [["torch", "dry"], ["triton", "dry"]], "python_optimize": 0},
-        banked=("P1",),
+        banked=("P1",), components_config="configs/t61/p2_session.json",
         steps=COMMON_STEPS_HEAD + (
             Step("mask_gate", "T2.23", "mask gate: Triton against PyTorch on one card; "
                                        "masks recorded untimed if it fails"),
@@ -1059,6 +1118,8 @@ def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, d
                 sync: bool, runner=run_logged, block: Optional["BlockRun"] = None) -> int:
     session = Path(session)
     session.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        write_step_layout(cfg, session)
     manifest = load_manifest(session)
     manifest.setdefault("dry_run", dry_run)
     manifest.setdefault("task", cfg.task)
@@ -1362,6 +1423,9 @@ def cfg_extra_options(cfg: SessionConfig) -> tuple:
 def start_refusal(cfg: SessionConfig, args) -> Optional[str]:
     """What is checked before the first step, so a missing input is refused
     before any GPU time is spent rather than at the step that needs it."""
+    if not args.dry_run and os.environ.get(EXIT_WRAPPER_ENV) != "armed":
+        return ("a real session runs under scripts/session_exit.sh, so that its last act on "
+                "any exit is the sync of its logs and manifests and then the halt")
     if not args.dry_run and not tree_clean():
         return "the tree is dirty, so no row could be banked with git_dirty = False"
     if "fa3_import" in cfg.names:

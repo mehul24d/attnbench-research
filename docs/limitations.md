@@ -3048,7 +3048,7 @@ So the results banked before the fix are unaffected by the read, and the
 queued `qa_1` re-check is dropped (the researcher's rule, plan Appendix A,
 2 Nov 2026). The fix stays mandatory, because the read can still fault.*
 
-## P1's device pricing at T3.2a: what the traces do not record, and a cell not measured (2026-11-08)
+## P1's device pricing at T3.2a and T3.2b: what the traces do not record, and a cell not measured (2026-11-08)
 
 **`oracle_d0.5_L32768` is not measured, on any pairing.** Step 5 of that cell
 ran P1's pinned host (`g2-standard-8`) out of memory at 31.6 GB, twice
@@ -3063,20 +3063,33 @@ oracle at 32768 tokens is at density 0.25 alone.
 model's q, k and v projections (`aten::linear > aten::addmm`, with a bias)
 each launch a `cudaMemsetAsync` before their GEMM that no device activity
 answers: 84 per cell, three per layer, in every arm, in step 5's eager
-recording and in step 6's isolated replay alike. At 16384 tokens the same
-projections launch two per layer, each with a 1024-byte device record. The
-trace gives no size for a memset without a device record, so whether these
-are zero-length, or work the device did and the trace did not write, is not
-known. The primary prediction adds nothing for them; T2.3's sensitivity
-bound adds the memset zoo's largest duration to each, 0.35 ms per cell, which
-bounds the effect at about 0.01% of a 32768-token prefill.
+recording and in step 6's isolated replay alike, in both T3.2 repeats; at
+16384 x 4 the q projection does the same, 28 per cell. At 16384 x 1 and below
+the same projections' memsets have device records (512 or 1024 bytes).
+**They are zero-length, not records the profiler dropped** (both repeats'
+traces, read offline, 8 Nov 2026): such a call costs 0.54 µs of CPU at the
+median against about 9 µs for one that enqueues work, the cost of a call that
+enqueues nothing; no other kind of launch ever lacks a
+device record, so the trace is not losing records at random; and the device
+timeline has no room for them: a memset that runs occupies at least 2.62 µs
+between its neighbours (5,656 recorded memsets), and the gap where these
+would sit is at most 1.95 µs (1,064 calls; median 1.1 µs, the ordinary gap
+between kernels). Device time at the headline length is not understated. The
+primary prediction adds nothing for them, as it should; T2.3's sensitivity
+bound still adds the memset zoo's largest duration to each (0.35 ms per
+cell, about 0.01% of a 32768-token prefill).
 
-**A trace that lost the first records after a profiler restart.** In T3.2a's
-`oracle_d0.5_L8192`, the isolated replay's last segment (layers 26 and 27)
-has no device activity for its first three kernel launches (layer 26's input
-RMSNorm). Step 6 priced those three positions from the in-order graph
-replay, so no position went unpriced, but the isolated original's price for
-them does not exist. One segment in 406 (29 cells with an isolated replay,
-14 segments each) lost records this way in T3.2a. If it happened in a
+**A trace that lost the first records after a profiler restart.** Three
+isolated-replay segments in 812 (29 cells with an isolated replay, 14
+segments each, in each of the two repeats) have no device activity for the
+first launches after the segment's profiler started: T3.2a's
+`oracle_d0.5_L8192` (layers 26 and 27, its first three launches), and in
+T3.2b `oracle_d0.5_L8192` (layers 12 and 13, the first launch) and
+`oracle_d0.25_L16384` (layers 26 and 27, the first seven). Each cut is at the
+layer boundary: the lost positions begin at the first position of the
+segment's first layer and are a run of that layer's input RMSNorm
+(`_to_copy`, `pow`, `mean`, `add`, `rsqrt`, `mul`, `_to_copy`). Step 6 priced
+them from the in-order graph replay, so no position went unpriced, but the
+isolated original's price for them does not exist. If it happened in a
 segment's positions that only the isolated original prices, those positions
 would be unpriced, and the arm's pricing gate would refuse the arm.
