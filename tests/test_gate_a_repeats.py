@@ -115,3 +115,19 @@ def test_the_markdown_names_the_verdicts_and_the_per_cell_spread():
     md = GR.to_markdown(GR.report(label="x", reports={"a": rep(), "b": rep()}, floors_=fl))
     assert "Gate A does not pass" in md and "provisional quantile" in md
     assert "| dense L2048 b1 | 100.0 | 110.0 | 0.0952 | 0.0400 | 0.0364 |" in md
+
+
+def test_the_cell_floors_take_the_larger_of_within_and_between_per_length():
+    fl = GR.cell_floors({"a": A, "b": B}, quantile=1.0, pairing="P1")
+    assert set(fl) == {"2048x1", "4096x1"}
+    c = fl["2048x1"]
+    # within: |x - median| over the four 2048 series is at most 2; between:
+    # dense's medians 100 and 110 differ by 10, xattention's by 0
+    assert c["within_ms"] == pytest.approx(2.0)
+    assert c["between_ms"] == pytest.approx(10.0)
+    assert c["floor_ms"] == pytest.approx(10.0) and c["source"] == "between"
+    assert c["n_between_series"] == 2
+    # 4096 ran in one session: its within-session floor, labelled
+    one = fl["4096x1"]
+    assert one["between_ms"] is None and one["floor_ms"] == one["within_ms"] == 0.0
+    assert one["source"] == "within" and one["n_between_series"] == 0
