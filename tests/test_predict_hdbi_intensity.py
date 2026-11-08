@@ -176,8 +176,10 @@ def test_the_primary_record_hashes_to_the_cached_snapshot_where_there_is_one():
     from pathlib import Path
     from attnbench.predict.intensity import PRIMARY_SHAPE, model_shape_from_config, primary_shape
     rec = json.loads(PRIMARY_SHAPE.read_text())
-    p = (Path.home() / ".cache" / "huggingface" / "hub" / "models--Qwen--Qwen2.5-1.5B-Instruct"
-         / "snapshots" / rec["revision"] / "config.json")
+    import os
+    hf = Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface")
+    p = (hf / "hub" / "models--Qwen--Qwen2.5-1.5B-Instruct" / "snapshots" / rec["revision"]
+         / "config.json")
     if not p.exists():
         pytest.skip("no cached snapshot of the primary model")
     shape, layers, _ = model_shape_from_config(p, sha256=rec["config_sha256"])
