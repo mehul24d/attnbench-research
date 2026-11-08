@@ -53,7 +53,7 @@ import json
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -133,6 +133,21 @@ def resolution_floor(series: Mapping, *, quantile: float, pairing: str) -> Resol
     return ResolutionFloor(floor_ms=float(np.quantile(pool, q)), quantile=q,
                            n_series=len(series), n_repeats=len(pool),
                            inputs_sha256=inputs_sha256(series), pairing=pairing)
+
+
+def resolution_floors_by_length(series: Mapping, *, length_of: Callable, quantile: float,
+                                pairing: str) -> dict:
+    """The resolution floor per length (Appendix A, 8 Nov 2026): for each
+    (context length, batch), `resolution_floor` over that cell's series
+    only, `length_of(key)` giving a series' (length, batch). A difference
+    at a cell is read against that cell's floor."""
+    groups: dict = {}
+    for k, xs in series.items():
+        groups.setdefault(length_of(k), {})[k] = xs
+    if not groups:
+        raise FloorsError("no series")
+    return {g: resolution_floor(s, quantile=quantile, pairing=pairing)
+            for g, s in sorted(groups.items())}
 
 
 @dataclass(frozen=True)

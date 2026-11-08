@@ -19,7 +19,7 @@ One row per T4.1 item (36). "Plan default" is what the plan or code already stat
 | 13 | Replay-versus-trace bound (Gate A) | set from the L4 shakedown's agreement distribution | Shakedown 2 gives it | Take the chosen quantile of that distribution |
 | 14 | Null-kernel floor multiple | within a fixed multiple of published figures | TaxBreak 4.7 us, SKIP 2.37 us (other hosts); ours from T2.2 | After Shakedown 2's T2.2 smoke |
 | 15 | Probe bounds | CV bound; source-vs-target median bound | none | From the P1 repeats |
-| 16 | Resolution and noise floors | from measured run-to-run spread | dry runs use a provisional 1.0 ms | From T3.2 |
+| 16 | Resolution and noise floors | from measured run-to-run spread; the resolution floor per (context length, batch), the quantile of that cell's pooled deviations (Appendix A, 8 Nov 2026) | dry runs use a provisional 1.0 ms | From T3.2 |
 | 17 | Floors quantile | 0.95, provisional | 0.95 | 0.95 |
 | 18 | HDBI boundedness threshold | fitted on training pairings (host-bound / balanced / device-bound in code) | none | Fit on P1; two vs three classes is audit D3 (open) |
 | 19 | Learned-predictor features | frozen in code (T2.10) | LightGBM 4.6.0 | Keep the frozen set |

@@ -1,5 +1,5 @@
 {
- "plan_sha256": "5ef3c060233dce79ed611f256d10cb5046b80ff86bc91cb78a391f57249c07f7",
+ "plan_sha256": "cf790029dddb6a2535ff6f2f5597b1d74231c85f3fc59d265b79b7da9c2f4e26",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -122,12 +122,12 @@
    "basis": "lock table row 15"
   },
   "resolution_and_noise_floors": {
-   "item": "resolution and noise floors (from the measured run-to-run spread)",
+   "item": "resolution and noise floors (from the measured run-to-run spread; the resolution floor per context length and batch since 8 Nov 2026, Appendix A)",
    "value": null,
    "source": null,
    "status": "evidence in hand",
-   "proposed": "Measured at the provisional 0.95: resolution 19.42 ms, noise 6.77%. The single absolute resolution floor is 16% of a dense 2048 prefill and 0.5% of a 32768 one; 8 of 12 sparse-vs-dense gaps at 2048 fall inside it. Decide per-length or relative before fixing",
-   "basis": "docs/t32_gate_a_repeats.md"
+   "proposed": "Resolution floor per (length, batch) by the declared slope criterion (slope 0.354, Appendix A 8 Nov 2026); pooled 19.42 ms provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap, n = 2, not an interval",
+   "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md"
   },
   "floors_quantile": {
    "item": "floors quantile (0.95 is provisional, for shakedowns only)",
