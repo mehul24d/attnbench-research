@@ -1,13 +1,16 @@
 {
- "plan_sha256": "594284085dcdb9c15f7062a48ddd6b3226633406e7b7d5721cff9fd29908e8b4",
+ "plan_sha256": "2f506039fe8626f115365615515b30574997ea414bc1c5f616ce9f7e92d5fa61",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
    "value": null,
    "source": null,
-   "status": "owed: decision",
-   "proposed": "Not before the floors are settled (rows 16, 17): a tolerance below the 6.77% noise floor cannot be met by construction",
-   "basis": "docs/t32_gate_a_repeats.md"
+   "status": "decided for H1, H2 and H3 (9 Nov 2026); H0 owed: decision (its unit)",
+   "proposed": "10% for H0 to H2 (H0's unit open); H3 bootstrap only",
+   "basis": "docs/lock_decisions_20261109.md",
+   "decided": "H1 and H2: 10% absolute relative error, the median over the pairing's scored cells, per pairing. H3: no tolerance beyond the bootstrap widening it names. None below the 6.77% noise floor.",
+   "authority": "the researcher's confirmation, 9 Nov 2026, IST: \"I agree with the adviser's rulings on lock items 1, 2 and 5\"",
+   "owed": "H0: the plan says per-operation (Section 4), so the per-family form of the ruling does not apply as written; the 0.25 per-family bound is Gate A leg 2's replay-versus-trace bound, a different comparison. Proposed: per pairing pair and component side, the median absolute relative difference over the compared operations within 10%, per-operation differences reported"
   },
   "h6_regret_bound": {
    "item": "H6 regret bound",
@@ -21,25 +24,27 @@
    "item": "the ground-truth density set",
    "value": null,
    "source": null,
-   "status": "owed: decision",
+   "status": "decided (9 Nov 2026), fixed by the lock commit",
    "proposed": "P1's working set (dense 1.0; block-sparse 0.25, 0.5; XAttention calibrated) for every pairing, oracle 0.5 at 32768 not measured",
-   "basis": "lock table row 3; configs/t31/p1_session.json"
+   "basis": "docs/lock_decisions_20261109.md",
+   "decided": "P2 and P4 run P1's set: dense 1.0; block-sparse 0.25 and 0.5; XAttention calibrated (its density the mask density it produces). oracle_d0.5_L32768 is not measured on any pairing (docs/limitations.md, 8 Nov 2026). The compiled arms are in only if their ground truth is resolved by 14 Nov 2026; if they are, each session's card states the host time they add to its cap.",
+   "authority": "the researcher's confirmation, 9 Nov 2026, IST: \"I agree with the adviser's rulings on lock items 1, 2 and 5\""
   },
   "h4_equivalence_bound_with_its_justification_from_the_tasks": {
    "item": "H4 equivalence bound with its justification from the tasks",
    "value": null,
    "source": null,
-   "status": "owed: decision",
-   "proposed": "10 points (lock table row 4)",
-   "basis": "T1.1: -4.3 and -6.0 points"
+   "status": "owed: decision (the adviser's next relay)",
+   "proposed": "10 points, from the admissibility margin (Section 5.7: 10 primary, 5 sensitivity), which H4 feeds when recall stands in for accuracy (Section 5.1); 5 points the alternative (about 5,200 x p before Holm)",
+   "basis": "docs/lock_decisions_20261109.md (T1.1's -4.3 and -6.0 are XAttention-minus-dense bounds at n = 100, block 128, unmatched recall: not H4's data, and not the bound's basis)"
   },
   "h4_confirmatory_family": {
    "item": "H4 confirmatory family",
    "value": null,
    "source": null,
-   "status": "owed: decision",
-   "proposed": "Count m from the declared family (audit D4 open)",
-   "basis": "lock table row 5"
+   "status": "owed: decision (the adviser's next relay)",
+   "proposed": "m from the declared family (audit D4): 3 x k(k-1)/2 pair tests plus the random control, once per estimator (k) or per block size (3k); m = 22 or 30 at k = 4, 35 or 45 at k = 5",
+   "basis": "docs/lock_decisions_20261109.md"
   },
   "power_target_and_n": {
    "item": "power target and n",
@@ -133,15 +138,17 @@
    "item": "floors quantile (0.95 is provisional, for shakedowns only)",
    "value": null,
    "source": null,
-   "status": "owed: decision",
+   "status": "decided (9 Nov 2026), fixed by the lock commit",
    "proposed": "0.95, for both floors (the resolution floor per length since 8 Nov 2026); with two sessions the noise floor's 0.95 quantile is close to the largest between-session gap",
-   "basis": "docs/t32_gate_a_repeats.md"
+   "basis": "docs/lock_decisions_20261109.md",
+   "decided": "0.95 for both floors, labelled: with two sessions (T3.2c, T3.2d) the between-session component is close to the largest gap.",
+   "authority": "the researcher's confirmation, 9 Nov 2026, IST: \"I agree with the adviser's rulings on lock items 1, 2 and 5\""
   },
   "hdbi_boundedness_threshold": {
    "item": "the HDBI boundedness threshold (fitted on the training pairings)",
    "value": null,
    "source": null,
-   "status": "owed: decision",
+   "status": "owed: decision; default confirmed by the adviser (9 Nov 2026)",
    "proposed": "Fit on P1 (two vs three classes, audit D3 open); the fit drops rows inside their cell's resolution floor (per length since 8 Nov 2026: 1.60 ms at 2048)",
    "basis": "attnbench/lock/hdbi_fit.py"
   },
@@ -165,7 +172,7 @@
    "item": "K2 correctness tolerance (the gate's `TOL`)",
    "value": null,
    "source": null,
-   "status": "owed: decision",
+   "status": "owed: decision; default confirmed by the adviser (9 Nov 2026)",
    "proposed": "Keep the gate's TOL",
    "basis": "lock table row 21"
   },
@@ -197,7 +204,7 @@
    "item": "payload class edges (proposed 8 B, 4 KiB and 1 MiB)",
    "value": null,
    "source": null,
-   "status": "owed: decision",
+   "status": "owed: decision; default confirmed by the adviser (9 Nov 2026)",
    "proposed": "8 B, 4 KiB, 1 MiB as proposed",
    "basis": "lock table row 25"
   },
@@ -213,16 +220,16 @@
    "item": "realised-length key rule",
    "value": null,
    "source": null,
-   "status": "owed: decision",
-   "proposed": "Key by the budget, the prompt's realised tokens kept as a field (as T3.1 rows do: budget 2048, 1951 tokens)",
-   "basis": "lock table row 27"
+   "status": "owed: decision; default corrected by the adviser (9 Nov 2026)",
+   "proposed": "Key each prediction by the prompt's realised token count, the budget a label (lock table row 27); the code already does (T3.2a to T3.2d prediction files keyed 1951, 4068, 8075, 16370, 32700), so no change",
+   "basis": "lock table row 27; scripts/t31_steps.py step 5 (context_length = the prompt's own tokens, budget = the cell)"
   },
   "budget_cut_order": {
    "item": "budget cut order",
    "value": null,
    "source": null,
-   "status": "owed: decision",
-   "proposed": "As the plan",
+   "status": "owed: decision; default extended by the adviser (9 Nov 2026)",
+   "proposed": "P7 first, then the chunked extension, then the compiled group, then the rehearsal session; never ground-truth timing, H1 or H4",
    "basis": "lock table row 28"
   },
   "compiled_versus_eager_density_flag_tolerance": {
@@ -261,7 +268,7 @@
    "item": "the recompile gate (T2.21: compile events allowed after a compiled arm's warm-up; working 0)",
    "value": null,
    "source": null,
-   "status": "owed: decision",
+   "status": "owed: decision; default confirmed by the adviser (9 Nov 2026)",
    "proposed": "0",
    "basis": "lock table row 33"
   },
@@ -294,7 +301,7 @@
   "H0": [],
   "H2": []
  },
- "status": "draft: proposals only, nothing fixed (8 Nov 2026)",
+ "status": "draft: proposals only, nothing fixed (8 Nov 2026); items 1 (H1 to H3), 2 and 5 decided 9 Nov 2026, fixed only by the lock commit",
  "pairing_values": {
   "P2": {
    "densities": null,
