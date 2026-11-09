@@ -35,7 +35,7 @@ import statistics
 from typing import Mapping, Optional, Sequence
 
 from ..lock import floors as F
-from .gate_a import GateAError, NOT_MEASURED
+from .gate_a import GateAError, NOT_MEASURED, short_of_rounds
 
 HOLDS, FAILS, NOT_APPLIED = "holds", "fails", "not applied"
 LEG1_RIVALS = ("sum", "step_form")
@@ -88,6 +88,25 @@ def floors(sessions: Mapping[str, Sequence[tuple[str, Mapping]]], *, quantile: f
             "n_repeats": res.n_repeats, "cells": table,
             "only_in_one_session": [list(k) for k in cells
                                     if sum(k in c for c in series.values()) < 2]}
+
+
+def drop_short_groups(sessions: Mapping[str, Sequence[tuple[str, Mapping]]], *,
+                      min_clean_rounds: int) -> tuple[dict, list]:
+    """(kept sessions, excluded groups): a ground-truth group that is not
+    complete or has fewer than `min_clean_rounds` clean rounds
+    (`gate_a.short_of_rounds`) leaves the floors whole, within- and
+    between-session, as it leaves leg 1 (Appendix A, 9 Nov 2026, ninth paste)."""
+    kept, excluded = {}, []
+    for s, results in sessions.items():
+        kept[s] = []
+        for name, result in results:
+            if short_of_rounds(result, min_clean_rounds):
+                excluded.append({"session": s, "result": name, "complete": result.get("complete"),
+                                 "clean_rounds": result.get("clean_rounds"),
+                                 "min_clean_rounds": min_clean_rounds})
+            else:
+                kept[s].append((name, result))
+    return kept, excluded
 
 
 def cell_floors(sessions: Mapping[str, Sequence[tuple[str, Mapping]]], *, quantile: float,

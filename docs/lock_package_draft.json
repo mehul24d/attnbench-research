@@ -1,5 +1,5 @@
 {
- "plan_sha256": "371f5168279f818cf7c4391fe5c27095b9ea6be8781a9fb9441ff92adc4d4842",
+ "plan_sha256": "594284085dcdb9c15f7062a48ddd6b3226633406e7b7d5721cff9fd29908e8b4",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -126,8 +126,8 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread), the between-session spread only over sessions whose timed ground-truth path is byte-identical (scripts/timed_path.py, 4e78a962...): T3.2c and T3.2d (amended 9 Nov 2026 before any new ground truth; floors.resolution_floors_within_between). After T3.2d (9 Nov 2026, quantile 0.95, provisional): 2048x1 1.39 (within), 4096x1 7.69 (between), 8192x1 17.76 (within), 16384x1 43.69 (between), 16384x4 139.02 (between), 32768x1 101.16 ms (between); docs/t32d_gate_a_v2.md. The 16384 between-session spreads include T3.2c's two short groups (8 and 2 clean rounds); without them both 16384 floors are within-session only (13.77, 27.59 ms). Sensitivities only, never used: T3.2a to T3.2d (4.25, 8.10, 69.49, 111.05, 441.54, 321.53 ms); T3.2d alone (1.10, 7.67, 18.42, 13.77, 27.59, 32.11 ms). Recomputed before lock; the pooled 19.42 ms is provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap over T3.2a/b, n = 2, not an interval",
-   "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md; Appendix A, 9 Nov 2026; docs/t32d_gate_a_v2.md"
+   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread), the between-session spread only over sessions whose timed ground-truth path is byte-identical (scripts/timed_path.py, 4e78a962...): T3.2c and T3.2d. A ground-truth group that is not complete or has fewer than 10 clean rounds is left out of both spreads (adviser's ruling 1c of the ninth 9 Nov 2026 paste; scripts/cell_floors.py --min-clean-rounds 10). After T3.2d (quantile 0.95, provisional): 2048x1 1.39 (within), 4096x1 7.69 (between), 8192x1 17.76 (within), 16384x1 13.77 and 16384x4 27.59 (within-session only, 'between-session unavailable': T3.2c's 16384 groups had 8 and 2 clean rounds), 32768x1 101.16 ms (between). Beside the 16384 floors, the sensitivity including T3.2a and T3.2b: 111.05 and 441.54 ms; a comparison at 16384 above the floor and inside the sensitivity floor is reported as marginal. Other sensitivities, never used: T3.2a to T3.2d at every cell (4.25, 8.10, 69.49, 111.05, 441.54, 321.53 ms); the short groups' within-session spread kept (16384: 14.19, 25.00 ms). Recomputed before lock; the pooled 19.42 ms is provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap over T3.2a/b, n = 2, not an interval",
+   "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md; Appendix A, 9 Nov 2026; docs/t32d_gate_a_v2.md §6 and §9"
   },
   "floors_quantile": {
    "item": "floors quantile (0.95 is provisional, for shakedowns only)",
@@ -340,7 +340,7 @@
     "bucket_path": "banked/p1_training/p1_training_t32dc_20261109.json.gz",
     "sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
     "bytes": 1399192,
-    "verified": "owed: the round-trip check after the upload (9 Nov 2026)"
+    "verified": "passed, 9 Nov 2026: the bucket copy, downloaded after the upload, is 1,399,192 bytes with sha256 de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f, equal to the local file and both backups"
    },
    "superseded": {
     "path": "banked/p1_training/p1_training.json.gz",
@@ -353,5 +353,10 @@
    },
    "path_note": "the path t61_session.P1_TRAINING reads; the backups and the bucket copy carry the dated name p1_training_t32dc_20261109.json.gz"
   }
+ },
+ "committed_predictors": {
+  "status": "proposed lock wording (adviser's ruling 3 of the ninth 9 Nov 2026 paste; the researcher's confirmation of the Gate A recommendation, 9 Nov 2026, 19:38 IST)",
+  "wording": "The recursion is the predictor under test, as pre-registered (H1), and is not replaced. For P2 and P4, and every later pairing, the committed prediction file holds, per cell and before the workload is timed, both the recursion and the KernelSight-style step form, with the sum, the sum with s_0, the fitted sum and the learned predictor (T2.11; commit.COMPUTED). H1 is scored as written: its primary comparison is the recursion against the fitted sum; the step form, the sum and the learned predictor are secondary comparators; the step form's own error is reported beside the recursion's on every pairing and every arm class, including where it is lower. Neither predictor is chosen after the data. Gate A's failing legs on P1 (leg 1: the step form below the recursion; leg 2: 6 of 35 cells) are limitations, and P1 is never counted as a test.",
+  "code": "attnbench/predict/commit.py: COMPUTED = (recursion, sum, sum_plus_s0, step_form), recomputed by verify_bytes; no code change needed"
  }
 }

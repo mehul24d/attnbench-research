@@ -199,3 +199,35 @@ lock value until the lock.
   - Leg 2: 6 of 35 cells fail.
 - **Not met:** leg 1's two repeats on the final identity.
 - **The decision is the researcher's (T3.3).** No threshold was moved.
+
+## 9. After the decision (9 Nov 2026, ninth paste)
+
+**The decision.** The researcher confirmed the Gate A recommendation on Mon
+9 Nov 2026 at 19:38 IST: "I agree with your Gate A T3.3 recommendation".
+Gate A is read: legs 1 and 2 fail on P1 and leg 3 passes. The study proceeds
+to the lock and to P2 and P4. The failing legs are limitations
+(`docs/limitations.md`, 9 Nov 2026), and T3.2d was the last P1 revision cycle
+(Appendix A, 9 Nov 2026).
+
+**§6's flag, ruled.** A group short of 10 clean rounds leaves the floors
+(adviser's ruling 1c; `scripts/cell_floors.py`, default `--min-clean-rounds 10`).
+The 16384 floors are within-session only, labelled "between-session
+unavailable":
+
+| Cell | Floor (ms) | Set by | Sensitivity: T3.2a–d |
+|---|---|---|---|
+| 16384 × 1 | 13.77 | within; between-session unavailable | 111.05 |
+| 16384 × 4 | 27.59 | within; between-session unavailable | 441.54 |
+
+The other four cells are unchanged. Under these floors, leg 2 scores 312 of
+1,143 pairs (27.3%; 95.5% of priced device time, 95.4% of traced). The same
+six cells fail: `scripts/gate_a.py --v2` was rerun on T3.2d with
+`--cell-floors` set to the rule's file, and its failing cells are §3's.
+
+**Leg 1 with intervals.** `scripts/leg1_bootstrap.py` resamples cells,
+paired, 10,000 draws at seed 0 (`docs/leg1_bootstrap_t32d_20261109.json`).
+The recursion's error minus the step form's is +3.09 points [+1.91, +4.11]
+overall, as recorded. It is above zero in every arm and inside the 6.77%
+noise floor overall. The two XAttention arms' point differences are above it
+(7.93 and 8.45 points), but their intervals reach down to about 2 points. The
+per-arm table is in `docs/limitations.md`.

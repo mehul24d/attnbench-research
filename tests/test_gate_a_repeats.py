@@ -131,3 +131,26 @@ def test_the_cell_floors_take_the_larger_of_within_and_between_per_length():
     one = fl["4096x1"]
     assert one["between_ms"] is None and one["floor_ms"] == one["within_ms"] == 0.0
     assert one["source"] == "within" and one["n_between_series"] == 0
+
+
+def test_a_group_short_of_clean_rounds_leaves_both_floors():
+    """Appendix A, 9 Nov 2026 (ninth paste): T3.2c's 16384 groups (8 and 2
+    clean rounds) leave the floors, so the cell's floor is within-session only."""
+    def untraced(*rows, clean, complete=True):
+        return {**result(*rows), "clean_rounds": clean, "complete": complete}
+    other = ("gt_L4096_b1.json", untraced(row("dense", 4096, 1, [200, 200]), clean=10))
+    a = [("gt_L2048_b1.json", untraced(row("dense", 2048, 1, [100, 130, 70]), clean=8,
+                                       complete=False)), other]
+    b = [("gt_L2048_b1.json", untraced(row("dense", 2048, 1, [110, 112, 108]), clean=10))]
+    kept, excluded = GR.drop_short_groups({"a": a, "b": b}, min_clean_rounds=10)
+    assert kept == {"a": [other], "b": b}
+    assert excluded == [{"session": "a", "result": "gt_L2048_b1.json", "complete": False,
+                         "clean_rounds": 8, "min_clean_rounds": 10}]
+    c = GR.cell_floors(kept, quantile=1.0, pairing="P1")["2048x1"]
+    assert c["between_ms"] is None and c["source"] == "within"
+    assert c["floor_ms"] == pytest.approx(2.0)          # b's |x - median| only, not a's 30
+    # a complete group at the minimum stays
+    full = [("gt_L2048_b1.json", untraced(row("dense", 2048, 1, [100, 102, 98]), clean=10))]
+    kept, excluded = GR.drop_short_groups({"a": full, "b": b}, min_clean_rounds=10)
+    assert excluded == [] and GR.cell_floors(kept, quantile=1.0, pairing="P1")["2048x1"][
+        "between_ms"] == pytest.approx(10.0)
