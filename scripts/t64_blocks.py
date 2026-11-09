@@ -53,6 +53,8 @@ CAP_FACTOR = 1.3
 HALT_FACTOR = 1.3
 DELETE_AFTER_HALT_MIN = 10
 MAX_BLOCK_HOURS = 2.2
+BLOCK_HOURS = {"P2": MAX_BLOCK_HOURS,
+               "P4": 2.3}   # P4's Spot fallback (adviser's ruling 5, 10 Nov 2026): 2.2 h refuses
 ANCHOR_MIN = 2.0               # the anchor cell's ground truth per block: an estimate
 SPLIT_FOLLOWERS = ("late_check", "trace_checks")
 
@@ -180,11 +182,13 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pairing", default="P4", choices=sorted(CARDS))
     ap.add_argument("--rate", type=float, default=None)
-    ap.add_argument("--max-hours", type=float, default=MAX_BLOCK_HOURS)
+    ap.add_argument("--max-hours", type=float, default=None,
+                    help="default: the pairing's block length, BLOCK_HOURS")
     ap.add_argument("--blocks", type=int, default=None, help="refuse unless the plan has this many")
     ap.add_argument("--spec", action="store_true", help="print the lock file's block spec")
     args = ap.parse_args(argv)
     rate = args.rate or SPOT_RATES[args.pairing]
+    args.max_hours = args.max_hours or BLOCK_HOURS[args.pairing]
     n = card_numbers(CARDS[args.pairing].read_text())
     blocks = plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=BOOT[args.pairing],
                          rate=rate, max_hours=args.max_hours)

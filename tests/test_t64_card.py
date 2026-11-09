@@ -1,6 +1,8 @@
 """The P4 card's built region (`scripts/t64_card.py`; adviser's ruling 7 of
 the eleventh 9 Nov 2026 paste): the runner's steps with the minutes file's
-sums, and Flex-start, Spot blocks and on-demand from the same numbers."""
+sums, and Flex-start, Spot blocks and on-demand from the same numbers;
+Flex-start first and Spot's four 2.3 h blocks the fallback (adviser's ruling
+5 of the 10 Nov 2026 paste)."""
 
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from t64_session import T64  # noqa: E402
 
 
 def _built():
-    return C.build(C.load_minutes(), "2026-11-09")
+    return C.build(C.load_minutes(), "2026-11-10")
 
 
 def test_the_card_on_disk_is_this_build():
@@ -46,7 +48,7 @@ def test_flex_and_spot_come_from_the_same_minutes_with_each_boots_overhead():
     card = _built()
     assert f"| Expected, nothing fails | ₹{math.ceil(round(planned, 3) * C.FLEX_RATE)} |" in card
     assert f"₹{math.ceil(round(planned, 3) * C.FLEX_RATE * B.CAP_FACTOR)} (halt" in card
-    hours, blocks, refusal = C.spot_blocks(steps, 0.6, 0.15)
+    blocks, refusal = C.spot_blocks(steps, 0.6, 0.15)
     boot = sum(dict(steps)[s] for s in B.BOOT["P4"])
     # every block pays setup, its boot steps and teardown again
     assert sum(b.planned_h for b in blocks) > planned + (len(blocks) - 1) * (0.75 + boot / 60) - 1e-6
@@ -55,15 +57,22 @@ def test_flex_and_spot_come_from_the_same_minutes_with_each_boots_overhead():
     assert "not offered for `a3-highgpu-1g`" in card
 
 
-def test_a_refusal_at_the_ruled_length_is_stated_not_hidden():
+def test_flex_is_first_and_the_fallback_is_four_blocks_at_2_3_hours():
     card = _built()
-    hours, blocks, refusal = C.spot_blocks(B.card_numbers(C.CARD.read_text())["steps"], 0.6, 0.15)
-    assert refusal == "host_components takes 79 min, more than a block's 78" and hours == 2.3
-    assert f"**At the ruled {B.MAX_BLOCK_HOURS} h the blocks are refused:** {refusal}" in card
-    assert "using it is a decision" in card
-    short = [(n, 20.0 if n == "host_components" else x)
-             for n, x in B.card_numbers(C.CARD.read_text())["steps"]]
-    assert C.spot_blocks(short, 0.6, 0.15)[2] is None
+    steps = B.card_numbers(C.CARD.read_text())["steps"]
+    blocks, refusal = C.spot_blocks(steps, 0.6, 0.15)
+    assert len(blocks) == 4 and all(b.planned_h <= 2.3 + 1e-9 for b in blocks)
+    assert "Flex-start first, its request submitted right after the lock (14 Nov 2026)" in card
+    assert "if no grant has come by about 22 Nov 2026, Spot in 4 blocks of 2.3 h" in card
+    # why not 2.2 h is stated, not hidden
+    assert refusal == "host_components takes 79 min, more than a block's 78"
+    assert f"at {B.MAX_BLOCK_HOURS} h the blocks are refused: {refusal}" in card
+    short = [(n, 20.0 if n == "host_components" else x) for n, x in steps]
+    with pytest.raises(ValueError, match="not the ruled 4"):
+        C.spot_blocks(short, 0.6, 0.15)        # 3 blocks: the fallback is no longer the ruled one
+    long = [(n, 3 * x if n == "ground_truth" else x) for n, x in steps]
+    with pytest.raises(ValueError, match="not the ruled 4"):
+        C.spot_blocks(long, 0.6, 0.15)
 
 
 def test_a_minutes_file_off_the_runners_steps_is_refused(tmp_path):

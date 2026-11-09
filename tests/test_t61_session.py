@@ -467,8 +467,9 @@ def test_this_branchs_plan_is_not_ready_for_p2():
     rows = S.unmet(T61.requirements, S.plan_statuses(
         (ROOT / "docs" / "RESEARCH_PLAN.md").read_text()))
     tasks = {r["task"] for r in rows}
-    # 9 Nov 2026 (docs/prereqs_20261109.md): three waivers proposed, three scheduled
-    assert tasks == {"T2.3", "T2.17", "T2.21", "T2.23", "T2.26", "T4.4"}
+    # 10 Nov 2026 (docs/prereqs_20261109.md): T2.3 done; T2.21 waived on conditions the check
+    # cannot read, T2.23 flagged, T2.17 and T2.26 in the rehearsal, T4.4 the lock
+    assert tasks == {"T2.17", "T2.21", "T2.23", "T2.26", "T4.4"}
 
 
 def test_the_strict_stamp_is_a_file_check():

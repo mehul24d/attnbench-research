@@ -71,6 +71,7 @@ def test_p4_refuses_2_2_hour_blocks_and_is_four_blocks_at_2_3():
     assert len(gt) == 2 and all({"late_check", "trace_checks"} <= set(b.steps) for b in gt)
     assert "predict" in gt[0].steps and "predict" not in gt[1].steps
     assert B.main(["--max-hours", "2.3", "--blocks", "4"]) == 0
+    assert B.main(["--blocks", "4"]) == 0          # P4's default is the ruled 2.3 h
     assert B.main(["--max-hours", "2.3", "--blocks", "3"]) == 2
 
 
