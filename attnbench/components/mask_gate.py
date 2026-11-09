@@ -29,12 +29,22 @@ path are refused: the gate compares across code paths.
 The densities are recomputed from the masks, never read from a bank's
 manifest, since nothing hashes the manifest's density.
 
-**The bound** is a lock value (T4.1) with no default here: a minimum
-agreement per layer and a maximum absolute density difference per layer,
-both required. A comparison passes when every layer of every paired record
-is within both. Which arms the gate covers is the per-arm rule's (the
-XAttention arms, Section 5.1); the gate reports the arms its records belong
-to and decides nothing else.
+**The bound** (adviser's ruling 3 of the eleventh 9 Nov 2026 paste,
+Appendix A): T4.1's absolute density tolerance, the one the compiled-versus-
+eager flag reads (`densities.DENSITY_FLAG_TOLERANCE`, working 0.01). A
+comparison is within the bound when every layer of every paired record has
+an absolute density difference within it. Block-level agreement is reported
+(the smallest per layer, and the layers identical bitwise) and decides
+nothing. Which arms the gate covers is the per-arm rule's (the XAttention
+arms, Section 5.1); the gate reports the arms its records belong to and
+decides nothing else.
+
+**Same card and across cards.** On P2 the gate's verdict is the two paths
+on P2's own card (Triton against PyTorch): with the card held fixed, that
+is the code-path test. P2's paths against P1's masks, and P4's against P2's,
+compare across cards; a density difference beyond the bound there is a flag,
+reported, never a stop, since each pairing's densities come from its own
+executed masks.
 
 **For T2.28.** `density_deltas` turns a comparison into the cross-path
 difference `predict.density_sensitivity` reads: an absolute change in mask
@@ -214,21 +224,16 @@ def compare_banks(reference: Iterable, candidate: Iterable) -> tuple[RecordCompa
 
 @dataclass(frozen=True)
 class Bounds:
-    """The gate's bound, fixed at lock (T4.1). No defaults."""
+    """The gate's bound: T4.1's absolute density tolerance (module docstring)."""
 
-    min_agreement: float             # per layer, over valid blocks, in (0, 1]
     max_density_difference: float    # per layer, absolute, >= 0
 
     def __post_init__(self) -> None:
-        for name, v in (("min_agreement", self.min_agreement),
-                        ("max_density_difference", self.max_density_difference)):
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-                raise MaskGateError(f"{name} must be a finite number, got {v!r}")
-        if not 0 < self.min_agreement <= 1:
-            raise MaskGateError(f"min_agreement must be in (0, 1], got {self.min_agreement}")
-        if self.max_density_difference < 0:
-            raise MaskGateError(
-                f"max_density_difference must be >= 0, got {self.max_density_difference}")
+        v = self.max_density_difference
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            raise MaskGateError(f"max_density_difference must be a finite number, got {v!r}")
+        if v < 0:
+            raise MaskGateError(f"max_density_difference must be >= 0, got {v}")
 
 
 @dataclass(frozen=True)
@@ -261,15 +266,10 @@ def gate(comparisons: Sequence[RecordComparison], bounds: Bounds) -> GateResult:
     failures = []
     for c in comparisons:
         for l in c.layers:
-            why = []
-            if l.agreement < bounds.min_agreement:
-                why.append(f"agreement {l.agreement:.6f} < {bounds.min_agreement}")
             if abs(l.density_difference) > bounds.max_density_difference:
-                why.append(f"|density difference| {abs(l.density_difference):.6f} > "
-                           f"{bounds.max_density_difference}")
-            if why:
-                failures.append((c.arm, c.context_length, c.batch, c.prompt_id,
-                                 l.layer, tuple(why)))
+                failures.append((c.arm, c.context_length, c.batch, c.prompt_id, l.layer,
+                                 (f"|density difference| {abs(l.density_difference):.6f} > "
+                                  f"{bounds.max_density_difference}",)))
     layers = [l for c in comparisons for l in c.layers]
     return GateResult(
         reference=ref, candidate=cand, passed=not failures,
@@ -329,9 +329,9 @@ def density_shift_report(comparisons: Sequence[RecordComparison], *, statistic: 
 
 @dataclass(frozen=True)
 class P2MaskGate:
-    """T2.23. Both P2 paths against P1's masks; the gate passes only if both
-    do. Triton against PyTorch on P2 is reported beside them: with the card
-    held fixed it isolates the implementation."""
+    """T2.23. The verdict is Triton against PyTorch on P2's card; both P2
+    paths against P1's masks are across cards, so beyond the bound they are
+    flags (module docstring)."""
 
     pytorch_vs_p1: GateResult
     triton_vs_p1: GateResult
@@ -339,7 +339,11 @@ class P2MaskGate:
 
     @property
     def passed(self) -> bool:
-        return self.pytorch_vs_p1.passed and self.triton_vs_p1.passed
+        return self.triton_vs_pytorch_on_p2.passed
+
+    @property
+    def cross_card_flags(self) -> tuple[str, ...]:
+        return tuple(k for k in ("pytorch_vs_p1", "triton_vs_p1") if not getattr(self, k).passed)
 
 
 def _implementation(bank) -> str:
@@ -379,7 +383,8 @@ P6_RECORDS = ("P6 records its own masks, and the full-transfer claim (H2) is "
 
 @dataclass(frozen=True)
 class P4MaskComparison:
-    """T2.24. P4's recorded Triton masks against P2's."""
+    """T2.24. P4's recorded Triton masks against P2's, across cards: beyond
+    the bound it is a flag and P6's decision, not a stop."""
 
     result: GateResult
 

@@ -108,8 +108,9 @@ def test_the_planners_skeleton_is_a_valid_plan_for_both_pairings():
     import t64_blocks as TB
     for pairing, cfg in (("P4", P4.T64), ("P2", S.T61)):
         n = TB.card_numbers(TB.CARDS[pairing].read_text())
+        h = {"P2": 2.2, "P4": 2.3}[pairing]      # P4 at 2.2 h refuses (t64_card.py)
         blocks = TB.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"],
-                                boot=TB.BOOT[pairing], rate=TB.SPOT_RATES[pairing])
-        spec = B.parse({"blocks": {cfg.pairing: TB.spec(blocks, max_hours=2.2)}}, cfg.pairing)
+                                boot=TB.BOOT[pairing], rate=TB.SPOT_RATES[pairing], max_hours=h)
+        spec = B.parse({"blocks": {cfg.pairing: TB.spec(blocks, max_hours=h)}}, cfg.pairing)
         assert TB.BOOT[pairing] == cfg.boot_steps
         assert B.check(spec, cfg.names, cfg.boot_steps, complete=False) == [], pairing

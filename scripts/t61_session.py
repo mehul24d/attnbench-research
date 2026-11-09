@@ -1092,8 +1092,9 @@ def banked_masks(base: Path) -> list:
 
 def mask_gate_bound(path=None, plan_text=None) -> dict:
     """The mask-gate bound from the lock (T4.1, "mask-gate bound"), as
-    `mask_gate.Bounds` takes it. Refused with no complete lock: the gate has
-    no default bound."""
+    `mask_gate.Bounds` takes it: one absolute density tolerance, T4.1's
+    compiled-versus-eager one (adviser's ruling 3 of the eleventh 9 Nov 2026
+    paste), so the lock's two must be equal. Refused with no complete lock."""
     sys.path.insert(0, str(ROOT / "scripts"))
     import t31_steps as st
     from attnbench.lock import checklist
@@ -1105,11 +1106,18 @@ def mask_gate_bound(path=None, plan_text=None) -> dict:
     res = checklist.check(lock, text)
     if not res.complete:
         raise StepFailed(f"{p.name} is not a complete lock, so the mask-gate bound is unset")
-    v = ((lock.get("values") or {}).get("mask_gate_bound") or {}).get("value")
-    if not isinstance(v, dict) or set(v) != {"min_agreement", "max_density_difference"}:
-        raise StepFailed(f"the lock's mask-gate bound is {v!r}, not "
-                         f"{{min_agreement, max_density_difference}}")
-    return v
+    values = lock.get("values") or {}
+    v = (values.get("mask_gate_bound") or {}).get("value")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise StepFailed(f"the lock's mask-gate bound is {v!r}, not one density tolerance")
+    flag = (values.get(DENSITY_FLAG_ITEM) or {}).get("value")
+    if flag != v:
+        raise StepFailed(f"the lock's mask-gate bound {v!r} is not its compiled-versus-eager "
+                         f"density tolerance {flag!r}: the ruling makes them one value")
+    return {"max_density_difference": v}
+
+
+DENSITY_FLAG_ITEM = "compiled_versus_eager_density_flag_tolerance"
 
 
 def record_both_paths(args, cells, out: Path, paths=("torch", "triton")) -> dict:
@@ -1159,9 +1167,10 @@ def real_mask_gate(cfg, args, *, record=None, bound=None) -> dict:
     recorded untimed on the prompts P1 banked masks for (`<session>/p1_masks`,
     T3.2d's step 5), each against P1's masks and against each other
     (`mask_gate.p2_mask_gate`). The comparisons are written before the bound
-    is read, and the step refuses without one. A failed gate does not stop
-    the session: it is the verdict the per-arm rule reads (Section 5.1), and
-    the masks stay recorded."""
+    is read, and the step refuses without one. The verdict is the two paths
+    on P2's card; against P1's masks, across cards, a difference beyond the
+    bound is a flag. Neither stops the session: the verdict is what the
+    per-arm rule reads (Section 5.1), and the masks stay recorded."""
     from attnbench.components import mask_gate as MG
     session, out = Path(args.session), Path(args.out)
     p1 = banked_masks(session / P1_MASKS)
@@ -1180,8 +1189,10 @@ def real_mask_gate(cfg, args, *, record=None, bound=None) -> dict:
         raise StepFailed(f"the mask gate cannot compare these banks: {e}") from e
     from dataclasses import asdict
     verdict = "pass" if res.passed else "fail"
-    write_json(out / "mask_gate.json", {"verdict": verdict, **asdict(res)})
-    return {"verdict": verdict, "cells": len(cells),
+    flags = list(res.cross_card_flags)
+    write_json(out / "mask_gate.json", {"verdict": verdict, "cross_card_flags": flags,
+                                        **asdict(res)})
+    return {"verdict": verdict, "cross_card_flags": flags, "cells": len(cells),
             "failures": {k: len(getattr(res, k).failures)
                          for k in ("pytorch_vs_p1", "triton_vs_p1", "triton_vs_pytorch_on_p2")}}
 

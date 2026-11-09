@@ -1,0 +1,23 @@
+{
+ "_comment": "The P4 launch card's minutes per step (scripts/t64_card.py), each with its basis. 'measured' names the P1 session and step it was read from (L4, Cascade Lake, docs/spend_ledger.md); nothing here has run on an H100, whose host is Sapphire Rapids, so a measured row is a basis, not a forecast. 'estimate' is not measured anywhere (the 28 Oct 2026 card). The compiled groups are not in (adviser's ruling 2 of the tenth 9 Nov 2026 paste).",
+ "setup_h": {"value": 0.6, "basis": "estimate: write gate, deploy, preflight, bootstrap with XAttention (28 Oct 2026 card); Flex waiting time is not counted, the VM is not running"},
+ "teardown_h": {"value": 0.15, "basis": "estimate: logs and manifests pull, delete, cleanup check (28 Oct 2026 card)"},
+ "steps": {
+  "prereqs": {"minutes": [1], "basis": "estimate"},
+  "preflight": {"minutes": [3], "basis": "estimate"},
+  "link": {"minutes": [6], "basis": "estimate"},
+  "launch_queue": {"minutes": [3], "basis": "estimate"},
+  "probe": {"minutes": [13], "basis": "measured: T3.2d step 4, L4"},
+  "masks": {"minutes": [15], "basis": "estimate: each XAttention cell P2 recorded, untimed, on the Triton path"},
+  "host_components": {"minutes": [79], "basis": "measured: T3.2d step 5, L4 (20, an estimate, on this card until 9 Nov 2026)"},
+  "device_components": {"minutes": [49], "basis": "measured: T3.2d step 6, L4"},
+  "fa3_import": {"minutes": [3], "basis": "estimate"},
+  "dense_select": {"minutes": [15], "basis": "estimate (FA3 among the candidates)"},
+  "host_speed_mid": {"minutes": [2], "basis": "estimate"},
+  "predict": {"minutes": [3], "basis": "estimate"},
+  "ground_truth": {"minutes": [2, 28, 5], "basis": "the hold, then measured: T3.2d step 9 (eager group, traced pass included), L4, then estimate: the Kineto export"},
+  "late_check": {"minutes": [1], "basis": "estimate"},
+  "trace_checks": {"minutes": [5], "basis": "estimate"},
+  "host_speed_end": {"minutes": [2], "basis": "estimate"}
+ }
+}

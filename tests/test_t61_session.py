@@ -467,7 +467,8 @@ def test_this_branchs_plan_is_not_ready_for_p2():
     rows = S.unmet(T61.requirements, S.plan_statuses(
         (ROOT / "docs" / "RESEARCH_PLAN.md").read_text()))
     tasks = {r["task"] for r in rows}
-    assert {"T2.23", "T3.1", "T4.4"} <= tasks
+    # 9 Nov 2026 (docs/prereqs_20261109.md): three waivers proposed, three scheduled
+    assert tasks == {"T2.3", "T2.17", "T2.21", "T2.23", "T2.26", "T4.4"}
 
 
 def test_the_strict_stamp_is_a_file_check():
@@ -499,20 +500,21 @@ def _mask_record(impl, gpu, masks, prompt="p0", arm="xattention", length=1951):
 
 
 LAYERS2 = [[[1, 0], [1, 1]], [[1, 0], [0, 1]]]          # two layers, 2 x 2 blocks, causal
-BOUND = {"min_agreement": 0.99, "max_density_difference": 0.01}
+BOUND = {"max_density_difference": 0.01}
+SAME_DENSITY = [[[1, 0], [1, 1]], [[1, 0], [1, 0]]]    # layer 2: 2 of 3 kept, other blocks
 
 
-def _mask_gate_setup(tmp_path, triton=LAYERS2, prompt="p0"):
+def _mask_gate_setup(tmp_path, triton=LAYERS2, prompt="p0", p1=LAYERS2, torch=LAYERS2):
     from attnbench.components import mask_bank as MB
     session = tmp_path / "s"
     cell = session / S.P1_MASKS / "xattention_dcal_L2048_b1" / "recording"
     cell.mkdir(parents=True)
-    MB.save(_mask_record("xattn:torch", "NVIDIA L4", LAYERS2), cell / "masks")
+    MB.save(_mask_record("xattn:torch", "NVIDIA L4", p1), cell / "masks")
     seen = []
 
     def record(args, cells, out):
         seen.append(cells)
-        return {"torch": [_mask_record("xattn:torch", "NVIDIA A100", LAYERS2)],
+        return {"torch": [_mask_record("xattn:torch", "NVIDIA A100", torch)],
                 "triton": [_mask_record("xattn:triton", "NVIDIA A100", triton, prompt=prompt)]}
     args = Namespace(out=str(tmp_path / "mg"), session=str(session), dry_run=False)
     return args, record, seen
@@ -532,8 +534,27 @@ def test_the_mask_gate_compares_both_p2_paths_with_p1s_banked_masks(tmp_path):
 def test_a_failed_mask_gate_is_a_verdict_not_a_stop(tmp_path):
     args, record, _ = _mask_gate_setup(tmp_path, triton=[[[1, 0], [1, 1]], [[1, 0], [1, 1]]])
     r = S.real_mask_gate(T61, args, record=record, bound=BOUND)
-    assert r["verdict"] == "fail"
+    assert r["verdict"] == "fail" and r["cross_card_flags"] == ["triton_vs_p1"]
     assert r["failures"] == {"pytorch_vs_p1": 0, "triton_vs_p1": 1, "triton_vs_pytorch_on_p2": 1}
+
+
+def test_the_verdict_is_p2s_own_card_and_p1_is_a_flag(tmp_path):
+    """Adviser's ruling 3 of the eleventh 9 Nov 2026 paste: both P2 paths
+    agree, both differ from P1's masks beyond the bound: a pass, flagged."""
+    args, record, _ = _mask_gate_setup(tmp_path, p1=[[[1, 0], [1, 1]], [[1, 0], [1, 1]]])
+    r = S.real_mask_gate(T61, args, record=record, bound=BOUND)
+    assert r["verdict"] == "pass"
+    assert r["cross_card_flags"] == ["pytorch_vs_p1", "triton_vs_p1"]
+    gate = json.loads((Path(args.out) / "mask_gate.json").read_text())
+    assert gate["cross_card_flags"] == r["cross_card_flags"]
+
+
+def test_block_agreement_is_reported_and_decides_nothing(tmp_path):
+    args, record, _ = _mask_gate_setup(tmp_path, triton=SAME_DENSITY)
+    r = S.real_mask_gate(T61, args, record=record, bound=BOUND)
+    gate = json.loads((Path(args.out) / "mask_gate.json").read_text())
+    assert r["verdict"] == "pass" and r["cross_card_flags"] == []
+    assert gate["triton_vs_pytorch_on_p2"]["min_agreement"] == pytest.approx(1 / 3)
 
 
 def test_the_mask_gate_writes_its_comparisons_then_refuses_without_a_lock(tmp_path, monkeypatch):
@@ -558,10 +579,17 @@ def test_the_mask_gate_bound_is_read_from_a_complete_lock_only(tmp_path, monkeyp
     lock = tmp_path / "lock_values.json"
     complete = SimpleNamespace(complete=True)
     monkeypatch.setattr(checklist, "check", lambda lk, text: complete)
-    lock.write_text(json.dumps({"values": {"mask_gate_bound": {"value": BOUND}}}))
+    def write(bound, flag=0.01):
+        lock.write_text(json.dumps({"values": {
+            "mask_gate_bound": {"value": bound},
+            "compiled_versus_eager_density_flag_tolerance": {"value": flag}}}))
+    write(0.01)
     assert S.mask_gate_bound(lock, plan_text="") == BOUND
-    lock.write_text(json.dumps({"values": {"mask_gate_bound": {"value": 0.99}}}))
-    with pytest.raises(S.StepFailed, match="not \\{min_agreement"):
+    write({"min_agreement": 0.99, "max_density_difference": 0.01})
+    with pytest.raises(S.StepFailed, match="not one density tolerance"):
+        S.mask_gate_bound(lock, plan_text="")
+    write(0.02)
+    with pytest.raises(S.StepFailed, match="not its compiled-versus-eager density tolerance"):
         S.mask_gate_bound(lock, plan_text="")
     complete.complete = False
     complete.report = lambda: ""

@@ -17,8 +17,8 @@ N = B.card_numbers(B.CARD.read_text())
 def test_the_numbers_are_read_from_the_cards_tables():
     assert [n for n, _ in N["steps"]][:3] == ["prereqs", "preflight", "link"]
     assert len(N["steps"]) == 16 and N["setup_h"] == 0.6 and N["teardown_h"] == 0.15
-    assert dict(N["steps"])["ground_truth"] == 71          # "1 + 70"
-    assert sum(m for _, m in N["steps"]) == 195            # the card's "about 195 minutes"
+    assert dict(N["steps"])["ground_truth"] == 35          # "2 + 28 + 5"
+    assert sum(m for _, m in N["steps"]) == 235            # the card's "235 minutes"
 
 
 def test_a_card_without_its_tables_is_refused():
@@ -26,7 +26,8 @@ def test_a_card_without_its_tables_is_refused():
         B.card_numbers("nothing here")
 
 
-def plan(h=2.2, pairing="P4"):
+def plan(h=None, pairing="P4"):
+    h = h or {"P2": 2.2, "P4": 2.3}[pairing]     # P4 at 2.2 h refuses (below)
     n = B.card_numbers(B.CARDS[pairing].read_text())
     return B.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=B.BOOT[pairing],
                          rate=B.SPOT_RATES[pairing], max_hours=h)
@@ -47,7 +48,8 @@ def test_the_spot_terms_are_cap_1_3_halt_1_3_rounded_down_and_delete_10_minutes_
 @pytest.mark.parametrize("h", [1.9, 2.0, 2.2, 2.5, 3.0])
 @pytest.mark.parametrize("pairing", ["P4", "P2"])
 def test_the_cost_at_the_halt_is_never_above_the_cap(h, pairing):
-    if pairing == "P2" and h < 2.1:     # P2's host_components, measured on T3.2d: 79 min
+    # host_components, measured on T3.2d: 79 min; P4's boot steps take one more minute
+    if h < {"P2": 2.1, "P4": 2.3}[pairing]:
         with pytest.raises(ValueError, match="host_components takes 79 min"):
             plan(h, pairing)
         return
@@ -57,15 +59,19 @@ def test_the_cost_at_the_halt_is_never_above_the_cap(h, pairing):
         assert b.cost_at_delete_inr > b.cap_inr          # the backstop is past the cap
 
 
-def test_p4_is_three_blocks_of_at_most_2_2_hours_with_ground_truth_split():
-    blocks = plan(2.2)
-    assert len(blocks) == 3 and all(b.planned_h <= 2.2 + 1e-9 for b in blocks)
-    assert [b.planned_h for b in blocks] == [1.883, 2.2, 1.883]
+def test_p4_refuses_2_2_hour_blocks_and_is_four_blocks_at_2_3():
+    with pytest.raises(ValueError, match="host_components takes 79 min, more than a block's 78"):
+        plan(2.2)
+    blocks = plan(2.3)
+    assert len(blocks) == 4 and all(b.planned_h <= 2.3 + 1e-9 for b in blocks)
+    assert [b.planned_h for b in blocks] == [1.517, 2.217, 2.3, 1.5]
+    assert blocks[1].steps == ("host_components",)
     assert sum(b.ground_truth_min for b in blocks) == dict(N["steps"])["ground_truth"]
     gt = [b for b in blocks if "ground_truth" in b.steps]
     assert len(gt) == 2 and all({"late_check", "trace_checks"} <= set(b.steps) for b in gt)
     assert "predict" in gt[0].steps and "predict" not in gt[1].steps
-    assert B.main(["--blocks", "3"]) == 0 and B.main(["--blocks", "4"]) == 2
+    assert B.main(["--max-hours", "2.3", "--blocks", "4"]) == 0
+    assert B.main(["--max-hours", "2.3", "--blocks", "3"]) == 2
 
 
 def test_every_step_but_the_boot_steps_is_planned_once_in_order():
@@ -78,7 +84,7 @@ def test_every_step_but_the_boot_steps_is_planned_once_in_order():
 
 
 def test_each_block_pays_its_own_boot_steps_and_the_anchor():
-    b = plan(2.2)[2]
+    b = plan(2.3)[3]
     boot = sum(dict(N["steps"])[s] for s in B.BOOT["P4"])
     tail = B.ANCHOR_MIN + dict(N["steps"])["late_check"] + dict(N["steps"])["trace_checks"]
     assert b.run_min == pytest.approx(boot + b.ground_truth_min + tail)
@@ -86,8 +92,8 @@ def test_each_block_pays_its_own_boot_steps_and_the_anchor():
 
 def test_the_spec_is_the_lock_files_skeleton():
     import json
-    s = B.spec(plan(2.2), max_hours=2.2)
-    assert s["anchor"] is None and [b["id"] for b in s["blocks"]] == ["b1", "b2", "b3"]
+    s = B.spec(plan(2.3), max_hours=2.3)
+    assert s["anchor"] is None and [b["id"] for b in s["blocks"]] == ["b1", "b2", "b3", "b4"]
     assert all(b["cells"] is None for b in s["blocks"] if "ground_truth" in b["steps"])
     assert "cells" not in s["blocks"][0]
     assert json.loads(json.dumps(s)) == s

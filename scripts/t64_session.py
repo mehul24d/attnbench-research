@@ -91,7 +91,7 @@ def real_masks(cfg, args, *, record=None, bound=None) -> dict:
     and prompts P2's mask gate recorded (`<session>/p2_masks`, P2's
     `mask_gate/masks/triton`), then compared with P2's Triton masks
     (`mask_gate.p4_mask_comparison`) under the lock's bound, written before
-    the bound is read. The decision is P6's (Section 7): inherit P4's masks,
+    the bound is read. Across cards, a difference beyond it is a flag. The decision is P6's (Section 7): inherit P4's masks,
     or record its own and restate H2. Neither stops this session."""
     from dataclasses import asdict
     from attnbench.components import mask_gate as MG
