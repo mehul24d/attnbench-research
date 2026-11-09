@@ -20,6 +20,19 @@ the lock or any claim.** Every session it writes says so in `manifest.json`
 
 A runs first. B is created only after A is deleted, because the GPU quota is 1.
 
+## Attempt 1 (10 Nov 2026, commit `2053377`) and the relaunch
+
+Instance A ran on the researcher's yes of 10 Nov. It stopped itself at step 11 of 15 (`predict`) after 55 min (₹101), was torn down from the bucket, and nothing is left billing. **Instance B was not started.**
+
+- **Cause:** `lightgbm` is not on image v6 and no launch path installed it, so the learned predictor could not fit (`CostModelError`). P2's and P4's A100 sessions would have stopped at the same step, after their setup and ten steps. Fixed in `5c9175a`: the bootstrap installs `lightgbm` at `learned.LIGHTGBM_VERSION` (4.6.0) and checks the import; `real_preflight` refuses without it, so the stop now comes in step 2.
+- **Passed on A:** `prereqs`, `preflight` (T2.26's five variants included), `link`, `launch_queue`, `probe`, `mask_gate` (4 cells, 112 of 112 layers identical, largest density difference 0.0), `host_components`, `device_components`, `dense_select`, `host_speed_mid`, and T2.17's `assert_gate` (3 prompts, 84 layer records).
+- **Not run:** ground truth, trace sizes, the second block, the interruption and the compiled stage: scopes (i), (iii) and (v) are still open.
+- **The suite record (T2.26 in the bootstrap) returned rc 1:** 27 failed, 6,123 passed, 215 skipped in 9:41. Most failures are tests that assume a CPU-only host (`a CUDA device is present; the CPU boundary is for a CPU`, the CPU dry runs) failing on a CUDA host; the diagnosis is not finished. The full suite therefore cannot pass as a GPU record, and `gpu_suite_record.sh` needs a CPU-only deselection or a GPU-only selection before any card passes `--suite-record` again. The record is banked (phase `s9_suite`). The relaunch does not pass the flag.
+- **Measured minutes (A, steps 1 to 10):** `link` 2.8, `probe` 5.0, `mask_gate` 0.2, `host_components` 7.7, `device_components` 5.1, `dense_select` 0.4, the rest under 1; 21.4 in all. The table below used T3.2d's per-cell scaling and overstated `host_components` (23.2) and `device_components` (14.4).
+
+**Relaunch (needs its own yes):** commit **`5c9175a`**; instance A `attnbench-l4-reh-a-<YYYYMMDD-HHMM>` again, then B; same zone and image. Planned A is **60 min** (setup 12, steps 1 to 10 at 21.4, predict 2, hold 1.5, ground truth 4.9, late and end checks 1, trace checks 3, assert gate 0.1, compiled 10 (estimate), exit 2.6): `GCP_HALT_MINUTES=78`, `GCP_MAX_RUN=1h28m`, cap **₹160**. B is unchanged (₹102). Cap for the relaunch: ₹160 + ₹102 = **₹262**; with attempt 1's ₹101 the rehearsal totals at most **₹363**, inside the original ₹403. Expected ₹272 in all.
+
+
 ## What it rehearses (adviser's scope, by priority)
 
 | Scope | Where | What is measured or checked |
@@ -120,19 +133,19 @@ ZONE=asia-northeast1-a
 **Instance A**
 
 ```bash
-export GCP_HALT_MINUTES=156 GCP_MAX_RUN=2h46m
+export GCP_HALT_MINUTES=156 GCP_MAX_RUN=2h46m     # relaunch: 78 and 1h28m (see above)
 A=attnbench-l4-reh-a-$(date +%Y%m%d-%H%M)
 bash scripts/gcp_cleanup_check.sh && bash scripts/gcp_launch_l4.sh "$A"     # type 'launch'
 bash scripts/gcp_deploy_source.sh "$A" "$ZONE"
 bash scripts/gcp_preflight_instance.sh "$A" "$ZONE" --quarantine
 bash scripts/gcp_verify_gcs_writable.sh "$A" "$ZONE"
-bash scripts/gcp_bootstrap_instance.sh "$A" "$ZONE" --suite-record   # T2.26, before b1
+bash scripts/gcp_bootstrap_instance.sh "$A" "$ZONE" --suite-record   # attempt 1 only; the relaunch omits the flag
 # if it stops at 7/8 (the suite): the record is in the bucket (phase s9_suite);
 # rerun it without --suite-record, then go on. That is pre-decided, so no question is asked.
 B1=results/t61r_l4_$(date -u +%Y%m%dT%H%MZ)_b1
 gcloud compute ssh "$A" --zone "$ZONE" --command "cd ~/attnbench_scaffold && \
   ATTNBENCH_REH_COMPILED=1 nohup bash scripts/session_exit.sh --log ~/reh_a.log -- \
-  bash scripts/t61_rehearsal_a.sh $B1 >/dev/null 2>&1 &"
+  bash scripts/t61_rehearsal_a.sh $B1 >/dev/null 2>&1 < /dev/null &"   # < /dev/null, or ssh does not return
 bash scripts/t61_rehearsal_watch.sh "$A" "$ZONE" > ~/reh_watch_a.log 2>&1   # until TERMINATED or gone
 bash scripts/gcp_session_elapsed.sh "$A" "$ZONE" 108.64
 bash scripts/gcp_teardown_session.sh "$A" "$ZONE" "$B1"
