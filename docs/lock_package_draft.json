@@ -1,16 +1,16 @@
 {
- "plan_sha256": "e12042ad4baccc0fb6217b077162eba6e00631bde61209e53a61327a77fe20bd",
+ "plan_sha256": "49f44c13148d73efe3198e2e2bc566c16ab4020faf5f1046daff6d89a5758f35",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
    "value": null,
    "source": null,
-   "status": "decided for H1, H2 and H3 (9 Nov 2026); H0 owed: decision (its unit)",
+   "status": "decided for H1, H2 and H3 (9 Nov 2026) and H0 (10 Nov 2026, the researcher's confirmation of the adviser's interpretation)",
    "proposed": "10% for H0 to H2 (H0's unit open); H3 bootstrap only",
    "basis": "docs/lock_decisions_20261109.md",
-   "decided": "H1 and H2: 10% absolute relative error, the median over the pairing's scored cells, per pairing. H3: no tolerance beyond the bootstrap widening it names. None below the 6.77% noise floor.",
+   "decided": "H1 and H2: 10% absolute relative error, the median over the pairing's scored cells, per pairing. H3: no tolerance beyond the bootstrap widening it names. None below the 6.77% noise floor. H0 (Appendix A, 9 and 10 Nov 2026): per operation; operations at or below the cell's resolution floor unscorable, not failed; the median relative difference over the scored operations, per compared pair and side, at most 10%, the largest and the time share covered reported (device time on the device side, host time on the host side).",
    "authority": "the researcher's confirmation, 9 Nov 2026, IST: \"I agree with the adviser's rulings on lock items 1, 2 and 5\"",
-   "owed": "H0: the plan says per-operation (Section 4), so the per-family form of the ruling does not apply as written; the 0.25 per-family bound is Gate A leg 2's replay-versus-trace bound, a different comparison. Proposed: per pairing pair and component side, the median absolute relative difference over the compared operations within 10%, per-operation differences reported"
+   "authority_h0": "the researcher's confirmation, 10 Nov 2026, IST: \"I agree with the adviser's H0 interpretation (median over scored operations above the resolution floor, with the maximum reported beside it)\"; the host-side share by host time accepted by the adviser (ruling 1 of the 10 Nov 2026 paste)"
   },
   "h6_regret_bound": {
    "item": "H6 regret bound",
@@ -34,17 +34,19 @@
    "item": "H4 equivalence bound with its justification from the tasks",
    "value": null,
    "source": null,
-   "status": "owed: decision (the adviser's next relay)",
+   "status": "decided (10 Nov 2026, adviser's ruling 2 of the 10 Nov paste)",
    "proposed": "10 points, from the admissibility margin (Section 5.7: 10 primary, 5 sensitivity), which H4 feeds when recall stands in for accuracy (Section 5.1); 5 points the alternative (about 5,200 x p before Holm)",
-   "basis": "docs/lock_decisions_20261109.md (T1.1's -4.3 and -6.0 are XAttention-minus-dense bounds at n = 100, block 128, unmatched recall: not H4's data, and not the bound's basis)"
+   "basis": "docs/lock_decisions_20261109.md (T1.1's -4.3 and -6.0 are XAttention-minus-dense bounds at n = 100, block 128, unmatched recall: not H4's data, and not the bound's basis)",
+   "decided": "10 points: the admissibility margin the dispatcher reads (Section 5.7, 10 primary, 5 the sensitivity); two estimators closer than the label's own margin cannot change, through the label, which one a practitioner picks. Independent of T1.1's -4.3 and -6.0."
   },
   "h4_confirmatory_family": {
    "item": "H4 confirmatory family",
    "value": null,
    "source": null,
-   "status": "owed: decision (the adviser's next relay)",
-   "proposed": "m from the declared family (audit D4): 3 x k(k-1)/2 pair tests plus the random control, once per estimator (k) or per block size (3k); m = 22 or 30 at k = 4, 35 or 45 at k = 5",
-   "basis": "docs/lock_decisions_20261109.md"
+   "status": "decided (10 Nov 2026, adviser's ruling 2 of the 10 Nov paste), stated before any P2 data",
+   "proposed": "m = 30 under the ruling's default (no primary estimator is declared; the control at each block size): 18 pair tests + 12 control tests at k = 4; m = 18 if the window arm (T1.7) is not built by the lock",
+   "basis": "docs/lock_decisions_20261109.md (H4 for the adviser's next relay, eleventh paste)",
+   "decided": "m = 18: the window arm is not built (T1.7 Not started), so k = 3 (oracle, mean-pool, XAttention); 3 pairs x 3 block sizes (32, 64, 128) + the random control against each estimator at each block size (9), Holm-corrected together; power-rule n about 2,150 x p. A window arm built later is exploratory for H4."
   },
   "power_target_and_n": {
    "item": "power target and n",
@@ -90,9 +92,9 @@
    "item": "mask-gate bound",
    "value": null,
    "source": null,
-   "status": "owed: data",
-   "proposed": "After P2's first masks",
-   "basis": "lock table row 11"
+   "status": "decided (9 Nov 2026) and accepted as built (10 Nov 2026, adviser's ruling 3 of the 10 Nov paste); its value is the compiled-versus-eager tolerance's, still owed with it",
+   "proposed": "the compiled-versus-eager density flag tolerance (working +-0.01 absolute), one value; agreement reported only; P2's verdict on its own card, across cards a flag",
+   "basis": "docs/RESEARCH_PLAN.md Appendix A, 9 Nov 2026; t61_session.mask_gate_bound refuses a lock whose two values differ"
   },
   "cross_card_dense_task_score_bound": {
    "item": "cross-card dense task-score bound",
@@ -229,7 +231,7 @@
    "value": null,
    "source": null,
    "status": "owed: decision; default extended by the adviser (9 Nov 2026)",
-   "proposed": "P7 first, then the chunked extension, then the compiled group, then the rehearsal session; never ground-truth timing, H1 or H4",
+   "proposed": "P7 first, then the chunked extension, then the compiled group, then the rehearsal session; never ground-truth timing, H1 or H4; P4's provisioning is Flex-start first and Spot in four 2.3 h blocks the fallback (10 Nov 2026), a cost and not a cut: no step, cell or repeat is dropped to fit Spot's price",
    "basis": "lock table row 28"
   },
   "compiled_versus_eager_density_flag_tolerance": {
@@ -238,7 +240,8 @@
    "source": null,
    "status": "owed: data",
    "proposed": "Keep +-0.01; T3.2 ran eager only, so no new compiled rows",
-   "basis": "lock table row 29"
+   "basis": "lock table row 29",
+   "note_10_nov": "T2.21's P2 waiver holds only if this is fixed at its declared +-0.01, not from compiled data (Appendix A, 10 Nov 2026), since it is also the mask-gate bound"
   },
   "probe_length_rule": {
    "item": "the probe-length rule (T2.18: three lengths at or below 32768 with distinct chunk counts of at least two, else two plus a full recording at 32768)",
@@ -301,7 +304,7 @@
   "H0": [],
   "H2": []
  },
- "status": "draft: proposals only, nothing fixed (8 Nov 2026); items 1 (H1 to H3), 2 and 5 decided 9 Nov 2026, fixed only by the lock commit",
+ "status": "draft: proposals only, nothing fixed (8 Nov 2026); items 1 (H1 to H3), 2 and 5 decided 9 Nov 2026, fixed only by the lock commit; H0 and H4 (bound and family) decided 10 Nov 2026",
  "pairing_values": {
   "P2": {
    "densities": null,

@@ -25,6 +25,7 @@ H100_TRITON = CodePath(arm="xattention", gpu="NVIDIA H100", implementation="xatt
 
 FULL = np.array([[[[1, 0], [1, 1]]]], dtype=bool)        # every valid block kept: density 1
 DROP = np.array([[[[1, 0], [0, 1]]]], dtype=bool)        # (1, 0) dropped: density 2/3
+SWAP = np.array([[[[1, 0], [1, 0]]]], dtype=bool)        # (1, 1) dropped: density 2/3, 1/3 agree with DROP
 UPPER = np.array([[[[1, 1], [1, 1]]]], dtype=bool)       # FULL plus an invalid block
 
 
@@ -50,8 +51,8 @@ def rec(cp, *layers, prompt="p0", length=256, batch=1):
     return R(cp, length, batch, prompt, tuple(M(x) for x in layers))
 
 
-LOOSE = G.Bounds(min_agreement=0.5, max_density_difference=0.5)
-TIGHT = G.Bounds(min_agreement=1.0, max_density_difference=0.0)
+LOOSE = G.Bounds(max_density_difference=0.5)
+TIGHT = G.Bounds(max_density_difference=0.0)
 
 
 # --- one layer -----------------------------------------------------------------
@@ -136,13 +137,11 @@ def test_banks_must_hold_the_same_prompts_once_each_on_one_code_path():
 def test_the_bound_has_no_defaults_and_refuses_nonsense():
     with pytest.raises(TypeError):
         G.Bounds()
-    for kw in (dict(min_agreement=0, max_density_difference=0.1),
-               dict(min_agreement=1.1, max_density_difference=0.1),
-               dict(min_agreement=0.9, max_density_difference=-0.1),
-               dict(min_agreement=float("nan"), max_density_difference=0.1),
-               dict(min_agreement=True, max_density_difference=0.1)):
+    with pytest.raises(TypeError):
+        G.Bounds(min_agreement=0.9, max_density_difference=0.1)     # agreement decides nothing
+    for v in (-0.1, float("nan"), True, "0.01"):
         with pytest.raises(G.MaskGateError):
-            G.Bounds(**kw)
+            G.Bounds(max_density_difference=v)
 
 
 def test_the_gate_names_every_layer_outside_the_bound():
@@ -155,10 +154,16 @@ def test_the_gate_names_every_layer_outside_the_bound():
     tight = G.gate(cmp, TIGHT)
     assert not tight.passed
     assert [(f[3], f[4]) for f in tight.failures] == [("p0", 0)]
-    assert len(tight.failures[0][5]) == 2        # agreement and density both outside
+    assert len(tight.failures[0][5]) == 1        # the density difference only
     # The bound is inclusive: exactly at it passes.
-    at = G.Bounds(min_agreement=2 / 3, max_density_difference=1 / 3 + 1e-12)
-    assert G.gate(cmp, at).passed
+    assert G.gate(cmp, G.Bounds(max_density_difference=1 / 3 + 1e-12)).passed
+
+
+def test_block_agreement_is_reported_and_decides_nothing():
+    """Adviser's ruling 3 of the eleventh 9 Nov 2026 paste: the bound is the
+    density tolerance; blocks that disagree at equal density pass."""
+    g = G.gate(G.compare_banks([rec(A100_TORCH, DROP)], [rec(A100_TRITON, SWAP)]), TIGHT)
+    assert g.passed and g.min_agreement == pytest.approx(1 / 3) and g.identical_layers == 0
 
 
 def test_one_gate_is_one_pair_of_code_paths():
@@ -225,17 +230,18 @@ def test_the_shift_report_carries_the_max_and_the_mean_beside_the_deltas():
 
 # --- T2.23 and T2.24 -------------------------------------------------------------------
 
-def test_the_p2_gate_needs_both_paths_within_the_bound():
+def test_the_p2_verdict_is_its_own_card_and_p1_is_a_flag():
     p1 = [rec(L4_TORCH, FULL)]
     same = G.p2_mask_gate(p1, [rec(A100_TORCH, FULL)], [rec(A100_TRITON, FULL)], TIGHT)
-    assert same.passed and same.triton_vs_pytorch_on_p2.passed
+    assert same.passed and same.cross_card_flags == ()
     triton_off = G.p2_mask_gate(p1, [rec(A100_TORCH, FULL)], [rec(A100_TRITON, DROP)], TIGHT)
-    assert not triton_off.passed
-    assert triton_off.pytorch_vs_p1.passed and not triton_off.triton_vs_p1.passed
-    assert not triton_off.triton_vs_pytorch_on_p2.passed
-    torch_off = G.p2_mask_gate(p1, [rec(A100_TORCH, DROP)], [rec(A100_TRITON, FULL)], TIGHT)
-    assert not torch_off.passed
-    assert torch_off.triton_vs_p1.arms == ("xattention",)
+    assert not triton_off.passed and triton_off.cross_card_flags == ("triton_vs_p1",)
+    assert triton_off.pytorch_vs_p1.passed and not triton_off.triton_vs_pytorch_on_p2.passed
+    # Both P2 paths agree with each other and differ from P1: a pass, flagged twice.
+    card_off = G.p2_mask_gate(p1, [rec(A100_TORCH, DROP)], [rec(A100_TRITON, DROP)], TIGHT)
+    assert card_off.passed
+    assert card_off.cross_card_flags == ("pytorch_vs_p1", "triton_vs_p1")
+    assert card_off.triton_vs_p1.arms == ("xattention",)
 
 
 def test_the_p2_gate_refuses_banks_from_the_wrong_cards_or_paths():

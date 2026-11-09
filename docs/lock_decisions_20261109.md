@@ -136,3 +136,66 @@ Two choices set m, and the plan states neither:
 | the same, plus vertical-slash (T1.7) | 5 | 30 | 5 | 15 | 35 or 45 |
 
 The window arm is not yet built (T1.7).
+
+## H4 for the adviser's next relay (ruling 2 of the eleventh 9 Nov 2026 paste)
+
+**Verbatim.** Section 4, H4's test: "Paired comparison at matched per-layer
+recall, or the estimator coefficient in a pre-registered model, against an
+equivalence bound **[lock]**." Section 5.7: "**H4 equivalence bound:**
+justified at lock from the tasks (how large an accuracy difference would
+change which estimator a practitioner picks). The default is 10 points; T1.5
+also prices a 5-point bound, which needs about four times the examples."
+"**H4 confirmatory family:** the planned estimator pairs at block sizes 32,
+64 and 128 on the primary cell, plus the random-selection control against
+each estimator, Holm-corrected together."
+
+**What "points" measures.** Percentage points of task accuracy on the
+primary cell (`qa_1`/16384, n = max(200, the power rule)). It is the paired
+difference between two estimators at matched per-layer recall, or between
+an estimator and the random control. It is not a difference from dense.
+
+**The plan's rationale for a bound.** Only the clause above: "how large an
+accuracy difference would change which estimator a practitioner picks". Ten
+points is named as the default, with no derivation.
+
+**What 22 and 30 count.** Neither is about a primary estimator. With k = 4
+estimators (oracle, window, mean-pool, XAttention), the pairs at three block
+sizes are 3 × 6 = 18 tests. The random control against each estimator adds
+4 tests if it is tested once, giving 22, or 12 if it is tested at each block
+size, giving 30.
+
+**The default in the ruling.**
+- **Flag: the premise does not fit.** With one primary estimator and the
+  others as sensitivity variants, the confirmatory pairs would be the
+  primary's three per block size: 9, plus 3 or 9 controls, so 12 or 18. That
+  is neither 22 nor 30.
+- **The plan declares no primary estimator.** Section 5.7 names "the planned
+  estimator pairs", and no estimator is named as primary anywhere. So the
+  default's "otherwise" applies, and m = 30.
+- **m = 30 is also the plain reading of the text.** The family is "at block
+  sizes 32, 64 and 128", and the control is tested "against each
+  estimator", which gives a control test at each block size.
+- **Flag: m = 30 needs the window arm.** The window arm is not built (T1.7).
+  If it is not in by the lock, k = 3, and m = 18 under the same reading.
+
+**What m costs.** The power rule at α = 0.025 (Holm, worst case Bonferroni),
+90% power and δ = 10 points:
+
+| m | n per unit of p |
+|---|---|
+| 1 | about 1,300 × p (the plan's figure) |
+| 18 | about 2,150 × p |
+| 22 | about 2,210 × p |
+| 30 | about 2,290 × p |
+
+At a 20% disagreement rate, m = 30 needs about 460 rows. That is above the
+200-row floor.
+
+**Proposed bound: 10 points.** The reason does not use −4.3 or −6.0. H4's
+job in the plan is to let recall stand in for accuracy when admissibility is
+labelled (Section 5.1). The dispatcher reads that label at a 10-point margin
+(Section 5.7, with 5 points as the sensitivity). Two estimators that differ
+by less than the label's own margin cannot change, through the label, which
+one a practitioner picks. That is the plan's criterion. The 5-point bound is
+the same argument read at the sensitivity margin, and needs about four times
+the rows.
