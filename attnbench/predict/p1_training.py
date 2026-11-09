@@ -14,11 +14,24 @@
     in any row set, are one group, so a fold never trains on a cell it
     scores.
   - **Exploratory sessions never enter training**: a session is accepted only
-    as one of the two repeats, by its prediction's store prefix
-    (`predictions/P1-T3.2a/` or `predictions/P1-T3.2b/`); a debug, rehearsal
-    or exploratory session's prefix is refused.
-  - **If T3.2b fails**, the pooled row is repeat a alone (`repeat_b=None`
+    as one of a pool's two repeats (`POOLS`), by its prediction's store prefix
+    (`predictions/P1-T3.2d/`, say); a debug, rehearsal or exploratory
+    session's prefix is refused.
+  - **The pools** (Appendix A, 8 and 9 Nov 2026): targets pool only sessions
+    whose timed ground-truth path is byte-identical (`scripts/timed_path.py`).
+    The primary is T3.2d and T3.2c (`4e78a962…`), features from T3.2d, the
+    final identity (adviser's ruling 4 of 9 Nov 2026, eighth paste); T3.2a
+    and T3.2b (`a5ade053…`) are a sensitivity. The first of a pool is its
+    repeat a.
+  - **A group short of clean rounds** (`gate_a.short_of_rounds`, the 10 of
+    leg 1's rule) gives no target: its cells' targets pool the other repeat
+    alone, and the cell's metadata names the repeat left out. A cell short in
+    both repeats is refused.
+  - **If repeat b fails**, the pooled row is repeat a alone (`repeat_b=None`
     with `b_failed` naming why); the rows say so.
+
+`REPEAT_A_ONLY` keeps repeat a's median as recorded, short or not; the
+metadata's `left_out` says when it is.
 
 Each row's features are repeat a's committed cell (its priced sequence, as
 the committed file holds it, read through `load_committed`), with the
@@ -37,14 +50,14 @@ import statistics
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
-from ..analysis.gate_a import GateAError, place_row
+from ..analysis.gate_a import MIN_CLEAN_ROUNDS, GateAError, place_row, short_of_rounds
 from ..analysis.gate_a_repeats import cell_key
 from .commit import CommittedPrediction, require_loaded
 from .intensity import ModelShape
 from .training import Cell, GroundTruthRow, HardwareFeatures
 
 PAIRING = "P1"
-REPEATS = ("T3.2a", "T3.2b")
+POOLS = (("T3.2d", "T3.2c"), ("T3.2a", "T3.2b"))   # (repeat a, the features; repeat b)
 PRIMARY = "pooled"
 SEPARATE_ROWS = "separate_rows"
 REPEAT_A_ONLY = "repeat_a_only"
@@ -58,7 +71,7 @@ class TrainingRowsError(GateAError):
 
 @dataclass(frozen=True)
 class RepeatSession:
-    label: str                                   # "T3.2a" or "T3.2b"
+    label: str                                   # a session of `POOLS`, "T3.2d" say
     remote: str                                  # the committed prediction's store path
     cp: CommittedPrediction                      # read through load_committed
     results: Sequence[tuple[str, Mapping]]       # (name, untraced ground-truth result)
@@ -80,12 +93,16 @@ def _check(s: RepeatSession, label: str) -> None:
         raise TrainingRowsError(f"{s.label}'s prediction is {cp.pairing}'s, not {PAIRING}'s")
 
 
-def _samples(s: RepeatSession) -> dict:
-    """{cell key: (committed cell, [seconds])} from one repeat."""
+def _samples(s: RepeatSession, min_clean_rounds: int) -> dict:
+    """{cell key: (committed cell, [seconds], nominal density, short)} from one
+    repeat; `short` names a group short of clean rounds, else None."""
     out = {}
     for name, result in s.results:
         if result.get("traced"):
             raise TrainingRowsError(f"{s.label} {name}: a traced result is not ground truth")
+        short = (f"{s.label} {name}: {result.get('clean_rounds')} clean of "
+                 f"{result.get('rounds_run')} rounds, complete {result.get('complete')}"
+                 if short_of_rounds(result, min_clean_rounds) else None)
         for row in result.get("rows", ()):
             k = cell_key(row)
             if k in out:
@@ -93,7 +110,8 @@ def _samples(s: RepeatSession) -> dict:
             xs = [float(x) / MS_PER_S for x in row["prefill_ms_samples"]]
             if not xs:
                 raise TrainingRowsError(f"{s.label}: cell {k} has no clean samples")
-            out[k] = (place_row(s.cp, row, f"{s.label} {name}"), xs, row.get("nominal_density"))
+            out[k] = (place_row(s.cp, row, f"{s.label} {name}"), xs, row.get("nominal_density"),
+                      short)
     if not out:
         raise TrainingRowsError(f"{s.label}: no ground-truth rows")
     return out
@@ -115,34 +133,46 @@ def _cell(s: RepeatSession, c) -> Cell:
 
 
 def training_rows(a: RepeatSession, b: Optional[RepeatSession], *,
-                  b_failed: Optional[str] = None) -> dict:
+                  b_failed: Optional[str] = None,
+                  min_clean_rounds: int = MIN_CLEAN_ROUNDS) -> dict:
     """The primary rows, the sensitivity row sets, and per cell the metadata."""
-    _check(a, REPEATS[0])
+    pool = next((p for p in POOLS if p[0] == a.label), None)
+    if pool is None:
+        raise TrainingRowsError(f"expected repeat a of a pool {POOLS}, got {a.label!r}")
+    _check(a, pool[0])
     if (b is None) == (b_failed is None):
         raise TrainingRowsError("give repeat b, or say why it failed (b_failed), not both")
     if b is not None:
-        _check(b, REPEATS[1])
-    sa = _samples(a)
-    sb = _samples(b) if b is not None else {}
+        _check(b, pool[1])
+    sa = _samples(a, min_clean_rounds)
+    sb = _samples(b, min_clean_rounds) if b is not None else {}
     if b is not None and set(sa) != set(sb):
         raise TrainingRowsError(f"the repeats timed different cells: only in a "
                                 f"{sorted(set(sa) - set(sb))}, only in b {sorted(set(sb) - set(sa))}")
     primary, meta = [], []
     targets = {name: [] for name in SENSITIVITY}     # per cell, a list of targets
     for k in sorted(sa):
-        ca, xa, nominal = sa[k]
+        ca, xa, nominal, short_a = sa[k]
         cell = _cell(a, ca)
         ma = statistics.median(xa)
-        m = {"cell": list(k), "median_a_s": ma, "n_a": len(xa)}
+        m = {"cell": list(k), "median_a_s": ma, "n_a": len(xa), "left_out": []}
         if b is not None:
-            cb, xb, _ = sb[k]
+            cb, xb, _, short_b = sb[k]
             _same_cell(k, ca, cb, estimator_density=nominal is None)
             mb = statistics.median(xb)
-            pooled = statistics.median(xa + xb)
-            targets[SEPARATE_ROWS].append([ma, mb])
+            kept = [(x, med) for x, med, short in ((xa, ma, short_a), (xb, mb, short_b))
+                    if short is None]
+            if not kept:
+                raise TrainingRowsError(f"cell {k} is short of clean rounds in both repeats: "
+                                        f"{short_a}; {short_b}")
+            pooled = statistics.median([x for xs, _ in kept for x in xs])
+            targets[SEPARATE_ROWS].append([med for _, med in kept])
             m.update(median_b_s=mb, n_b=len(xb),
                      between_session_spread=(max(ma, mb) - min(ma, mb)) / statistics.median([ma, mb]))
+            m["left_out"] = [s for s in (short_a, short_b) if s is not None]
         else:
+            if short_a is not None:
+                raise TrainingRowsError(f"cell {k} is short of clean rounds: {short_a}")
             pooled = ma
             targets[SEPARATE_ROWS].append([ma])
             m.update(median_b_s=None, n_b=0, between_session_spread=None)
@@ -156,6 +186,7 @@ def training_rows(a: RepeatSession, b: Optional[RepeatSession], *,
     return {"primary": PRIMARY, "rows": primary, "sensitivity": sensitivity,
             "sensitivity_targets": targets,
             "metadata": meta, "repeats": [a.label] + ([b.label] if b is not None else []),
+            "features_from": a.label, "min_clean_rounds": min_clean_rounds,
             "b_failed": b_failed,
             "predictions": {a.label: a.cp.sha256, **({b.label: b.cp.sha256} if b else {})}}
 
@@ -177,7 +208,9 @@ def cell_groups(rows: Sequence[GroundTruthRow]) -> list:
 
 SCHEMA = "attnbench.p1_training/2"     # /2: a sensitivity set holds targets per cell
 DECISION = ("researcher's decision, 8 Nov 2026: one row per cell, the target the median of "
-            "both T3.2 repeats' samples pooled; repeat a alone if T3.2b fails")
+            "both T3.2 repeats' samples pooled; repeat a alone if repeat b fails. Appendix A, "
+            "8 and 9 Nov 2026: the repeats share a timed ground-truth path, the primary T3.2d "
+            "and T3.2c with T3.2d's features; a group short of clean rounds gives no target")
 CELL_FIELDS = ("model_name", "code_path", "arm", "context_length", "density", "batch")
 
 
@@ -202,6 +235,7 @@ def to_record(out: Mapping, hardware: HardwareFeatures) -> dict:
     rec = {"schema": SCHEMA, "decision": DECISION, "pairing": PAIRING,
            "primary": out["primary"], "repeats": list(out["repeats"]),
            "b_failed": out["b_failed"], "predictions": dict(out["predictions"]),
+           "features_from": out["features_from"], "min_clean_rounds": out["min_clean_rounds"],
            "hardware": {"pinned_bandwidth": hardware.pinned_bandwidth,
                         "pageable_bandwidth": hardware.pageable_bandwidth},
            "rows": rows,

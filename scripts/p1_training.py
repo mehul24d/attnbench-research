@@ -1,16 +1,18 @@
 """P1's training file for the fitted baselines of every later pairing
 (`attnbench/predict/p1_training.py`; researcher's decision, 8 Nov 2026).
 
-Each `--repeat` names one T3.2 session: LABEL REMOTE LOCAL GROUND_TRUTH LINK.
+Each `--repeat` names one T3.2 session: LABEL REMOTE LOCAL GROUND_TRUTH LINK,
+repeat a (the features) first: T3.2d then T3.2c for the primary, T3.2a then
+T3.2b for the sensitivity (`p1_training.POOLS`).
 REMOTE is the committed prediction in the store (read through
 `load_committed` with its local copy LOCAL), GROUND_TRUTH the session's step-9
 directory, LINK its `02_link/recursion_inputs.json` (the link figures; repeat
-a's are the rows'). With T3.2b failed, give repeat a alone and `--b-failed`.
+a's are the rows'). With repeat b failed, give repeat a alone and `--b-failed`.
 
     python3 scripts/p1_training.py \\
-        --repeat T3.2a gs://.../predictions/P1-T3.2a/<s>/prediction_P1_<t>.json <local> \\
+        --repeat T3.2d gs://.../predictions/P1-T3.2d/<s>/prediction_P1_<t>.json <local> \\
             <09_ground_truth> <recursion_inputs.json> \\
-        --repeat T3.2b ... --out results/p1_training/p1_training.json.gz
+        --repeat T3.2c ... --out results/p1_training/p1_training.json.gz
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ def main(argv=None, store=None) -> int:
     args = parser().parse_args(argv)
     reps = [dict(zip(FIELDS, r)) for r in args.repeat]
     if len(reps) > 2:
-        print("p1_training: at most the two T3.2 repeats", file=sys.stderr)
+        print("p1_training: at most a pool's two repeats", file=sys.stderr)
         return 2
     try:
         sessions = [repeat_session(r, clock_skew_s=args.clock_skew_s, store=store) for r in reps]

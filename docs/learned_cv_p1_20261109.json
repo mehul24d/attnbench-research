@@ -1,0 +1,97 @@
+{
+ "schema_note": "Re-selection, 9 Nov 2026 (adviser's ruling 4, eighth paste): the same six pre-declared configurations and procedure as docs/learned_cv_p1_20261108.json, on the rebuilt P1 training file: targets pooled over T3.2d and T3.2c (a repeat short of 10 clean rounds gives no target), features and link figures from T3.2d.",
+ "training_file_sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
+ "configs": [
+  {
+   "index": 0,
+   "target": "log_seconds",
+   "params": {
+    "random_state": 0,
+    "deterministic": true,
+    "force_row_wise": true,
+    "verbose": -1
+   },
+   "median": 0.8274817053972738,
+   "max": 6.0090790939421135
+  },
+  {
+   "index": 1,
+   "target": "seconds",
+   "params": {
+    "random_state": 0,
+    "deterministic": true,
+    "force_row_wise": true,
+    "verbose": -1
+   },
+   "median": 1.0815625070113024,
+   "max": 12.14202252620875
+  },
+  {
+   "index": 2,
+   "target": "log_seconds",
+   "params": {
+    "random_state": 0,
+    "deterministic": true,
+    "force_row_wise": true,
+    "verbose": -1,
+    "n_estimators": 200,
+    "learning_rate": 0.05,
+    "num_leaves": 7,
+    "min_child_samples": 3
+   },
+   "median": 0.041046860127526945,
+   "max": 0.6427696357411312
+  },
+  {
+   "index": 3,
+   "target": "seconds",
+   "params": {
+    "random_state": 0,
+    "deterministic": true,
+    "force_row_wise": true,
+    "verbose": -1,
+    "n_estimators": 200,
+    "learning_rate": 0.05,
+    "num_leaves": 7,
+    "min_child_samples": 3
+   },
+   "median": 0.0676815965215379,
+   "max": 0.6149736583575999
+  },
+  {
+   "index": 4,
+   "target": "log_seconds",
+   "params": {
+    "random_state": 0,
+    "deterministic": true,
+    "force_row_wise": true,
+    "verbose": -1,
+    "n_estimators": 500,
+    "learning_rate": 0.02,
+    "num_leaves": 4,
+    "min_child_samples": 2,
+    "reg_lambda": 1.0
+   },
+   "median": 0.028726386309352436,
+   "max": 0.6466676229346049
+  },
+  {
+   "index": 5,
+   "target": "log_seconds",
+   "params": {
+    "random_state": 0,
+    "deterministic": true,
+    "force_row_wise": true,
+    "verbose": -1,
+    "n_estimators": 100,
+    "learning_rate": 0.1,
+    "num_leaves": 15,
+    "min_child_samples": 5
+   },
+   "median": 0.03826521621067523,
+   "max": 0.7088624420584775
+  }
+ ],
+ "winner": 4,
+ "file_record_sha256": "361c69c86806a6d2de57fe346a701efe4c952021ef6f6f39ce68a9d0cfeecc7a"
+}
