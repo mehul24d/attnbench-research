@@ -1063,8 +1063,9 @@ def real_trace_checks(cfg, args) -> dict:
 
 # --- the mask gates (T2.23, T2.24) ----------------------------------------------------------
 
-# The session's copy of a banked pairing's XAttention masks, as T3.1's step 5
-# wrote them: `<cell>/recording/masks.{npz,json}` (`t31_steps.cell_dir`).
+# The session's copy of a banked pairing's XAttention masks: P1's as T3.1's
+# step 5 wrote them (`<cell>/recording/masks.{npz,json}`, `t31_steps.cell_dir`),
+# P2's as its mask gate did (`mask_gate/masks/triton/<cell>/masks.{npz,json}`).
 P1_MASKS = "p1_masks"
 P2_MASKS = "p2_masks"
 _CELL_DIR = re.compile(r"^(?P<arm>.+)_d(?P<d>[^_]+)_L(?P<budget>\d+)_b(?P<batch>\d+)$")
@@ -1072,11 +1073,13 @@ _CELL_DIR = re.compile(r"^(?P<arm>.+)_d(?P<d>[^_]+)_L(?P<budget>\d+)_b(?P<batch>
 
 def banked_masks(base: Path) -> list:
     """(budget, MaskRecord) for every XAttention cell banked under `base`,
-    each read back through its own hashes (`mask_bank.load`)."""
+    the budget read from the nearest cell directory above the bank, each read
+    back through its own hashes (`mask_bank.load`)."""
     from attnbench.components import mask_bank
-    out = []
-    for m in sorted(Path(base).glob("*/recording/masks.json")):
-        cell = _CELL_DIR.match(m.parent.parent.name)
+    base, out = Path(base), []
+    for m in sorted(base.rglob("masks.json")):
+        cell = next((c for c in map(_CELL_DIR.match, (p.name for p in m.relative_to(base).parents))
+                     if c), None)
         if cell is None:
             raise StepFailed(f"{m}: not under a T3.1 cell directory")
         rec = mask_bank.load(m.with_suffix(""))
@@ -1109,21 +1112,22 @@ def mask_gate_bound(path=None, plan_text=None) -> dict:
     return v
 
 
-def record_both_paths(args, cells, out: Path) -> dict:
-    """Each XAttention cell's prefill on both paths, untimed
+def record_both_paths(args, cells, out: Path, paths=("torch", "triton")) -> dict:
+    """Each XAttention cell's prefill on each of `paths`, untimed
     (`recorder.record_masks`): `use_triton` set on a fresh backend before its
     first run, and the path the estimator took read back into the code path
     (`Harness.code_path`), refused if it is not the one asked for or if the
-    prompt is not the banked one. {"torch": [...], "triton": [...]}"""
+    prompt is not the banked one. {path: [MaskRecord, ...]}"""
     import torch
     sys.path.insert(0, str(ROOT / "scripts"))
     import t31_steps as st
     from attnbench.components import recorder
     from attnbench.components.shakedown_arms import ARMS
     h = st._harness(args)
-    banks = {"torch": [], "triton": []}
+    banks = {p: [] for p in paths}
     for arm, budget, batch, prompt_id in cells:
-        for path, triton in (("torch", False), ("triton", True)):
+        for path in paths:
+            triton = path == "triton"
             be = h._backend(ARMS[arm])
             be.use_triton, be.triton_effective = triton, None
             a = h.prepare(arm, budget, backend=be, density=st.density_setting(arm, None),

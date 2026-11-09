@@ -151,9 +151,33 @@ def test_p4_requires_p2_banked_and_the_fa3_files():
     assert {"scripts/fa3_import_check.sh", "attnbench/backends/fa3.py"} <= files
 
 
-def test_the_masks_step_waits_for_t2_23(tmp_path):
-    with pytest.raises(S.NotBuilt, match=r"T2\.23"):
-        T64.reals["masks"](T64, args_for(tmp_path))
+def _p4_masks_setup(tmp_path, p4_layers):
+    from attnbench.components import mask_bank as MB
+    from test_t61_session import LAYERS2, _mask_record
+    session = tmp_path / "s"
+    cell = session / S.P2_MASKS / "mask_gate" / "masks" / "triton" / "xattention_dcal_L4096_b1"
+    cell.mkdir(parents=True)
+    MB.save(_mask_record("xattn:triton", "NVIDIA A100", LAYERS2), cell / "masks")
+    seen = []
+
+    def record(args, cells, out, paths):
+        seen.append((cells, paths))
+        return {"triton": [_mask_record("xattn:triton", "NVIDIA H100", p4_layers)]}
+    return Namespace(out=str(tmp_path / "m"), session=str(session), dry_run=False), record, seen
+
+
+def test_the_masks_step_records_p4s_triton_masks_on_p2s_cells_and_compares(tmp_path):
+    from test_t61_session import BOUND, LAYERS2
+    from attnbench.components import mask_gate as MG
+    args, record, seen = _p4_masks_setup(tmp_path, LAYERS2)
+    r = T64.reals["masks"](T64, args, record=record, bound=BOUND)
+    assert seen == [([("xattention", 4096, 1, "p0")], ("triton",))]
+    assert r["verdict"] == "pass" and r["decision"] == MG.P6_INHERITS
+    m = json.loads((Path(args.out) / "masks.json").read_text())
+    assert m["recorded"] is True and m["n_layers"] == 2
+    args, record, _ = _p4_masks_setup(tmp_path / "b", [[[1, 0], [1, 1]], [[1, 0], [1, 1]]])
+    r = T64.reals["masks"](T64, args, record=record, bound=BOUND)
+    assert r["verdict"] == "fail" and r["decision"] == MG.P6_RECORDS
 
 
 def test_the_real_record_needs_both_banking_times(tmp_path):

@@ -9,8 +9,9 @@ on P4:
   - the instance: `a3-highgpu-1g` on DWS Flex-start only, launched from the
     Mac by `scripts/gcp_launch_h100.sh` (the async submit and bounded poll
     of `scripts/_flex_request.sh`, on main from PR #22);
-  - `masks`: XAttention's Triton masks recorded untimed on the target, the
-    input T2.24 compares with P2's after this session;
+  - `masks`: XAttention's Triton masks recorded untimed on the target, on
+    the cells and prompts P2's mask gate recorded, and T2.24's comparison
+    with P2's (`real_masks`);
   - `fa3_import`, before `dense_select`: `scripts/fa3_import_check.sh` with
     the wheel's sha256 recorded at its build (`--fa3-sha256`), which checks
     the hash, the Python and torch tags, installs it without dependencies,
@@ -85,10 +86,36 @@ def fake_fa3_import(cfg, args) -> dict:
     return {"fa3_wheel_sha256": sha, "available": True, "fake": True}
 
 
+def real_masks(cfg, args, *, record=None, bound=None) -> dict:
+    """T2.24 on P4: XAttention's Triton masks recorded untimed on the cells
+    and prompts P2's mask gate recorded (`<session>/p2_masks`, P2's
+    `mask_gate/masks/triton`), then compared with P2's Triton masks
+    (`mask_gate.p4_mask_comparison`) under the lock's bound, written before
+    the bound is read. The decision is P6's (Section 7): inherit P4's masks,
+    or record its own and restate H2. Neither stops this session."""
+    from dataclasses import asdict
+    from attnbench.components import mask_gate as MG
+    session, out = Path(args.session), Path(args.out)
+    p2 = S.banked_masks(session / S.P2_MASKS)
+    cells = [(r.code_path.arm, budget, r.batch, r.prompt_id) for budget, r in p2]
+    banks = (record or S.record_both_paths)(args, cells, out / "masks", paths=("triton",))
+    ref = [r for _, r in p2]
+    try:
+        S.write_json(out / "mask_comparisons.json", {
+            "triton_p4_vs_p2": S._comparisons(MG.compare_banks(ref, banks["triton"]))})
+        res = MG.p4_mask_comparison(ref, banks["triton"], MG.Bounds(
+            **(bound if bound is not None else S.mask_gate_bound())))
+    except MG.MaskGateError as e:
+        raise S.StepFailed(f"T2.24 cannot compare these banks: {e}") from e
+    verdict = "pass" if res.result.passed else "fail"
+    S.write_json(out / "masks.json", {"recorded": True, "verdict": verdict,
+                                      "decision": res.decision, **asdict(res.result)})
+    return {"recorded": True, "cells": len(cells), "verdict": verdict, "decision": res.decision}
+
+
 def _t64() -> S.SessionConfig:
     reals, fakes = S.common_bodies()
-    reals["masks"] = S.not_built("T2.23", "recording XAttention's Triton masks at the grid "
-                                          "lengths, untimed, for T2.24")
+    reals["masks"] = real_masks
     fakes["masks"] = S.fake_files("masks.json", recorded=True)
     reals["fa3_import"], fakes["fa3_import"] = real_fa3_import, fake_fa3_import
     cfg = S.SessionConfig(
