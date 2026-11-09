@@ -556,9 +556,62 @@ def test_the_launch_queue_reports_the_q_link_measured(tmp_path):
     assert S.real_launch_queue(T61, args) == {"q": 1022, "from": "link"}
 
 
-def test_the_real_ground_truth_harness_is_not_built():
-    with pytest.raises(S.NotBuilt, match=r"traced pass.*\(T2\.13\)"):
-        S.real_harness(T61, None)
+
+
+# --- the real harness (adviser's ruling 9 of the tenth 9 Nov 2026 paste) --------------------
+
+def _harness_setup(tmp_path, monkeypatch):
+    """P1's grid stands in for P2's config (whose lock values are unset), and
+    a fake T3.1 step writes one eager group's untraced and traced files."""
+    import t31_steps as st
+    comp, grid = p1_grid()
+    monkeypatch.setattr(st, "load_config", lambda path, dry_run: json.loads(Path(path).read_text())
+                        if Path(path).name == "block_config.json" else comp)
+    seen = []
+
+    def step(ns, cfg, *, raise_=None):
+        seen.append((ns, cfg))
+        out = Path(ns.out)
+        write_t31_gt(out, "eager", [t31_row("dense", "dense", None, 2048, 1, 1951)],
+                     not_before=T, firsts=[T + 1], complete=raise_ is None)
+        S.write_json(out / "eager" / "traced_L2048_b1.json", {"traced": {"rows": []}})
+        if raise_:
+            raise raise_
+    out = tmp_path / "gt"
+    out.mkdir()
+    args = Namespace(out=str(out), session=str(tmp_path), dry_run=False)
+    return st, comp, grid, seen, step, args
+
+
+def test_the_real_harness_runs_t31s_ground_truth_on_the_pairings_config(tmp_path, monkeypatch):
+    st, comp, grid, seen, step, args = _harness_setup(tmp_path, monkeypatch)
+    r = S.real_harness(T61, args, step_fn=step)
+    ns, cfg = seen[0]
+    assert ns.config == str(ROOT / T61.components_config) and ns.dry_run is False
+    assert cfg is comp and ns.out == args.out and ns.session == args.session
+    assert r["complete"] is True and r[S.STRICT_KEY] == T
+    assert [x["cell"] for x in r["untraced"]["rows"]] == [["dense", 1.0, 2048, 1]]
+    assert r["traced_files"] == ["eager/traced_L2048_b1.json"] and r["traces"] == []
+
+
+def test_the_real_harness_runs_a_block_on_the_blocks_grid_only(tmp_path, monkeypatch):
+    st, comp, grid, seen, step, args = _harness_setup(tmp_path, monkeypatch)
+    block = {"id": "b2", "anchor": grid[0], "cells": [grid[1]], "run_cells": [grid[0], grid[1]]}
+    S.real_harness(T61, args, block, step_fn=step)
+    ns, cfg = seen[0]
+    assert Path(ns.config) == Path(args.out) / "block_config.json"
+    assert cfg == json.loads(json.dumps(S.block_config(comp, block)))
+    assert {k for k in map(tuple, st.cells(cfg))} == {tuple(grid[0]), tuple(grid[1])}
+
+
+def test_the_real_harness_reports_an_incomplete_cell_and_passes_on_a_refusal(tmp_path, monkeypatch):
+    st, comp, grid, seen, step, args = _harness_setup(tmp_path, monkeypatch)
+    r = S.real_harness(T61, args, step_fn=lambda ns, cfg: step(
+        ns, cfg, raise_=st.StepIncomplete("1 cell short")))
+    assert r["complete"] is False
+    with pytest.raises(S.StepFailed, match="group eager failed"):
+        S.real_harness(T61, args, step_fn=lambda ns, cfg: step(
+            ns, cfg, raise_=st.StepFailed("ground truth for group eager failed")))
 
 
 def test_predict_leaves_t31s_receipt_where_t31s_steps_read_it(tmp_path):

@@ -851,9 +851,9 @@ class FakeHarness:
 
 # The ground truth is T3.1's (`t31_steps.step_ground_truth`, T2.13): untraced,
 # one process per compile-setting group, each with its dense control, on this
-# pairing's components config. Section 5.3 step 8 (traced against untraced
-# per arm) has no T3.1 counterpart: P1's sessions never ran it, so the traced
-# pass is not built and the harness refuses before anything is clocked.
+# pairing's components config, then each cell's traced pass (Section 5.3 step
+# 8, in T3.1's step since the revised identity of 8 Nov 2026), written to
+# `traced_L*_b*.json` and never to the untraced rows.
 
 def _cell_of(c) -> tuple:
     from attnbench.lock.blocks import CELL_FIELDS, cell_key
@@ -914,10 +914,36 @@ def t31_ground_truth_result(d: Path) -> dict:
     return {STRICT_KEY: min(stamps), "complete": complete, "untraced": {"rows": rows}}
 
 
-def real_harness(cfg, args, block=None) -> dict:
-    raise NotBuilt("T2.13", "this runner's harness: T3.1's ground truth (untraced, then "
-                   "the traced pass of Section 5.3 step 8, 8 Nov 2026), run through "
-                   "`block_config` and `t31_ground_truth_result`")
+def real_harness(cfg, args, block=None, *, step_fn=None) -> dict:
+    """T3.1's ground-truth step on this pairing's components config, or on a
+    block's grid (`block_config`, written beside the step's output), read back
+    by `t31_ground_truth_result`. A cell short of clean rounds makes the result
+    incomplete, which `body_ground_truth` refuses after writing it. The traced
+    pass's files are listed as `traced_files`; they hold no profiler trace,
+    so `traces` stays empty and T2.7's step refuses until one is exported."""
+    from types import SimpleNamespace
+    if not cfg.components_config:
+        raise StepFailed(f"{cfg.pairing} names no components config for the ground truth")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    out = Path(args.out)
+    config = ROOT / cfg.components_config
+    if block is not None:
+        comp = st.load_config(str(config), dry_run=False)
+        config = write_json(out / "block_config.json", block_config(comp, block))
+    ns = SimpleNamespace(out=str(out), session=args.session, dry_run=False,
+                         cpu_boundary=False, config=str(config), step="ground_truth")
+    step_fn = step_fn or st.step_ground_truth
+    try:
+        step_fn(ns, st.load_config(str(config), dry_run=False))
+    except st.StepIncomplete:
+        pass
+    except st.StepFailed as e:
+        raise StepFailed(str(e), e.findings) from e
+    result = t31_ground_truth_result(out)
+    result["traced_files"] = [str(p.relative_to(out)) for p in sorted(out.glob("*/traced_L*_b*.json"))]
+    result["traces"] = []
+    return result
 
 
 def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
