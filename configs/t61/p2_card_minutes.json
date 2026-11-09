@@ -1,0 +1,22 @@
+{
+ "_comment": "The P2 launch card's minutes per step (scripts/t61_card.py), each with its basis. 'measured' names the P1 session and step it was read from (L4, docs/spend_ledger.md); nothing here has run on an A100. 'estimate' is not measured anywhere. The compiled groups are not in: their ground truth is unresolved (adviser's ruling 2 of the tenth 9 Nov 2026 paste), and if they come in by 14 Nov 2026 their host time is added here and stated on the card.",
+ "setup_h": {"value": 0.5, "basis": "estimate: write gate, deploy, preflight, bootstrap with XAttention (28 Oct 2026 card)"},
+ "teardown_h": {"value": 0.15, "basis": "estimate: logs and manifests pull, delete, cleanup check (28 Oct 2026 card)"},
+ "steps": {
+  "prereqs": {"minutes": [1], "basis": "estimate"},
+  "preflight": {"minutes": [3], "basis": "estimate"},
+  "link": {"minutes": [6], "basis": "estimate"},
+  "launch_queue": {"minutes": [3], "basis": "estimate"},
+  "probe": {"minutes": [13], "basis": "measured: T3.2d step 4, L4"},
+  "mask_gate": {"minutes": [10], "basis": "estimate: each XAttention cell P1 banked, untimed, on two paths"},
+  "host_components": {"minutes": [79], "basis": "measured: T3.2d step 5, L4"},
+  "device_components": {"minutes": [49], "basis": "measured: T3.2d step 6, L4"},
+  "dense_select": {"minutes": [15], "basis": "estimate"},
+  "host_speed_mid": {"minutes": [2], "basis": "estimate"},
+  "predict": {"minutes": [3], "basis": "estimate"},
+  "ground_truth": {"minutes": [2, 28, 5], "basis": "the hold, then measured: T3.2d step 9 (eager group, traced pass included), L4, then estimate: the Kineto export"},
+  "late_check": {"minutes": [1], "basis": "estimate"},
+  "trace_checks": {"minutes": [5], "basis": "estimate"},
+  "host_speed_end": {"minutes": [2], "basis": "estimate"}
+ }
+}
