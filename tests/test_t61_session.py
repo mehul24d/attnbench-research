@@ -486,9 +486,89 @@ def test_a_real_step_is_wrapped_in_run_phase_and_named_for_t61(tmp_path):
     assert d[0] == sys.executable and d[-1] == "--dry-run"
 
 
-def test_the_mask_gate_is_not_yet_built_and_refuses_naming_its_task(tmp_path):
-    with pytest.raises(S.NotBuilt, match=r"T2\.23"):
-        T61.reals["mask_gate"](T61, args_for(tmp_path, tmp_path, dry_run=False))
+# --- the mask gate (T2.23; adviser's ruling 9 of the tenth 9 Nov 2026 paste) ---------------
+
+def _mask_record(impl, gpu, masks, prompt="p0", arm="xattention", length=1951):
+    import numpy as np
+    import torch
+    from attnbench.components import mask_bank as MB
+    from attnbench.components.op_sequence import CodePath
+    cp = CodePath(arm=arm, gpu=gpu, implementation=impl, libraries=(), python_optimize=0)
+    return MB.MaskRecord(cp, length, 1, prompt, tuple(
+        MB._bank_one(torch.from_numpy(np.array(m, dtype=bool)), True) for m in masks))
+
+
+LAYERS2 = [[[1, 0], [1, 1]], [[1, 0], [0, 1]]]          # two layers, 2 x 2 blocks, causal
+BOUND = {"min_agreement": 0.99, "max_density_difference": 0.01}
+
+
+def _mask_gate_setup(tmp_path, triton=LAYERS2, prompt="p0"):
+    from attnbench.components import mask_bank as MB
+    session = tmp_path / "s"
+    cell = session / S.P1_MASKS / "xattention_dcal_L2048_b1" / "recording"
+    cell.mkdir(parents=True)
+    MB.save(_mask_record("xattn:torch", "NVIDIA L4", LAYERS2), cell / "masks")
+    seen = []
+
+    def record(args, cells, out):
+        seen.append(cells)
+        return {"torch": [_mask_record("xattn:torch", "NVIDIA A100", LAYERS2)],
+                "triton": [_mask_record("xattn:triton", "NVIDIA A100", triton, prompt=prompt)]}
+    args = Namespace(out=str(tmp_path / "mg"), session=str(session), dry_run=False)
+    return args, record, seen
+
+
+def test_the_mask_gate_compares_both_p2_paths_with_p1s_banked_masks(tmp_path):
+    args, record, seen = _mask_gate_setup(tmp_path)
+    r = S.real_mask_gate(T61, args, record=record, bound=BOUND)
+    assert seen == [[("xattention", 2048, 1, "p0")]]        # P1's banked cell, by budget
+    assert r["verdict"] == "pass" and r["cells"] == 1
+    gate = json.loads((Path(args.out) / "mask_gate.json").read_text())
+    assert gate["verdict"] == "pass" and gate["triton_vs_p1"]["n_layers"] == 2
+    comps = json.loads((Path(args.out) / "mask_comparisons.json").read_text())
+    assert set(comps) == {"torch_vs_p1", "triton_vs_p1", "triton_vs_torch_on_p2"}
+
+
+def test_a_failed_mask_gate_is_a_verdict_not_a_stop(tmp_path):
+    args, record, _ = _mask_gate_setup(tmp_path, triton=[[[1, 0], [1, 1]], [[1, 0], [1, 1]]])
+    r = S.real_mask_gate(T61, args, record=record, bound=BOUND)
+    assert r["verdict"] == "fail"
+    assert r["failures"] == {"pytorch_vs_p1": 0, "triton_vs_p1": 1, "triton_vs_pytorch_on_p2": 1}
+
+
+def test_the_mask_gate_writes_its_comparisons_then_refuses_without_a_lock(tmp_path, monkeypatch):
+    import t31_steps as st
+    monkeypatch.setattr(st, "LOCK_FILE", tmp_path / "lock_values.json")
+    args, record, _ = _mask_gate_setup(tmp_path)
+    with pytest.raises(S.StepFailed, match="the mask-gate bound is a lock value"):
+        S.real_mask_gate(T61, args, record=record)
+    assert (Path(args.out) / "mask_comparisons.json").exists()
+    assert not (Path(args.out) / "mask_gate.json").exists()
+
+
+def test_the_mask_gate_refuses_banks_on_other_prompts(tmp_path):
+    args, record, _ = _mask_gate_setup(tmp_path, prompt="p1")
+    with pytest.raises(S.StepFailed, match="cannot compare these banks"):
+        S.real_mask_gate(T61, args, record=record, bound=BOUND)
+
+
+def test_the_mask_gate_bound_is_read_from_a_complete_lock_only(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from attnbench.lock import checklist
+    lock = tmp_path / "lock_values.json"
+    complete = SimpleNamespace(complete=True)
+    monkeypatch.setattr(checklist, "check", lambda lk, text: complete)
+    lock.write_text(json.dumps({"values": {"mask_gate_bound": {"value": BOUND}}}))
+    assert S.mask_gate_bound(lock, plan_text="") == BOUND
+    lock.write_text(json.dumps({"values": {"mask_gate_bound": {"value": 0.99}}}))
+    with pytest.raises(S.StepFailed, match="not \\{min_agreement"):
+        S.mask_gate_bound(lock, plan_text="")
+    complete.complete = False
+    complete.report = lambda: ""
+    with pytest.raises(S.StepFailed, match="not a complete lock"):
+        S.mask_gate_bound(lock, plan_text="")
+    with pytest.raises(S.StepFailed, match="no XAttention masks"):
+        S.banked_masks(tmp_path / "nothing")
 
 
 @pytest.mark.parametrize("step", ["probe", "host_components", "device_components",
