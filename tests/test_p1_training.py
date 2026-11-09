@@ -18,9 +18,9 @@ HW = HardwareFeatures(pinned_bandwidth=2e10, pageable_bandwidth=1e10)
 REMOTE = "gs://bucket/predictions/P1-{}/sess/prediction_P1_x.json"
 
 
-def gt(xattn, dense, *, xattn_density=0.55):
+def gt(xattn, dense, *, xattn_density=0.55, **over):
     """A ground-truth result with samples (ms) for the fixture's two cells."""
-    r = FX.ground_truth()
+    r = FX.ground_truth(**over)
     for row, xs in zip(r["rows"], (xattn, dense)):
         row.update(model=MODEL, budget=4, prefill_ms_samples=list(xs))
     r["rows"][0]["arm"] = "xattn@0.5"
@@ -114,7 +114,7 @@ def test_only_the_two_repeats_train_never_an_exploratory_or_debug_session(tmp_pa
 
 def test_the_repeats_must_be_labelled_in_order_and_time_the_same_cells(tmp_path):
     a = session(tmp_path, "T3.2b", gt([10], [5]))
-    with pytest.raises(PT.TrainingRowsError, match="expected repeat T3.2a"):
+    with pytest.raises(PT.TrainingRowsError, match="expected repeat a of a pool"):
         PT.training_rows(a, None, b_failed="x")
     a = session(tmp_path, "T3.2a", gt([10, 20], [5, 6]))
     short = gt([1, 2], [3, 4])
@@ -156,3 +156,39 @@ def test_the_banked_file_round_trips_and_refuses_an_edit(tmp_path):
         PT.rows_from_record(edited)
     with pytest.raises(PT.TrainingRowsError, match="no sensitivity set"):
         PT.rows_from_record(rec, sensitivity="repeat_b_only")
+
+
+def test_the_primary_pool_is_t32d_then_t32c_with_t32d_features(tmp_path):
+    d = session(tmp_path, "T3.2d", gt([10, 20, 30], [5, 6, 7]))
+    c = session(tmp_path, "T3.2c", gt([40, 50, 60, 70], [8, 9]), xattn_ops=FX.OPS_HOST)
+    out = PT.training_rows(d, c)
+    assert out["repeats"] == ["T3.2d", "T3.2c"] and out["features_from"] == "T3.2d"
+    rows = {r.cell.arm: r for r in out["rows"]}
+    assert rows["xattn"].measured == pytest.approx(0.040)
+    assert rows["dense"].measured == pytest.approx(0.007)
+    cd = next(x for x in d.cp.cells if x.arm == "xattn")
+    cc = next(x for x in c.cp.cells if x.arm == "xattn")
+    assert cd.priced != cc.priced and rows["xattn"].cell.priced == cd.priced
+    for a, b in ((c, d), (d, session(tmp_path, "T3.2b", gt([1], [2]))),
+                 (session(tmp_path, "T3.2a", gt([1], [2])), c)):
+        with pytest.raises(PT.TrainingRowsError):
+            PT.training_rows(a, b)
+
+
+@pytest.mark.parametrize("which", ["a", "b"])
+def test_a_group_short_of_ten_clean_rounds_gives_no_target(tmp_path, which):
+    short = {"complete": True, "clean_rounds": 9, "rounds_run": 10}
+    d = session(tmp_path, "T3.2d", gt([10, 20, 30], [5, 6, 7], **(short if which == "a" else {})))
+    c = session(tmp_path, "T3.2c", gt([40, 50, 60, 70], [8, 9], **(short if which == "b" else {})))
+    out = PT.training_rows(d, c)
+    rows = {r.cell.arm: r for r in out["rows"]}
+    # the other repeat alone: c's xattn 40 50 60 70 -> 55 ms, dense 8 9 -> 8.5; d's 20 and 6
+    alone, kept_out = {"a": ((0.055, 0.0085), "T3.2d"), "b": ((0.020, 0.006), "T3.2c")}[which]
+    assert (rows["xattn"].measured, rows["dense"].measured) == \
+        (pytest.approx(alone[0]), pytest.approx(alone[1]))
+    assert all(len(m["left_out"]) == 1 and m["left_out"][0].startswith(kept_out + " ")
+               and "9 clean of 10" in m["left_out"][0] for m in out["metadata"])
+    assert [len(t) for t in out["sensitivity_targets"][PT.SEPARATE_ROWS]] == [1, 1]
+    with pytest.raises(PT.TrainingRowsError, match="both repeats"):
+        PT.training_rows(session(tmp_path, "T3.2d", gt([1], [2], complete=False)),
+                         session(tmp_path, "T3.2c", gt([1], [2], complete=False)))
