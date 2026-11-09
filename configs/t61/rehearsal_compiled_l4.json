@@ -1,0 +1,53 @@
+{
+ "_comment": "The L4 rehearsal of the P2 runner (scripts/t61_rehearsal.py; docs/launch_cards/t61_rehearsal_l4.md). EXPLORATORY: no row it produces enters training, the floors or any claim. pairing is P1 because the card is P1's (L4) and the values are T3.1's working values (fill_working_values); the session's own pairing is P2-R. This is the compiled run (scope v): the grid is 2048 only, batch 1, the two compiled groups' working arms; the eager group is not run here (it is the blocks'). The grid is reduced to 2048 at batch 1; the measurement protocol (reps, warm-ups, reruns, the sampler, the traced pass) is the working values', unchanged. The grid is cut to density 0.25 for the oracle and mean-pool (the working 0.5 dropped) to keep the card's cap under the adviser's 400 with scope (v); reps, warm-up, rounds and the rest of the protocol are the working values'.",
+ "pairing": "P1",
+ "card": "L4",
+ "model": "primary",
+ "lengths": [
+  2048
+ ],
+ "batches": {},
+ "arms": [
+  "dense",
+  "oracle",
+  "meanpool",
+  "xattention",
+  "xattention_noassert"
+ ],
+ "densities": {
+  "dense": [
+   1.0
+  ],
+  "oracle": [
+   0.25
+  ],
+  "meanpool": [
+   0.25
+  ],
+  "xattention": [
+   "calibrated"
+  ],
+  "xattention_noassert": [
+   "calibrated"
+  ]
+ },
+ "gt_groups": {
+  "eager": [],
+  "compiled_default": null,
+  "compiled_capture": null
+ },
+ "reps": null,
+ "warmup": 3,
+ "max_rerun_rounds": null,
+ "resolution_floor_ms": null,
+ "dense_rounds": null,
+ "flag_reasons": [
+  "hw_slowdown",
+  "sw_thermal_slowdown",
+  "hw_thermal_slowdown",
+  "hw_power_brake_slowdown"
+ ],
+ "sampler_interval_s": null,
+ "prediction_prefix": "predictions/P2-R",
+ "not_measured": []
+}
