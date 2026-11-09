@@ -141,6 +141,12 @@ faster:
 - `mm` −26%, `addmm` −14% and block-sparse attention −29%, against their replay;
 - the memory-bound ones agree within 1%: `mul`, `silu`, `add`, `pow`.
 
+**Correction (9 Nov 2026, `docs/t32d_oracle_residual.md` §4):** the peak
+SM clocks below are wrong for dense and mean-pool. Step 9's rows give them
+1,950 to 1,995 MHz at 16384, beside the oracle's 1,980 to 2,025. Peak clocks
+do not separate the oracle, so the clock-state reading in this section is
+untested, not supported. The device-busy shares stand.
+
 The memory clock was fixed (6,251 MHz) and the SM clock moved under the
 software power cap, which every arm hit. The oracle keeps the device busy
 for only 82 to 88% of its prefill (traced device total over the measured

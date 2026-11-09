@@ -1,5 +1,9 @@
 # T3.2d: proposal (9 Nov 2026; not a launch card, nothing launched)
 
+**Superseded by `docs/t32d_card.md`** (adviser's rulings of 9 Nov 2026, seventh
+paste). Options (a) to (c) below were all taken in, with the sustained-clock
+soak; the plan, the limits and the cap are unchanged.
+
 The adviser's ruling 8 of 9 Nov 2026 (sixth paste). A launch needs the
 researcher's yes, naming the instance, zone, commit and cap. It also needs a
 card built from this proposal once the open decisions below are settled.

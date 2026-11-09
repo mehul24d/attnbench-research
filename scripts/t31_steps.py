@@ -606,15 +606,19 @@ def residual_cell(a, rec, out: Path, bare, null, *, tolerance: float, entries=()
     Shakedown 6, measured with the device idle since ruling B1 of 8 Nov
     2026): the host gaps between the prefill's calls per layer, each opened
     after a synchronise, under the tape alone, added back over the layer's
-    positions. Writes `host_profile.json` (the bare prices with the
+    positions. The declared host-side functions run bare inside their gaps
+    (ruling 2 of 9 Nov 2026); on the CPU boundary, where the host is the
+    device, none is. Writes `host_profile.json` (the bare prices with the
     residual: what the prediction reads), `host_profile_bare.json` and
     `layer_residual.json`; returns (profile, record)."""
     from attnbench.components import host_profile as hp
     from attnbench.components import layer_residual as lr
     dev = "cpu" if _boundary() else "cuda"
+    host_side = () if _boundary() else lr.declared_host_side()
     gaps = lr.idle_gaps(a.run_prefill, rec.tape, a.layers, seq=rec.sequence, entries=entries,
-                        device_type=dev, sync=_sync())
+                        host_side=host_side, device_type=dev, sync=_sync())
     prof, record = lr.residual(rec.sequence, bare, null, gaps, spread_tol=float(tolerance))
+    record["host_side_functions"] = [f"{m.__name__}.{f}" for m, f in host_side]
     out = Path(out)
     (out / "host_profile_bare.json").write_text(hp.dumps(bare))
     (out / "host_profile.json").write_text(hp.dumps(prof))
@@ -809,6 +813,7 @@ FAKE_MECHANISMS = {
     "copy_to_host_pinned": {"s_fixed": 1e-5, "bandwidth": 2e10, "loaded_bandwidth": 1e10},
     "copy_to_host_pageable": {"s_fixed": 3e-5, "bandwidth": 5e9, "loaded_bandwidth": 2e9},
     "event_synchronize": {"s_fixed": 1e-5},
+    "event_record_synchronize": {"s_fixed": 2e-5},
     "copy_from_host_pinned": {"s_fixed": 1e-5, "bandwidth": 2e10, "loaded_bandwidth": 1e10},
     "copy_from_host_pageable": {"s_fixed": 3e-5, "bandwidth": 5e9, "loaded_bandwidth": 2e9},
 }
@@ -1276,32 +1281,63 @@ def spawn_cell(args, cfg, cell, cd: Path, *, ceiling_mb: float,
     return g.record()
 
 
+def pricing_sampled() -> bool:
+    """Whether steps 5 and 6 sample NVML (`pricing_clocks`; ruling 4b of 9 Nov
+    2026): on a real GPU, never behind the CPU boundary."""
+    import torch
+    return torch.cuda.is_available() and not _boundary()
+
+
+SOAK_S, SOAK_MIN_REPLAYS = 5.0, 2
+
+
+def soak(cap, *, seconds: float = SOAK_S, min_replays: int = SOAK_MIN_REPLAYS,
+         clock=time.monotonic) -> dict:
+    """The sustained-clock protocol (ruling 3 of 9 Nov 2026): the captured
+    replay run back to back, each one synchronised, until `seconds` have passed
+    and at least `min_replays` ran, so the replay step 6 prices from finds
+    the device in the sustained state the timed rounds run in (several
+    seconds of back-to-back prefills under the software power cap)."""
+    t0, n = clock(), 0
+    while n < min_replays or clock() - t0 < seconds:
+        cap.replay()
+        cap.backend.synchronize()
+        n += 1
+    return {"replays": n, "seconds": round(clock() - t0, 3)}
+
+
 def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
     """One cell of step 5, in this process: its `cells_index.json` entry."""
     from attnbench.components import bare_timer as bt
     from attnbench.components import host_profile as hp
     from attnbench.components import layer_residual as lr
     from attnbench.components import recorder
+    from attnbench import pricing_clocks
     arm, d, L, b = cell
     cd = cell_dir(out, arm, d, L, b)
     a = ready_cell(h, arm, d, L, b)
     seconds, t0 = {}, time.time()
-    rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording", code_path=a.code_path,
-                                      context_length=a.length, batch=b,
-                                      prompt_id=a.prompt_id, layers=a.layers)
-    seconds["record"], t0 = time.time() - t0, time.time()
     entries = () if arm == "dense" else (hp.block_sparse_entry(),)
-    prof, check = host_profile_cell(a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
-                                    tolerance=cfg["chain_check_tolerance"],
-                                    segment_layers=int(cfg.get("isolated_segment_layers",
-                                                               ISOLATED_SEGMENT_LAYERS)))
-    seconds["isolated_and_null_pass"], t0 = time.time() - t0, time.time()
-    bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
-                                     tolerance=cfg["chain_check_tolerance"])
-    seconds["bare_pass"], t0 = time.time() - t0, time.time()
-    priced, resid = residual_cell(a, rec, cd, bare, prof, entries=entries,
-                                  tolerance=cfg["residual_spread_tolerance"])
-    seconds["residual"] = time.time() - t0
+    with pricing_clocks.PricingClocks(cd, enabled=pricing_sampled()) as pc:
+        with pc.phase("record"):
+            rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording",
+                                              code_path=a.code_path, context_length=a.length,
+                                              batch=b, prompt_id=a.prompt_id, layers=a.layers)
+        seconds["record"], t0 = time.time() - t0, time.time()
+        with pc.phase("isolated_and_null_pass"):
+            prof, check = host_profile_cell(
+                a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
+                tolerance=cfg["chain_check_tolerance"],
+                segment_layers=int(cfg.get("isolated_segment_layers", ISOLATED_SEGMENT_LAYERS)))
+        seconds["isolated_and_null_pass"], t0 = time.time() - t0, time.time()
+        with pc.phase("bare_pass"):
+            bare, record = bare_profile_cell(a, rec, cd, prof, pricer=pricer, entries=entries,
+                                             tolerance=cfg["chain_check_tolerance"])
+        seconds["bare_pass"], t0 = time.time() - t0, time.time()
+        with pc.phase("residual"):
+            priced, resid = residual_cell(a, rec, cd, bare, prof, entries=entries,
+                                          tolerance=cfg["residual_spread_tolerance"])
+        seconds["residual"] = time.time() - t0
     realised = d
     if d is None:
         per_layer = list(getattr(a.backend, "last_layer_density", None) or ())
@@ -1536,11 +1572,8 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
     its summary, and the step's aggregate gate decides per arm. A cell with a
     position neither replay matches has no operations."""
     import pandas as pd
-    import torch
-    from attnbench.components import host_profile as hp
-    from attnbench.components import memset_flags as msf
-    from attnbench.components import op_sequence as ops
-    from attnbench.components import recorder, replay
+    from attnbench import pricing_clocks
+    from attnbench.components import recorder
     host_dir = step_dir(session, "host_components")
     name = cell_dir(Path(), *cell).name
     c = json.loads((host_dir / name / CELL_INDEX).read_text())
@@ -1549,8 +1582,21 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
     cd.mkdir(parents=True, exist_ok=True)
     rec = recorder.load_recording(host_dir / c["dir"] / "recording")
     a = ready_cell(h, c["arm"], c["nominal_density"], c["budget"], c["batch"])
-    cap = replay.capture(a.run_prefill, rec.tape, device=_device(), masks=rec.masks,
-                         backend=_graph_backend())
+    with pricing_clocks.PricingClocks(cd, enabled=pricing_sampled()) as pc:
+        return _device_cell_priced(pc, a, c, rec, row, cd, out, host_dir)
+
+
+def _device_cell_priced(pc, a, c, rec, row, cd: Path, out: Path, host_dir: Path) -> dict:
+    """`device_cell` from the capture on, each phase marked for the pricing
+    clocks (`pricing_clocks`); the profiled replay follows the soak (`soak`)."""
+    import torch
+    from attnbench.components import host_profile as hp
+    from attnbench.components import memset_flags as msf
+    from attnbench.components import op_sequence as ops
+    from attnbench.components import replay
+    with pc.phase("capture"):
+        cap = replay.capture(a.run_prefill, rec.tape, device=_device(), masks=rec.masks,
+                             backend=_graph_backend())
     try:    # after one replay and a synchronise (ruling, 1 Nov 2026)
         agreement, failure = replay.mask_agreement(cap), None
     except replay.ReplayError as e:
@@ -1563,12 +1609,17 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
                           graph_backend=_graph_backend())
         _write_json(cd / "mask_diagnosis.json", diag)
         raise StepFailed(f"{c['dir']}: {failure}", {"mask_diagnosis": md.summaries(diag)})
-    m = replay.match(rec.sequence, replay.replay_nodes(
-        replay.profile_replay(cap, cd / "replay_trace.json")))
+    with pc.phase("soak"):     # a dry run's fake capture has no device to soak
+        soaked = soak(cap) if torch.cuda.is_available() or _boundary() else \
+            {"replays": 0, "seconds": 0.0, "skipped": "no device"}
+    with pc.phase("profiled_replay"):
+        trace = replay.profile_replay(cap, cd / "replay_trace.json")
+    m = replay.match(rec.sequence, replay.replay_nodes(trace))
     original, stream, segments = None, None, None
     if replay.needs_original(rec.sequence, m):
         torch.cuda.synchronize()
-        orig, stream = isolated_original(a, rec, cd)
+        with pc.phase("isolated_original"):
+            orig, stream = isolated_original(a, rec, cd)
         original, segments = match_original(rec.sequence, orig, stream)
     pricing = replay.price_positions(rec.sequence, m, original)
     summary = {**pricing.summary(rec.sequence),
@@ -1578,7 +1629,8 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
             "context_length": c["context_length"], "budget": c["budget"],
             "batch": c["batch"], "prompt_id": c["prompt_id"],
             "code_path": c["code_path"], "cost_sources": pricing.counts(),
-            "pricing": summary, **({"isolated_segments": segments} if segments else {})}
+            "pricing": summary, "soak": soaked,
+            **({"isolated_segments": segments} if segments else {})}
     if pricing.unpriced:
         return {**head, "ops": None}
     prof = hp.from_record(json.loads((host_dir / c["dir"] / "host_profile.json").read_text()))
@@ -1596,7 +1648,17 @@ def device_cell(h, out: Path, session: Path, cell) -> dict:
                    "ops_upper": [op_to_dict(op) for op in label_outside_layers(
                        ops.to_operations(rec.sequence, **costs, flagged_memset_s=upper))]}
     return {**head, "ops": [op_to_dict(op) for op in priced],
+            "event_syncs": event_sync_rule(rec),
             **({"memset_flags": memsets} if memsets else {})}
+
+
+def event_sync_rule(rec) -> list:
+    """`event_rule.kinds` of the cell's recording, one per event synchronise
+    (ruling 4a of 9 Nov 2026); the trace is read only when there is one."""
+    from attnbench.components import event_rule
+    if not any(op.mechanism == event_rule.EVENT_SYNCHRONIZE for op in rec.sequence.ops):
+        return []
+    return event_rule.kinds(rec.directory / "trace.json")
 
 
 def run_device_cell(args, cfg, cell):
@@ -1650,6 +1712,7 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
     `baselines`, for a pairing trained on banked ones (P2 on, a later
     pairing's runner): {"banked": [...], "fitted_sum": ..., "learned": ...,
     "fitted_sum_plus_s0": ...}; P1 has none."""
+    from attnbench.components import event_rule
     from attnbench.predict import commit as C
     from attnbench.predict.recursion import MechanismCost, close_prefill, price
     from attnbench.predict.training import Cell, HardwareFeatures
@@ -1671,7 +1734,7 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
         mech = {m: MechanismCost(**v) for m, v in rin["by_length"][str(grid_L)].items()}
         ops = list(close_prefill(op_from_dict(o) for o in e["ops"]))
         check_payload_bound(ops, rin.get("max_payload_bytes"), label)
-        priced = price(ops, mech)
+        priced = event_rule.apply(price(ops, mech), e.get("event_syncs", []), mech)
         out.append(Cell(pairing=cfg["pairing"], model_name=cfg["model"], code_path=label,
                         arm=e["arm"], context_length=e["context_length"],
                         density=e["density"], batch=e["batch"], priced=priced, hardware=hw))
@@ -2082,7 +2145,11 @@ def step_delay_injection(args, cfg) -> dict:
     decl = dls.declaration(cfg["delay_injection"])
     session, out = Path(args.session), Path(args.out)
     rin = json.loads((step_dir(session, "link") / "recursion_inputs.json").read_text())
-    mech = {m: MechanismCost(**v) for m, v in rin["by_length"][str(decl.length)].items()}
+    # The injector records before each wait: its event synchronise is priced
+    # record-then-wait (`event_rule`, ruling 4a of 9 Nov 2026).
+    from attnbench.components import event_rule
+    mech = event_rule.for_injection(
+        {m: MechanismCost(**v) for m, v in rin["by_length"][str(decl.length)].items()})
     store, base_uri = make_store(session, dry_run=_local(args))
     rel = f"{prediction_dir(cfg, session)}/{LEG3_PLAN_REMOTE}"   # nothing banked names the bucket
     remote = f"{base_uri}/{rel}"

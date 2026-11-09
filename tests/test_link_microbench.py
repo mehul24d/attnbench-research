@@ -27,7 +27,7 @@ REPO = Path(__file__).resolve().parents[1]
 FIXED_NS = {"synchronize": 4_000, "item": 9_000, "bool": 10_000,
             "copy_to_host_pinned": 12_000, "copy_to_host_pageable": 15_000,
             "event_synchronize": 6_000, "copy_from_host_pinned": 13_000,
-            "copy_from_host_pageable": 17_000}
+            "copy_from_host_pageable": 17_000, "event_record_synchronize": 8_500}
 BW = {("h2d", "pinned"): 24e9, ("h2d", "pageable"): 8e9,
       ("d2h", "pinned"): 25e9, ("d2h", "pageable"): 6e9}
 BLOCKING_BW = {("d2h", "pinned"): 20e9, ("d2h", "pageable"): 5e9,
@@ -80,10 +80,10 @@ def test_every_host_repetition_starts_from_an_idle_device():
     assert dev.log == ["sync", "item", "sync", "item", "sync", "item", "sync"]
 
 
-def test_s_fixed_covers_exactly_the_recursions_mechanisms():
+def test_s_fixed_covers_exactly_the_recursions_mechanisms_and_record_then_wait():
     dev = VirtualDevice()
     table = link.s_fixed_table(dev.ops(), 5, clock=dev.clock)
-    assert tuple(table) == recursion.PRICED_MECHANISMS
+    assert tuple(table) == recursion.PRICED_MECHANISMS + (link.RECORD_THEN_WAIT,)
     for m, ns in FIXED_NS.items():
         assert table[m]["median"] == pytest.approx(ns * 1e-9)
 
@@ -134,7 +134,10 @@ def test_the_readers_give_the_recursion_its_s0():
     """s_0(m, payload) = s_fixed(m) + payload / B, from the row alone."""
     row = _row()
     costs = link.mechanism_costs(row, context_length=2048)
-    assert set(costs) == set(recursion.PRICED_MECHANISMS)
+    assert set(costs) == set(recursion.PRICED_MECHANISMS) | {link.RECORD_THEN_WAIT}
+    assert costs[link.RECORD_THEN_WAIT].s_fixed == pytest.approx(8.5e-6)
+    old = {k: v for k, v in row.items() if link.RECORD_THEN_WAIT not in k}   # a row before 9 Nov
+    assert set(link.mechanism_costs(old, context_length=2048)) == set(recursion.PRICED_MECHANISMS)
     payload = 1 << 20
     s0 = recursion.s0(costs["copy_to_host_pinned"], payload, loaded=False)
     assert s0 == pytest.approx(12e-6 + payload / 20e9, rel=1e-6)

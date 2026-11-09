@@ -24,17 +24,17 @@ def _row(**kw):
                         load="python_loop", clock=dev.clock, **kw)
 
 
-def test_the_measured_mechanisms_are_exactly_the_priced_ones():
+def test_the_measured_mechanisms_are_exactly_the_priced_ones_and_record_then_wait():
     row = _row()
     measured = {k[len("s_fixed_"):-len("_median")] for k in row
                 if k.startswith("s_fixed_") and k.endswith("_median")}
-    assert measured == set(recursion.PRICED_MECHANISMS)
+    assert measured == set(recursion.PRICED_MECHANISMS) | {link.RECORD_THEN_WAIT}
     assert set(recursion.ADDED_MECHANISMS) <= measured
 
 
 def test_every_priced_mechanism_has_a_cost_with_the_bandwidth_its_payload_needs():
     costs = link.mechanism_costs(_row(), context_length=2048)
-    assert set(costs) == set(recursion.PRICED_MECHANISMS)
+    assert set(costs) == set(recursion.PRICED_MECHANISMS) | {link.RECORD_THEN_WAIT}
     for m, c in costs.items():
         assert c.s_fixed > 0
         if m in link.COPY_MECHANISMS:

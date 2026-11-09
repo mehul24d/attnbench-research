@@ -7,6 +7,9 @@ reads:
     (the five synchronising ones and, since 7 Nov 2026, the three Appendix A
     25 Oct added: a blocking copy from pinned and from pageable host memory,
     and an event synchronise):
+    and, since 9 Nov 2026, `RECORD_THEN_WAIT` (an event recorded and then
+    waited for, the round trip `components.event_rule` prices real code's
+    event synchronises with; adviser's ruling 4a of 9 Nov 2026):
     the host time to issue and complete mechanism m at the smallest payload
     (one byte), with the device idle. The device is synchronised before every
     repetition, outside the timer, and only the mechanism is timed, so the
@@ -51,6 +54,10 @@ from ..predict.recursion import PRICED_MECHANISMS, MechanismCost
 from ..predict.training import HardwareFeatures
 
 SMALLEST_PAYLOAD_BYTES = 1
+# `ev.record(); ev.synchronize()` per call; T2.5 measures it beside the
+# recursion's own mechanisms, and `event_rule` decides which an event takes.
+RECORD_THEN_WAIT = "event_record_synchronize"
+LINK_MECHANISMS = PRICED_MECHANISMS + (RECORD_THEN_WAIT,)
 # 4 KiB to 256 MiB: the recorded sequences' blocking copies run from a few
 # bytes (scalars) to the masks, so the table must reach below 1 MiB.
 DEFAULT_SIZES = (1 << 12, 1 << 16, 1 << 20, 1 << 22, 1 << 24, 1 << 26, 1 << 28)
@@ -124,6 +131,14 @@ def cuda_ops(device: str = "cuda") -> DeviceOps:
             ev.record()
             torch.cuda.synchronize()
             return ev.synchronize
+        if name == RECORD_THEN_WAIT:
+            # A marker enqueued and waited for, every call: the round trip.
+            rtw = torch.cuda.Event()
+
+            def record_then_wait():
+                rtw.record()
+                rtw.synchronize()
+            return record_then_wait
         if name in COPY_MECHANISMS:
             direction, memory = COPY_MECHANISMS[name]
             host = buf(memory, SMALLEST_PAYLOAD_BYTES)
@@ -213,9 +228,10 @@ def summary(xs: Sequence[float]) -> dict:
 
 
 def s_fixed_table(ops: DeviceOps, reps: int, *, clock=time.perf_counter_ns) -> dict:
-    """{mechanism: summary} for every mechanism the recursion costs."""
+    """{mechanism: summary} for every mechanism the recursion costs, and
+    `RECORD_THEN_WAIT`."""
     return {m: summary(time_host(ops.mechanism(m), reps, sync=ops.sync, clock=clock))
-            for m in PRICED_MECHANISMS}
+            for m in LINK_MECHANISMS}
 
 
 def bandwidth_tables(ops: DeviceOps, sizes: Sequence[int], reps: int,
@@ -533,10 +549,13 @@ def mechanism_costs(row, context_length: Optional[int] = None) -> dict[str, Mech
 
     The copy mechanisms take the blocking device-to-host bandwidth; with a
     `context_length`, also the loaded figure measured under that length's
-    load. Mechanisms that move no payload carry no bandwidth."""
+    load. Mechanisms that move no payload carry no bandwidth.
+    `RECORD_THEN_WAIT` is in the table when the row measured it (rows from 9
+    Nov 2026)."""
     _refuse_dry_run(row)
     out = {}
-    for m in PRICED_MECHANISMS:
+    for m in PRICED_MECHANISMS + ((RECORD_THEN_WAIT,) if f"s_fixed_{RECORD_THEN_WAIT}_median"
+                                  in row else ()):
         bw = loaded = None
         if m in COPY_MECHANISMS:
             direction, mem = COPY_MECHANISMS[m]

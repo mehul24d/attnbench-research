@@ -114,11 +114,30 @@ def test_a_cell_measured_twice_is_refused_and_an_unmeasured_one_is_listed(cp):
     assert [k.arm for k in m["unmeasured"]] == ["xattn"]
 
 
-def test_traced_or_incomplete_ground_truth_is_refused(cp):
+def test_traced_ground_truth_is_refused(cp):
     from attnbench.figures.results import ResultsError
-    for over, match in ((dict(traced=True), "traced"), (dict(complete=False), "complete")):
-        with pytest.raises(ResultsError, match=match):
-            G.measured(cp, [("gt.json", gt(**over))])
+    with pytest.raises(ResultsError, match="traced"):
+        G.measured(cp, [("gt.json", gt(traced=True))])
+
+
+@pytest.mark.parametrize("over", [dict(complete=False, clean_rounds=8, rounds_run=10),
+                                  dict(complete=True, clean_rounds=9, rounds_run=12)])
+def test_a_group_short_of_ten_clean_rounds_is_listed_and_left_out(cp, over):
+    """Appendix A, 9 Nov 2026: listed and excluded from the aggregate, never silent."""
+    short = gt(**over)
+    short["rows"] = short["rows"][:1]                    # the xattn group
+    full = gt(clean_rounds=10, rounds_run=10)
+    full["rows"] = full["rows"][1:]                      # the dense group
+    m = G.measured(cp, [("short.json", short), ("full.json", full)])
+    assert [k.arm for k in m["seconds"]] == ["dense"]
+    assert [k.arm for k in m["unmeasured"]] == ["xattn"]
+    assert m["excluded"] == [{"result": "short.json", "complete": over["complete"],
+                              "clean_rounds": over["clean_rounds"],
+                              "rounds_run": over["rounds_run"], "min_clean_rounds": 10,
+                              "arms": ["xattn@0.5"]}]
+    assert G.MIN_CLEAN_ROUNDS == 10
+    with pytest.raises(G.GateAError, match="1 groups short of clean rounds"):
+        G.measured(cp, [("short.json", short)])
 
 
 # --- leg 1 ----------------------------------------------------------------------------

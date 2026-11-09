@@ -72,6 +72,8 @@ refused, so no fix is made within it:
     python3 scripts/t31_session.py --repeat a --groups eager
 T3.2c is the repeat on the revised identity (ruling D of 8 Nov 2026):
     python3 scripts/t31_session.py --repeat c --groups eager
+T3.2d is the one more cycle on the identity of 9 Nov 2026 (Appendix A):
+    python3 scripts/t31_session.py --repeat d --groups eager
 """
 
 from __future__ import annotations
@@ -120,7 +122,7 @@ REPEAT_CONFIG = "repeat_config.json"
 # to the bucket and then halts the VM; a session on the card refuses to start
 # without it (adviser's ruling B4 of 8 Nov 2026, after T3.2b's idle hour).
 EXIT_WRAPPER_ENV = "ATTNBENCH_SESSION_EXIT"
-REPEATS = ("a", "b", "c")
+REPEATS = ("a", "b", "c", "d")
 
 
 class RepeatError(ValueError):
@@ -299,7 +301,7 @@ def rehearsal_config(session: Path, source) -> Path:
 
 
 def repeat_config(session: Path, repeat: str, groups, source=None) -> Path:
-    """T3.2's repeat `repeat` ("a", "b", "c") as the session's config, written
+    """T3.2's repeat `repeat` ("a" to "d") as the session's config, written
     once (a resume reuses it, and a different repeat or groups is refused):
     `"repeat": "T3.2<repeat>"`, the prediction prefix `predictions/P1-T3.2
     <repeat>`, every ground-truth group not in `groups` set to run nothing
