@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The L4 rehearsal, instance A (docs/launch_cards/t61_rehearsal_l4.md): block
 # b1 of the P2 runner, then T2.17's gate, the compiled ground truth (only with
-# ATTNBENCH_REH_COMPILED=1: scope v, cut from the card's default cap) and the
-# GPU suite record, each after the one before whatever it returned. Run under
+# ATTNBENCH_REH_COMPILED=1: scope v, the first cut), each after the one before
+# whatever it returned. T2.26's suite record is not here: it runs before
+# anything is measured, from `gcp_bootstrap_instance.sh --suite-record`. Run under
 # scripts/session_exit.sh, whose last act syncs and halts. EXPLORATORY: no
 # row here enters training or any claim.
 #
@@ -16,7 +17,6 @@ BANKED="${ATTNBENCH_REH_BANKED_AT:-P1=2026-11-09T11:12:31+00:00}"   # T3.2d's te
 T32D="attnbench-l4-t32d-20261109-1237/results/t32d_p1_20261109T0726Z/05_host_components"
 TRAINING="banked/p1_training/p1_training_t32dc_20261109.json.gz"
 TRAINING_SHA=de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f
-SUITE_MIN="${ATTNBENCH_REH_SUITE_MIN:-25}"
 COMPILED="${ATTNBENCH_REH_COMPILED:-0}"   # 1 only when the launch yes names the cap with (v)
 
 say() { echo "=== $(date -u +%FT%TZ) $*"; }
@@ -63,8 +63,4 @@ if [[ "$COMPILED" == 1 ]]; then
 else
   say "compiled not run (scope v cut from this card's cap)"
 fi
-
-# (iv) T2.26: the suite record on the GPU, bounded so it cannot eat the halt
-timeout "${SUITE_MIN}m" bash scripts/gpu_suite_record.sh
-say "gpu_suite_record rc=$? (124 = the ${SUITE_MIN} min bound)"
 exit "$RC_B1"
