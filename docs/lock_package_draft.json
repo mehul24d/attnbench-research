@@ -1,5 +1,5 @@
 {
- "plan_sha256": "cdab6987df394049b3af24b956a205dd17a64ca4beeffc095995329090043b36",
+ "plan_sha256": "34d188bf901b6f2f2458a420f51517925725969d9b0bf37f05bdc9c0c6588fa1",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -126,8 +126,8 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread), the between-session spread only over sessions whose timed ground-truth path is byte-identical (scripts/timed_path.py): T3.2c (4e78a962...) and later sessions with that hash; amended 9 Nov 2026 before any new ground truth (floors.resolution_floors_within_between). Until a second such session the floors are within-session only, labelled. Sensitivity only, never used: the floors over T3.2a, T3.2b and T3.2c (9 Nov 2026, quantile 0.95: 2048x1 4.25, 4096x1 8.04, 8192x1 69.49, 16384x1 111.05, 16384x4 441.54, 32768x1 321.53 ms; docs/t32c_gate_a_v2.md). Recomputed before lock; the pooled 19.42 ms is provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap, n = 2, not an interval",
-   "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md; Appendix A, 9 Nov 2026"
+   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread), the between-session spread only over sessions whose timed ground-truth path is byte-identical (scripts/timed_path.py, 4e78a962...): T3.2c and T3.2d (amended 9 Nov 2026 before any new ground truth; floors.resolution_floors_within_between). After T3.2d (9 Nov 2026, quantile 0.95, provisional): 2048x1 1.39 (within), 4096x1 7.69 (between), 8192x1 17.76 (within), 16384x1 43.69 (between), 16384x4 139.02 (between), 32768x1 101.16 ms (between); docs/t32d_gate_a_v2.md. The 16384 between-session spreads include T3.2c's two short groups (8 and 2 clean rounds); without them both 16384 floors are within-session only (13.77, 27.59 ms). Sensitivities only, never used: T3.2a to T3.2d (4.25, 8.10, 69.49, 111.05, 441.54, 321.53 ms); T3.2d alone (1.10, 7.67, 18.42, 13.77, 27.59, 32.11 ms). Recomputed before lock; the pooled 19.42 ms is provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap over T3.2a/b, n = 2, not an interval",
+   "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md; Appendix A, 9 Nov 2026; docs/t32d_gate_a_v2.md"
   },
   "floors_quantile": {
    "item": "floors quantile (0.95 is provisional, for shakedowns only)",
@@ -150,7 +150,7 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "The frozen T2.10 set; the primary ModelShape is read from the pinned config.json (989aa79, sha256 98d2ff8c...), cross-checked; features come from T3.2c (the final identity; training rule, Appendix A 8 Nov 2026); the P1 training file's came from the superseded residual",
+   "proposed": "The frozen T2.10 set; the primary ModelShape is read from the pinned config.json (989aa79, sha256 98d2ff8c...), cross-checked; features come from T3.2d, the only P1 session on the final identity 3c44588 (adviser's ruling 4 of the eighth 9 Nov 2026 paste; it replaces T3.2c of the 8 Nov 2026 training rule); the banked P1 training file's came from the superseded residual until it is rebuilt",
    "basis": "attnbench/predict/training.py; configs/models/qwen2.5-1.5b-instruct_shape.json"
   },
   "learned_predictor_hyperparameters": {
@@ -158,8 +158,8 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Provisional: config 2 of 6 pre-declared (log_seconds; n_estimators 200, learning_rate 0.05, num_leaves 7, min_child_samples 3; seed 0, deterministic, one thread), 2.85% median held-out error in 7-fold cell-grouped CV on P1 (defaults 83%: min_child_samples 20 leaves no splits on 30 rows). Features from the superseded residual. Training rule (8 Nov 2026): features from T3.2c, targets pooled over every session whose timed ground-truth path is byte-identical (scripts/timed_path.py), the config re-selected from the same 6 after the rebuild; T3.2a/b targets with T3.2a features reported as sensitivities, never selected",
-   "basis": "docs/learned_cv_p1_20261108.json; lock table row 20; Appendix A, 8 Nov 2026"
+   "proposed": "Provisional: config 4 of the same 6 pre-declared (log_seconds; n_estimators 500, learning_rate 0.02, num_leaves 4, min_child_samples 2, reg_lambda 1.0; seed 0, deterministic, one thread), 2.87% median held-out error in 7-fold cell-grouped CV on P1, re-selected 9 Nov 2026 (adviser's ruling 4, eighth paste): targets pooled over T3.2c and T3.2d, features from T3.2d, a repeat short of 10 clean rounds giving no target (plan default, flagged). Provisional until the final training file: T3.2d's and T3.2c's link figures stood in for by T3.2a's and T3.2b's (constant within P1; both give the same CV). Replaces the 8 Nov provisional config 2 (2.85%, superseded features)",
+   "basis": "docs/learned_cv_p1_20261109.json; docs/learned_cv_p1_20261108.json; lock table row 20; Appendix A, 8 and 9 Nov 2026"
   },
   "k2_correctness_tolerance": {
    "item": "K2 correctness tolerance (the gate's `TOL`)",
