@@ -6,7 +6,10 @@ basis (`configs/t64/p4_card_minutes.json`), then Flex-start, Spot blocks
 and on-demand side by side, each with its expected cost, its cap and its
 interruption risk, the overhead every Spot block pays on its own boot
 included. The measurement protocol is the same under each; only the
-provisioning differs.
+provisioning differs. The order is ruled (adviser's ruling 5 of the 10 Nov
+2026 paste): Flex-start first, requested right after the lock; Spot in four
+blocks of 2.3 h if no grant comes by about 22 Nov. A plan that is not those
+four blocks is refused, not printed.
 
 Only the region between the card's two markers is built; the rest of
 `docs/launch_cards/t64_p4_h100.md` is prose and stays hand-written.
@@ -35,6 +38,9 @@ CARD = B.CARDS["P4"]
 FLEX_RATE = 462.42           # plan Section 5.2, H100 Flex-start, us-central1, all-in
 SPOT_RATE = B.SPOT_RATES["P4"]
 SPOT_RATE_LOW = 629.94       # plan Section 5.2, H100 Spot, us-central1, all-in
+SPOT_HOURS, SPOT_BLOCKS = 2.3, 4   # the fallback as ruled, 10 Nov 2026
+FLEX_REQUEST = "right after the lock (14 Nov 2026)"
+SPOT_FROM = "about 22 Nov 2026"
 BEGIN = "<!-- built by scripts/t64_card.py from configs/t64/p4_card_minutes.json: rebuild, do not edit -->"
 END = "<!-- end of the built region -->"
 
@@ -49,21 +55,19 @@ def load_minutes(path=MINUTES) -> dict:
 
 
 def spot_blocks(steps, setup, tear):
-    """The blocks at the ruled length, or, if a step does not fit one, the
-    plan at the shortest length that fits (0.1 h steps), with the refusal."""
+    """The fallback's blocks at the ruled 2.3 h, refused unless they are the
+    ruled four; with why the general 2.2 h length refuses, if it does."""
+    blocks = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE,
+                           max_hours=SPOT_HOURS)
+    if len(blocks) != SPOT_BLOCKS:
+        raise ValueError(f"{len(blocks)} blocks at {SPOT_HOURS} h, not the ruled "
+                         f"{SPOT_BLOCKS}: the fallback needs a new ruling")
     try:
-        return B.MAX_BLOCK_HOURS, B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"],
-                                                rate=SPOT_RATE), None
+        B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE)
+        refusal = None
     except ValueError as e:
         refusal = str(e)
-    for tenth in range(round(B.MAX_BLOCK_HOURS * 10) + 1, 61):
-        try:
-            h = tenth / 10
-            return h, B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE,
-                                    max_hours=h), refusal
-        except ValueError:
-            continue
-    raise ValueError(f"no block length up to 6 h fits: {refusal}")
+    return blocks, refusal
 
 
 def build(minutes: dict, on: str) -> str:
@@ -71,7 +75,7 @@ def build(minutes: dict, on: str) -> str:
     setup, tear = minutes["setup_h"]["value"], minutes["teardown_h"]["value"]
     run_min = sum(m for _, m in steps)
     flex = B._block([n for n, _ in steps], 0.0, run_min, setup, tear, FLEX_RATE)
-    hours, blocks, refusal = spot_blocks(steps, setup, tear)
+    blocks, refusal = spot_blocks(steps, setup, tear)
     mins = dict(steps)
     boot_min = sum(mins[s] for s in B.BOOT["P4"])
     per_boot_h = setup + boot_min / 60 + tear
@@ -94,6 +98,11 @@ def build(minutes: dict, on: str) -> str:
         "",
         "## Time and cost: Flex-start, Spot blocks, on-demand",
         "",
+        f"**Provisioning, in this order** (adviser's ruling 5 of the 10 Nov 2026 paste): "
+        f"Flex-start first, its request submitted {FLEX_REQUEST}; if no grant has come by "
+        f"{SPOT_FROM}, Spot in {SPOT_BLOCKS} blocks of {SPOT_HOURS} h (below). On-demand "
+        "is not offered. The measurement protocol is the same under each.",
+        "",
         f"Cap = rate x planned hours x {B.CAP_FACTOR}; halt = {B.HALT_FACTOR} x planned hours "
         f"(rounded down); hard delete = the halt + {B.DELETE_AFTER_HALT_MIN} min. Rates are "
         "the plan's all-in planning rates (Section 5.2). Every boot pays the setup, the boot "
@@ -111,7 +120,7 @@ def build(minutes: dict, on: str) -> str:
         f"| Teardown: logs and manifests pull, delete, cleanup check | {tear} | "
         f"{math.ceil(tear * FLEX_RATE)} |",
         "",
-        "| | Flex-start, one session | Spot, in blocks | On-demand |",
+        "| | Flex-start, one session (first) | Spot, in blocks (the fallback) | On-demand |",
         "|---|---|---|---|",
         f"| Rate | ₹{FLEX_RATE}/h (`us-central1`) | ₹{SPOT_RATE}/h (`asia-southeast1`, the "
         f"higher; `us-central1` ₹{SPOT_RATE_LOW}/h) | not offered for `a3-highgpu-1g` |",
@@ -132,12 +141,11 @@ def build(minutes: dict, on: str) -> str:
         "",
     ]
     if refusal:
-        out += [f"**At the ruled {B.MAX_BLOCK_HOURS} h the blocks are refused:** {refusal} "
-                f"(setup, teardown and the boot steps take {per_boot_h * 60:.0f} of a block's "
-                f"{B.MAX_BLOCK_HOURS * 60:.0f} minutes). The Spot plan below is at {hours} h, the "
-                "shortest length that fits; it is not the ruled length, and using it is a "
-                "decision.", ""]
-    out += [f"**Spot blocks at {hours} h:**", "",
+        out += [f"**Why {SPOT_HOURS} h, not the {B.MAX_BLOCK_HOURS} h of 7 Nov:** at "
+                f"{B.MAX_BLOCK_HOURS} h the blocks are refused: {refusal} (setup, teardown and "
+                f"the boot steps take {per_boot_h * 60:.0f} of a block's "
+                f"{B.MAX_BLOCK_HOURS * 60:.0f} minutes).", ""]
+    out += [f"**The fallback, Spot blocks at {SPOT_HOURS} h:**", "",
             "| Block | Steps | Planned h | Expected ₹ | Cap ₹ | Halt min | Hard delete min |",
             "|---|---|---|---|---|---|---|"]
     for n, b in enumerate(blocks, 1):

@@ -1,0 +1,765 @@
+{
+ "cells": {
+  "dense_d1_L16384_b1": {
+   "arm": "dense",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 16370,
+   "batch": 1,
+   "operations": 1140,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 0,
+   "sync_column": "None (checked in the trace)",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "1140 operations agree (strict)"
+   }
+  },
+  "dense_d1_L16384_b4": {
+   "arm": "dense",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 16370,
+   "batch": 4,
+   "operations": 1112,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 0,
+   "sync_column": "None (checked in the trace)",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 28
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "1112 operations agree (strict)"
+   }
+  },
+  "dense_d1_L2048_b1": {
+   "arm": "dense",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 1951,
+   "batch": 1,
+   "operations": 1224,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 0,
+   "sync_column": "None (checked in the trace)",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "1224 operations agree (strict)"
+   }
+  },
+  "dense_d1_L32768_b1": {
+   "arm": "dense",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 32700,
+   "batch": 1,
+   "operations": 1168,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 0,
+   "sync_column": "None (checked in the trace)",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 84
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "1168 operations agree (strict)"
+   }
+  },
+  "dense_d1_L4096_b1": {
+   "arm": "dense",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 4068,
+   "batch": 1,
+   "operations": 1168,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 0,
+   "sync_column": "None (checked in the trace)",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "1168 operations agree (strict)"
+   }
+  },
+  "dense_d1_L8192_b1": {
+   "arm": "dense",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 8075,
+   "batch": 1,
+   "operations": 1168,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 0,
+   "sync_column": "None (checked in the trace)",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "1168 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.25_L16384_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 16370,
+   "batch": 1,
+   "operations": 3380,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3380 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.25_L2048_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 1951,
+   "batch": 1,
+   "operations": 3464,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3464 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.25_L32768_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 32700,
+   "batch": 1,
+   "operations": 3408,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 84
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3408 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.25_L4096_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 4068,
+   "batch": 1,
+   "operations": 3408,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3408 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.25_L8192_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 8075,
+   "batch": 1,
+   "operations": 3408,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3408 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.5_L16384_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 16370,
+   "batch": 1,
+   "operations": 3380,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3380 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.5_L2048_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 1951,
+   "batch": 1,
+   "operations": 3464,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3464 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.5_L32768_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 32700,
+   "batch": 1,
+   "operations": 3408,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 84
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3408 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.5_L4096_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 4068,
+   "batch": 1,
+   "operations": 3408,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3408 operations agree (strict)"
+   }
+  },
+  "meanpool_d0.5_L8192_b1": {
+   "arm": "meanpool",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 8075,
+   "batch": 1,
+   "operations": 3408,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 56,
+   "sync_column": "2 per layer in all 28 layers: bool x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "3408 operations agree (strict)"
+   }
+  },
+  "oracle_d0.25_L16384_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 16370,
+   "batch": 1,
+   "operations": 2148,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2148 operations agree (strict)"
+   }
+  },
+  "oracle_d0.25_L2048_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 1951,
+   "batch": 1,
+   "operations": 2232,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2232 operations agree (strict)"
+   }
+  },
+  "oracle_d0.25_L32768_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 32700,
+   "batch": 1,
+   "operations": 2176,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 84
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2176 operations agree (strict)"
+   }
+  },
+  "oracle_d0.25_L4096_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 4068,
+   "batch": 1,
+   "operations": 2176,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2176 operations agree (strict)"
+   }
+  },
+  "oracle_d0.25_L8192_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 8075,
+   "batch": 1,
+   "operations": 2176,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2176 operations agree (strict)"
+   }
+  },
+  "oracle_d0.5_L16384_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 16370,
+   "batch": 1,
+   "operations": 2148,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2148 operations agree (strict)"
+   }
+  },
+  "oracle_d0.5_L2048_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 1951,
+   "batch": 1,
+   "operations": 2232,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2232 operations agree (strict)"
+   }
+  },
+  "oracle_d0.5_L4096_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 4068,
+   "batch": 1,
+   "operations": 2176,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2176 operations agree (strict)"
+   }
+  },
+  "oracle_d0.5_L8192_b1": {
+   "arm": "oracle",
+   "implementation": "eager",
+   "python_optimize": 0,
+   "context_length": 8075,
+   "batch": 1,
+   "operations": 2176,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 84,
+   "sync_column": "3 per layer in all 28 layers: bool x1, copy_from_host_pageable x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "2176 operations agree (strict)"
+   }
+  },
+  "xattention_dcal_L16384_b1": {
+   "arm": "xattention",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 16370,
+   "batch": 1,
+   "operations": 4948,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 224,
+   "sync_column": "8 per layer in all 28 layers: bool x3, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "4948 operations agree (strict)"
+   }
+  },
+  "xattention_dcal_L2048_b1": {
+   "arm": "xattention",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 1951,
+   "batch": 1,
+   "operations": 4976,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 224,
+   "sync_column": "8 per layer in all 28 layers: bool x3, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "4976 operations agree (strict)"
+   }
+  },
+  "xattention_dcal_L32768_b1": {
+   "arm": "xattention",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 32700,
+   "batch": 1,
+   "operations": 10986,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 476,
+   "sync_column": "17 per layer in all 28 layers: bool x9, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x4, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 84
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "10986 operations agree (strict)"
+   }
+  },
+  "xattention_dcal_L4096_b1": {
+   "arm": "xattention",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 4068,
+   "batch": 1,
+   "operations": 4920,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 224,
+   "sync_column": "8 per layer in all 28 layers: bool x3, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "4920 operations agree (strict)"
+   }
+  },
+  "xattention_dcal_L8192_b1": {
+   "arm": "xattention",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 8075,
+   "batch": 1,
+   "operations": 4920,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 224,
+   "sync_column": "8 per layer in all 28 layers: bool x3, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "4920 operations agree (strict)"
+   }
+  },
+  "xattention_noassert_dcal_L16384_b1": {
+   "arm": "xattention_noassert",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 16370,
+   "batch": 1,
+   "operations": 4752,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 168,
+   "sync_column": "6 per layer in all 28 layers: bool x1, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "4752 operations agree (strict)"
+   }
+  },
+  "xattention_noassert_dcal_L2048_b1": {
+   "arm": "xattention_noassert",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 1951,
+   "batch": 1,
+   "operations": 4808,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 168,
+   "sync_column": "6 per layer in all 28 layers: bool x1, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "4808 operations agree (strict)"
+   }
+  },
+  "xattention_noassert_dcal_L32768_b1": {
+   "arm": "xattention_noassert",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 32700,
+   "batch": 1,
+   "operations": 10072,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 252,
+   "sync_column": "9 per layer in all 28 layers: bool x1, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x4, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 84
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "10072 operations agree (strict)"
+   }
+  },
+  "xattention_noassert_dcal_L4096_b1": {
+   "arm": "xattention_noassert",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 4068,
+   "batch": 1,
+   "operations": 4752,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 168,
+   "sync_column": "6 per layer in all 28 layers: bool x1, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "4752 operations agree (strict)"
+   }
+  },
+  "xattention_noassert_dcal_L8192_b1": {
+   "arm": "xattention_noassert",
+   "implementation": "xattn:torch",
+   "python_optimize": 0,
+   "context_length": 8075,
+   "batch": 1,
+   "operations": 4752,
+   "layers": 28,
+   "single_stream": true,
+   "streams": "one stream (7)",
+   "synchronisations": 168,
+   "sync_column": "6 per layer in all 28 layers: bool x1, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1",
+   "flags": {
+    "implicit_wait": 0,
+    "no_device_record": 0
+   },
+   "against_earlier": {
+    "verdict": "same sequence",
+    "reason": "4752 operations agree (strict)"
+   }
+  }
+ },
+ "asserts": {
+  "xattention_dcal_L16384_b1": {
+   "attributed": true,
+   "assert_synchronisations": 56,
+   "sync_column": "8 per layer in all 28 layers: bool x1, bool (assert) x2, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1"
+  },
+  "xattention_dcal_L2048_b1": {
+   "attributed": true,
+   "assert_synchronisations": 56,
+   "sync_column": "8 per layer in all 28 layers: bool x1, bool (assert) x2, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1"
+  },
+  "xattention_dcal_L32768_b1": {
+   "attributed": false,
+   "refusal": "layer 0: the stripped arm is not the shipped arm with assert statements removed (device work then one 'bool' synchronisation per assert)"
+  },
+  "xattention_dcal_L4096_b1": {
+   "attributed": true,
+   "assert_synchronisations": 56,
+   "sync_column": "8 per layer in all 28 layers: bool x1, bool (assert) x2, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1"
+  },
+  "xattention_dcal_L8192_b1": {
+   "attributed": true,
+   "assert_synchronisations": 56,
+   "sync_column": "8 per layer in all 28 layers: bool x1, bool (assert) x2, copy_from_host_pageable x3, copy_from_host_pageable (aten::index_put_) x1, copy_to_host_pinned (aten::index) x1"
+  }
+ }
+}
