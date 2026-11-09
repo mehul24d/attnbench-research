@@ -189,6 +189,13 @@ def test_it_stops_at_the_first_failure(tmp_path, outcome):
     assert rc == 1 and ran == list(ORDER[:ORDER.index("hold") + 1])
 
 
+def test_incomplete_ground_truth_lets_the_later_steps_run_and_the_session_not_pass(tmp_path):
+    rc, ran = _run(tmp_path, {"ground_truth": ("incomplete", 4)})
+    assert rc == 1 and ran == list(ORDER)
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert {a["step"]: a["status"] for a in m["attempts"]}["ground_truth"] == "incomplete"
+
+
 def test_resume_needs_every_earlier_step_passed(tmp_path):
     _run(tmp_path, {"link": ("failed", 1)})
     rc, ran = _run(tmp_path, start="predict")

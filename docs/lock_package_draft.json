@@ -1,5 +1,5 @@
 {
- "plan_sha256": "75b0e5eae1b918b4f7855a1f5fc0c88e9d997bb773a4eb9633e56957e9e0b5ee",
+ "plan_sha256": "2a6da02c94181be4187cfffebb63e3233c25bc2e02af506cccc7ac1ce8716818",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -126,8 +126,8 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread over T3.2a, T3.2b and T3.2c), amended 8 Nov 2026 before T3.2c (floors.resolution_floors_within_between); recomputed after T3.2c (9 Nov 2026, quantile 0.95: 2048x1 4.25, 4096x1 8.04, 8192x1 69.49, 16384x1 111.05, 16384x4 441.54, 32768x1 321.53 ms; docs/t32c_gate_a_v2.md; T3.2c's 16384 groups are incomplete), before lock; the per-length within-session floors (slope 0.354) and the pooled 19.42 ms are provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap, n = 2, not an interval",
-   "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md"
+   "proposed": "Resolution floor per (length, batch) = max(within-session spread, between-session spread), the between-session spread only over sessions whose timed ground-truth path is byte-identical (scripts/timed_path.py): T3.2c (4e78a962...) and later sessions with that hash; amended 9 Nov 2026 before any new ground truth (floors.resolution_floors_within_between). Until a second such session the floors are within-session only, labelled. Sensitivity only, never used: the floors over T3.2a, T3.2b and T3.2c (9 Nov 2026, quantile 0.95: 2048x1 4.25, 4096x1 8.04, 8192x1 69.49, 16384x1 111.05, 16384x4 441.54, 32768x1 321.53 ms; docs/t32c_gate_a_v2.md). Recomputed before lock; the pooled 19.42 ms is provisional only. Noise floor 6.77% at the provisional 0.95: the largest systematic between-session gap, n = 2, not an interval",
+   "basis": "Appendix A, 8 Nov 2026 (resolution floor's form); docs/t32_gate_a_repeats.md; Appendix A, 9 Nov 2026"
   },
   "floors_quantile": {
    "item": "floors quantile (0.95 is provisional, for shakedowns only)",
@@ -182,7 +182,7 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "One extra round, 3 clean rounds; check against T3.2's flag rate (not yet extracted)",
+   "proposed": "One extra round, 3 clean rounds; the dense-control drift filter relative since 9 Nov 2026 (6.31%, the 0.95 quantile of |drift| / warm-up time over T3.2a's and T3.2b's 120 rounds; Appendix A), applied after the session from the per-round record",
    "basis": "lock table row 23"
   },
   "throttle_set": {
@@ -226,7 +226,7 @@
    "basis": "lock table row 28"
   },
   "compiled_versus_eager_density_flag_tolerance": {
-   "item": "the compiled-versus-eager density flag tolerance (working \u00b10.01 absolute)",
+   "item": "the compiled-versus-eager density flag tolerance (working ±0.01 absolute)",
    "value": null,
    "source": null,
    "status": "owed: data",

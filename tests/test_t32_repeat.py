@@ -74,6 +74,42 @@ def test_a_group_with_no_arm_is_not_run(tmp_path, monkeypatch):
     assert found["compiled_default"] == found["compiled_capture"] == {"not_run": st.GROUP_NOT_RUN}
 
 
+@pytest.mark.parametrize("complete", [True, False])
+def test_a_cell_short_of_clean_rounds_makes_ground_truth_incomplete(tmp_path, monkeypatch, complete):
+    def run(cmd):
+        d = Path(cmd[cmd.index("--out") + 1])
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "stamps.json").write_text(json.dumps({"group": "eager"}))
+        (d / "gt_L2048_b1.json").write_text(json.dumps({"complete": True, "clean_rounds": 10,
+                                                        "rounds_run": 10}))
+        (d / "gt_L16384_b4.json").write_text(json.dumps(
+            {"complete": complete, "clean_rounds": 10 if complete else 2, "rounds_run": 10}))
+        return 0
+    monkeypatch.setattr(st, "_run", run)
+    cfg = {"gt_groups": {"eager": ["dense", "oracle"]}}
+    args = SimpleNamespace(out=str(tmp_path / "gt"), session=str(tmp_path), dry_run=True,
+                           config=None)
+    if complete:
+        assert st.step_ground_truth(args, cfg)["eager"] == {"group": "eager"}
+        return
+    with pytest.raises(st.StepIncomplete) as e:
+        st.step_ground_truth(args, cfg)
+    assert e.value.findings["incomplete"] == [{"group": "eager", "file": "gt_L16384_b4.json",
+                                               "clean_rounds": 2, "rounds_run": 10}]
+    assert "2 clean of 10" in str(e.value)
+
+
+def test_run_step_writes_incomplete_and_exits_4(tmp_path, monkeypatch):
+    def short(args, cfg):
+        raise st.StepIncomplete("1 ground-truth cell(s) with too few clean rounds", {"x": 1})
+    monkeypatch.setitem(st.STEP_FUNCS, "ground_truth", short)
+    monkeypatch.setattr(st, "load_config", lambda *a, **k: {})
+    args = SimpleNamespace(out=str(tmp_path / "09"), dry_run=True, cpu_boundary=False, config=None)
+    assert st.run_step("ground_truth", args) == 4
+    res = json.loads((tmp_path / "09" / "result.json").read_text())
+    assert res["status"] == "incomplete" and res["findings"] == {"x": 1}
+
+
 def test_the_code_identity_is_frozen_at_the_first_start(tmp_path):
     s = tmp_path / "s"
     assert TS.freeze_code(s, "T3.2a", head="aaa") is None

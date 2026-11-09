@@ -5,10 +5,12 @@
 its own log, and stops at the first failure. Each step writes `result.json`
 in its directory, as the T2.27 steps do:
 
-    {"step", "status": "passed" | "failed" | "skipped", "reason",
+    {"step", "status": "passed" | "failed" | "skipped" | "incomplete", "reason",
      "dry_run", "findings": {...}}
 
-and exits 0 (passed), 1 (failed) or 3 (skipped).
+and exits 0 (passed), 1 (failed), 3 (skipped) or 4 (incomplete: the step ran
+to its end but a cell has fewer clean rounds than its reps; ground truth only,
+adviser's ruling 2 of 9 Nov 2026).
 
 Steps, in the runner's order (plan Section 5.3):
 
@@ -88,8 +90,8 @@ from attnbench.predict import session_order as so  # noqa: E402
 from attnbench.predict.commit import (PLANNED_SYNC_WAIT_S,  # noqa: E402,F401
                                       REQUIRED_SYNC_GAP_S, SYNC_WAIT_MARGIN_S)
 
-PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
-EXIT = {PASSED: 0, FAILED: 1, SKIPPED: 3}
+PASSED, FAILED, SKIPPED, INCOMPLETE = "passed", "failed", "skipped", "incomplete"
+EXIT = {PASSED: 0, FAILED: 1, SKIPPED: 3, INCOMPLETE: 4}
 
 STEPS = ("preflight", "link", "dense_select", "probe", "host_components",
          "device_components", "predict", "hold", "ground_truth", "verify", "postflight",
@@ -210,6 +212,11 @@ class StepFailed(Exception):
     def __init__(self, reason: str, findings: dict | None = None):
         super().__init__(reason)
         self.findings = findings or {}
+
+
+class StepIncomplete(StepFailed):
+    """The step ran to its end, but what it measured is short (a ground-truth
+    cell with fewer clean rounds than its reps): never reported as passed."""
 
 
 # --- shared ----------------------------------------------------------------------
@@ -1805,8 +1812,10 @@ def step_ground_truth(args, cfg) -> dict:
     """T2.13, one process per compile-setting group (Appendix A, 27 Oct 2026),
     each with its own dense control. A group with no arm (`[]`, a T3.2a
     repeat's compiled groups; researcher's ruling 4 of 7 Nov 2026) is not
-    run."""
-    found = {}
+    run. Every group runs; then a cell whose result says `complete: false`
+    makes the step incomplete, not passed (T3.2c's 16384 cells passed with 8
+    and 2 of 10 clean rounds; adviser's ruling 2 of 9 Nov 2026)."""
+    found, short = {}, []
     for group, arms in cfg["gt_groups"].items():
         if not arms:
             found[group] = {"not_run": GROUP_NOT_RUN}
@@ -1818,6 +1827,17 @@ def step_ground_truth(args, cfg) -> dict:
         if _run(cmd):
             raise StepFailed(f"ground truth for group {group} failed; see {d}", found)
         found[group] = json.loads((d / "stamps.json").read_text())
+        for p in sorted(d.glob("gt_L*_b*.json")):
+            r = json.loads(p.read_text())
+            if r.get("complete") is not True:
+                short.append({"group": group, "file": p.name, "clean_rounds": r.get("clean_rounds"),
+                              "rounds_run": r.get("rounds_run")})
+    if short:
+        found["incomplete"] = short
+        raise StepIncomplete(
+            f"{len(short)} ground-truth cell(s) with too few clean rounds: "
+            + ", ".join(f"{x['group']}/{x['file']} {x['clean_rounds']} clean of "
+                        f"{x['rounds_run']}" for x in short), found)
     return found
 
 
@@ -2203,6 +2223,8 @@ def run_step(name: str, args) -> int:
         status, reason, findings = PASSED, "", STEP_FUNCS[name](args, cfg)
     except Skip as e:
         status, reason, findings = SKIPPED, str(e), {}
+    except StepIncomplete as e:
+        status, reason, findings = INCOMPLETE, str(e), e.findings
     except StepFailed as e:
         status, reason, findings = FAILED, str(e), e.findings
     except Exception as e:
