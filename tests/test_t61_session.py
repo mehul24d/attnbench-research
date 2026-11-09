@@ -968,6 +968,7 @@ def test_the_real_preflight_stops_on_a_missing_lightgbm_before_any_step_is_timed
     monkeypatch.setattr(S, "check_provenance_row", lambda cfg, row, p: list(p))
     monkeypatch.setattr(S, "run_gpu_variants", lambda out: ({}, []))
     monkeypatch.setattr(S, "lightgbm_problem", lambda: "lightgbm does not import")
+    monkeypatch.setattr(S, "import_check", lambda cfg: ([], {"required": {}, "kernel_problems": []}))
     monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "3.4.0\n", ""))
     with pytest.raises(S.StepFailed) as e:
         S.real_preflight(T61, args_for(tmp_path, tmp_path, dry_run=False))
