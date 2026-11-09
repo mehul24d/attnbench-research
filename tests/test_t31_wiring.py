@@ -462,10 +462,15 @@ def test_each_group_times_its_arms_with_the_k2_choice_as_the_control(tmp_path, m
     h = SimpleNamespace(timing_arms=timing_arms, _backend=lambda spec: spec.name,
                         unwrap=lambda: None)
     calls = []
+    monkeypatch.setattr(st, "_tracer", lambda: FakeProfile)
 
     def time_arms(w, ids, arms, **k):
         calls.append(k.get("tracer") is not None)
+        for _ in range(len(arms) * (k["warmup"] + 3) if calls[-1] else 0):
+            with k["tracer"]():
+                pass
         return {"first_clocked_block_started_at": 1.0 + calls[-1], "traced": calls[-1],
+                "rounds_run": 3,
                 "rows": [{"arm": a.name, "prefill_ms_median": 10.0 + calls[-1],
                           "clean_rounds": 3} for a in arms]}
     monkeypatch.setattr(gt, "time_arms", time_arms)
@@ -486,6 +491,39 @@ def test_each_group_times_its_arms_with_the_k2_choice_as_the_control(tmp_path, m
     tr = json.loads((tmp_path / "traced_L16384_b1.json").read_text())
     assert tr["traced"]["traced"] is True and tr["cell_arms"][1] == "meanpool"
     assert [o["overhead_ms"] for o in tr["overhead"]] == [1.0, 1.0, 1.0]
+    # T2.7: one Kineto trace per arm per cell, named by arm and density
+    assert tr["traces"] == ["traces/trace_L16384_b1_0_dense.json",
+                            "traces/trace_L16384_b1_1_meanpool_d0.25.json",
+                            "traces/trace_L16384_b1_2_xattention.json"]
+    assert all((tmp_path / t).exists() for t in tr["traces"])
+    assert len(list((tmp_path / "traces").glob("*.json"))) == 3 + 3 + 1
+
+
+class FakeProfile:
+    """A profiler whose export writes a stub trace."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def export_chrome_trace(self, path):
+        Path(path).write_text("{}")
+
+
+def test_the_trace_export_refuses_an_entry_count_off_the_layout(tmp_path):
+    from attnbench import ground_truth as gt
+    tr = st.TraceExport(gt, FakeProfile, tmp_path, "t", ["0_dense", "1_meanpool"], warmup=2)
+    for _ in range(2 * (2 + 3)):
+        with tr():
+            pass
+    tr.check({"rounds_run": 3})
+    assert [p.name for p in tr.written] == ["t_0_dense.json", "t_1_meanpool.json"]
+    with tr():
+        pass
+    with pytest.raises(st.StepFailed, match="entered 11 times"):
+        tr.check({"rounds_run": 3})
 
 
 def test_every_step_is_wired_on_a_gpu():

@@ -72,6 +72,7 @@ Usage, from the repo root:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -1988,6 +1989,46 @@ def _tracer():
     return lambda: torch.profiler.profile(activities=acts)
 
 
+class TraceExport:
+    """The traced pass's tracer with its Kineto export (T2.7): a fresh profiler
+    per block, and each arm's first timed block written to `out_dir` as
+    `<stem>_<label>.json` (`gt.tracer_layout`). The export runs after the
+    profiler stops, outside the timed block. `check` refuses an entry count
+    other than `time_arms`' layout, so a change to that order cannot leave a
+    trace under the wrong arm's name."""
+
+    def __init__(self, gt, make, out_dir, stem: str, labels: list, warmup: int):
+        self.gt, self.make, self.dir, self.stem = gt, make, Path(out_dir), stem
+        self.labels, self.warmup = labels, warmup
+        self.layout = gt.tracer_layout(len(labels), warmup)
+        self.entered, self.written = 0, []
+
+    @contextlib.contextmanager
+    def __call__(self):
+        i = self.entered
+        self.entered += 1
+        with self.make() as prof:
+            yield prof
+        if i in self.layout:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            path = self.dir / f"{self.stem}_{self.labels[self.layout[i]]}.json"
+            prof.export_chrome_trace(str(path))
+            self.written.append(path)
+
+    def check(self, traced: dict) -> None:
+        want = self.gt.tracer_entries(len(self.labels), self.warmup, traced["rounds_run"])
+        if self.entered != want or len(self.written) != len(self.labels):
+            raise StepFailed(f"{self.stem}: the tracer was entered {self.entered} times and "
+                             f"wrote {len(self.written)} traces; time_arms' layout gives "
+                             f"{want} and {len(self.labels)}")
+
+
+def trace_labels(names, densities) -> list:
+    """One file label per arm, in arm order: index, arm, and density if any."""
+    return [f"{j}_{n}" + ("" if d is None else f"_d{d}")
+            for j, (n, d) in enumerate(zip(names, densities))]
+
+
 def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
     """Every (length, batch) of this group: the K2 choice as the dense
     control (checked with `check_control` against the session's record),
@@ -2027,11 +2068,14 @@ def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
                 n_layers = int(h.model.config.num_hidden_layers)
                 check_of = lambda a, run, ids_b=ids_b: cc.run_checks(   # noqa: E731
                     a, run, second_ids=ids_b, n_layers=n_layers)
+            tracer = TraceExport(gt, _tracer(), out / "traces", f"trace_L{L}_b{b}",
+                                 trace_labels(names, dens), cfg["warmup"])
             both = gt.time_with_profiler_overhead(
-                wrapped, ids, arms, reps=cfg["reps"], controls=controls, tracer=_tracer(),
+                wrapped, ids, arms, reps=cfg["reps"], controls=controls, tracer=tracer,
                 warmup=cfg["warmup"], density_of=gt.kernel_densities,
                 synchronize=torch.cuda.synchronize, score_kwargs=score_kwargs,
                 compiled_check_of=check_of)
+            tracer.check(both["traced"])
             res = both["untraced"]
             stamp = res["first_clocked_block_started_at"]
             ds.check_control(choice, choice.chosen, stamp, key=cell)
@@ -2045,7 +2089,8 @@ def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
             _write_json(out / f"gt_L{L}_b{b}.json", res)
             _write_json(out / f"traced_L{L}_b{b}.json", {
                 "cell_arms": names, "nominal_densities": dens, "budget": L, "batch": b,
-                "group": args.group, "overhead": both["overhead"], "traced": both["traced"]})
+                "group": args.group, "overhead": both["overhead"], "traced": both["traced"],
+                "traces": [str(p.relative_to(out)) for p in tracer.written]})
             h.unwrap()
     return first
 

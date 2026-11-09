@@ -47,6 +47,10 @@ def test_the_spot_terms_are_cap_1_3_halt_1_3_rounded_down_and_delete_10_minutes_
 @pytest.mark.parametrize("h", [1.9, 2.0, 2.2, 2.5, 3.0])
 @pytest.mark.parametrize("pairing", ["P4", "P2"])
 def test_the_cost_at_the_halt_is_never_above_the_cap(h, pairing):
+    if pairing == "P2" and h < 2.1:     # P2's host_components, measured on T3.2d: 79 min
+        with pytest.raises(ValueError, match="host_components takes 79 min"):
+            plan(h, pairing)
+        return
     for b in plan(h, pairing):
         assert b.cost_at_halt_inr <= b.cap_inr, b
         assert not b.halt_exceeds_cap

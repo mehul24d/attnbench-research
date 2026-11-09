@@ -851,9 +851,9 @@ class FakeHarness:
 
 # The ground truth is T3.1's (`t31_steps.step_ground_truth`, T2.13): untraced,
 # one process per compile-setting group, each with its dense control, on this
-# pairing's components config. Section 5.3 step 8 (traced against untraced
-# per arm) has no T3.1 counterpart: P1's sessions never ran it, so the traced
-# pass is not built and the harness refuses before anything is clocked.
+# pairing's components config, then each cell's traced pass (Section 5.3 step
+# 8, in T3.1's step since the revised identity of 8 Nov 2026), written to
+# `traced_L*_b*.json` and never to the untraced rows.
 
 def _cell_of(c) -> tuple:
     from attnbench.lock.blocks import CELL_FIELDS, cell_key
@@ -914,10 +914,39 @@ def t31_ground_truth_result(d: Path) -> dict:
     return {STRICT_KEY: min(stamps), "complete": complete, "untraced": {"rows": rows}}
 
 
-def real_harness(cfg, args, block=None) -> dict:
-    raise NotBuilt("T2.13", "this runner's harness: T3.1's ground truth (untraced, then "
-                   "the traced pass of Section 5.3 step 8, 8 Nov 2026), run through "
-                   "`block_config` and `t31_ground_truth_result`")
+def real_harness(cfg, args, block=None, *, step_fn=None) -> dict:
+    """T3.1's ground-truth step on this pairing's components config, or on a
+    block's grid (`block_config`, written beside the step's output), read back
+    by `t31_ground_truth_result`. A cell short of clean rounds makes the result
+    incomplete, which `body_ground_truth` refuses after writing it. The traced
+    pass's files are listed as `traced_files`, and the Kineto traces they
+    name (one per arm per cell, `t31_steps.TraceExport`) as `traces`, both
+    relative to the step's output, for T2.7's step."""
+    from types import SimpleNamespace
+    if not cfg.components_config:
+        raise StepFailed(f"{cfg.pairing} names no components config for the ground truth")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    out = Path(args.out)
+    config = ROOT / cfg.components_config
+    if block is not None:
+        comp = st.load_config(str(config), dry_run=False)
+        config = write_json(out / "block_config.json", block_config(comp, block))
+    ns = SimpleNamespace(out=str(out), session=args.session, dry_run=False,
+                         cpu_boundary=False, config=str(config), step="ground_truth")
+    step_fn = step_fn or st.step_ground_truth
+    try:
+        step_fn(ns, st.load_config(str(config), dry_run=False))
+    except st.StepIncomplete:
+        pass
+    except st.StepFailed as e:
+        raise StepFailed(str(e), e.findings) from e
+    result = t31_ground_truth_result(out)
+    traced = sorted(out.glob("*/traced_L*_b*.json"))
+    result["traced_files"] = [str(p.relative_to(out)) for p in traced]
+    result["traces"] = [str((p.parent / t).relative_to(out))
+                        for p in traced for t in read_json(p, {}).get("traces", [])]
+    return result
 
 
 def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
@@ -1017,17 +1046,144 @@ def body_late_check(cfg: SessionConfig, args) -> dict:
 
 
 def real_trace_checks(cfg, args) -> dict:
-    """T2.7 on every trace the traced ground-truth pass wrote."""
+    """T2.7 on every trace the traced ground-truth pass wrote (paths relative
+    to the ground-truth step's output)."""
     session = Path(args.session)
     gt = step_dir(session, "ground_truth", cfg)
     traces = read_json(gt / "traces.json", None)
     if not traces:
         raise StepFailed(f"no traces listed in {gt / 'traces.json'}")
     bad = [t for t in traces
-           if run(py("check_trace.py", "kineto", t, "--out", str(Path(args.out) / Path(t).stem)))]
+           if run(py("check_trace.py", "kineto", str(gt / t),
+                     "--out", str(Path(args.out) / "__".join(Path(t).with_suffix("").parts))))]
     if bad:
         raise StepFailed(f"check_trace.py flagged or failed on {len(bad)} trace(s)", {"bad": bad})
     return {"traces": len(traces)}
+
+
+# --- the mask gates (T2.23, T2.24) ----------------------------------------------------------
+
+# The session's copy of a banked pairing's XAttention masks: P1's as T3.1's
+# step 5 wrote them (`<cell>/recording/masks.{npz,json}`, `t31_steps.cell_dir`),
+# P2's as its mask gate did (`mask_gate/masks/triton/<cell>/masks.{npz,json}`).
+P1_MASKS = "p1_masks"
+P2_MASKS = "p2_masks"
+_CELL_DIR = re.compile(r"^(?P<arm>.+)_d(?P<d>[^_]+)_L(?P<budget>\d+)_b(?P<batch>\d+)$")
+
+
+def banked_masks(base: Path) -> list:
+    """(budget, MaskRecord) for every XAttention cell banked under `base`,
+    the budget read from the nearest cell directory above the bank, each read
+    back through its own hashes (`mask_bank.load`)."""
+    from attnbench.components import mask_bank
+    base, out = Path(base), []
+    for m in sorted(base.rglob("masks.json")):
+        cell = next((c for c in map(_CELL_DIR.match, (p.name for p in m.relative_to(base).parents))
+                     if c), None)
+        if cell is None:
+            raise StepFailed(f"{m}: not under a T3.1 cell directory")
+        rec = mask_bank.load(m.with_suffix(""))
+        if rec.code_path.implementation.startswith("xattn:"):
+            out.append((int(cell["budget"]), rec))
+    if not out:
+        raise StepFailed(f"no XAttention masks banked under {base}")
+    return out
+
+
+def mask_gate_bound(path=None, plan_text=None) -> dict:
+    """The mask-gate bound from the lock (T4.1, "mask-gate bound"), as
+    `mask_gate.Bounds` takes it. Refused with no complete lock: the gate has
+    no default bound."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    from attnbench.lock import checklist
+    p = Path(path or st.LOCK_FILE)
+    if not p.exists():
+        raise StepFailed(f"no lock file at {p}: the mask-gate bound is a lock value (T4.1)")
+    lock = json.loads(p.read_text(encoding="utf-8"))
+    text = plan_text if plan_text is not None else checklist.PLAN.read_text(encoding="utf-8")
+    res = checklist.check(lock, text)
+    if not res.complete:
+        raise StepFailed(f"{p.name} is not a complete lock, so the mask-gate bound is unset")
+    v = ((lock.get("values") or {}).get("mask_gate_bound") or {}).get("value")
+    if not isinstance(v, dict) or set(v) != {"min_agreement", "max_density_difference"}:
+        raise StepFailed(f"the lock's mask-gate bound is {v!r}, not "
+                         f"{{min_agreement, max_density_difference}}")
+    return v
+
+
+def record_both_paths(args, cells, out: Path, paths=("torch", "triton")) -> dict:
+    """Each XAttention cell's prefill on each of `paths`, untimed
+    (`recorder.record_masks`): `use_triton` set on a fresh backend before its
+    first run, and the path the estimator took read back into the code path
+    (`Harness.code_path`), refused if it is not the one asked for or if the
+    prompt is not the banked one. {path: [MaskRecord, ...]}"""
+    import torch
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    from attnbench.components import recorder
+    from attnbench.components.shakedown_arms import ARMS
+    h = st._harness(args)
+    banks = {p: [] for p in paths}
+    for arm, budget, batch, prompt_id in cells:
+        for path in paths:
+            triton = path == "triton"
+            be = h._backend(ARMS[arm])
+            be.use_triton, be.triton_effective = triton, None
+            a = h.prepare(arm, budget, backend=be, density=st.density_setting(arm, None),
+                          batch=batch)
+            a.run_prefill()
+            torch.cuda.synchronize()
+            a.code_path = h.code_path(a)
+            if a.code_path.implementation != f"xattn:{path}":
+                raise StepFailed(f"{arm} L{budget}: asked for the {path} path, the "
+                                 f"estimator took {a.code_path.implementation}")
+            if a.prompt_id != prompt_id:
+                raise StepFailed(f"{arm} L{budget}: prompt {a.prompt_id}, the bank's is {prompt_id}")
+            rec = recorder.record_masks(
+                a.run_prefill, out / path / st.cell_dir(Path(), arm, None, budget, batch).name,
+                code_path=a.code_path, context_length=a.length, batch=batch,
+                prompt_id=a.prompt_id)
+            banks[path].append(rec.masks)
+    h.unwrap()
+    return banks
+
+
+def _comparisons(comps) -> list:
+    from dataclasses import asdict
+    return [asdict(c) for c in comps]
+
+
+def real_mask_gate(cfg, args, *, record=None, bound=None) -> dict:
+    """T2.23 on P2 (Section 7): XAttention's two paths, through `use_triton`,
+    recorded untimed on the prompts P1 banked masks for (`<session>/p1_masks`,
+    T3.2d's step 5), each against P1's masks and against each other
+    (`mask_gate.p2_mask_gate`). The comparisons are written before the bound
+    is read, and the step refuses without one. A failed gate does not stop
+    the session: it is the verdict the per-arm rule reads (Section 5.1), and
+    the masks stay recorded."""
+    from attnbench.components import mask_gate as MG
+    session, out = Path(args.session), Path(args.out)
+    p1 = banked_masks(session / P1_MASKS)
+    cells = [(r.code_path.arm, budget, r.batch, r.prompt_id) for budget, r in p1]
+    banks = (record or record_both_paths)(args, cells, out / "masks")
+    ref = [r for _, r in p1]
+    try:
+        write_json(out / "mask_comparisons.json", {
+            "torch_vs_p1": _comparisons(MG.compare_banks(ref, banks["torch"])),
+            "triton_vs_p1": _comparisons(MG.compare_banks(ref, banks["triton"])),
+            "triton_vs_torch_on_p2": _comparisons(MG.compare_banks(banks["torch"],
+                                                                   banks["triton"]))})
+        res = MG.p2_mask_gate(ref, banks["torch"], banks["triton"],
+                              MG.Bounds(**(bound if bound is not None else mask_gate_bound())))
+    except MG.MaskGateError as e:
+        raise StepFailed(f"the mask gate cannot compare these banks: {e}") from e
+    from dataclasses import asdict
+    verdict = "pass" if res.passed else "fail"
+    write_json(out / "mask_gate.json", {"verdict": verdict, **asdict(res)})
+    return {"verdict": verdict, "cells": len(cells),
+            "failures": {k: len(getattr(res, k).failures)
+                         for k in ("pytorch_vs_p1", "triton_vs_p1", "triton_vs_pytorch_on_p2")}}
 
 
 # --- the P2 session -------------------------------------------------------------------------
@@ -1121,8 +1277,7 @@ def common_bodies() -> tuple[dict, dict]:
 
 def _t61() -> SessionConfig:
     reals, fakes = common_bodies()
-    reals["mask_gate"] = not_built("T2.23", "the mask gate: both XAttention paths through "
-                                            "use_triton on the recorded prompts")
+    reals["mask_gate"] = real_mask_gate
     fakes["mask_gate"] = fake_files("mask_gate.json", verdict="pass")
     cfg = SessionConfig(
         task="T6.1", pairing="P2", title="The P2 session (T6.1: Cascade Lake + A100)",
