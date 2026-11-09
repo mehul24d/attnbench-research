@@ -574,7 +574,8 @@ def _harness_setup(tmp_path, monkeypatch):
         out = Path(ns.out)
         write_t31_gt(out, "eager", [t31_row("dense", "dense", None, 2048, 1, 1951)],
                      not_before=T, firsts=[T + 1], complete=raise_ is None)
-        S.write_json(out / "eager" / "traced_L2048_b1.json", {"traced": {"rows": []}})
+        S.write_json(out / "eager" / "traced_L2048_b1.json", {
+            "traced": {"rows": []}, "traces": ["traces/trace_L2048_b1_0_dense.json"]})
         if raise_:
             raise raise_
     out = tmp_path / "gt"
@@ -591,7 +592,24 @@ def test_the_real_harness_runs_t31s_ground_truth_on_the_pairings_config(tmp_path
     assert cfg is comp and ns.out == args.out and ns.session == args.session
     assert r["complete"] is True and r[S.STRICT_KEY] == T
     assert [x["cell"] for x in r["untraced"]["rows"]] == [["dense", 1.0, 2048, 1]]
-    assert r["traced_files"] == ["eager/traced_L2048_b1.json"] and r["traces"] == []
+    assert r["traced_files"] == ["eager/traced_L2048_b1.json"]
+    assert r["traces"] == ["eager/traces/trace_L2048_b1_0_dense.json"]
+
+
+def test_the_trace_checks_read_each_trace_from_the_ground_truth_output(tmp_path, monkeypatch):
+    gt = S.step_dir(tmp_path, "ground_truth", T61)
+    S.write_json(gt / "traces.json", ["eager/traces/t_0_dense.json", "compiled/traces/t_0_dense.json"])
+    cmds = []
+    monkeypatch.setattr(S, "run", lambda cmd, *a, **k: cmds.append(cmd) or 0)
+    args = Namespace(out=str(tmp_path / "tc"), session=str(tmp_path))
+    assert S.real_trace_checks(T61, args) == {"traces": 2}
+    assert [c[c.index("kineto") + 1] for c in cmds] == [
+        str(gt / "eager/traces/t_0_dense.json"), str(gt / "compiled/traces/t_0_dense.json")]
+    outs = [c[c.index("--out") + 1] for c in cmds]
+    assert len(set(outs)) == 2          # two groups' traces of one arm keep their own output
+    S.write_json(gt / "traces.json", [])
+    with pytest.raises(S.StepFailed, match="no traces listed"):
+        S.real_trace_checks(T61, args)
 
 
 def test_the_real_harness_runs_a_block_on_the_blocks_grid_only(tmp_path, monkeypatch):

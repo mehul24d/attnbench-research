@@ -919,8 +919,9 @@ def real_harness(cfg, args, block=None, *, step_fn=None) -> dict:
     block's grid (`block_config`, written beside the step's output), read back
     by `t31_ground_truth_result`. A cell short of clean rounds makes the result
     incomplete, which `body_ground_truth` refuses after writing it. The traced
-    pass's files are listed as `traced_files`; they hold no profiler trace,
-    so `traces` stays empty and T2.7's step refuses until one is exported."""
+    pass's files are listed as `traced_files`, and the Kineto traces they
+    name (one per arm per cell, `t31_steps.TraceExport`) as `traces`, both
+    relative to the step's output, for T2.7's step."""
     from types import SimpleNamespace
     if not cfg.components_config:
         raise StepFailed(f"{cfg.pairing} names no components config for the ground truth")
@@ -941,8 +942,10 @@ def real_harness(cfg, args, block=None, *, step_fn=None) -> dict:
     except st.StepFailed as e:
         raise StepFailed(str(e), e.findings) from e
     result = t31_ground_truth_result(out)
-    result["traced_files"] = [str(p.relative_to(out)) for p in sorted(out.glob("*/traced_L*_b*.json"))]
-    result["traces"] = []
+    traced = sorted(out.glob("*/traced_L*_b*.json"))
+    result["traced_files"] = [str(p.relative_to(out)) for p in traced]
+    result["traces"] = [str((p.parent / t).relative_to(out))
+                        for p in traced for t in read_json(p, {}).get("traces", [])]
     return result
 
 
@@ -1043,14 +1046,16 @@ def body_late_check(cfg: SessionConfig, args) -> dict:
 
 
 def real_trace_checks(cfg, args) -> dict:
-    """T2.7 on every trace the traced ground-truth pass wrote."""
+    """T2.7 on every trace the traced ground-truth pass wrote (paths relative
+    to the ground-truth step's output)."""
     session = Path(args.session)
     gt = step_dir(session, "ground_truth", cfg)
     traces = read_json(gt / "traces.json", None)
     if not traces:
         raise StepFailed(f"no traces listed in {gt / 'traces.json'}")
     bad = [t for t in traces
-           if run(py("check_trace.py", "kineto", t, "--out", str(Path(args.out) / Path(t).stem)))]
+           if run(py("check_trace.py", "kineto", str(gt / t),
+                     "--out", str(Path(args.out) / "__".join(Path(t).with_suffix("").parts))))]
     if bad:
         raise StepFailed(f"check_trace.py flagged or failed on {len(bad)} trace(s)", {"bad": bad})
     return {"traces": len(traces)}

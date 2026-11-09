@@ -773,3 +773,15 @@ def time_with_profiler_overhead(wrapped, input_ids, arms, *, reps: int,
             "first_clocked_block_started_at": untraced["first_clocked_block_started_at"],
             "overhead": profiler_overhead(
                 untraced, traced, resolution_floor_ms=controls.resolution_floor_ms)}
+
+
+def tracer_layout(n_arms: int, warmup: int) -> dict:
+    """Which tracer entry is each arm's first timed block, in `time_arms`'
+    order: one entry per warm-up block (each arm's, in arm order), then one per
+    block of every round, round 0 in arm order. {entry index: arm index}."""
+    return {n_arms * warmup + j: j for j in range(n_arms)}
+
+
+def tracer_entries(n_arms: int, warmup: int, rounds_run: int) -> int:
+    """How many times `time_arms` enters its tracer (`tracer_layout`)."""
+    return n_arms * (warmup + rounds_run)

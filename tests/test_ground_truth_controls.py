@@ -13,6 +13,7 @@ not observed.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 
 import pytest
@@ -547,3 +548,28 @@ def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late
     for late in (start, start + warmup_s / 2, start + warmup_s, start + warmup_s + 0.001):
         with pytest.raises(LatePredictionError):
             load(late)
+
+
+def test_the_tracer_layout_is_time_arms_order():
+    """T2.7's export names each trace by `tracer_layout`: the entry it marks
+    for arm j must run arm j, in a round that was timed, and the count must be
+    `tracer_entries`. A rerun round is included (a flagged round 1)."""
+    tracing = Tracing()
+    rig = Rig(costs={"dense": lambda i: 30.0 + (40.0 if i == WARMUP + 1 else 0.0)},
+              tracing=tracing)
+    entered = []
+
+    @contextlib.contextmanager
+    def tracer():
+        start = len(rig.log)
+        with tracing():
+            yield
+        entered.append([name for name, *_ in rig.log[start:]])
+    out = gt.time_arms(_wrapped(), _ids(), rig.arms, reps=REPS, density_of=fake_densities,
+                       controls=rig.controls, tracer=tracer, clock=rig.clock, warmup=WARMUP)
+    assert out["rounds_run"] > REPS            # the drifted round was rerun
+    names = [a.name for a in rig.arms]
+    assert len(entered) == gt.tracer_entries(len(names), WARMUP, out["rounds_run"])
+    layout = gt.tracer_layout(len(names), WARMUP)
+    assert {i: entered[i] for i in layout} == {i: [names[j]] for i, j in layout.items()}
+    assert all(i >= len(names) * WARMUP for i in layout)     # past every warm-up block
