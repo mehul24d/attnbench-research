@@ -54,6 +54,10 @@ from ..predict import scoring
 from ..predict.commit import CommittedPrediction, require_loaded
 
 GATE_PREDICTORS = ("recursion", "sum", "step_form")
+# A ground-truth group with fewer clean rounds than this, or not complete, is
+# listed and left out of every aggregate, never dropped silently (Appendix A,
+# 9 Nov 2026; adviser's ruling 5 of the seventh paste: the minimum stays 10).
+MIN_CLEAN_ROUNDS = 10
 SCOPES = ("all", R.DENSE, R.SYNC_FREE, R.SYNCHRONISING)
 # A label's density and a calibrated cell's density agree to the precision
 # the prediction writes it at (six decimals).
@@ -96,12 +100,33 @@ def place_row(cp: CommittedPrediction, row: Mapping, name: str):
     return fits[0]
 
 
-def measured(cp: CommittedPrediction, results: Sequence[tuple[str, Mapping]]) -> dict:
-    """{"seconds": {cell key: seconds}, "unmeasured": [cell keys]} from
-    (name, ground-truth result) pairs, each row placed on one committed cell."""
+def short_of_rounds(result: Mapping, min_clean_rounds: int = MIN_CLEAN_ROUNDS) -> bool:
+    """An untraced group that is not complete, or has fewer clean rounds than
+    `min_clean_rounds`."""
+    if result.get("traced") is not False:
+        return False                       # refused by `check_result`, not excluded
+    clean = result.get("clean_rounds")
+    return result.get("complete") is not True or (clean is not None
+                                                  and int(clean) < min_clean_rounds)
+
+
+def measured(cp: CommittedPrediction, results: Sequence[tuple[str, Mapping]], *,
+             min_clean_rounds: int = MIN_CLEAN_ROUNDS) -> dict:
+    """{"seconds": {cell key: seconds}, "unmeasured": [cell keys], "excluded":
+    [groups]} from (name, ground-truth result) pairs, each row placed on one
+    committed cell. A group short of clean rounds (`short_of_rounds`) is
+    listed under "excluded" with its rounds, and its cells are unmeasured."""
     cp = require_loaded(cp)
     out: dict = {}
+    excluded = []
     for name, result in results:
+        if short_of_rounds(result, min_clean_rounds):
+            excluded.append({"result": name, "complete": result.get("complete"),
+                             "clean_rounds": result.get("clean_rounds"),
+                             "rounds_run": result.get("rounds_run"),
+                             "min_clean_rounds": min_clean_rounds,
+                             "arms": [row.get("arm") for row in result.get("rows", ())]})
+            continue
         RS.check_result(result, name)
         for row in result.get("rows", ()):
             k = place_row(cp, row, name).key
@@ -110,8 +135,9 @@ def measured(cp: CommittedPrediction, results: Sequence[tuple[str, Mapping]]) ->
                 raise GateAError(f"cell {k} is measured twice")
             out[k] = RS.measured_seconds(result, label, cp.statistic, name)
     if not out:
-        raise GateAError("no measured cells")
-    return {"seconds": out, "unmeasured": sorted(c.key for c in cp.cells if c.key not in out)}
+        raise GateAError(f"no measured cells ({len(excluded)} groups short of clean rounds)")
+    return {"seconds": out, "unmeasured": sorted(c.key for c in cp.cells if c.key not in out),
+            "excluded": excluded}
 
 
 def _residuals(cp, seconds, *, dense_arm, relative_floor, predictors):
@@ -322,6 +348,7 @@ def report(*, label: str, cp: CommittedPrediction, results: Sequence[tuple[str, 
         "label": label, "prediction_sha256": cp.sha256, "pairing": cp.pairing,
         "statistic": cp.statistic, "relative_floor": relative_floor,
         "measured_cells": len(secs), "unmeasured": [list(k) for k in m["unmeasured"]],
+        "excluded_groups": m["excluded"],
         "predictors": predictors(cp, secs, dense_arm=dense_arm,
                                  relative_floor=relative_floor),
         "families": families(family_reports, bound=family_bound,
@@ -341,6 +368,10 @@ def to_markdown(rep: Mapping) -> str:
          f"Prediction `{rep['prediction_sha256'][:12]}`, {rep['pairing']}, the "
          f"{rep['statistic']}; {rep['measured_cells']} cells measured, "
          f"{len(rep['unmeasured'])} committed cells not measured. Decision: {rep['decision']}.",
+         *([""] + [f"Excluded, short of {g['min_clean_rounds']} clean rounds: `{g['result']}` "
+                  f"({g['clean_rounds']} of {g['rounds_run']} rounds clean; arms "
+                  f"{', '.join(map(str, g['arms']))})."
+                  for g in rep.get("excluded_groups", ())]),
          "", "## Leg 1: the recursion against the sum and the step form", "",
          "| Scope | Predictor | n | Median abs. rel. error | Signed mean | Max |",
          "|---|---|---|---|---|---|"]

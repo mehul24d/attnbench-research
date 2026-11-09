@@ -33,7 +33,7 @@ gap, but with every Python mode suspended (the tape's torch-function mode
 and `_GapMode`), its own time read by the clock around it and added to the
 layer's gap. Under the modes each of its CPU operators paid both modes'
 dispatch: on T3.2c the oracle's builder, some 2,000 to 8,000 assignments a
-layer, read 3.8 to 6.5 times the layer's whole measured time (schema 2).
+layer, read 1.9 to 6.5 times the layer's whole measured time (schema 2).
 The function touches no device (`cpu_boundary.launch_check` checks that in
 the recording), so the tape has nothing in it to serve, and a departure
 would be refused at the tape's next entry.
