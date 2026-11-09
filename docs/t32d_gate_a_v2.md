@@ -168,11 +168,12 @@ floor; device time as priced and as traced):
 
 The same six cells fail under both.
 
-## 7. The learned predictor, re-selected (provisional)
+## 7. The learned predictor, re-selected
 
 - **Training rule (ruling 4):** targets pooled over T3.2c and T3.2d (per cell, the median over both repeats' samples); features from T3.2d; the same six pre-declared configurations; 7-fold cell-grouped CV on P1, seed 0, one thread, 1 h cap (used: about 2 s).
 - **Plan default, flagged:** a repeat whose group is short of 10 clean rounds gives no target for its cells (`p1_training.short_of_rounds`, leg 1's rule). Here this leaves out T3.2c's eight 16384 cells from the pool, and they take T3.2d's median alone.
-- **Provisional:** T3.2d's and T3.2c's link figures (`02_link/recursion_inputs.json`) are not on the Mac. The run used T3.2a's and T3.2b's in their place, labelled. The two runs give identical CV, since the link figures are constant within P1.
+- **The training file** (`attnbench.p1_training/2`, 35 rows, repeats T3.2d and T3.2c): sha256 `de7f0f44…` (record `361c69c8…`), 1,399,192 bytes. It is built with T3.2d's and T3.2c's link figures (`02_link/recursion_inputs.json`, read on the researcher's yes). It is backed up as `p1_training_t32dc_20261109.json.gz` in both local backup folders, and uploaded to `banked/p1_training/` under the same name. The 8 Nov file is not overwritten.
+- A provisional run with T3.2a's and T3.2b's link figures standing in gave the same CV: the link figures are constant within P1.
 
 | Config | Median held-out error | Max |
 |---|---|---|
@@ -183,9 +184,9 @@ The same six cells fail under both.
 | **4** (log seconds; 500 trees, rate 0.02, 4 leaves, min child 2, λ 1.0) | **2.87%** | 64.7% |
 | 5 | 3.83% | 70.9% |
 
-Config 4 is selected, replacing the 8 Nov provisional config 2 (2.85% on the
-superseded features). The final training file, its sha256 and its backups
-follow the read of the two link files.
+Config 4 is selected (`docs/learned_cv_p1_20261109.json`), replacing the
+8 Nov provisional config 2 (2.85% on the superseded features). It is not a
+lock value until the lock.
 
 ## 8. What this settles, and what it does not
 

@@ -1,5 +1,5 @@
 {
- "plan_sha256": "34d188bf901b6f2f2458a420f51517925725969d9b0bf37f05bdc9c0c6588fa1",
+ "plan_sha256": "371f5168279f818cf7c4391fe5c27095b9ea6be8781a9fb9441ff92adc4d4842",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -158,7 +158,7 @@
    "value": null,
    "source": null,
    "status": "owed: data",
-   "proposed": "Provisional: config 4 of the same 6 pre-declared (log_seconds; n_estimators 500, learning_rate 0.02, num_leaves 4, min_child_samples 2, reg_lambda 1.0; seed 0, deterministic, one thread), 2.87% median held-out error in 7-fold cell-grouped CV on P1, re-selected 9 Nov 2026 (adviser's ruling 4, eighth paste): targets pooled over T3.2c and T3.2d, features from T3.2d, a repeat short of 10 clean rounds giving no target (plan default, flagged). Provisional until the final training file: T3.2d's and T3.2c's link figures stood in for by T3.2a's and T3.2b's (constant within P1; both give the same CV). Replaces the 8 Nov provisional config 2 (2.85%, superseded features)",
+   "proposed": "Proposed: config 4 of the same 6 pre-declared (log_seconds; n_estimators 500, learning_rate 0.02, num_leaves 4, min_child_samples 2, reg_lambda 1.0; seed 0, deterministic, one thread), 2.87% median held-out error in 7-fold cell-grouped CV on P1, re-selected 9 Nov 2026 (adviser's ruling 4, eighth paste): targets pooled over T3.2c and T3.2d, features from T3.2d, a repeat short of 10 clean rounds giving no target (plan default, flagged). On the rebuilt training file (sha256 de7f0f4497e8..., T3.2d's link figures). Replaces the 8 Nov provisional config 2 (2.85%, superseded features)",
    "basis": "docs/learned_cv_p1_20261109.json; docs/learned_cv_p1_20261108.json; lock table row 20; Appendix A, 8 and 9 Nov 2026"
   },
   "k2_correctness_tolerance": {
@@ -323,20 +323,35 @@
  "banked_files": {
   "p1_training": {
    "path": "results/p1_training/p1_training.json.gz",
-   "file_sha256": "083b66134ebd3e2e72ca9cd6d576ffe561b128a61a2de93418fde49978045bdf",
-   "record_sha256": "c363c0cbb3de3e5224f913e91fabe442f3c8cb9b49b2f8fb7e3112be16530d58",
+   "file_sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
+   "record_sha256": "361c69c86806a6d2de57fe346a701efe4c952021ef6f6f39ce68a9d0cfeecc7a",
    "schema": "attnbench.p1_training/2",
    "rows": 35,
    "repeats": [
-    "T3.2a",
-    "T3.2b"
+    "T3.2d",
+    "T3.2c"
+   ],
+   "features_from": "T3.2d",
+   "backups": [
+    "~/Desktop/research/attnbench_backups/p1_training/p1_training_t32dc_20261109.json.gz",
+    "~/attnbench_backups/p1_training/p1_training_t32dc_20261109.json.gz"
    ],
    "uploaded": {
-    "bucket_path": "banked/p1_training/p1_training.json.gz",
-    "sha256": "083b66134ebd3e2e72ca9cd6d576ffe561b128a61a2de93418fde49978045bdf",
-    "bytes": 1378396,
-    "verified": "8 Nov 2026: downloaded copy's sha256 matches"
-   }
+    "bucket_path": "banked/p1_training/p1_training_t32dc_20261109.json.gz",
+    "sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
+    "bytes": 1399192,
+    "verified": "owed: the round-trip check after the upload (9 Nov 2026)"
+   },
+   "superseded": {
+    "path": "banked/p1_training/p1_training.json.gz",
+    "file_sha256": "083b66134ebd3e2e72ca9cd6d576ffe561b128a61a2de93418fde49978045bdf",
+    "repeats": [
+     "T3.2a",
+     "T3.2b"
+    ],
+    "kept": "as the sensitivity's file; not overwritten"
+   },
+   "path_note": "the path t61_session.P1_TRAINING reads; the backups and the bucket copy carry the dated name p1_training_t32dc_20261109.json.gz"
   }
  }
 }

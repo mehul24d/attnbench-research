@@ -1,6 +1,6 @@
 {
- "schema_note": "Provisional re-selection, 9 Nov 2026 (adviser's ruling 4, eighth paste): the same six pre-declared configurations and procedure as docs/learned_cv_p1_20261108.json; targets pooled over T3.2c and T3.2d, features from T3.2d. The link figures of T3.2d and T3.2c were not on the Mac; T3.2a's stand in, labelled (T3.2b's give identical results). Not final until the training file is rebuilt with T3.2d's link figures.",
- "link_stand_in": "T3.2a",
+ "schema_note": "Re-selection, 9 Nov 2026 (adviser's ruling 4, eighth paste): the same six pre-declared configurations and procedure as docs/learned_cv_p1_20261108.json, on the rebuilt P1 training file: targets pooled over T3.2d and T3.2c (a repeat short of 10 clean rounds gives no target), features and link figures from T3.2d.",
+ "training_file_sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
  "configs": [
   {
    "index": 0,
@@ -93,5 +93,5 @@
   }
  ],
  "winner": 4,
- "file_record_sha256": "f53febbaa2d5c9d99b31ad6e1510d4ec3f46abab7215a502aea5b78b5330ce0c"
+ "file_record_sha256": "361c69c86806a6d2de57fe346a701efe4c952021ef6f6f39ce68a9d0cfeecc7a"
 }
