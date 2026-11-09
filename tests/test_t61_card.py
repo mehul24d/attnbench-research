@@ -59,3 +59,12 @@ def test_the_prerequisites_follow_the_plan():
     assert f"| {first} | {S.T61.requirements[0].why} | Partly built (9 Nov 2026) | no |" in _card(one_short)
     assert "**As the plan stands, 1 of" in _card(one_short)
     assert plan          # the real plan builds too
+
+
+def test_the_card_says_the_suite_record_is_not_in_the_setup_and_no_command_passes_it():
+    """Adviser's ruling of 10 Nov 2026 (reversing ruling h): no `--suite-record`
+    in P2's bootstrap, and its 20 minutes in no cap."""
+    text = _card()
+    assert "**No suite record in the setup**" in text and "20 minutes" in text
+    assert not [l for l in text.splitlines() if "gcp_bootstrap_instance.sh" in l and "--suite-record" in l]
+    assert "| Setup: write gate, deploy, preflight, bootstrap with XAttention | 0.5 |" in text
