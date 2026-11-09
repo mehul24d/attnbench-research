@@ -26,6 +26,18 @@ synchronised outside the clock, and the clock starts again. A layer's gaps
 run from its forward pre-hook to its forward hook, so a layer has one
 interval more than it has calls. A call nested in a met one is part of it.
 
+**Host-side functions** (`host_side`; adviser's ruling 2 of 9 Nov 2026,
+seventh paste). A function declared host-side (`cpu_boundary.
+HOST_SIDE_FUNCTIONS`: the oracle's reference mask builder) runs inside a
+gap, but with every Python mode suspended (the tape's torch-function mode
+and `_GapMode`), its own time read by the clock around it and added to the
+layer's gap. Under the modes each of its CPU operators paid both modes'
+dispatch: on T3.2c the oracle's builder, some 2,000 to 8,000 assignments a
+layer, read 3.8 to 6.5 times the layer's whole measured time (schema 2).
+The function touches no device (`cpu_boundary.launch_check` checks that in
+the recording), so the tape has nothing in it to serve, and a departure
+would be refused at the tape's next entry.
+
 **The timer's overhead.** Each run first issues `CALIBRATION_CALLS`
 back-to-back one-element `add_` calls under the same stack; the median gap
 between two of them is the instrument's own time per interval (the modes'
@@ -72,8 +84,8 @@ from .host_profile import (ISOLATED_REPLAY, HostProfile, NullEntry, aten_name, d
 from .op_sequence import HOST_COMPUTE, OpSequence, SeqKind
 from .sync_tape import SyncTape, TapeReplayer, classify
 
-SCHEMA = "attnbench.layer_residual/2"
-METHOD = "idle_device_gaps"
+SCHEMA = "attnbench.layer_residual/3"
+METHOD = "idle_device_gaps_bare_host"
 MIN_REPS, MAX_REPS, STABLE_REL = 7, 21, 0.01
 CALIBRATION_CALLS = 64
 SPREAD_LABEL = "per-layer residual spread above its T4.1 tolerance"
@@ -89,6 +101,7 @@ class Gaps:
     per interval; and whether the cell's median settled."""
 
     gaps_s: dict = field(default_factory=dict)           # layer -> (net gaps per run)
+    host_side_s: dict = field(default_factory=dict)      # layer -> (host-side time per run)
     intervals: dict = field(default_factory=dict)        # layer -> intervals in a run
     overhead_s: tuple = ()
     stable: bool = True
@@ -103,6 +116,7 @@ class _Timer:
         self.layer = None
         self.last: Optional[float] = None
         self.sum, self.n, self.inside = 0.0, 0, 0
+        self.host_side = 0.0
         self.calibration: list = []
 
     def stop(self) -> None:
@@ -186,6 +200,46 @@ def _entries(entries: Sequence[NullEntry], timer: _Timer):
 
 
 @contextlib.contextmanager
+def _no_modes():
+    """Every Python mode suspended: the torch-function modes and the dispatch modes."""
+    from torch.utils._python_dispatch import _disable_current_modes
+    with torch._C.DisableTorchFunction(), _disable_current_modes():
+        yield
+
+
+@contextlib.contextmanager
+def _host_side(fns: Sequence[tuple], timer: _Timer):
+    """Each (module, attribute) in `fns` runs bare inside its gap (module docstring)."""
+    saved = []
+    try:
+        for module, attr in fns:
+            original = getattr(module, attr)
+            saved.append((module, attr, original))
+
+            def bare(*args, _orig=original, **kwargs):
+                if timer.inside or timer.layer in (None, _CALIBRATION):
+                    return _orig(*args, **kwargs)
+                timer.stop()
+                timer.inside += 1
+                try:
+                    with _no_modes():
+                        t0 = timer.clock()
+                        out = _orig(*args, **kwargs)
+                        d = timer.clock() - t0
+                    timer.sum += d
+                    timer.host_side += d
+                finally:
+                    timer.inside -= 1
+                    timer.start()
+                return out
+            setattr(module, attr, bare)
+        yield
+    finally:
+        for module, attr, original in reversed(saved):
+            setattr(module, attr, original)
+
+
+@contextlib.contextmanager
 def _host_compute(timer: _Timer):
     """Each `attnbench::host_compute` region is a call: its time is priced
     at its position (`bare_timer`, `host_compute_null_pass`)."""
@@ -218,14 +272,14 @@ def _hooks(layers: Sequence[torch.nn.Module], timer: _Timer, out: dict):
 
     def pre(i):
         def h(mod, args):
-            timer.layer, timer.sum, timer.n = i, 0.0, 0
+            timer.layer, timer.sum, timer.n, timer.host_side = i, 0.0, 0, 0.0
             timer.start()
         return h
 
     def post(i):
         def h(mod, args, result):
             timer.stop()
-            out[i] = (timer.sum, timer.n)
+            out[i] = (timer.sum, timer.n, timer.host_side)
             timer.layer = None
         return h
     try:
@@ -249,18 +303,18 @@ def _calibrate(timer: _Timer, device_type: str, calls: int) -> float:
     return float(statistics.median(timer.calibration[1:-1] or timer.calibration))
 
 
-def _one_run(run_prefill, tape, staged, layers, launching, entries, *, sync, clock,
-             device_type, calls) -> tuple[dict, float]:
+def _one_run(run_prefill, tape, staged, layers, launching, entries, host_side, *, sync,
+             clock, device_type, calls) -> tuple[dict, float]:
     timer = _Timer(clock, sync)
     raw: dict = {}
     rep = _GapReplayer(tape, staged, timer)
-    with rep, _entries(entries, timer), _host_compute(timer), _hooks(layers, timer, raw), \
-            _GapMode(launching, device_type, timer):
+    with _host_side(host_side, timer), rep, _entries(entries, timer), _host_compute(timer), \
+            _hooks(layers, timer, raw), _GapMode(launching, device_type, timer):
         overhead = _calibrate(timer, device_type, calls)
         run_prefill()
     rep.finish()
     sync()
-    return {i: (s - n * overhead, n) for i, (s, n) in raw.items()}, overhead
+    return {i: (s - n * overhead, n, h) for i, (s, n, h) in raw.items()}, overhead
 
 
 def _settled(totals: Sequence[float], min_reps: int, rel: float) -> bool:
@@ -272,13 +326,15 @@ def _settled(totals: Sequence[float], min_reps: int, rel: float) -> bool:
 
 def idle_gaps(run_prefill: Callable[[], None], tape: SyncTape,
               layers: Sequence[torch.nn.Module], *, seq: Optional[OpSequence] = None,
-              entries: Sequence[NullEntry] = (), device_type: str = "cuda",
+              entries: Sequence[NullEntry] = (), host_side: Sequence[tuple] = (),
+              device_type: str = "cuda",
               staged_device=None, sync: Callable[[], None] = torch.cuda.synchronize,
               clock: Callable[[], float] = time.perf_counter, min_reps: int = MIN_REPS,
               max_reps: int = MAX_REPS, stable_rel: float = STABLE_REL,
               calibration_calls: int = CALIBRATION_CALLS) -> Gaps:
     """One untimed run, then timed runs until the median settles (module
-    docstring). With no `seq`, every call that touches the device is met."""
+    docstring). With no `seq`, every call that touches the device is met.
+    `host_side`: (module, attribute) pairs run bare (module docstring)."""
     for name, v in (("min_reps", min_reps), ("max_reps", max_reps)):
         if isinstance(v, bool) or not isinstance(v, int) or v < 1:
             raise ValueError(f"{name} must be an int >= 1")
@@ -290,22 +346,33 @@ def idle_gaps(run_prefill: Callable[[], None], tape: SyncTape,
     staged = tape.stage(staged_device if staged_device is not None
                         else torch.device(device_type))
     kw = dict(sync=sync, clock=clock, device_type=device_type, calls=calibration_calls)
-    _one_run(run_prefill, tape, staged, layers, launching, entries, **kw)
+    _one_run(run_prefill, tape, staged, layers, launching, entries, host_side, **kw)
     runs, overheads, totals = [], [], []
     while len(runs) < max_reps and not _settled(totals, min_reps, stable_rel):
-        r, ov = _one_run(run_prefill, tape, staged, layers, launching, entries, **kw)
+        r, ov = _one_run(run_prefill, tape, staged, layers, launching, entries, host_side,
+                         **kw)
         runs.append(r)
         overheads.append(ov)
-        totals.append(sum(v for v, _ in r.values()))
+        totals.append(sum(v for v, _, _ in r.values()))
     out = Gaps(overhead_s=tuple(overheads), stable=_settled(totals, min_reps, stable_rel))
     for i in sorted(runs[0]):
         out.gaps_s[i] = tuple(r[i][0] for r in runs)
+        out.host_side_s[i] = tuple(r[i][2] for r in runs)
         ns = {r[i][1] for r in runs}
         if len(ns) != 1:
             raise ValueError(f"layer {i} had {sorted(ns)} intervals in different runs: "
                              f"the prefill did not take one path")
         out.intervals[i] = ns.pop()
     return out
+
+
+def declared_host_side() -> tuple:
+    """`cpu_boundary.HOST_SIDE_FUNCTIONS` as the (module, attribute) pairs
+    `idle_gaps` runs bare."""
+    from attnbench import cpu_boundary, masks
+    from attnbench.accuracy import model
+    modules = {"model.py": model, "masks.py": masks}
+    return tuple((modules[f], name) for f, name in cpu_boundary.HOST_SIDE_FUNCTIONS)
 
 
 def _spread(xs: Sequence[float]) -> float:
@@ -348,6 +415,8 @@ def residual(seq: OpSequence, bare: HostProfile, null: HostProfile, gaps: Gaps, 
             labels.append(SPREAD_LABEL)
         rows.append({"layer": layer, "residual_s": rho, "gaps_s": list(xs),
                      "intervals": gaps.intervals.get(layer),
+                     "host_side_s": (float(statistics.median(gaps.host_side_s[layer]))
+                                     if gaps.host_side_s.get(layer) else 0.0),
                      "added_s": max(rho, 0.0) if calls else 0.0, "positions": len(calls),
                      "spread": spread, "labels": labels})
     host = {i: v + added.get(i, 0.0) for i, v in bare.host_s.items()}
@@ -365,6 +434,7 @@ def residual(seq: OpSequence, bare: HostProfile, null: HostProfile, gaps: Gaps, 
               "overhead_s": float(statistics.median(ov)) if ov else 0.0,
               "overhead_s_per_run": list(ov), "spread_tol": spread_tol,
               "gap_total_s": sum(r["residual_s"] for r in rows),
+              "host_side_total_s": sum(r["host_side_s"] for r in rows),
               "residual_added_s": sum(added.values()),
               "layers_over_spread": [r["layer"] for r in rows if SPREAD_LABEL in r["labels"]],
               "layers_negative": [r["layer"] for r in rows if NEGATIVE_LABEL in r["labels"]],

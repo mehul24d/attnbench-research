@@ -463,3 +463,86 @@ def test_a_cached_output_shape_is_the_meta_runs_and_the_meta_run_is_made_once(mo
     # a different shape is another signature
     hp._null_outputs(aten.add.Tensor, (torch.randn(2, 3), torch.randn(2, 3)), {}, "cpu")
     assert len(runs) > n
+
+
+# --- the oracle's host-side builder runs bare (ruling 2 of 9 Nov 2026, seventh paste) -------
+
+def _host_side_prefill(clock, seen):
+    import types
+    import torch
+    mod = types.SimpleNamespace()
+
+    def build(x):
+        # what the reference mask builder does: CPU operators and the host's time
+        seen.append((torch._C._is_torch_function_mode_enabled(),
+                     torch._C._len_torch_dispatch_stack()))
+        y = (x * 3) + 1
+        clock.t += 4.0
+        return y
+    mod.build = build
+
+    class Layer(torch.nn.Module):
+        def forward(self, x):
+            clock.t += 3.0
+            x = x + 1                       # a call
+            x = mod.build(x)                # the host-side function, between calls
+            y = x * 2                       # a call
+            clock.t += 1.0
+            return y
+
+    layers = [Layer()]
+
+    def prefill():
+        x = torch.ones(4)
+        for m in layers:
+            x = m(x)
+    return prefill, layers, mod
+
+
+def test_a_declared_host_side_function_runs_bare_inside_its_gap():
+    from attnbench.components.sync_tape import TapeRecorder
+    clock, seen = _Clock(), []
+    prefill, layers, mod = _host_side_prefill(clock, seen)
+    with TapeRecorder("cpu") as r:
+        prefill()
+    seen.clear()
+    g = lr.idle_gaps(prefill, r.tape, layers, host_side=((mod, "build"),), device_type="cpu",
+                     sync=clock.sync, clock=clock, min_reps=3, max_reps=3, calibration_calls=8)
+    # no Python mode is active inside it, in any run
+    assert seen and all(s == (False, 0) for s in seen)
+    # its time is in the layer's gap, recorded beside it; its operators are not calls
+    assert g.gaps_s == {0: (3.0 + 4.0 + 1.0,) * 3}
+    assert g.host_side_s == {0: (4.0,) * 3}
+    assert g.intervals == {0: 4}
+    assert mod.build.__name__ == "build"              # restored after the runs
+
+
+def test_without_host_side_its_operators_are_calls_under_the_modes():
+    from attnbench.components.sync_tape import TapeRecorder
+    clock, seen = _Clock(), []
+    prefill, layers, mod = _host_side_prefill(clock, seen)
+    with TapeRecorder("cpu") as r:
+        prefill()
+    seen.clear()
+    g = lr.idle_gaps(prefill, r.tape, layers, device_type="cpu", sync=clock.sync, clock=clock,
+                     min_reps=3, max_reps=3, calibration_calls=8)
+    assert seen and all(s[0] or s[1] for s in seen)
+    assert g.intervals == {0: 5} and g.host_side_s == {0: (0.0,) * 3}   # 4 calls
+
+
+def test_the_record_carries_each_layers_host_side_time():
+    seq = _fixture()
+    bare, null = _profiles(seq)
+    gaps = lr.Gaps(gaps_s={0: (500e-6,) * 3}, host_side_s={0: (300e-6,) * 3},
+                   intervals={0: 9}, overhead_s=(0.0,) * 3)
+    _, rec = lr.residual(seq, bare, null, gaps, spread_tol=0.10)
+    assert rec["layers"][0]["host_side_s"] == pytest.approx(300e-6)
+    assert rec["host_side_total_s"] == pytest.approx(300e-6)
+    assert rec["schema"] == "attnbench.layer_residual/3"
+
+
+def test_the_declared_host_side_functions_are_the_oracles_builder():
+    from attnbench import masks
+    from attnbench.accuracy import model
+    assert lr.declared_host_side() == ((model, "_mask_from_scores"),
+                                       (masks, "importance_block_mask"))
