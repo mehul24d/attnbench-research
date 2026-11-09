@@ -5,7 +5,10 @@ paste) the rule's sessions are those whose timed ground-truth path is
 byte-identical (`scripts/timed_path.py`); any other set is a sensitivity. Writes `<out>/cell_floors.json`, the
 `scripts/gate_a.py --v2 --cell-floors` input ("<length>x<batch>" -> ms), and
 `<out>/cell_floors_detail.json` with each cell's within- and between-session
-spread and which one set it.
+spread and which one set it. A group short of `--min-clean-rounds` clean
+rounds (default 10, leg 1's) is left out of both spreads and listed
+(Appendix A, 9 Nov 2026, ninth paste); `--min-clean-rounds 0` keeps every
+complete group.
 
     python3 scripts/cell_floors.py --session T3.2a t32a/09_ground_truth \\
         --session T3.2b ... --session T3.2c ... --quantile 0.95 --provisional --out floors
@@ -34,6 +37,7 @@ def parser() -> argparse.ArgumentParser:
                     metavar=("NAME", "GROUND_TRUTH"))
     ap.add_argument("--quantile", type=float, required=True, help="the floors' quantile (a lock value)")
     ap.add_argument("--provisional", action="store_true")
+    ap.add_argument("--min-clean-rounds", type=int, default=G.MIN_CLEAN_ROUNDS)
     ap.add_argument("--out", required=True)
     return ap
 
@@ -46,6 +50,7 @@ def main(argv=None) -> int:
         return 2
     try:
         sessions = {n: GA.ground_truth(Path(d))[0] for n, d in args.session}
+        sessions, excluded = GR.drop_short_groups(sessions, min_clean_rounds=args.min_clean_rounds)
         fl = GR.cell_floors(sessions, quantile=args.quantile, pairing="P1")
     except (G.GateAError, FloorsError, OSError, KeyError, TypeError, ValueError) as e:
         print(f"cell_floors: {e}", file=sys.stderr)
@@ -57,8 +62,13 @@ def main(argv=None) -> int:
     (out / "cell_floors_detail.json").write_text(json.dumps(
         {"sessions": names, "quantile": args.quantile, "provisional": args.provisional,
          "rule": "max(within-session, between-session) per (length, batch), over sessions with a "
-                 "byte-identical timed ground-truth path; Appendix A, 8 and 9 Nov 2026",
+                 "byte-identical timed ground-truth path, groups short of the minimum clean "
+                 "rounds left out; Appendix A, 8 and 9 Nov 2026",
+         "min_clean_rounds": args.min_clean_rounds, "excluded_groups": excluded,
          "cells": fl}, indent=1))
+    for e in excluded:
+        print(f"excluded: {e['session']} {e['result']} ({e['clean_rounds']} clean of "
+              f"{e['min_clean_rounds']}, complete {e['complete']})")
     for k, v in fl.items():
         b = "-" if v["between_ms"] is None else f"{v['between_ms']:.2f}"
         print(f"{k}: floor {v['floor_ms']:.2f} ms (within {v['within_ms']:.2f}, between {b}, "

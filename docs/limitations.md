@@ -3097,3 +3097,63 @@ them from the in-order graph replay, so no position went unpriced, but the
 isolated original's price for them does not exist. If it happened in a
 segment's positions that only the isolated original prices, those positions
 would be unpriced, and the arm's pricing gate would refuse the arm.
+
+## Gate A on P1 failed two of its three legs, and the study proceeded (2026-11-09)
+
+Gate A v2 was read on T3.2d (`3c44588`, the final P1 identity), with T3.2c as
+a sensitivity (`docs/t32d_gate_a_v2.md`). The researcher confirmed the
+recommendation on 9 Nov 2026 at 19:38 IST: "I agree with your Gate A T3.3
+recommendation". The study proceeds to the lock and to P2 and P4. Legs 1 and
+2 are recorded here as limitations. The claim rests on the held-out pairings,
+and P1 is never counted as a test (Appendix A, 9 Nov 2026).
+
+**Leg 1: the step form predicts P1 better than the recursion.** Leg 1 needs
+the recursion's median absolute relative error below both the sum's and the
+step form's. It is below the sum's (51.21%) and above the step form's. The
+bootstrap resamples cells within each scope (10,000 draws, seed 0, paired, 95%
+percentile intervals; `scripts/leg1_bootstrap.py`,
+`docs/leg1_bootstrap_t32d_20261109.json`):
+
+| Scope (T3.2d, as recorded) | Cells | Recursion | Step form | Difference, points |
+|---|---|---|---|---|
+| All | 35 | 5.05% [4.18, 6.12] | 1.96% [1.31, 3.42] | +3.09 [+1.91, +4.11] |
+| dense | 6 | 2.57% [1.90, 5.37] | 2.19% [1.89, 5.30] | +0.38 [+0.00, +0.75] |
+| mean-pool | 10 | 4.80% [2.81, 17.31] | 3.04% [0.62, 15.31] | +1.77 [+0.63, +3.06] |
+| oracle | 9 | 5.80% [2.68, 15.69] | 1.81% [0.40, 9.62] | +3.99 [+2.28, +6.08] |
+| XAttention | 5 | 9.10% [3.47, 59.68] | 1.17% [0.57, 57.69] | +7.93 [+1.99, +12.51] |
+| XAttention, no assert | 5 | 9.76% [3.86, 59.73] | 1.31% [0.51, 57.76] | +8.45 [+1.97, +18.94] |
+
+- **Every interval of the difference is above zero.** The step form is better on P1 overall and in every arm.
+- **Overall, the difference is inside the 6.77% noise floor:** 3.09 points, and its upper limit is 4.11. So is each arm's point difference except the two XAttention arms (7.93 and 8.45 points). Their lower limits (1.99 and 1.97) are inside it. The noise floor is a between-session spread of cell times (T3.2a and T3.2b, n = 2), not an error interval, so this comparison is a scale, not a test.
+- **Under the relative drift filter** (21 cells), the overall difference is +2.46 points [+1.51, +3.46].
+- **Every cell is an overprediction.** The largest errors are at 2048 tokens for every predictor that adds host work.
+- **The finding cuts against H1's advance statement.** H1 expects the recursion to gain over the step form only on arms with synchronisations. On P1 the step form is lower on the synchronising arms too.
+
+**Leg 2: six cells' replay prices disagree with their traces.** Leg 2 needs
+every scored family within 0.25 (provisional) of its trace, where the error
+is replay / trace − 1. Under the rule's floors 312 of 1,143 (cell, family)
+pairs are scored (27.3%, 95.5% of priced device time). Six cells fail, and in
+every one the replay is slower than the trace:
+
+| Arm | Length × batch | Family: error |
+|---|---|---|
+| oracle, 0.5 | 4096 × 1 | `addmm` +0.255; `block_sparse_attn_forward` +0.297; `mm` +0.292 |
+| oracle, 0.5 | 8192 × 1 | `addmm` +0.331; `block_sparse_attn_forward` +0.388; `mm` +0.385 |
+| oracle, 0.25 | 16384 × 1 | `block_sparse_attn_forward` +0.487; `mm` +0.457 |
+| oracle, 0.5 | 16384 × 1 | `block_sparse_attn_forward` +0.505; `mm` +0.389 |
+| oracle, 0.25 | 32768 × 1 | `block_sparse_attn_forward` +0.507 |
+| XAttention, calibrated | 2048 × 1 | `cat` +0.271 |
+
+**The clock test, in one line.** No family fails where the trace and the
+replay share a clock state (SM clock ratio below 1.3: 12 cells, 115 pairs);
+all 12 failing families are at a ratio of 1.72 or more, but the ratio is
+necessary, not sufficient (mean-pool at 1.66 to 1.88 has none).
+
+**What it means for the claims.** P1's device prices are the replay's. Where
+the trace ran at boost clocks and the replay at the power cap, the price is
+the capped one. This is consistent with the oracle's failures being a
+mismatch of clock state, not mispricing within a state. It is not shown to
+be: no fix was tested, and leg 2's bound and families are unchanged. Leg 3
+passed (slopes 1.005 to 1.127), so the synchronisation costing is not where
+the gap lies. A pairing's replay-versus-trace check reruns on the first card
+of each new code path before H1 is read there (Section 7).
