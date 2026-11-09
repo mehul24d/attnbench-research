@@ -40,6 +40,7 @@ case "$*" in
   *"compute ssh"*"XATTN_OK"*) say XATTN_OK ;;
   *"compute ssh"*"FA3_OK"*) say FA3_OK ;;
   *"compute ssh"*"TREE_CLEAN"*) say TREE_CLEAN ;;
+  *"compute ssh"*"SUITE_RC="*) say SUITE_RC=0 ;;
 esac
 exit 0
 """
@@ -197,3 +198,34 @@ def test_a_failed_fa3_check_stops_before_the_tree_check(tmp_path):
     p, calls = _run(tmp_path, FA3_WHEEL_SHA256=SHA, FAKE_FAIL="FA3_OK")
     assert p.returncode == 1 and "FA3 import check" in p.stderr
     assert not any("TREE_CLEAN" in c for c in calls)
+
+
+# --- T2.26: the suite record, opt-in, before anything is measured -----------------------------
+
+def test_the_suite_record_runs_after_the_installs_and_before_the_tree_check(tmp_path):
+    p, calls = _run(tmp_path, "--suite-record", FA3_WHEEL_SHA256=SHA)
+    assert p.returncode == 0, p.stdout[-1500:] + p.stderr[-1500:]
+    suite = _step(calls, "SUITE_RC=")
+    assert _step(calls, "FA3_OK") < suite < _step(calls, "TREE_CLEAN")
+    assert "timeout 25m bash scripts/gpu_suite_record.sh " in calls[suite]
+
+
+def test_a_suite_record_that_does_not_pass_stops_before_the_tree_check(tmp_path):
+    p, calls = _run(tmp_path, "--suite-record", FAKE_FAIL="SUITE_RC=0")
+    assert p.returncode == 1 and "the suite record did not pass" in p.stderr
+    assert not any("TREE_CLEAN" in c for c in calls)
+
+
+def test_without_the_flag_no_suite_runs_and_the_run_says_so(tmp_path):
+    p, calls = _run(tmp_path, "--no-xattention")
+    assert p.returncode == 0, p.stderr[-1500:]
+    assert not any("gpu_suite_record" in c for c in calls)
+    assert "suite record skipped (no --suite-record)" in p.stdout
+
+
+def test_the_suite_bound_is_read_and_an_unknown_option_refuses_before_anything_runs(tmp_path):
+    p, calls = _run(tmp_path, "--suite-record", SUITE_RECORD_MIN="7")
+    assert p.returncode == 0 and "timeout 7m " in calls[_step(calls, "SUITE_RC=")]
+    for args, env in ((("--suite",), {}), (("--suite-record",), {"SUITE_RECORD_MIN": "0"})):
+        p, calls = _run(tmp_path, *args, **env)
+        assert p.returncode in (1, 2) and "REFUSING" in p.stderr and calls == []

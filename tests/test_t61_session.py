@@ -776,15 +776,34 @@ def p1_grid():
 def test_a_blocks_components_config_times_only_its_cells_and_the_anchor():
     import t31_steps as st
     comp, grid = p1_grid()
-    block = {"id": "b3", "anchor": grid[0], "cells": [grid[5], grid[9]]}
+    assert grid[7][:3] == ("dense", 1.0, 4096) and grid[9][2] == 4096
+    block = {"id": "b3", "anchor": grid[0], "cells": [grid[5], grid[7], grid[9]]}
     block["run_cells"] = [block["anchor"]] + block["cells"]
     sub = S.block_config(comp, block)
-    assert st.cells(sub) == [grid[0], grid[5], grid[9]]
+    assert st.cells(sub) == [grid[0], grid[5], grid[7], grid[9]]
+    assert sub["lengths"] == [2048, 4096] and sub["batches"] == {"2048": [1], "4096": [1]}
     assert st.cells(comp) == grid                                   # the pairing's is untouched
     assert {e["reason"] for e in sub["not_measured"][len(comp["not_measured"]):]} == \
         {"another block's cell (this is block b3)"}
     with pytest.raises(S.StepFailed, match="not in the grid"):
         S.block_config(comp, dict(block, run_cells=[("dense", 1.0, 999, 1)]))
+
+
+def test_a_block_with_cells_at_a_length_but_not_its_dense_control_is_refused():
+    """T3.1 times the dense control at every length it visits
+    (`t31_steps.group_arms`): with no dense cell at 4096 in the block, its
+    rows would hold dense at 4096 and `tag_rows` would refuse them after the
+    clocking. The block's config refuses first."""
+    import t31_steps as st
+    comp, grid = p1_grid()
+    block = {"id": "b3", "anchor": grid[0], "cells": [grid[5], grid[9]]}
+    block["run_cells"] = [block["anchor"]] + block["cells"]
+    with pytest.raises(S.StepFailed, match=r"\[\(4096, 1\)\].*without the dense cell"):
+        S.block_config(comp, block)
+    sub = S.block_config(comp, dict(block, run_cells=block["run_cells"] + [grid[7]]))
+    for L in sub["lengths"]:                                    # every visited length's control
+        names, _ = st.group_arms(dict(sub, gt_groups={"eager": ["dense", "oracle"]}), "eager", L, 1)
+        assert names[0] == "dense" and ("dense", 1.0, L, 1) in {tuple(c) for c in st.cells(sub)}
 
 
 def write_t31_gt(d, group, rows, *, not_before, firsts, traced=False, complete=True):
@@ -919,6 +938,42 @@ def test_the_real_preflight_refuses_a_cpu_host(tmp_path):
     pytest.importorskip("torch")
     with pytest.raises(S.StepFailed):
         S.real_preflight(T61, args_for(tmp_path, tmp_path, dry_run=False))
+
+
+# --- T2.26's GPU variants in the preflight ----------------------------------------------
+
+def _junit(path, cases):
+    """A JUnit record with one testcase per (name, kind), kind None for a pass."""
+    body = "".join(f'<testcase name="{n}">' + (f"<{k}/>" if k else "") + "</testcase>"
+                   for n, k in cases)
+    path.write_text(f'<testsuites><testsuite name="pytest">{body}</testsuite></testsuites>')
+    return path
+
+
+def test_five_passing_gpu_variants_are_no_problem(tmp_path):
+    counts, problems = S.gpu_variant_problems(
+        _junit(tmp_path / "j.xml", [(f"t{i}", None) for i in range(5)]), 0)
+    assert problems == [] and counts["passed"] == 5 and counts["skipped"] == 0
+
+
+@pytest.mark.parametrize("kind", ["skipped", "failure", "error"])
+def test_a_skipped_failed_or_erroring_gpu_variant_is_a_problem(tmp_path, kind):
+    cases = [(f"t{i}", None) for i in range(4)] + [("t4", kind)]
+    counts, problems = S.gpu_variant_problems(_junit(tmp_path / "j.xml", cases), 0)
+    assert problems == [f"GPU variant {kind}: t4"] and counts[kind] == 1
+
+
+def test_a_gpu_variant_count_other_than_five_is_a_problem(tmp_path):
+    _, problems = S.gpu_variant_problems(
+        _junit(tmp_path / "j.xml", [(f"t{i}", None) for i in range(4)]), 0)
+    assert problems == ["4 GPU variants ran, not 5"]
+
+
+def test_no_junit_record_or_a_bare_nonzero_exit_is_a_problem(tmp_path):
+    assert S.gpu_variant_problems(tmp_path / "absent.xml", 4)[1]
+    _, problems = S.gpu_variant_problems(
+        _junit(tmp_path / "j.xml", [(f"t{i}", None) for i in range(5)]), 1)
+    assert problems == ["pytest exited 1 on the GPU variants"]
 
 
 # --- added after break-testing: the two guards no test killed --------------------------

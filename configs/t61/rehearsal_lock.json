@@ -1,0 +1,101 @@
+{
+ "_comment": "The rehearsal's block spec (scope iii): two small blocks of the P2 runner on the L4, each on its own instance. b1 runs every component step, the prediction and ground truth at 2048; b2 runs ground truth at 8192. The anchor, dense at 8192, is measured in both and compared between them (block_drift, the working 6.77%). planned_hours from the card's step table (docs/launch_cards/t61_rehearsal_l4.md). EXPLORATORY: not a lock file.",
+ "blocks": {
+  "P2-R": {
+   "max_hours": 2.2,
+   "anchor": {
+    "arm": "dense",
+    "density": 1.0,
+    "context_length": 8192,
+    "batch": 1
+   },
+   "blocks": [
+    {
+     "id": "b1",
+     "steps": [
+      "link",
+      "launch_queue",
+      "probe",
+      "mask_gate",
+      "host_components",
+      "device_components",
+      "dense_select",
+      "host_speed_mid",
+      "predict",
+      "ground_truth",
+      "late_check",
+      "trace_checks"
+     ],
+     "cells": [
+      {
+       "arm": "dense",
+       "density": 1.0,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.25,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.25,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "xattention",
+       "density": null,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "xattention_noassert",
+       "density": null,
+       "context_length": 2048,
+       "batch": 1
+      }
+     ],
+     "planned_hours": 1.31
+    },
+    {
+     "id": "b2",
+     "steps": [
+      "ground_truth",
+      "late_check",
+      "trace_checks"
+     ],
+     "cells": [
+      {
+       "arm": "oracle",
+       "density": 0.25,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.25,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "xattention",
+       "density": null,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "xattention_noassert",
+       "density": null,
+       "context_length": 8192,
+       "batch": 1
+      }
+     ],
+     "planned_hours": 0.27
+    }
+   ]
+  }
+ }
+}

@@ -131,6 +131,7 @@ OPENED = "ground_truth_opened.json"
 STAMPS = "ground_truth_stamps.json"
 DRY_CLOCK = "dry_clock.json"
 DISCARD = "INTERRUPTED_DISCARD.md"
+EXPLORATORY = "EXPLORATORY.md"
 # Set by scripts/session_exit.sh, whose exit path syncs and halts; a real
 # session refuses to start without it (researcher's item 4, 8 Nov 2026).
 EXIT_WRAPPER_ENV = "ATTNBENCH_SESSION_EXIT"
@@ -194,6 +195,7 @@ class SessionConfig:
     discard_on_restart: bool = False   # a resume on another boot discards the session (P4, Spot)
     boot_steps: tuple = ("prereqs", "preflight", "host_speed_end")   # every block's own (blocks.py)
     components_config: str = ""   # the T3.1 steps' config for this pairing, from the repo root
+    exploratory: str = ""         # why no row of the session is evidence (a rehearsal), or ""
 
     @property
     def names(self) -> tuple:
@@ -483,9 +485,45 @@ def _host_speed_row(out: Path, tag: str) -> dict:
     return pd.read_parquet(out / f"host_speed_{tag}.parquet").iloc[0].to_dict()
 
 
+GPU_VARIANTS = ("tests/test_swappable_attention_model_gpu.py",
+                "tests/test_generation_wiring_gpu.py", "tests/test_inline_estimator_gpu.py")
+GPU_VARIANT_COUNT = 5     # the five GQA tests of tests/_sdpa_env.py (T2.26)
+
+
+def gpu_variant_problems(junit: Path, rc: int) -> tuple[dict, list]:
+    """T2.26's five GPU variants as their JUnit record says they ran. On a
+    GPU instance a skipped variant checked nothing, so it is a problem like
+    a failure; so is a count other than five."""
+    import xml.etree.ElementTree as ET
+    try:
+        cases = list(ET.parse(junit).getroot().iter("testcase"))
+    except (OSError, ET.ParseError) as e:
+        return {"rc": rc}, [f"no JUnit record of the GPU variants ({e})"]
+    kinds = {"failure", "error", "skipped"}
+    out = {k: [c.get("name") for c in cases if c.find(k) is not None] for k in kinds}
+    passed = [c.get("name") for c in cases if not any(c.find(k) is not None for k in kinds)]
+    counts = {"rc": rc, "passed": len(passed), **{k: len(v) for k, v in out.items()}}
+    problems = [f"GPU variant {k}: {n}" for k in sorted(kinds) for n in out[k]]
+    if len(cases) != GPU_VARIANT_COUNT:
+        problems.append(f"{len(cases)} GPU variants ran, not {GPU_VARIANT_COUNT}")
+    if rc != 0 and not problems:
+        problems.append(f"pytest exited {rc} on the GPU variants")
+    return counts, problems
+
+
+def run_gpu_variants(out: Path) -> tuple[dict, list]:
+    """T2.26: the GPU variants on this instance's GPU, from the preflight."""
+    junit = out / "gpu_variants.xml"
+    rc = run([sys.executable, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider",
+              f"--junitxml={junit}", *GPU_VARIANTS],
+             env={**os.environ, "ATTNBENCH_TEST_DEVICE": "cuda"})
+    return gpu_variant_problems(junit, rc)
+
+
 def real_preflight(cfg: SessionConfig, args) -> dict:
     """T2.20 provenance and the T2.1 host-speed probe at the start, read from
-    the probe's own row; Triton imports (the XAttention code path here)."""
+    the probe's own row; Triton imports (the XAttention code path here); the
+    GPU variants of T2.26 pass on this GPU."""
     from attnbench import provenance
     out = Path(args.out)
     if run(py("host_cpu_probe.py", "snapshot", "--out", str(out), "--tag", "start")):
@@ -496,11 +534,14 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
                          capture_output=True, text=True)
     if tri.returncode != 0:
         problems.append("triton does not import, so XAttention cannot take its Triton path")
+    variants, vproblems = run_gpu_variants(out)
+    problems += vproblems
     findings = {"provisioning_model": row.get("provisioning_model"),
                 "instance_type": row.get("instance_type"), "gpu_name": row.get("gpu_name"),
                 "cpu_model": row.get("cpu_model"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
-                "triton": tri.stdout.strip() or None, "problems": problems}
+                "triton": tri.stdout.strip() or None, "gpu_variants": variants,
+                "problems": problems}
     if cfg.preflight_findings is not None:
         findings.update(cfg.preflight_findings(row))
     if problems:
@@ -862,8 +903,13 @@ def _cell_of(c) -> tuple:
 
 def block_config(comp: dict, block: dict) -> dict:
     """The components config for one block: every grid cell outside the
-    block's run cells (its own and the anchor) named not measured here, so
-    T3.1's grid is the block's."""
+    block's run cells (its own and the anchor) named not measured here, and
+    the lengths and batches cut to those the run cells name, so T3.1's grid
+    is the block's. T3.1 times the dense control at every length and batch
+    it visits (`t31_steps.group_arms`), so a block whose cells at a length
+    and batch leave out that length's dense cell is refused here: its rows
+    could never be exactly its cells (`tag_rows`), and the refusal comes
+    before anything is clocked, not after."""
     sys.path.insert(0, str(ROOT / "scripts"))
     import t31_steps as st
     want = {_cell_of(c) for c in block["run_cells"]}
@@ -873,10 +919,18 @@ def block_config(comp: dict, block: dict) -> dict:
     if missing:
         raise StepFailed(f"block {block['id']} names cells not in the grid: "
                          f"{sorted(missing, key=str)}")
+    visited = sorted({(L, b) for _, _, L, b in want})
+    no_control = [(L, b) for L, b in visited if ("dense", 1.0, L, b) not in want]
+    if no_control:
+        raise StepFailed(f"block {block['id']} has cells at {no_control} (length, batch) "
+                         f"without the dense cell there: T3.1 times the dense control at "
+                         f"every length it visits, so put it in the block or make it the anchor")
+    out["lengths"] = sorted({L for L, _ in visited})
+    out["batches"] = {str(L): sorted({b for L2, b in visited if L2 == L}) for L in out["lengths"]}
     out["not_measured"] = list(out.get("not_measured") or ()) + [
         {"arm": a, "density": st.CALIBRATED if d is None else d, "length": L, "batch": b,
          "reason": f"another block's cell (this is block {block['id']})"}
-        for a, d, L, b in grid if _cell_of((a, d, L, b)) not in want]
+        for a, d, L, b in grid if _cell_of((a, d, L, b)) not in want and (L, b) in visited]
     return out
 
 
@@ -1399,6 +1453,11 @@ def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, d
     manifest = load_manifest(session)
     manifest.setdefault("dry_run", dry_run)
     manifest.setdefault("task", cfg.task)
+    if cfg.exploratory:
+        manifest["exploratory"] = cfg.exploratory
+        if not (session / EXPLORATORY).exists():
+            (session / EXPLORATORY).write_text(f"# Exploratory: no row here is evidence\n\n"
+                                               f"{cfg.title}. {cfg.exploratory}\n")
     if manifest["dry_run"] != dry_run or manifest["task"] != cfg.task:
         print(f"REFUSING: {session} is a {'dry' if manifest['dry_run'] else 'real'} "
               f"{manifest['task']} session", file=sys.stderr)
