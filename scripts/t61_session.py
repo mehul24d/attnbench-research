@@ -520,6 +520,19 @@ def run_gpu_variants(out: Path) -> tuple[dict, list]:
     return gpu_variant_problems(junit, rc)
 
 
+def lightgbm_problem() -> str | None:
+    """The learned predictor's step (11) needs lightgbm at the pinned version;
+    a session without it would spend steps 3 to 10 before stopping there."""
+    from attnbench.predict.learned import LIGHTGBM_VERSION
+    got = subprocess.run([sys.executable, "-c", "import lightgbm; print(lightgbm.__version__)"],
+                         capture_output=True, text=True)
+    if got.returncode != 0:
+        return f"lightgbm does not import, so the learned predictor cannot fit (pinned {LIGHTGBM_VERSION})"
+    if got.stdout.strip() != LIGHTGBM_VERSION:
+        return f"lightgbm {got.stdout.strip()} is installed; the learned baseline is pinned to {LIGHTGBM_VERSION}"
+    return None
+
+
 def real_preflight(cfg: SessionConfig, args) -> dict:
     """T2.20 provenance and the T2.1 host-speed probe at the start, read from
     the probe's own row; Triton imports (the XAttention code path here); the
@@ -534,6 +547,9 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
                          capture_output=True, text=True)
     if tri.returncode != 0:
         problems.append("triton does not import, so XAttention cannot take its Triton path")
+    lgbm = lightgbm_problem()
+    if lgbm:
+        problems.append(lgbm)
     variants, vproblems = run_gpu_variants(out)
     problems += vproblems
     findings = {"provisioning_model": row.get("provisioning_model"),
