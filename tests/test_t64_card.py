@@ -82,3 +82,9 @@ def test_a_minutes_file_off_the_runners_steps_is_refused(tmp_path):
     p.write_text(json.dumps(m))
     with pytest.raises(ValueError, match="T64's steps are"):
         C.load_minutes(p)
+
+
+def test_the_card_says_the_suite_record_is_not_in_the_setup_and_no_command_passes_it():
+    text = _built()
+    assert "**No suite record in the setup**" in text and "20 minutes" in text
+    assert not [l for l in text.splitlines() if "gcp_bootstrap_instance.sh" in l and "--suite-record" in l]

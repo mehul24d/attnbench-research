@@ -18,7 +18,10 @@
 #      copy there already verifies; a copy there that fails is moved aside,
 #      not deleted;
 #   4. install wonderwords and nltk at ruler_data.PINNED_VERSIONS, the one
-#      place the versions are written, into the user site;
+#      place the versions are written, and lightgbm at
+#      predict.learned.LIGHTGBM_VERSION (the learned predictor's step needs it
+#      and image v6 has none), into the user site; lightgbm must then import
+#      at that version;
 #   5. verify on the instance: every SHA-256 pin, the word pool (wonderwords
 #      at its pinned version) and the sentence tokenizer (nltk and punkt_tab);
 #   6. scripts/install_xattention.sh through run_phase.sh, so its log is
@@ -107,9 +110,10 @@ else
   echo "   copied and verified"
 fi
 
-echo "== 3/8 pinned packages: $PINS"
-remote PKGS_OK "python3 -m pip install --user -q $PINS && echo PKGS_OK" \
-  || { echo "FAILED: installing $PINS" >&2; exit 1; }
+LGBM="$("$PY" -c 'from attnbench.predict.learned import LIGHTGBM_VERSION as v; print(v)')"
+echo "== 3/8 pinned packages: $PINS lightgbm==$LGBM"
+remote PKGS_OK "python3 -m pip install --user -q $PINS lightgbm==$LGBM && python3 -c 'import lightgbm; assert lightgbm.__version__ == \"$LGBM\", lightgbm.__version__' && echo PKGS_OK" \
+  || { echo "FAILED: installing $PINS lightgbm==$LGBM, or lightgbm does not import at that version" >&2; exit 1; }
 
 echo "== 4/8 word pool and sentence tokenizer on the instance"
 remote RULER_OK "cd $REMOTE_DIR && python3 -c 'from attnbench.accuracy import ruler_data as r; r.word_pool(); r.sent_tokenizer()' && echo RULER_OK" \

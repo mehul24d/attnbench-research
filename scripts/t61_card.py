@@ -112,6 +112,14 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         "the plan's all-in planning rates (Section 5.2); `GCP_RATE_INR_HR` takes the rate "
         "of the model actually created.",
         "",
+        "**No suite record in the setup** (adviser's ruling of 10 Nov 2026, reversing the "
+        "ruling h that would have added it): the bootstrap is run without `--suite-record`, "
+        "and the 20 minutes it would have added are in neither the setup row nor any cap "
+        "below. T2.26's five GPU variants still run in every preflight. The whole suite on a "
+        "GPU host fails 27 tests that assume a CPU-only host "
+        "(`docs/gpu_suite_failures_20261110.md`), and `scripts/gpu_suite_record.sh` is not "
+        "run until it selects GPU-safe tests.",
+        "",
         "| | Hours | ₹ |",
         "|---|---|---|",
         f"| Setup: write gate, deploy, preflight, bootstrap with XAttention | {setup} | "

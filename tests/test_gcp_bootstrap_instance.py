@@ -21,6 +21,7 @@ from attnbench.accuracy import ruler_data
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "gcp_bootstrap_instance.sh"
 PIN = "pinned-proj-123"
+from attnbench.predict.learned import LIGHTGBM_VERSION
 PINS = " ".join(f"{k}=={v}" for k, v in sorted(ruler_data.PINNED_VERSIONS.items()))
 
 # Answers each remote step with its marker. The instance's copy of the data
@@ -48,7 +49,7 @@ exit 0
 FAKE_PYTHON = r"""#!/usr/bin/env bash
 case "$*" in
   *"len(r.PINNED_SHA256)"*) echo 3 ;;
-  *"PINNED_VERSIONS"*) exec "$REAL_PYTHON" "$@" ;;
+  *"PINNED_VERSIONS"*|*"LIGHTGBM_VERSION"*) exec "$REAL_PYTHON" "$@" ;;
   *) cat >/dev/null; [[ -n "${FAKE_LOCAL_BAD:-}" ]] && exit 1; echo "$FAKE_RULER_DIR" ;;
 esac
 """
@@ -112,7 +113,8 @@ def test_the_full_run_goes_in_order_with_the_pinned_versions(tmp_path):
     # the copy is verified on the instance after it lands
     assert any("PINS_OK" in c for c in calls[_step(calls, "compute scp"):])
     pip = calls[_step(calls, "PKGS_OK")]
-    assert f"pip install --user -q {PINS} " in pip, pip
+    assert f"pip install --user -q {PINS} lightgbm=={LIGHTGBM_VERSION} " in pip, pip
+    assert f'import lightgbm; assert lightgbm.__version__ == "{LIGHTGBM_VERSION}"' in pip, pip
     xattn = calls[_step(calls, "XATTN_OK")]
     assert "run_phase.sh bootstrap_xattention -- bash scripts/install_xattention.sh" in xattn
     assert all(f"--project={PIN}" in c for c in calls)

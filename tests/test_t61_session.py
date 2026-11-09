@@ -940,6 +940,41 @@ def test_the_real_preflight_refuses_a_cpu_host(tmp_path):
         S.real_preflight(T61, args_for(tmp_path, tmp_path, dry_run=False))
 
 
+# --- lightgbm in the preflight (the 10 Nov L4 rehearsal stopped at step 11 without it) ----
+
+def _lgbm_probe(monkeypatch, rc, out=""):
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, rc, out, ""))
+
+
+def test_lightgbm_at_the_pinned_version_is_no_problem(monkeypatch):
+    from attnbench.predict.learned import LIGHTGBM_VERSION
+    _lgbm_probe(monkeypatch, 0, LIGHTGBM_VERSION + "\n")
+    assert S.lightgbm_problem() is None
+
+
+def test_a_missing_or_wrong_lightgbm_is_a_preflight_problem(monkeypatch):
+    _lgbm_probe(monkeypatch, 1)
+    assert "does not import" in S.lightgbm_problem()
+    _lgbm_probe(monkeypatch, 0, "3.3.5\n")
+    assert "pinned to" in S.lightgbm_problem()
+
+
+def test_the_real_preflight_stops_on_a_missing_lightgbm_before_any_step_is_timed(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    from attnbench import provenance
+    monkeypatch.setattr(S, "run", lambda *a, **k: 0)
+    monkeypatch.setattr(S, "_host_speed_row", lambda out, tag: GOOD_ROW)
+    monkeypatch.setattr(provenance, "stamp_integrity_problems", lambda row: [])
+    monkeypatch.setattr(S, "check_provenance_row", lambda cfg, row, p: list(p))
+    monkeypatch.setattr(S, "run_gpu_variants", lambda out: ({}, []))
+    monkeypatch.setattr(S, "lightgbm_problem", lambda: "lightgbm does not import")
+    monkeypatch.setattr(S, "import_check", lambda cfg: ([], {"required": {}, "kernel_problems": []}))
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "3.4.0\n", ""))
+    with pytest.raises(S.StepFailed) as e:
+        S.real_preflight(T61, args_for(tmp_path, tmp_path, dry_run=False))
+    assert "lightgbm does not import" in e.value.findings["problems"]
+
+
 # --- T2.26's GPU variants in the preflight ----------------------------------------------
 
 def _junit(path, cases):

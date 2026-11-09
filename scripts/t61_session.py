@@ -520,6 +520,29 @@ def run_gpu_variants(out: Path) -> tuple[dict, list]:
     return gpu_variant_problems(junit, rc)
 
 
+def lightgbm_problem() -> str | None:
+    """The learned predictor's step (11) needs lightgbm at the pinned version;
+    a session without it would spend steps 3 to 10 before stopping there."""
+    from attnbench.predict.learned import LIGHTGBM_VERSION
+    got = subprocess.run([sys.executable, "-c", "import lightgbm; print(lightgbm.__version__)"],
+                         capture_output=True, text=True)
+    if got.returncode != 0:
+        return f"lightgbm does not import, so the learned predictor cannot fit (pinned {LIGHTGBM_VERSION})"
+    if got.stdout.strip() != LIGHTGBM_VERSION:
+        return f"lightgbm {got.stdout.strip()} is installed; the learned baseline is pinned to {LIGHTGBM_VERSION}"
+    return None
+
+
+def import_check(cfg: SessionConfig) -> tuple[list, dict]:
+    """Every third-party module that the session's scripts can import, found by
+    a scan of their imports, imported here; a missing one is a preflight problem
+    that names the package. Attempt 1 of the L4 rehearsal ran ten steps before
+    the eleventh found lightgbm missing."""
+    from attnbench.session_imports import session_import_problems
+    chains = sorted(p for p in (ROOT / "scripts").glob("*.sh") if cfg.script in p.read_text())
+    return session_import_problems([cfg.script], shell_files=chains)
+
+
 def real_preflight(cfg: SessionConfig, args) -> dict:
     """T2.20 provenance and the T2.1 host-speed probe at the start, read from
     the probe's own row; Triton imports (the XAttention code path here); the
@@ -534,6 +557,11 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
                          capture_output=True, text=True)
     if tri.returncode != 0:
         problems.append("triton does not import, so XAttention cannot take its Triton path")
+    imports, found = import_check(cfg)
+    problems += imports
+    lgbm = lightgbm_problem()
+    if lgbm:
+        problems.append(lgbm)
     variants, vproblems = run_gpu_variants(out)
     problems += vproblems
     findings = {"provisioning_model": row.get("provisioning_model"),
@@ -541,6 +569,8 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
                 "cpu_model": row.get("cpu_model"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
                 "triton": tri.stdout.strip() or None, "gpu_variants": variants,
+                "imports_checked": sorted(found["required"]),
+                "kernel_modules_absent": found["kernel_problems"],
                 "problems": problems}
     if cfg.preflight_findings is not None:
         findings.update(cfg.preflight_findings(row))

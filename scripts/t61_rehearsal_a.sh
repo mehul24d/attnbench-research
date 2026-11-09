@@ -2,8 +2,9 @@
 # The L4 rehearsal, instance A (docs/launch_cards/t61_rehearsal_l4.md): block
 # b1 of the P2 runner, then T2.17's gate, the compiled ground truth (only with
 # ATTNBENCH_REH_COMPILED=1: scope v, the first cut), each after the one before
-# whatever it returned. T2.26's suite record is not here: it runs before
-# anything is measured, from `gcp_bootstrap_instance.sh --suite-record`. Run under
+# whatever it returned. T2.26's suite record is not here, and the relaunch does
+# not run it (`gcp_bootstrap_instance.sh --suite-record` is off: 27 tests assume
+# a CPU-only host, docs/gpu_suite_failures_20261110.md). Run under
 # scripts/session_exit.sh, whose last act syncs and halts. EXPLORATORY: no
 # row here enters training or any claim.
 #
