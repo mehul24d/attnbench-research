@@ -105,6 +105,41 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         "and the mask-gate bound are unset, and the steps refuse.",
         "- `--banked-at P1=<ISO time>`, the time P1 was banked.",
         "",
+        "**Cheap checks first** (adviser's ruling 2 of the 10 Nov 2026 paste: a failure costs "
+        "minutes). `prereqs`, step 1, checks every staged input a later step reads "
+        "(`t61_session.p2_staged_inputs`): the lock is complete and its mask-gate bound is set, "
+        f"and `{S.P1_MASKS}/` reads back (both read by step 6); the training file's sha256 is "
+        "the lock's `p1_training.file_sha256` and the learned configuration is set (both read "
+        "by step 11, after about three hours). Before 10 Nov 2026 the sha256 was checked "
+        "nowhere in the runner. On Spot, a block checks only what its own steps read. "
+        "Then `preflight` (3 min) checks the instance, the GPU variants and lightgbm; the "
+        "first long step is `probe`.",
+        "",
+        "## Not exercised before P2 (documented risks)",
+        "",
+        "The L4 rehearsal's launch 4 is the last rehearsal launch (adviser's ruling 2 of the "
+        "10 Nov 2026 paste). At best it runs steps 1 to 15 of P2's runner on P2-R once, "
+        "with two blocks and a simulated reset. These are still not exercised on a GPU "
+        "before P2's own session, and each is a risk P2 carries:",
+        "",
+        "- The two-path mask verdict (T2.23, `real_mask_gate`): the L4 has no Triton path, "
+        "so the rehearsal compares one path against P1's banked masks only.",
+        "- The A100 instance: `a2-ultragpu-1g`'s provenance, Flex-start and Spot provisioning, "
+        "Spot's own preemption (the rehearsal resets an on-demand instance) and P2's four "
+        "Spot blocks (the rehearsal runs two).",
+        "- The lock: the session's values from `docs/lock_values.json` "
+        "(`t31_steps.fill_lock_values`), the lock's mask-gate bound and learned "
+        "configuration. The rehearsal runs P1's working values and configuration 4 of "
+        "`docs/learned_cv_p1_20261109.json`. Step 1 checks that they are present, on a CPU only.",
+        "- P2's full grid: lengths above 8192, batches above 1, and the Kineto trace sizes, "
+        "disk and memory there. The rehearsal's grid is 2048 and 8192 at batch 1.",
+        "- The compiled groups beyond 2048 at batch 1 (scope v), and all of them if launch 4's "
+        "compiled stage does not run clean. If the compiled path is not clean by 14 Nov 2026, "
+        "the compiled group is dropped from P2 and P4 and the limitation is written in the "
+        "plan (Section 8 calendar; ruling 2 of the tenth 9 Nov 2026 paste).",
+        "- Step 1's refusal on the plan rows not Done (the rehearsal records them and does not "
+        "refuse), and the teardown and pull from the A100's zone.",
+        "",
         "## Time and cost",
         "",
         f"Cap = rate x planned hours x {B.CAP_FACTOR}; halt = {B.HALT_FACTOR} x planned hours "
