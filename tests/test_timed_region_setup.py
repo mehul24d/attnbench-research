@@ -60,12 +60,23 @@ CALLS = 3
 _FACTORIES = {"ones", "zeros", "full", "arange", "eye", "empty", "linspace",
               "ones_like", "zeros_like", "full_like", "empty_like"}
 
-# Backends that legitimately rebuild per call, with the reason. Empty on
+# Backends that legitimately rebuild per call, with the reason. Kept short on
 # purpose: an entry here is a decision to leave a tax inside a timed region,
 # and it should have to be argued for in writing. `test_no_stale_allowlist`
 # fails if an entry stops being necessary, so this cannot rot into a
 # permanent exemption list.
-ALLOWLIST: dict[tuple[str, str], str] = {}
+ALLOWLIST: dict[tuple[str, str], str] = {
+    # Adviser's ruling of 10 Nov 2026: allowlisted, not hoisted. `forward`
+    # calls `mask.to_block_sparse_attn_mask` every call: a `.to` that is a
+    # no-op on the mask's own device, two `unsqueeze`s and an `expand`, all
+    # views (about 3 us on the Mac). The same bytes of
+    # attnbench/backends/block_sparse.py are in the timed ground-truth path
+    # of T3.2c and T3.2d (timed_path.py, 4e78a962...), so every banked
+    # oracle and mean-pool row carries it alike; hoisting it would move that
+    # identity. First seen by the L4 rehearsal's S8 run
+    # (docs/gpu_suite_failures_20261110.md).
+    ("block_sparse", "block_sparse"): "per-call mask view, part of the banked timed path",
+}
 
 
 class _CountSeqLenFactories(TorchFunctionMode):

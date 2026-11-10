@@ -195,3 +195,66 @@ def test_the_instance_a_chain_runs_the_compiled_stage_only_when_asked():
     text = (ROOT / "scripts" / "t61_rehearsal_a.sh").read_text()
     assert 'COMPILED="${ATTNBENCH_REH_COMPILED:-0}"' in text
     assert 'if [[ "$COMPILED" == 1 ]]; then' in text
+
+
+# A stand-in for gcloud: `compute ssh` first reads its own stdin to the end,
+# as ssh without -n reads stdin to forward it to the far end, then runs the
+# command under bash; `compute instances reset` succeeds. Started on a stdin
+# that never closes (a terminal, or a pipe held open), an `on` call that does
+# not give ssh /dev/null waits for ever.
+_GCLOUD_STUB = r'''#!/usr/bin/env python3
+import subprocess, sys
+args = sys.argv[1:]
+if args[:2] == ["compute", "instances"]:
+    sys.exit(0)
+sys.stdin.read()
+cmd = args[args.index("--command") + 1]
+sys.exit(subprocess.run(["bash", "-c", cmd]).returncode)
+'''
+
+
+def test_the_interrupt_starts_boot2_and_no_ssh_in_it_reads_stdin(tmp_path):
+    # Adviser's ruling of 10 Nov 2026: the ssh that starts boot 2 must not read
+    # stdin. The script's stdin is a pipe that this test never closes.
+    import os
+    import signal
+    import subprocess
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "gcloud").write_text(_GCLOUD_STUB)
+    (bin_ / "gcloud").chmod(0o755)
+    home = tmp_path / "home"
+    scaffold = home / "attnbench_scaffold"
+    (scaffold / "X" / "12_ground_truth").mkdir(parents=True)
+    (scaffold / "X" / "12_ground_truth" / "step.log").write_text("")
+    (scaffold / "scripts").mkdir()
+    (scaffold / "scripts" / "session_exit.sh").write_text(
+        'cat > "$HOME/boot2_stdin"; echo "$@" > "$HOME/boot2_started"\n')
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "HOME": str(home),
+           "ATTNBENCH_GCP_PROJECT": "stub-project"}
+    p = subprocess.Popen(["bash", str(ROOT / "scripts" / "t61_rehearsal_interrupt.sh"),
+                          "B", "zone", "A", "B1", "X", "Y", "--within", "1"],
+                         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         stdin=subprocess.PIPE, start_new_session=True)
+    try:
+        p.wait(timeout=30)                    # stdin is never closed
+        out = p.stdout.read()
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        pytest.fail("the interrupt script did not return: an ssh is reading stdin")
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    text = out.decode()
+    assert p.returncode == 0, text
+    assert "INTERRUPT_DONE: boot2 started" in text
+    import time
+    for _ in range(100):                      # the boot2 session runs in the background
+        if (home / "boot2_started").exists():
+            break
+        time.sleep(0.05)
+    started = (home / "boot2_started").read_text().split()
+    assert started[-6:] == ["scripts/t61_rehearsal_b.sh", "boot2", "A", "B1", "X", "Y"]
+    assert (home / "boot2_stdin").read_text() == ""      # it read /dev/null

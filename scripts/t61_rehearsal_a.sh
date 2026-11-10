@@ -10,7 +10,7 @@
 #
 # Usage (on the instance, from ~/attnbench_scaffold):
 #   nohup bash scripts/session_exit.sh --log ~/reh_a.log -- \
-#       bash scripts/t61_rehearsal_a.sh results/t61r_l4_<UTC>_b1 >/dev/null 2>&1 &
+#       bash scripts/t61_rehearsal_a.sh results/t61r_l4_<UTC>_b1 >/dev/null 2>&1 < /dev/null &
 set -uo pipefail
 
 SESSION="${1:?usage: t61_rehearsal_a.sh results/<b1 session>}"
