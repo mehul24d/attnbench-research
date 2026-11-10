@@ -1716,6 +1716,7 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
     from attnbench.components import event_rule
     from attnbench.predict import commit as C
     from attnbench.predict.recursion import MechanismCost, close_prefill, price
+    from attnbench.predict.intensity import shape_for
     from attnbench.predict.training import Cell, HardwareFeatures
 
     rin = json.loads((step_dir(session, "link") / "recursion_inputs.json").read_text())
@@ -1738,7 +1739,8 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
         priced = event_rule.apply(price(ops, mech), e.get("event_syncs", []), mech)
         out.append(Cell(pairing=cfg["pairing"], model_name=cfg["model"], code_path=label,
                         arm=e["arm"], context_length=e["context_length"],
-                        density=e["density"], batch=e["batch"], priced=priced, hardware=hw))
+                        density=e["density"], batch=e["batch"], priced=priced, hardware=hw,
+                        model=shape_for(cfg["model"])))
     want = {(a, d, L, b) for a, d, L, b in cells(cfg) if a not in refused}
     # A cell is named by its setting: the nominal density (None where the
     # estimator sets it) and the length budget (the prompt lands at or below it).

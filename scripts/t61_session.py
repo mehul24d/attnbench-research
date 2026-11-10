@@ -775,7 +775,10 @@ def training_rows(cfg: SessionConfig, path: Optional[Path] = None) -> list:
     if not path.exists():
         raise StepFailed(f"no P1 training file at {path}: fetch it (its sha256 is the lock's)")
     try:
-        return PT.rows_from_record(PT.load(path))
+        # The rows carry the model shape the learned predictor's features
+        # need (attempt 2 of the L4 rehearsal stopped at `predict` without it).
+        from attnbench.predict.intensity import shape_for
+        return PT.rows_from_record(PT.load(path), model=shape_for("primary"))
     except PT.TrainingRowsError as e:
         raise StepFailed(str(e)) from e
 
