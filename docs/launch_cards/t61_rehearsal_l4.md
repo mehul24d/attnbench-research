@@ -2,7 +2,7 @@
 
 Prepared 10 Nov 2026 from the adviser's ruling of 10 Nov 2026. **Launchable
 only on the researcher's yes, in their own words, naming the instances, the
-zone, the commit and the cap. Nothing here runs on its own. The first yes (commit `2053377`, ₹403) is spent: attempt 1 used it. The second (commit `10e1fe1`, ₹296) is spent: attempt 2 used it.**
+zone, the commit and the cap. Nothing here runs on its own. The first yes (commit `2053377`, ₹403) is spent: attempt 1 used it. The second (commit `10e1fe1`, ₹296) is spent: attempt 2 used it. The third (commit `59cc607`, ₹254, ₹422 in all) is spent: launch 3 used it.**
 
 **Exploratory. No row of this rehearsal enters training, the floors, Gate A,
 the lock or any claim.** Every session it writes says so in `manifest.json`
@@ -11,12 +11,12 @@ the lock or any claim.** Every session it writes says so in `manifest.json`
 
 | | |
 |---|---|
-| Commit | **`59cc607`** (`59cc60756ea004c6e49b84052046c59f46f8258a`, branch `l4-rehearsal-launch3-card-2026-11-10` off `main` `16dd13e`). It is `main` after PR #67 (the model-shape fix `89e1f6f`) plus three things: the interrupt script's no-stdin fix (`225bed9`), `block_sparse` on the timed-region allowlist (`a115619`), and PR #66's permission-log row and the suite counts. Deployed from a fresh clone, detached, clean tree. A later commit holds this card; it is not deployed |
+| Commit | **`40b6df5`** (`40b6df5e2be77e486f9db9ce454e55024d74fb14`, branch `timed-path-pin-2026-11-10` off `main` `ac3f563`). It is `main` plus four things: the timed-path identity pinned (`8316263`, docs and a lock test), the prediction record named for the session's pairing (`3057240`, launch 3's stop), the remote start commands backgrounded inside braces (`e7162cc`), launch 3's records (`d42b0b0`) and the suite counts. Deployed from a fresh clone, detached, clean tree. A later commit updates this card to name it |
 | Instances | A: `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`; then B: `attnbench-l4-reh-b-<YYYYMMDD-HHMM>`. Both `g2-standard-8` with one L4, on-demand (STANDARD) |
 | Zone | `asia-northeast1-a` |
 | Image | `attnbench-env-v6-20260917` |
 | Rate | ₹108.64/h (planning rate, all-in) |
-| **Cap** | **₹254 for launch 3** (A ₹163 + B ₹91), **₹422 with attempts 1 and 2 (₹168)**: over the original ₹403, on the researcher's choice of 10 Nov 2026 to keep (v) and raise the total to ₹422. Expected ₹338 in all. Without (v): ₹231 and ₹399 |
+| **Cap** | **₹254 for launch 4** (A ₹163 + B ₹91), **₹487 with attempts 1 and 2 and launch 3 (₹233)**: over the ₹422 the researcher allowed on 10 Nov 2026, so launch 4 needs a cap decision as well as its yes. Without (v): ₹231 and ₹464 |
 
 A runs first. B is created only after A is deleted, because the GPU quota is 1.
 
@@ -42,11 +42,22 @@ Instance A `attnbench-l4-reh-a-20261110-0446` ran on the researcher's second yes
 - **Passed on A:** setup without the suite record (5.3 min), steps 1 to 10, the import check (no false refusal; lightgbm installed and verified) and T2.17's `assert_gate`. The compiled stage started after the failed session and ended in 1 s, so it measured nothing.
 - **Still not run:** ground truth and trace sizes (i), the second block and the interruption (iii), the compiled groups (v), and steps 12 to 15 have never run for real.
 
-**Launch 3 (needs its own yes):** commit **`59cc607`**; instance A `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`, then B; same zone, image and rate. The caps are built from attempt 2's measured durations, each plan × 1.3 (see "Time and cost"):
+**Launch 3 (ran 10 Nov 2026; see the next section):** commit **`59cc607`**; instance A `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`, then B; same zone, image and rate. The caps are built from attempt 2's measured durations, each plan × 1.3 (see "Time and cost"):
 - A plans 62 min, `GCP_HALT_MINUTES=80`, `GCP_MAX_RUN=1h30m`, cap **₹163**.
 - B plans 31 min, halt 32, delete `50m`, cap **₹91**.
 
 Launch 3's cap is **₹254**. With the ₹168 already spent, the rehearsal totals at most **₹422**, expected ₹338. **This departs from the adviser's "cut (v) first if over about ₹400"**: the researcher chose on 10 Nov 2026 to keep (v) and raise the total to ₹422. Without (v), the total is ₹399. Launch 3 does not pass `--suite-record`.
+
+## Launch 3 (10 Nov 2026, commit `59cc607`) and launch 4
+
+Instance A `attnbench-l4-reh-a-20261110-0653` ran on the researcher's third yes. It was created at 01:47:34Z after ten stockouts in `asia-northeast1-a` (the same zone, retried from 01:23Z). It stopped itself at step 11 again after 36 min (₹65), was torn down from the bucket (112 of 112 logs and manifests), and nothing is left billing. **B was not started:** it imports b1's ground truth, which never ran.
+
+- **Cause:** `predict` failed with `PredictionCommitError: P1 is listed as banked before its own prediction`. `t31_steps.build_prediction` named the record after its components config's `pairing`. The rehearsal's config is P1's (`configs/t61/rehearsal_l4.json`), while the session is `P2-R` and is trained on banked P1. Fixed in `3057240`: `real_record` passes the session's pairing. Two tests reproduce the stop, and each was watched to fail with its half of the fix undone. P2's own config says `P2`, so P2 would not have stopped here.
+- **The start ssh hung for 27 min** (the session ran; the ssh was killed and the watcher started at 02:18Z). `cd X && nohup cmd ... &` backgrounds the whole list, and that subshell holds ssh's stdout until the session ends. The `&` now sits inside braces in both start commands below and in the interrupt script's boot 2 command (`e7162cc`). The stub test now waits for stdout EOF as sshd does, and fails at 30 s with the old form.
+- **Passed on A:** setup in 3.9 min, steps 1 to 10 in 26.5 min (attempt 2: 27.3; T2.26's five variants passed), T2.17's `assert_gate`. The compiled stage refused (rc 2: no b1 prediction).
+- **Still not run:** steps 12 to 15, ground truth and trace sizes (i), the second block and the interruption (iii), and the compiled groups (v).
+
+**Launch 4 (needs its own yes and a cap decision):** commit **`40b6df5`**, same instances, zone, image, rate, halts and deletes as launch 3. The caps are unchanged: launch 3's measured minutes are within attempt 2's. A is ₹163 and B ₹91, so launch 4 is ₹254 and the total ₹487, or ₹231 and ₹464 without (v). The 14 Nov rule still stands, and launch 4 is the compiled path's last chance before it.
 
 ## What it rehearses (adviser's scope, by priority)
 
@@ -81,7 +92,7 @@ Launch 3's cap is **₹254**. With the ₹168 already spent, the rehearsal total
 
 Items 1 to 3 were fixed in `dda1c39` and item 4 in `2053377`.
 
-## Time and cost (launch 3: attempt 2's measured durations × 1.3, ₹108.64/h)
+## Time and cost (launches 3 and 4: attempt 2's measured durations × 1.3, ₹108.64/h)
 
 Cap = rate × (planned minutes × 1.3, rounded down, + 10) ÷ 60, rounded up. The in-guest halt is at 1.3 × the plan, and the hard delete comes 10 minutes after it. Attempt 2 measured the setup, steps 1 to 10, the assert gate and the exit (the phase logs, `session_cost.txt`):
 
@@ -128,7 +139,7 @@ Not measured on this card, so estimates: `predict` (it failed after 3 s), the ho
 
 **The interrupt window is now 10 minutes, not 20.** Boot 1 reaches ground truth about 4.5 min after the session starts. With `--within 10`, the reset comes at most about 16 min after B boots. If the reset restarts the run timer, boot 2 halts by 16 + 32 = 48 min, which is inside the 50-minute delete. With 20, it could have run to 58 min, past the cap.
 
-**Launch 3's cap is ₹254** (A ₹163 + B ₹91). Expected ₹170: A 62 min ₹113, B 31 min ₹57. With attempts 1 and 2 (₹101 + ₹67 = ₹168, `docs/spend_ledger.md`): **₹422**, expected ₹338. That is over the original ₹403, on the researcher's choice of 10 Nov 2026 (keep (v), raise the total to ₹422).
+**Launch 3's cap is ₹254** (A ₹163 + B ₹91). Expected ₹170: A 62 min ₹113, B 31 min ₹57. With attempts 1 and 2 (₹101 + ₹67 = ₹168, `docs/spend_ledger.md`): **₹422**, expected ₹338. That is over the original ₹403, on the researcher's choice of 10 Nov 2026 (keep (v), raise the total to ₹422). Launch 3 spent ₹65 of it. **Launch 4's cap is the same ₹254**, which brings the total to **₹487** (₹464 without (v)): over ₹422, so it is the researcher's decision.
 
 Without (v), with `ATTNBENCH_REH_COMPILED` unset: A plans 52 min, halts at 67 and is deleted at 77 (`1h17m`, ₹140). That gives launch 3 a cap of **₹231** and a total of **₹399**. The protocol is not touched either way.
 
@@ -147,10 +158,10 @@ After attempt 2, ₹4,707 of ₹14,000 is spent (`docs/spend_ledger.md`, counted
 
 ## The commands
 
-On the Mac, in a fresh clone at `59cc607`:
+On the Mac, in a fresh clone at `40b6df5`:
 
 ```bash
-git clone <repository> reh && cd reh && git checkout --detach 59cc607
+git clone <repository> reh && cd reh && git checkout --detach 40b6df5
 export ATTNBENCH_GCP_PROJECT=...          # this study's project, never the gcloud default
 export CLOUDSDK_CORE_PROJECT="$ATTNBENCH_GCP_PROJECT"
 export ATTNBENCH_IMAGE=attnbench-env-v6-20260917 GCP_RATE_INR_HR=108.64
@@ -169,9 +180,9 @@ bash scripts/gcp_verify_gcs_writable.sh "$A" "$ZONE"
 bash scripts/gcp_bootstrap_instance.sh "$A" "$ZONE"      # no --suite-record (ruling of 10 Nov 2026)
 # if it stops on an SSH timeout or a failed scp, rerun it: it is idempotent. That is pre-decided.
 B1=results/t61r_l4_$(date -u +%Y%m%dT%H%MZ)_b1
-gcloud compute ssh "$A" --zone "$ZONE" --command "cd ~/attnbench_scaffold && \
+gcloud compute ssh "$A" --zone "$ZONE" --command "cd ~/attnbench_scaffold && { \
   ATTNBENCH_REH_COMPILED=1 nohup bash scripts/session_exit.sh --log ~/reh_a.log -- \
-  bash scripts/t61_rehearsal_a.sh $B1 >/dev/null 2>&1 < /dev/null &"   # < /dev/null, or ssh does not return
+  bash scripts/t61_rehearsal_a.sh $B1 >/dev/null 2>&1 < /dev/null & }" < /dev/null   # the & inside the braces, or ssh does not return
 bash scripts/t61_rehearsal_watch.sh "$A" "$ZONE" > ~/reh_watch_a.log 2>&1   # until TERMINATED or gone
 bash scripts/gcp_session_elapsed.sh "$A" "$ZONE" 108.64
 bash scripts/gcp_teardown_session.sh "$A" "$ZONE" "$B1"
@@ -185,9 +196,9 @@ export GCP_HALT_MINUTES=32 GCP_MAX_RUN=50m
 B=attnbench-l4-reh-b-$(date +%Y%m%d-%H%M)
 # launch, deploy, preflight, write gate, bootstrap: as for A, with "$B"
 X=results/t61r_l4_$(date -u +%Y%m%dT%H%MZ)_b2_interrupted; Y=${X%_interrupted}
-gcloud compute ssh "$B" --zone "$ZONE" --command "cd ~/attnbench_scaffold && \
+gcloud compute ssh "$B" --zone "$ZONE" --command "cd ~/attnbench_scaffold && { \
   nohup bash scripts/session_exit.sh --log ~/reh_b1.log -- \
-  bash scripts/t61_rehearsal_b.sh boot1 $A $B1 $X >/dev/null 2>&1 < /dev/null &"
+  bash scripts/t61_rehearsal_b.sh boot1 $A $B1 $X >/dev/null 2>&1 < /dev/null & }" < /dev/null
 bash scripts/t61_rehearsal_watch.sh "$B" "$ZONE" > ~/reh_watch_b.log 2>&1 &
 bash scripts/t61_rehearsal_interrupt.sh "$B" "$ZONE" "$A" "$B1" "$X" "$Y" --within 10
 wait                                                     # the watcher: TERMINATED or gone

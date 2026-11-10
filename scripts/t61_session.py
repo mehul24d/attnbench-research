@@ -810,7 +810,7 @@ def real_record(cfg: SessionConfig, args, written_at: datetime) -> dict:
     try:
         comp = st.load_config(str(ROOT / cfg.components_config), dry_run=False)
         return st.build_prediction(comp, Path(args.session), dry_run=False, now=written_at,
-                                   baselines=fitted)
+                                   baselines=fitted, pairing=cfg.pairing)
     except st.StepFailed as e:
         raise StepFailed(str(e), e.findings) from e
 

@@ -608,3 +608,13 @@ def test_a_trained_prediction_with_the_learned_baseline_builds_from_the_session_
               "learned": LM.fit_learned(ts, conf, model_factory=lambda params: Mean())}
     out = st.build_prediction(cfg, session, dry_run=False, baselines=fitted)
     assert out["cells"] and all("learned" in c["predictions"] for c in out["cells"])
+    # Launch 3 stopped here: the rehearsal runs P1's config as P2-R, and the
+    # record took the config's name, P1, trained on P1.
+    ts = committed_training_set(PT.rows_from_record(rec, model=shape_for("primary")), "P2-R", ["P1"])
+    fitted = {"banked": ["P1"], "fitted_sum": BL.fit_fitted_sum(ts),
+              "learned": LM.fit_learned(ts, conf, model_factory=lambda params: Mean())}
+    with pytest.raises(C.PredictionCommitError, match="P1 is listed as banked before"):
+        st.build_prediction({**cfg, "pairing": "P1"}, session, dry_run=False, baselines=fitted)
+    out = st.build_prediction({**cfg, "pairing": "P1"}, session, dry_run=False,
+                              baselines=fitted, pairing="P2-R")
+    assert out["pairing"] == "P2-R" and out["banked_before"] == ["P1"]

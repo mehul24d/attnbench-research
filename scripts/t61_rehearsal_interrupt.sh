@@ -38,6 +38,9 @@ gcloud compute instances reset "$NAME" "${GC[@]}" || { say "reset failed"; exit 
 for _ in $(seq 1 30); do on true && break; sleep 10; done
 on true || { say "no SSH after the reset"; exit 1; }
 say "boot 2: $(on 'cat /proc/sys/kernel/random/boot_id')"
-on "cd ~/attnbench_scaffold && nohup bash scripts/session_exit.sh --log ~/reh_b2.log -- \
-    bash scripts/t61_rehearsal_b.sh boot2 $A $B1 $X $Y >/dev/null 2>&1 < /dev/null &"
+# The & is inside the braces: `cd ... && cmd &` backgrounds the whole list, a
+# subshell that keeps ssh's stdout open until boot 2 ends, so ssh never returns
+# (launch 3's start command, 10 Nov 2026).
+on "cd ~/attnbench_scaffold && { nohup bash scripts/session_exit.sh --log ~/reh_b2.log -- \
+    bash scripts/t61_rehearsal_b.sh boot2 $A $B1 $X $Y >/dev/null 2>&1 < /dev/null & }"
 say "INTERRUPT_DONE: boot2 started"
