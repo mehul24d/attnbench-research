@@ -11,7 +11,7 @@ the lock or any claim.** Every session it writes says so in `manifest.json`
 
 | | |
 |---|---|
-| Commit | **`4251b7c`** (`4251b7c03f956da6267ac73d52e4029392f2172f`, branch `timed-path-pin-2026-11-10` off `main` `ac3f563`). It is `main` plus four things: the timed-path identity pinned (`8316263`, docs and a lock test), the prediction record named for the session's pairing (`3057240`, launch 3's stop), the remote start commands backgrounded inside braces (`e7162cc`) and the suite counts. Deployed from a fresh clone, detached, clean tree. A later commit holds this card; it is not deployed |
+| Commit | **`40b6df5`** (`40b6df5e2be77e486f9db9ce454e55024d74fb14`, branch `timed-path-pin-2026-11-10` off `main` `ac3f563`). It is `main` plus four things: the timed-path identity pinned (`8316263`, docs and a lock test), the prediction record named for the session's pairing (`3057240`, launch 3's stop), the remote start commands backgrounded inside braces (`e7162cc`), launch 3's records (`d42b0b0`) and the suite counts. Deployed from a fresh clone, detached, clean tree. A later commit updates this card to name it |
 | Instances | A: `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`; then B: `attnbench-l4-reh-b-<YYYYMMDD-HHMM>`. Both `g2-standard-8` with one L4, on-demand (STANDARD) |
 | Zone | `asia-northeast1-a` |
 | Image | `attnbench-env-v6-20260917` |
@@ -57,7 +57,7 @@ Instance A `attnbench-l4-reh-a-20261110-0653` ran on the researcher's third yes.
 - **Passed on A:** setup in 3.9 min, steps 1 to 10 in 26.5 min (attempt 2: 27.3; T2.26's five variants passed), T2.17's `assert_gate`. The compiled stage refused (rc 2: no b1 prediction).
 - **Still not run:** steps 12 to 15, ground truth and trace sizes (i), the second block and the interruption (iii), and the compiled groups (v).
 
-**Launch 4 (needs its own yes and a cap decision):** commit **`4251b7c`**, same instances, zone, image, rate, halts and deletes as launch 3. The caps are unchanged: launch 3's measured minutes are within attempt 2's. A is ₹163 and B ₹91, so launch 4 is ₹254 and the total ₹487, or ₹231 and ₹464 without (v). The 14 Nov rule still stands, and launch 4 is the compiled path's last chance before it.
+**Launch 4 (needs its own yes and a cap decision):** commit **`40b6df5`**, same instances, zone, image, rate, halts and deletes as launch 3. The caps are unchanged: launch 3's measured minutes are within attempt 2's. A is ₹163 and B ₹91, so launch 4 is ₹254 and the total ₹487, or ₹231 and ₹464 without (v). The 14 Nov rule still stands, and launch 4 is the compiled path's last chance before it.
 
 ## What it rehearses (adviser's scope, by priority)
 
@@ -158,10 +158,10 @@ After attempt 2, ₹4,707 of ₹14,000 is spent (`docs/spend_ledger.md`, counted
 
 ## The commands
 
-On the Mac, in a fresh clone at `4251b7c`:
+On the Mac, in a fresh clone at `40b6df5`:
 
 ```bash
-git clone <repository> reh && cd reh && git checkout --detach 4251b7c
+git clone <repository> reh && cd reh && git checkout --detach 40b6df5
 export ATTNBENCH_GCP_PROJECT=...          # this study's project, never the gcloud default
 export CLOUDSDK_CORE_PROJECT="$ATTNBENCH_GCP_PROJECT"
 export ATTNBENCH_IMAGE=attnbench-env-v6-20260917 GCP_RATE_INR_HR=108.64
