@@ -451,7 +451,8 @@ def test_prereqs_refuses_a_real_session_and_skips_a_dry_one(tmp_path, monkeypatc
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "RESEARCH_PLAN.md").write_text(PLAN)
     monkeypatch.setattr(S, "ROOT", tmp_path)
-    cfg = dataclasses.replace(T61, requirements=(S.Requirement("T2.2", "w"),), files=())
+    cfg = dataclasses.replace(T61, requirements=(S.Requirement("T2.2", "w"),), files=(),
+                              staged=None)
     with pytest.raises(S.StepFailed, match="T2.2"):
         S.body_prereqs(cfg, args_for(tmp_path, tmp_path, dry_run=False))
     with pytest.raises(S.Skip):
@@ -572,6 +573,58 @@ def test_the_mask_gate_refuses_banks_on_other_prompts(tmp_path):
     args, record, _ = _mask_gate_setup(tmp_path, prompt="p1")
     with pytest.raises(S.StepFailed, match="cannot compare these banks"):
         S.real_mask_gate(T61, args, record=record, bound=BOUND)
+
+
+def test_p2s_staged_inputs_are_refused_at_step_one_not_at_the_step_that_reads_them(
+        tmp_path, monkeypatch):
+    """Adviser's ruling 2 of the 10 Nov 2026 paste: a failure costs minutes.
+    The lock and its bound and P1's masks (step 6), the training file at the
+    lock's sha256 and the learned configuration (step 11) are checked by
+    prereqs; a block checks only what its own steps read."""
+    import hashlib
+    import shutil
+    from types import SimpleNamespace
+    import t31_steps as st
+    from attnbench.lock import checklist
+    from attnbench.predict import learned as LM
+    args, _, _ = _mask_gate_setup(tmp_path)
+    training = tmp_path / "p1_training.json.gz"
+    training.write_bytes(b"rows")
+    lock = tmp_path / "lock_values.json"
+    monkeypatch.setattr(st, "LOCK_FILE", lock)
+    monkeypatch.setattr(S, "P1_TRAINING", training)
+    monkeypatch.setattr(checklist, "check", lambda lk, text: SimpleNamespace(complete=True))
+    monkeypatch.setattr(LM, "LOCKED_CONFIG", LM.LearnedConfig("seconds"))
+
+    def write(sha):
+        lock.write_text(json.dumps({"p1_training": {"file_sha256": sha}, "values": {
+            "mask_gate_bound": {"value": 0.01},
+            "compiled_versus_eager_density_flag_tolerance": {"value": 0.01}}}))
+    write(hashlib.sha256(b"rows").hexdigest())
+    found, bad = S.p2_staged_inputs(T61, args, T61.names)
+    assert bad == [] and found["p1_mask_cells"] == 1 and found["mask_gate_bound"] == 0.01
+    write("0" * 64)
+    assert [b for b in S.p2_staged_inputs(T61, args, T61.names)[1]] == [
+        f"the P1 training file's sha256 is {hashlib.sha256(b'rows').hexdigest()}, "
+        f"the lock's {'0' * 64}"]
+    # a block that runs neither mask_gate nor predict does not need them staged
+    assert S.p2_staged_inputs(T61, args, ("prereqs", "preflight", "ground_truth")) == ({}, [])
+    monkeypatch.setattr(LM, "LOCKED_CONFIG", None)
+    shutil.rmtree(Path(args.session) / S.P1_MASKS)
+    training.unlink()
+    bad = S.p2_staged_inputs(T61, args, T61.names)[1]
+    assert len(bad) == 3 and "no XAttention masks" in bad[0] and "no P1 training file" in bad[1]
+    assert "LOCKED_CONFIG is not set" in bad[2]
+    # and prereqs refuses on them, at step 1
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "RESEARCH_PLAN.md").write_text(PLAN)
+    monkeypatch.setattr(S, "ROOT", tmp_path)
+    cfg = dataclasses.replace(T61, requirements=(S.Requirement("T2.1", "w"),), files=())
+    with pytest.raises(S.StepFailed, match="3 staged input"):
+        S.body_prereqs(cfg, args_for(args.session, tmp_path, dry_run=False))
+    # the rehearsal stages its inputs in its own shell script and checks none here
+    import t61_rehearsal as R
+    assert R.REHEARSAL.staged is None
 
 
 def test_the_mask_gate_bound_is_read_from_a_complete_lock_only(tmp_path, monkeypatch):

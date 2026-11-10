@@ -59,6 +59,17 @@ Instance A `attnbench-l4-reh-a-20261110-0653` ran on the researcher's third yes.
 
 **Launch 4 (needs its own yes and a cap decision):** commit **`40b6df5`**, same instances, zone, image, rate, halts and deletes as launch 3. The caps are unchanged: launch 3's measured minutes are within attempt 2's. A is ₹163 and B ₹91, so launch 4 is ₹254 and the total ₹487, or ₹231 and ₹464 without (v). The 14 Nov rule still stands, and launch 4 is the compiled path's last chance before it.
 
+**Launch 4 is the last rehearsal launch** (adviser's ruling 2 of the 10 Nov 2026 paste). What it cannot exercise is listed as P2's documented risks in `docs/launch_cards/t61_p2_a100.md` ("Not exercised before P2"). Whatever launch 4 leaves unrun joins that list; it is not relaunched.
+
+**The CPU pass before launch 4 (10 Nov 2026, adviser's ruling 1 of the 10 Nov 2026 paste): clean, no code change.** It used this card's real config and session name (`P2-R`, `configs/t61/rehearsal_l4.json`, `configs/t61/rehearsal_lock.json`, not P2's), with only the device mocked. Steps 1 to 10 took launch 3's own results (their findings, preflight's included), with T3.1's components on synthetic recordings for the rehearsal grid. The real bodies, not a dry run, then ran:
+
+- block b1's steps 11 to 15: `predict` on the real P1 training file and LightGBM configuration 4, the record named `P2-R` under `predictions/P2-R/`; the real 65 s hold; `ground_truth` through T3.1's orchestration, untraced then traced, five Kineto traces per length; `late_check` (`load_committed`) against a directory store; `trace_checks` (`check_trace.py kineto`, its own process); `host_speed_end`;
+- `trace-sizes`, then `compiled` (scope v): its entry checks, both compiled groups at 2048, 6 rows, complete;
+- block B: b2 imported b1, its reset during `ground_truth` was refused on the next boot (rc 2, `INTERRUPTED_DISCARD.md`), a new b2 passed steps 1, 2 and 12 to 15, and `t61_rehearsal_b.sh`'s drift script read b1 and the new b2 with the discarded b2 set aside;
+- `start_refusal` on the A command's arguments, under the armed exit wrapper.
+
+What it cannot show: anything the device decides (timings, recompiles, masks, the GPU's traces, memory). The harness is in the session's scratchpad, not the repo. The commit `main` moves to after this card is merged adds P2's staged-input checks at step 1 (`p2_staged_inputs`), which the rehearsal does not run (`staged` is None for `P2-R`), so the deploy commit stays `40b6df5`.
+
 ## What it rehearses (adviser's scope, by priority)
 
 | Scope | Where | What is measured or checked |
@@ -230,4 +241,4 @@ No `ssh` in the interrupt script reads stdin (`225bed9`, the ruling of 10 Nov 20
 - The learned configuration is the working one. P2's prerequisites are recorded, not enforced.
 - **No suite record.** The adviser's ruling of 10 Nov 2026 reverses the 10 Nov ruling h: P2's and P4's cards leave `--suite-record` off and carry no minutes for it (their setup rows are unchanged, 0.5 h and 0.6 h; each card says so). T2.26's five GPU variants still run in every preflight. The step is still in the bootstrap as an opt-in, and `gpu_suite_record.sh` needs a GPU-safe selection before any card uses it.
 - The compiled minutes are estimates.
-- **The 14 Nov rule:** the compiled path is clean when `compiled/result.json` reads passed on the relaunch, both groups complete, no recompile after warm-up, and the Kineto twin and mask-dependence checks passed. **If it is not clean by 14 Nov 2026, the compiled group is dropped** (the cut order of Appendix A, 9 Nov 2026, item 10) **and the limitation is written**: the compiled variants' ground truth was not measured, and no claim about compiled arms rests on this study. P2's and P4's cards are built without the compiled groups today and stay so. This rehearsal is the only GPU run of the compiled path before then. Attempts 1 and 2 never reached it, so launch 3 is the one attempt left: results by Thu 13 Nov leave one day.
+- **The 14 Nov rule:** the compiled path is clean when `compiled/result.json` reads passed on the relaunch, both groups complete, no recompile after warm-up, and the Kineto twin and mask-dependence checks passed. **If it is not clean by 14 Nov 2026, the compiled group is dropped** (the cut order of Appendix A, 9 Nov 2026, item 10) **and the limitation is written**: the compiled variants' ground truth was not measured, and no claim about compiled arms rests on this study. P2's and P4's cards are built without the compiled groups today and stay so. This rehearsal is the only GPU run of the compiled path before then. Attempts 1 and 2 and launch 3 never reached it, so launch 4 is the one attempt left: results by Thu 13 Nov leave one day.
