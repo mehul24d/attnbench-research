@@ -12,9 +12,9 @@
 #
 # Usage (on the instance, from ~/attnbench_scaffold):
 #   nohup bash scripts/session_exit.sh --log ~/reh_b1.log -- \
-#       bash scripts/t61_rehearsal_b.sh boot1 <A instance> <b1 session> <b2 interrupted> >/dev/null 2>&1 &
+#       bash scripts/t61_rehearsal_b.sh boot1 <A instance> <b1 session> <b2 interrupted> >/dev/null 2>&1 < /dev/null &
 #   nohup bash scripts/session_exit.sh --log ~/reh_b2.log -- \
-#       bash scripts/t61_rehearsal_b.sh boot2 <A instance> <b1 session> <b2 interrupted> <b2 session> >/dev/null 2>&1 &
+#       bash scripts/t61_rehearsal_b.sh boot2 <A instance> <b1 session> <b2 interrupted> <b2 session> >/dev/null 2>&1 < /dev/null &
 set -uo pipefail
 
 MODE="${1:?boot1 or boot2}"; A="${2:?the A instance}"; B1="${3:?b1 session}"; X="${4:?interrupted b2}"

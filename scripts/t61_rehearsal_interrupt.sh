@@ -18,7 +18,12 @@ WITHIN=20
 : "${ATTNBENCH_GCP_PROJECT:?set the project of this study}"
 GC=(--zone="$ZONE" --project="$ATTNBENCH_GCP_PROJECT")
 say() { echo "=== $(date -u +%FT%TZ) $*"; }
-on() { gcloud compute ssh "$NAME" "${GC[@]}" --command "$1" 2>/dev/null; }
+# No ssh here reads stdin (the ruling of 10 Nov 2026): without -n, ssh reads
+# its stdin to forward it, so on a stdin that stays open (a terminal, or a
+# background job's) the call never returns and INTERRUPT_DONE is never
+# printed. The boot2 command's own < /dev/null says the same on the far end,
+# where a POSIX shell already gives a background command /dev/null.
+on() { gcloud compute ssh "$NAME" "${GC[@]}" --command "$1" 2>/dev/null < /dev/null; }
 
 deadline=$(( $(date +%s) + WITHIN * 60 ))
 until on "test -e ~/attnbench_scaffold/$X/12_ground_truth/step.log"; do
@@ -34,5 +39,5 @@ for _ in $(seq 1 30); do on true && break; sleep 10; done
 on true || { say "no SSH after the reset"; exit 1; }
 say "boot 2: $(on 'cat /proc/sys/kernel/random/boot_id')"
 on "cd ~/attnbench_scaffold && nohup bash scripts/session_exit.sh --log ~/reh_b2.log -- \
-    bash scripts/t61_rehearsal_b.sh boot2 $A $B1 $X $Y >/dev/null 2>&1 &"
+    bash scripts/t61_rehearsal_b.sh boot2 $A $B1 $X $Y >/dev/null 2>&1 < /dev/null &"
 say "INTERRUPT_DONE: boot2 started"
