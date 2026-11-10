@@ -298,13 +298,22 @@
    "status": "evidence in hand",
    "proposed": "6.77% as a flag, not an exclusion (adviser's ruling of 8 Nov 2026): the largest systematic gap between T3.2a and T3.2b, n = 2; flagged blocks stay in primary scoring and each gets a sensitivity run without it",
    "basis": "Appendix A, 8 Nov 2026; attnbench/analysis/block_drift.py"
+  },
+  "timed_path_identity_for_p2_and_p4": {
+   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py`: `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
+   "value": null,
+   "source": null,
+   "status": "decided (10 Nov 2026, adviser's ruling 2 of the 10 Nov paste), fixed by the lock commit",
+   "proposed": "8716d7db4449d52872eee03bed28450ef0c951295d3d833c410654d70e53f3be: scripts/timed_path.py at main (ac3f563), unchanged since 050a96d",
+   "basis": "Appendix A, 10 Nov 2026; scripts/timed_path.py 02cfc1d 050a96d (the only change from T3.2d's 4e78a962...: ground_truth.py appended tracer_layout/tracer_entries, t31_steps._real_cells and trace_labels), all outside the timed region",
+   "decided": "P2's and P4's timed ground-truth path is 8716d7db... Pooling needs identical timed paths only across P1 sessions (T3.2c and T3.2d, 4e78a962...); P2 is never pooled with P1; across P1 and P2 or P4 only protocol identity inside the timed region is claimed, not byte identity"
   }
  },
  "scored_pairings": {
   "H0": [],
   "H2": []
  },
- "status": "draft: proposals only, nothing fixed (8 Nov 2026); items 1 (H1 to H3), 2 and 5 decided 9 Nov 2026, fixed only by the lock commit; H0 and H4 (bound and family) decided 10 Nov 2026",
+ "status": "draft: proposals only, nothing fixed (8 Nov 2026); items 1 (H1 to H3), 2 and 5 decided 9 Nov 2026, fixed only by the lock commit; H0 and H4 (bound and family) decided 10 Nov 2026; the timed-path identity for P2 and P4 decided 10 Nov 2026",
  "pairing_values": {
   "P2": {
    "densities": null,
