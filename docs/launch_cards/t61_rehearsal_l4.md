@@ -11,7 +11,7 @@ the lock or any claim.** Every session it writes says so in `manifest.json`
 
 | | |
 |---|---|
-| Commit | **`89e1f6f`** (`89e1f6f713abe85e6d9395c60994024669dd20f9`, on `main` through PR #67, `16dd13e`: attempt 2's `10e1fe1` plus the model-shape fix), from a fresh clone, detached, clean tree. A later commit holds this card and the ledger; it is not deployed |
+| Commit | **`59cc607`** (`59cc60756ea004c6e49b84052046c59f46f8258a`, branch `l4-rehearsal-launch3-card-2026-11-10` off `main` `16dd13e`). It is `main` after PR #67 (the model-shape fix `89e1f6f`) plus three things: the interrupt script's no-stdin fix (`225bed9`), `block_sparse` on the timed-region allowlist (`a115619`), and PR #66's permission-log row and the suite counts. Deployed from a fresh clone, detached, clean tree. A later commit holds this card; it is not deployed |
 | Instances | A: `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`; then B: `attnbench-l4-reh-b-<YYYYMMDD-HHMM>`. Both `g2-standard-8` with one L4, on-demand (STANDARD) |
 | Zone | `asia-northeast1-a` |
 | Image | `attnbench-env-v6-20260917` |
@@ -31,7 +31,7 @@ Instance A ran on the researcher's yes of 10 Nov. It stopped itself at step 11 o
 - **Measured minutes (A, steps 1 to 10):** `link` 2.8, `probe` 5.0, `mask_gate` 0.2, `host_components` 7.7, `device_components` 5.1, `dense_select` 0.4, the rest under 1; 21.4 of work in 26.9 wall. The first card's table used T3.2d's per-cell scaling and overstated `host_components` (23.2) and `device_components` (14.4); "Time and cost" below is rebuilt from these.
 
 **Attempt 1's relaunch (attempt 2) ran at `10e1fe1`, cap ₹296; see the next section.**
-- **The 27 suite failures, classified (no new GPU time):** all 27 are tests that assume a CPU-only host; none is a defect in the GPU path (`docs/gpu_suite_failures_20261110.md`). The S8 run of the timed-region test, separate from the 27, found one thing: `block_sparse` converts its mask on every call (about 3 µs on the Mac, views only). It is a finding for the researcher, not changed here.
+- **The 27 suite failures, classified (no new GPU time):** all 27 are tests that assume a CPU-only host; none is a defect in the GPU path (`docs/gpu_suite_failures_20261110.md`). The S8 run of the timed-region test, separate from the 27, found one thing: `block_sparse` converts its mask on every call (about 3 µs on the Mac, views only). It is allowlisted, not hoisted (adviser's ruling 2 of 10 Nov 2026, `a115619`): the same bytes are in T3.2c's and T3.2d's timed path, `4e78a962…`.
 - **New in `10e1fe1`:** the preflight scans the session's scripts for every third-party import and refuses, naming the package, if one does not import (`attnbench/session_imports.py`). The lightgbm version check stays beside it.
 
 ## Attempt 2 (10 Nov 2026, commit `10e1fe1`) and launch 3
@@ -42,7 +42,7 @@ Instance A `attnbench-l4-reh-a-20261110-0446` ran on the researcher's second yes
 - **Passed on A:** setup without the suite record (5.3 min), steps 1 to 10, the import check (no false refusal; lightgbm installed and verified) and T2.17's `assert_gate`. The compiled stage started after the failed session and ended in 1 s, so it measured nothing.
 - **Still not run:** ground truth and trace sizes (i), the second block and the interruption (iii), the compiled groups (v), and steps 12 to 15 have never run for real.
 
-**Launch 3 (needs its own yes):** commit **`89e1f6f`**; instance A `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`, then B; same zone, image and rate. The caps are built from attempt 2's measured durations, each plan × 1.3 (see "Time and cost"):
+**Launch 3 (needs its own yes):** commit **`59cc607`**; instance A `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`, then B; same zone, image and rate. The caps are built from attempt 2's measured durations, each plan × 1.3 (see "Time and cost"):
 - A plans 62 min, `GCP_HALT_MINUTES=80`, `GCP_MAX_RUN=1h30m`, cap **₹163**.
 - B plans 31 min, halt 32, delete `50m`, cap **₹91**.
 
@@ -147,10 +147,10 @@ After attempt 2, ₹4,707 of ₹14,000 is spent (`docs/spend_ledger.md`, counted
 
 ## The commands
 
-On the Mac, in a fresh clone at `89e1f6f`:
+On the Mac, in a fresh clone at `59cc607`:
 
 ```bash
-git clone <repository> reh && cd reh && git checkout --detach 89e1f6f
+git clone <repository> reh && cd reh && git checkout --detach 59cc607
 export ATTNBENCH_GCP_PROJECT=...          # this study's project, never the gcloud default
 export CLOUDSDK_CORE_PROJECT="$ATTNBENCH_GCP_PROJECT"
 export ATTNBENCH_IMAGE=attnbench-env-v6-20260917 GCP_RATE_INR_HR=108.64
@@ -196,7 +196,7 @@ bash scripts/gcp_teardown_session.sh "$B" "$ZONE" "$Y"
 bash scripts/gcp_cleanup_check.sh
 ```
 
-If ground truth has not opened within 10 minutes, the interrupt script resets nothing and prints `INTERRUPT_NOT_REHEARSED`. Boot 1's b2 then runs on and halts itself, and the report says the interruption was not rehearsed.
+No `ssh` in the interrupt script reads stdin (`225bed9`, the ruling of 10 Nov 2026): every call gets `/dev/null`, and so does the boot2 command. `test_the_interrupt_starts_boot2_and_no_ssh_in_it_reads_stdin` runs the script against a `gcloud` stub that reads its stdin. The stdin is never closed, and `INTERRUPT_DONE` prints; with the local redirect removed, the script hangs. If ground truth has not opened within 10 minutes, the interrupt script resets nothing and prints `INTERRUPT_NOT_REHEARSED`. Boot 1's b2 then runs on and halts itself, and the report says the interruption was not rehearsed.
 
 **While it bills.** No blocking question is asked. The watcher is a poll loop that runs until the instance is TERMINATED or gone. It outlives any question and changes nothing; the self-halt is what ends each session.
 

@@ -30,6 +30,8 @@ The 27 were classified from the failure text in the log, not by rerunning. The t
 
 The test is built to flag exactly this ("work that depends only on cfg is being redone every call") and was never exercised for `block_sparse` before, because on a CPU host the library is absent and the test reads the backend as not exercised. It is not a defect that produces a wrong number: ground truth, the components and the replay all run the same call, so every banked row carries it alike. Hoisting it changes the timed code of every block-sparse arm, and with it the code identity the banked P1 rows and the training file stand on. **No change made.** The options are to leave it and add `("block_sparse", "block_sparse")` to `ALLOWLIST` with this reason, or to hoist it under a new identity. That is the researcher's decision.
 
+**Decided (adviser's ruling 2 of 10 Nov 2026):** allowlisted, not hoisted. `tests/test_timed_region_setup.py` lists `("block_sparse", "block_sparse")` with the reason, and the evidence is in Appendix A of the plan (10 Nov 2026). `attnbench/backends/block_sparse.py` is byte-identical in T3.2c's and T3.2d's timed path (`4e78a962…`), and the P1 training file's 19 oracle and mean-pool rows were timed through it in both sessions.
+
 ## Consequence
 
 `scripts/gpu_suite_record.sh` as written cannot pass on a GPU host. P2's and P4's cards do not run it (the adviser's ruling of 10 Nov). No CPU-assumption test is fixed now. When the record is wanted, the work is a GPU-safe selection (skip these 27, or mark them `cpu_only`) and the soak guard keyed on the capture, not the device.
