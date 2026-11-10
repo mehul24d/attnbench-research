@@ -1051,3 +1051,22 @@ def test_the_training_rows_carry_the_primary_models_shape_so_the_learned_feature
     rows = S.training_rows(T61, path)
     assert rows and all(r.cell.model == primary_shape() for r in rows)
     assert all(len(LM.features(r.cell)) == len(LM.FEATURES) for r in rows)
+
+
+def test_the_real_record_is_named_for_the_session_not_its_components_config(tmp_path, monkeypatch):
+    """Launch 3 of the L4 rehearsal stopped at predict: its components config
+    is P1's (the card's), so the record was named P1 and refused as trained on
+    P1. The record takes the session's pairing, P2-R."""
+    import t31_steps as st
+    import t61_rehearsal as R
+    from attnbench.predict import learned as LM
+    monkeypatch.setattr(S, "P1_TRAINING", _p1_training_file(tmp_path))
+    monkeypatch.setattr(LM, "LOCKED_CONFIG", LM.LearnedConfig("seconds"))
+    monkeypatch.setattr(LM, "fit_learned", lambda ts, conf: ("learned", ts.target))
+    seen = {}
+    monkeypatch.setattr(st, "build_prediction", lambda comp, session, **kw: seen.update(
+        comp=comp["pairing"], **kw) or {})
+    a = args_for(tmp_path, tmp_path, dry_run=False, banked=["P1=2026-11-19T00:00:00+00:00"])
+    S.real_record(R.REHEARSAL, a, datetime(2026, 11, 20, tzinfo=timezone.utc))
+    assert seen["comp"] == "P1" and seen["pairing"] == "P2-R"
+    assert seen["baselines"]["learned"] == ("learned", "P2-R")

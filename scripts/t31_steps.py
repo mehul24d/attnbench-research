@@ -1708,17 +1708,20 @@ def check_payload_bound(ops, max_payload_bytes, label: str) -> None:
 
 
 def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
-                     baselines=None):
+                     baselines=None, pairing=None):
     """The T2.11 record from the link and device-component steps' outputs.
     `baselines`, for a pairing trained on banked ones (P2 on, a later
     pairing's runner): {"banked": [...], "fitted_sum": ..., "learned": ...,
-    "fitted_sum_plus_s0": ...}; P1 has none."""
+    "fitted_sum_plus_s0": ...}; P1 has none. `pairing`, the session's own
+    when it is not the config's: the L4 rehearsal runs P1's config as P2-R,
+    and a record named P1 and trained on P1 is refused (launch 3, 10 Nov 2026)."""
     from attnbench.components import event_rule
     from attnbench.predict import commit as C
     from attnbench.predict.recursion import MechanismCost, close_prefill, price
     from attnbench.predict.intensity import shape_for
     from attnbench.predict.training import Cell, HardwareFeatures
 
+    name = pairing or cfg["pairing"]
     rin = json.loads((step_dir(session, "link") / "recursion_inputs.json").read_text())
     dev = json.loads((step_dir(session, "device_components") / "cells.json").read_text())
     if dev["fake"] != dry_run or rin["fake"] != dry_run:
@@ -1737,7 +1740,7 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
         ops = list(close_prefill(op_from_dict(o) for o in e["ops"]))
         check_payload_bound(ops, rin.get("max_payload_bytes"), label)
         priced = event_rule.apply(price(ops, mech), e.get("event_syncs", []), mech)
-        out.append(Cell(pairing=cfg["pairing"], model_name=cfg["model"], code_path=label,
+        out.append(Cell(pairing=name, model_name=cfg["model"], code_path=label,
                         arm=e["arm"], context_length=e["context_length"],
                         density=e["density"], batch=e["batch"], priced=priced, hardware=hw,
                         model=shape_for(cfg["model"])))
@@ -1755,7 +1758,7 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
     code = C.CodeStamp("0" * 40, False) if (dry_run if local is None else local) \
         else C.current_code_stamp()
     fitted = baselines or {"banked": [], "fitted_sum": None, "learned": None}
-    return C.build_record(cfg["pairing"], out, rin["queue_depth"], code_paths=code_paths,
+    return C.build_record(name, out, rin["queue_depth"], code_paths=code_paths,
                           code=code, written_at=now or datetime.now(timezone.utc),
                           not_priced=refused, **fitted)
 
