@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Optional
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,6 +115,13 @@ def primary_shape(record=PRIMARY_SHAPE) -> ModelShape:
     """The primary model's shape from the pinned record, no file read."""
     r = json.loads(Path(record).read_text())
     return ModelShape(**r["shape"])
+
+
+def shape_for(model_name: str) -> Optional[ModelShape]:
+    """The shape of the model a cell names: the primary model's pinned record,
+    and None for any other name (nothing else has a pinned shape). A learned
+    predictor's features need it; `learned.features` refuses a cell without."""
+    return primary_shape() if model_name == "primary" else None
 
 
 def _check_cell(context_length: int, batch: int, density: float) -> None:

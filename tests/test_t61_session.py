@@ -1032,3 +1032,22 @@ def test_a_skipped_step_fails_a_real_session(tmp_path):
     assert rc == 1
     a = manifest(tmp_path / "s")["attempts"]
     assert [x["status"] for x in a] == ["failed"] and "skipped on a real run" in a[0]["reason"]
+
+
+# --- the learned predictor's features need the model shape (attempt 2, 10 Nov) ----------
+
+def test_the_training_rows_carry_the_primary_models_shape_so_the_learned_features_compute(tmp_path):
+    """Attempt 2 of the L4 rehearsal stopped at `predict`: `training_rows` built
+    rows with no model shape, and `learned.features` refused the first one."""
+    import test_p1_training as TP
+    from attnbench.predict import learned as LM
+    from attnbench.predict import p1_training as PT
+    from attnbench.predict.intensity import primary_shape
+    a = TP.session(tmp_path, "T3.2a", TP.gt([10, 20, 30], [5, 6, 7]))
+    b = TP.session(tmp_path, "T3.2b", TP.gt([40, 50, 60, 70], [8, 9]), xattn_ops=TP.FX.OPS_HOST)
+    rec = PT.to_record(PT.training_rows(a, b), TP.HW)
+    path = tmp_path / "p1_training.json"
+    PT.dump(rec, path)
+    rows = S.training_rows(T61, path)
+    assert rows and all(r.cell.model == primary_shape() for r in rows)
+    assert all(len(LM.features(r.cell)) == len(LM.FEATURES) for r in rows)

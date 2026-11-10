@@ -336,6 +336,19 @@ def test_host_then_device_components_give_the_cells_the_prediction_reads(tmp_pat
                             "0" * 40, False))
     rec = st.build_prediction(cfg, session, dry_run=False)
     assert rec is not None
+    # the cells carry the primary model's pinned shape, which the learned
+    # predictor's features need (attempt 2 of the L4 rehearsal stopped without it)
+    from attnbench.predict import commit as C
+    from attnbench.predict.intensity import primary_shape
+    seen = []
+    real_build = C.build_record
+    monkeypatch.setattr(C, "build_record", lambda pairing, cells, *a, **k:
+                        seen.append(list(cells)) or real_build(pairing, cells, *a, **k))
+    st.build_prediction(cfg, session, dry_run=False)
+    st.build_prediction({**cfg, "model": "primary"}, session, dry_run=False)
+    assert all(c.model is None for c in seen[0])              # a model with no pinned shape
+    assert seen[1] and all(c.model == primary_shape() for c in seen[1])
+    monkeypatch.setattr(C, "build_record", real_build)
     # a blocking copy above the largest payload the link microbenchmark measured is refused,
     # never extrapolated (researcher, 7 Nov 2026)
     copies = [o for c in dev["cells"] for o in c["ops"]
@@ -553,3 +566,45 @@ def test_a_blocking_copy_beyond_the_measured_payloads_is_refused_at_any_position
     st.check_payload_bound([big], None, "x")                 # a dry run's fakes
     with pytest.raises(st.StepFailed, match="operation 2.*never extrapolated"):
         st.check_payload_bound([ok, big], 1 << 28, "meanpool_d0.5_L32768")
+
+
+def test_a_trained_prediction_with_the_learned_baseline_builds_from_the_session_cells(tmp_path, monkeypatch):
+    """The path `t61_session.real_record` takes for P2: the banked pairing's
+    rows fit the fitted sum and the learned predictor, and the session's own
+    cells are predicted by both. Attempt 2 of the L4 rehearsal stopped here:
+    neither the rows nor the cells had the model's shape."""
+    import test_p1_training as TP
+    from attnbench.predict import baselines as BL
+    from attnbench.predict import commit as C
+    from attnbench.predict import learned as LM
+    from attnbench.predict import p1_training as PT
+    from attnbench.predict.intensity import shape_for
+    from attnbench.predict.training import committed_training_set
+    _components(monkeypatch, FakeHarness())
+    session, cfg = _session(tmp_path), {**_grid(), "pairing": "P2", "model": "primary"}
+    args = lambda step: SimpleNamespace(dry_run=False, session=str(session),  # noqa: E731
+                                        out=str(st.step_dir(session, step)))
+    st.step_host_components(args("host_components"), cfg)
+    st.step_device_components(args("device_components"), cfg)
+    (st.step_dir(session, "link") / "recursion_inputs.json").write_text(json.dumps(
+        {"queue_depth": 8, "fake": False,
+         "hardware": {"pinned_bandwidth": 1e10, "pageable_bandwidth": 5e9},
+         "by_length": {"2048": st.FAKE_MECHANISMS}}))
+    monkeypatch.setattr(C, "current_code_stamp", lambda: C.CodeStamp("0" * 40, False))
+
+    class Mean:                     # a model with fit/predict; the pinned lightgbm is not this test's subject
+        def fit(self, X, y):
+            self.m = sum(y) / len(y)
+
+        def predict(self, X):
+            return [self.m] * len(X)
+    conf = LM.LearnedConfig("seconds")
+    monkeypatch.setattr(LM, "LOCKED_CONFIG", conf)
+    a = TP.session(tmp_path, "T3.2a", TP.gt([10, 20, 30], [5, 6, 7]))
+    b = TP.session(tmp_path, "T3.2b", TP.gt([40, 50, 60, 70], [8, 9]), xattn_ops=TP.FX.OPS_HOST)
+    rec = PT.to_record(PT.training_rows(a, b), TP.HW)
+    ts = committed_training_set(PT.rows_from_record(rec, model=shape_for("primary")), "P2", ["P1"])
+    fitted = {"banked": ["P1"], "fitted_sum": BL.fit_fitted_sum(ts),
+              "learned": LM.fit_learned(ts, conf, model_factory=lambda params: Mean())}
+    out = st.build_prediction(cfg, session, dry_run=False, baselines=fitted)
+    assert out["cells"] and all("learned" in c["predictions"] for c in out["cells"])
