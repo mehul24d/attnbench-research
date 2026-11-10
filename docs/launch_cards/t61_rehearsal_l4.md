@@ -2,7 +2,7 @@
 
 Prepared 10 Nov 2026 from the adviser's ruling of 10 Nov 2026. **Launchable
 only on the researcher's yes, in their own words, naming the instances, the
-zone, the commit and the cap. Nothing here runs on its own. The first yes (commit `2053377`, ₹403) is spent: attempt 1 used it.**
+zone, the commit and the cap. Nothing here runs on its own. The first yes (commit `2053377`, ₹403) is spent: attempt 1 used it. The second (commit `10e1fe1`, ₹296) is spent: attempt 2 used it.**
 
 **Exploratory. No row of this rehearsal enters training, the floors, Gate A,
 the lock or any claim.** Every session it writes says so in `manifest.json`
@@ -11,12 +11,12 @@ the lock or any claim.** Every session it writes says so in `manifest.json`
 
 | | |
 |---|---|
-| Commit | **`10e1fe1`** (`10e1fe1b728f34b82078e3953a4d64cf2ef140ae`, branch `l4-rehearsal-lightgbm-2026-11-10`: attempt 1's `2053377` plus the lightgbm fix, the import preflight and the P2 and P4 cards' suite-record note), from a fresh clone, detached, clean tree. A later commit holds this card and the ledger; it is not deployed |
+| Commit | **`89e1f6f`** (`89e1f6f713abe85e6d9395c60994024669dd20f9`, on `main` through PR #67, `16dd13e`: attempt 2's `10e1fe1` plus the model-shape fix), from a fresh clone, detached, clean tree. A later commit holds this card and the ledger; it is not deployed |
 | Instances | A: `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`; then B: `attnbench-l4-reh-b-<YYYYMMDD-HHMM>`. Both `g2-standard-8` with one L4, on-demand (STANDARD) |
 | Zone | `asia-northeast1-a` |
 | Image | `attnbench-env-v6-20260917` |
 | Rate | ₹108.64/h (planning rate, all-in) |
-| **Cap** | **₹296 for the relaunch** (A ₹183 + B ₹113), **₹397 with attempt 1's ₹101**, inside the ₹403; expected ₹299 in all. Without scope (v): ₹273 and ₹374 |
+| **Cap** | **₹254 for launch 3** (A ₹163 + B ₹91), **₹422 with attempts 1 and 2 (₹168)**: over the original ₹403, on the researcher's choice of 10 Nov 2026 to keep (v) and raise the total to ₹422. Expected ₹338 in all. Without (v): ₹231 and ₹399 |
 
 A runs first. B is created only after A is deleted, because the GPU quota is 1.
 
@@ -30,10 +30,23 @@ Instance A ran on the researcher's yes of 10 Nov. It stopped itself at step 11 o
 - **The suite record (T2.26 in the bootstrap) returned rc 1:** 27 failed, 6,123 passed, 215 skipped in 9:41. All 27 assume a CPU-only host (`a CUDA device is present; the CPU boundary is for a CPU`, CPU dry runs that reach an installed GPU kernel in float32, a fake capture that is soaked because a CUDA device exists); none is a GPU-path defect (`docs/gpu_suite_failures_20261110.md`). The record is banked (phase `s9_suite`). The relaunch does not pass the flag, and neither do P2's or P4's cards.
 - **Measured minutes (A, steps 1 to 10):** `link` 2.8, `probe` 5.0, `mask_gate` 0.2, `host_components` 7.7, `device_components` 5.1, `dense_select` 0.4, the rest under 1; 21.4 of work in 26.9 wall. The first card's table used T3.2d's per-cell scaling and overstated `host_components` (23.2) and `device_components` (14.4); "Time and cost" below is rebuilt from these.
 
-**Relaunch (needs its own yes):** commit **`10e1fe1`**; instance A `attnbench-l4-reh-a-<YYYYMMDD-HHMM>` again, then B; same zone, image and rate. The caps below are built from attempt 1's measured durations, each plan × 1.3 (see "Time and cost"): A plans 70 min, `GCP_HALT_MINUTES=91`, `GCP_MAX_RUN=1h41m`, cap **₹183**; B plans 39 min, halt 41, delete `60m`, cap **₹113**. Relaunch **₹296**; with attempt 1's ₹101 the rehearsal totals at most **₹397**, inside the original ₹403 (₹6 to spare). Expected ₹299 in all. The relaunch does not pass `--suite-record`.
+**Attempt 1's relaunch (attempt 2) ran at `10e1fe1`, cap ₹296; see the next section.**
 - **The 27 suite failures, classified (no new GPU time):** all 27 are tests that assume a CPU-only host; none is a defect in the GPU path (`docs/gpu_suite_failures_20261110.md`). The S8 run of the timed-region test, separate from the 27, found one thing: `block_sparse` converts its mask on every call (about 3 µs on the Mac, views only). It is a finding for the researcher, not changed here.
 - **New in `10e1fe1`:** the preflight scans the session's scripts for every third-party import and refuses, naming the package, if one does not import (`attnbench/session_imports.py`). The lightgbm version check stays beside it.
 
+## Attempt 2 (10 Nov 2026, commit `10e1fe1`) and launch 3
+
+Instance A `attnbench-l4-reh-a-20261110-0446` ran on the researcher's second yes after two stockouts in `asia-northeast1-a` (the same zone, created on the third try). It stopped itself at step 11 again after 37 min (₹67), was torn down from the bucket, and nothing is left billing. **B was not started.**
+
+- **Cause:** `predict` failed with `CostModelError: P1/dense has no model shape`. Nothing on the real path set `Cell.model`, neither the P1 training rows nor the session's cells; only test fixtures and the dry run's fake record did. Fixed in `89e1f6f`: `intensity.shape_for` gives both the primary model's pinned shape. A test reproduces the failure, and a trained prediction is built over the session's cells.
+- **Passed on A:** setup without the suite record (5.3 min), steps 1 to 10, the import check (no false refusal; lightgbm installed and verified) and T2.17's `assert_gate`. The compiled stage started after the failed session and ended in 1 s, so it measured nothing.
+- **Still not run:** ground truth and trace sizes (i), the second block and the interruption (iii), the compiled groups (v), and steps 12 to 15 have never run for real.
+
+**Launch 3 (needs its own yes):** commit **`89e1f6f`**; instance A `attnbench-l4-reh-a-<YYYYMMDD-HHMM>`, then B; same zone, image and rate. The caps are built from attempt 2's measured durations, each plan × 1.3 (see "Time and cost"):
+- A plans 62 min, `GCP_HALT_MINUTES=80`, `GCP_MAX_RUN=1h30m`, cap **₹163**.
+- B plans 31 min, halt 32, delete `50m`, cap **₹91**.
+
+Launch 3's cap is **₹254**. With the ₹168 already spent, the rehearsal totals at most **₹422**, expected ₹338. **This departs from the adviser's "cut (v) first if over about ₹400"**: the researcher chose on 10 Nov 2026 to keep (v) and raise the total to ₹422. Without (v), the total is ₹399. Launch 3 does not pass `--suite-record`.
 
 ## What it rehearses (adviser's scope, by priority)
 
@@ -68,51 +81,58 @@ Instance A ran on the researcher's yes of 10 Nov. It stopped itself at step 11 o
 
 Items 1 to 3 were fixed in `dda1c39` and item 4 in `2053377`.
 
-## Time and cost (the relaunch: attempt 1's measured durations × 1.3, ₹108.64/h)
+## Time and cost (launch 3: attempt 2's measured durations × 1.3, ₹108.64/h)
 
-Cap = rate × (planned minutes × 1.3, rounded down, + 10) ÷ 60: the in-guest halt is 1.3 × the plan and the hard delete is 10 minutes after it. Attempt 1 measured the setup and steps 1 to 10 (`session_cost.txt`, the phase logs, the suite log):
+Cap = rate × (planned minutes × 1.3, rounded down, + 10) ÷ 60, rounded up. The in-guest halt is at 1.3 × the plan, and the hard delete comes 10 minutes after it. Attempt 2 measured the setup, steps 1 to 10, the assert gate and the exit (the phase logs, `session_cost.txt`):
 
-| Measured in attempt 1 (A) | Minutes | From |
+| Measured in attempt 2 (A) | Minutes | From |
 |---|---|---|
-| Boot to the session start, without the suite record and the S8 run | 14.0 | Booted 20:14:12Z. The suite began 20:26:12Z (12.0 min: deploy, preflight, write gate, bootstrap with one SSH retry); 2.0 min more to the session start at 20:38:48Z. The suite (9.7) and S8 (0.8) are taken out |
-| Steps 1 to 10, wall time | 26.9 | 20:38:48Z to 21:05:39Z. The work is 21.4 min; the sync between steps took 16 to 47 s each (mean 31 s) |
-| T2.17 `assert_gate` | 0.2 | 9 s |
-| Exit, sync, halt | 2.6 | T3.2d, measured (attempt 1: 1.8) |
+| Boot to the session start, without the suite record | 5.3 | Created 23:25:54Z, `prereqs` began 23:31:09Z (deploy, preflight, write gate, bootstrap, no SSH retry). Attempt 1's 14.0 included an SSH retry and is not used; a retry is covered by the margin |
+| Steps 1 to 10, wall time, to the start of `predict` | 27.3 | 23:31:09Z to 23:58:26Z. Work: `link` 2.8, `probe` 5.1, `host_components` 7.8, `device_components` 5.2, the rest under 1 |
+| The sync between steps | 0.3 to 0.7 | 17 s while the session is small; 42 to 44 s once the components are written |
+| T2.17 `assert_gate`, with the sync before it | 0.9 | 23:58:29Z to 23:59:21Z |
+| Compiled stage end to the halt | 2.6 | 00:00:05Z to 00:02:41Z (exit, sync, halt) |
 
-Not measured on this card, so estimates: `predict`, the hold (the runner's 90 s), `ground_truth` (T3.2d step 9: 28 min over 34 cells, scaled to 5 cells and the anchor), `late_check`, `trace_checks`, `host_speed_end`, the compiled stage (never timed clean on a GPU), fetching b1 on B and the reset.
+Not measured on this card, so estimates: `predict` (it failed after 3 s), the hold (the runner's 90 s), `ground_truth` (T3.2d step 9: 28 min over 34 cells, scaled to 5 cells and the anchor), `late_check`, `trace_checks`, `host_speed_end`, the compiled stage (never timed clean on a GPU), fetching b1 on B and the reset. Syncs after ground truth carry its traces, whose size is (i) and unknown.
 
 **Instance A**
 
 | | Minutes | Basis |
 |---|---|---|
-| Setup | 14.0 | measured |
-| Steps 1 to 10 | 26.9 | measured, with the sync |
+| Setup | 5.3 | measured |
+| Steps 1 to 10, with the sync, to `predict` | 27.3 | measured |
 | `predict` | 2 | estimate |
 | The hold | 1.5 | the runner's 90 s |
 | `ground_truth`, 5 cells + the anchor | 4.9 | T3.2d step 9, 28 / 34 per cell × 6 |
 | `late_check`, `trace_checks`, `host_speed_end` | 4.5 | estimates: 1 + 3 + 0.5 |
-| Sync between steps 11 to 15 | 2.5 | 5 × 0.5 (measured mean 31 s) |
-| T2.17 `assert_gate`, with its sync | 0.7 | 9 s measured + 0.5 |
+| Sync between steps 11 to 15 | 2.9 | 4 × 0.72 (measured, the later syncs) |
+| T2.17 `assert_gate`, with its sync | 0.9 | measured |
 | (v) the compiled groups, 2 × 3 cells at 2048, with the sync | 10.5 | **estimate; never timed clean on a GPU** |
 | Exit, sync, halt | 2.6 | measured |
-| **Planned** | **70** | 70.1; without (v): 59.6 |
+| **Planned** | **62** | 62.4; without (v): 52 (51.9) |
 
 **Instance B**
 
 | | Minutes | Basis |
 |---|---|---|
-| Boot 1: setup 14.0, fetch b1 1, `prereqs` and `preflight` 1, the hold 1.5, ground truth opening 1 | 18.5 | measured setup; estimates |
+| Boot 1: setup 5.3, fetch b1 1, `prereqs` and `preflight` 1, the hold 1.5, ground truth opening 1 | 9.8 | measured setup and preflight; estimates |
 | Reset, SSH back | 2 | estimate |
-| Boot 2: the refused resume 1; then b2 again: `prereqs` and `preflight` 1, hold 1.5, ground truth 4.9, `late_check`, `trace_checks`, `host_speed_end` 4.5, sync 2.0, drift 0.5, exit 2.6 | 18.0 | as above, 5 cells × 28 / 34 |
-| **Planned** | **39** | 38.5. If the reset never comes, boot 1 runs b2 to its end: 14 + 1 + 17 = 32 min, the longest single boot |
+| Boot 2: the refused resume 1; then b2 again: `prereqs` and `preflight` 1, hold 1.5, ground truth 4.9, `late_check`, `trace_checks`, `host_speed_end` 4.5, sync 3.6 (5 × 0.72), drift 0.5, exit 2.6 | 19.6 | as above |
+| **Planned** | **31** | 31.4. If the reset never comes, boot 1 runs b2 to its end: 5.3 + 1 + 18.6 = 25 min, the longest single boot |
 
 | Limit | A | B |
 |---|---|---|
-| In-guest halt, from **each** boot (`GCP_HALT_MINUTES`) | 91 (1.3 × 70) | 41 (1.3 × 32, the longest boot) |
-| Hard delete (`GCP_MAX_RUN`, DELETE) | 101 min = `1h41m` (halt + 10) | 60 min = `60m` (1.3 × 39 rounded down, 50, + 10) |
-| Cap, at the later bound | **₹183** (101 min) | **₹113** (62 min: the reset at about 19 min, then a halted boot 2 at 41 min, if the reset restarts the run timer; 60 if not) |
+| In-guest halt, from **each** boot (`GCP_HALT_MINUTES`) | 80 (1.3 × 62) | 32 (1.3 × 25, the longest boot) |
+| Hard delete (`GCP_MAX_RUN`, DELETE) | 90 min = `1h30m` (halt + 10) | 50 min = `50m` (1.3 × 31 rounded down, 40, + 10) |
+| Cap, at the later bound | **₹163** (90 min) | **₹91** (50 min) |
 
-**Relaunch cap ₹296** (A ₹183 + B ₹113); expected ₹198 (A 70 min ₹127, B 39 min ₹71). With attempt 1's ₹101 (`docs/spend_ledger.md`): **₹397 against the ₹403 cap**, expected ₹299. Without (v), with `ATTNBENCH_REH_COMPILED` unset: A plans 60 min, halts at 78 and is deleted at 88 (`1h28m`, ₹160), a relaunch cap of **₹273** and a total of **₹374**. If a plan moves the total over about ₹400, (v) is cut first and the protocol is not touched. After attempt 1, ₹4,640 of ₹14,000 is spent (`docs/spend_ledger.md`, counted from its rows); the relaunch's cap leaves at least **₹9,060**.
+**The interrupt window is now 10 minutes, not 20.** Boot 1 reaches ground truth about 4.5 min after the session starts. With `--within 10`, the reset comes at most about 16 min after B boots. If the reset restarts the run timer, boot 2 halts by 16 + 32 = 48 min, which is inside the 50-minute delete. With 20, it could have run to 58 min, past the cap.
+
+**Launch 3's cap is ₹254** (A ₹163 + B ₹91). Expected ₹170: A 62 min ₹113, B 31 min ₹57. With attempts 1 and 2 (₹101 + ₹67 = ₹168, `docs/spend_ledger.md`): **₹422**, expected ₹338. That is over the original ₹403, on the researcher's choice of 10 Nov 2026 (keep (v), raise the total to ₹422).
+
+Without (v), with `ATTNBENCH_REH_COMPILED` unset: A plans 52 min, halts at 67 and is deleted at 77 (`1h17m`, ₹140). That gives launch 3 a cap of **₹231** and a total of **₹399**. The protocol is not touched either way.
+
+After attempt 2, ₹4,707 of ₹14,000 is spent (`docs/spend_ledger.md`, counted from its rows); launch 3's cap leaves at least **₹9,039**.
 
 ## Named bucket reads (part of the launch yes)
 
@@ -127,10 +147,10 @@ Not measured on this card, so estimates: `predict`, the hold (the runner's 90 s)
 
 ## The commands
 
-On the Mac, in a fresh clone at `10e1fe1`:
+On the Mac, in a fresh clone at `89e1f6f`:
 
 ```bash
-git clone <repository> reh && cd reh && git checkout --detach 10e1fe1
+git clone <repository> reh && cd reh && git checkout --detach 89e1f6f
 export ATTNBENCH_GCP_PROJECT=...          # this study's project, never the gcloud default
 export CLOUDSDK_CORE_PROJECT="$ATTNBENCH_GCP_PROJECT"
 export ATTNBENCH_IMAGE=attnbench-env-v6-20260917 GCP_RATE_INR_HR=108.64
@@ -140,7 +160,7 @@ ZONE=asia-northeast1-a
 **Instance A**
 
 ```bash
-export GCP_HALT_MINUTES=91 GCP_MAX_RUN=1h41m     # without (v): 78 and 1h28m, and leave ATTNBENCH_REH_COMPILED unset
+export GCP_HALT_MINUTES=80 GCP_MAX_RUN=1h30m     # without (v): 67 and 1h17m, and leave ATTNBENCH_REH_COMPILED unset
 A=attnbench-l4-reh-a-$(date +%Y%m%d-%H%M)
 bash scripts/gcp_cleanup_check.sh && bash scripts/gcp_launch_l4.sh "$A"     # type 'launch'
 bash scripts/gcp_deploy_source.sh "$A" "$ZONE"
@@ -161,22 +181,22 @@ bash scripts/gcp_cleanup_check.sh
 **Instance B** (after A is deleted)
 
 ```bash
-export GCP_HALT_MINUTES=41 GCP_MAX_RUN=60m
+export GCP_HALT_MINUTES=32 GCP_MAX_RUN=50m
 B=attnbench-l4-reh-b-$(date +%Y%m%d-%H%M)
 # launch, deploy, preflight, write gate, bootstrap: as for A, with "$B"
 X=results/t61r_l4_$(date -u +%Y%m%dT%H%MZ)_b2_interrupted; Y=${X%_interrupted}
 gcloud compute ssh "$B" --zone "$ZONE" --command "cd ~/attnbench_scaffold && \
   nohup bash scripts/session_exit.sh --log ~/reh_b1.log -- \
-  bash scripts/t61_rehearsal_b.sh boot1 $A $B1 $X >/dev/null 2>&1 &"
+  bash scripts/t61_rehearsal_b.sh boot1 $A $B1 $X >/dev/null 2>&1 < /dev/null &"
 bash scripts/t61_rehearsal_watch.sh "$B" "$ZONE" > ~/reh_watch_b.log 2>&1 &
-bash scripts/t61_rehearsal_interrupt.sh "$B" "$ZONE" "$A" "$B1" "$X" "$Y" --within 20
+bash scripts/t61_rehearsal_interrupt.sh "$B" "$ZONE" "$A" "$B1" "$X" "$Y" --within 10
 wait                                                     # the watcher: TERMINATED or gone
 bash scripts/gcp_session_elapsed.sh "$B" "$ZONE" 108.64
 bash scripts/gcp_teardown_session.sh "$B" "$ZONE" "$Y"
 bash scripts/gcp_cleanup_check.sh
 ```
 
-If ground truth has not opened within 20 minutes, the interrupt script resets nothing and prints `INTERRUPT_NOT_REHEARSED`. Boot 1's b2 then runs on and halts itself, and the report says the interruption was not rehearsed.
+If ground truth has not opened within 10 minutes, the interrupt script resets nothing and prints `INTERRUPT_NOT_REHEARSED`. Boot 1's b2 then runs on and halts itself, and the report says the interruption was not rehearsed.
 
 **While it bills.** No blocking question is asked. The watcher is a poll loop that runs until the instance is TERMINATED or gone. It outlives any question and changes nothing; the self-halt is what ends each session.
 
@@ -199,4 +219,4 @@ If ground truth has not opened within 20 minutes, the interrupt script resets no
 - The learned configuration is the working one. P2's prerequisites are recorded, not enforced.
 - **No suite record.** The adviser's ruling of 10 Nov 2026 reverses the 10 Nov ruling h: P2's and P4's cards leave `--suite-record` off and carry no minutes for it (their setup rows are unchanged, 0.5 h and 0.6 h; each card says so). T2.26's five GPU variants still run in every preflight. The step is still in the bootstrap as an opt-in, and `gpu_suite_record.sh` needs a GPU-safe selection before any card uses it.
 - The compiled minutes are estimates.
-- **The 14 Nov rule:** the compiled path is clean when `compiled/result.json` reads passed on the relaunch, both groups complete, no recompile after warm-up, and the Kineto twin and mask-dependence checks passed. **If it is not clean by 14 Nov 2026, the compiled group is dropped** (the cut order of Appendix A, 9 Nov 2026, item 10) **and the limitation is written**: the compiled variants' ground truth was not measured, and no claim about compiled arms rests on this study. P2's and P4's cards are built without the compiled groups today and stay so. This rehearsal is the only GPU run of the compiled path before then, so there is one attempt: results by Thu 13 Nov leave one day.
+- **The 14 Nov rule:** the compiled path is clean when `compiled/result.json` reads passed on the relaunch, both groups complete, no recompile after warm-up, and the Kineto twin and mask-dependence checks passed. **If it is not clean by 14 Nov 2026, the compiled group is dropped** (the cut order of Appendix A, 9 Nov 2026, item 10) **and the limitation is written**: the compiled variants' ground truth was not measured, and no claim about compiled arms rests on this study. P2's and P4's cards are built without the compiled groups today and stay so. This rehearsal is the only GPU run of the compiled path before then. Attempts 1 and 2 never reached it, so launch 3 is the one attempt left: results by Thu 13 Nov leave one day.
