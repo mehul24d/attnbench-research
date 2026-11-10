@@ -209,7 +209,11 @@ if args[:2] == ["compute", "instances"]:
     sys.exit(0)
 sys.stdin.read()
 cmd = args[args.index("--command") + 1]
-sys.exit(subprocess.run(["bash", "-c", cmd]).returncode)
+# As sshd does: the call returns when the command's stdout reaches EOF, so a
+# background job that still holds it keeps the call open.
+r = subprocess.run(["bash", "-c", cmd], stdout=subprocess.PIPE)
+sys.stdout.buffer.write(r.stdout)
+sys.exit(r.returncode)
 '''
 
 
@@ -229,7 +233,7 @@ def test_the_interrupt_starts_boot2_and_no_ssh_in_it_reads_stdin(tmp_path):
     (scaffold / "X" / "12_ground_truth" / "step.log").write_text("")
     (scaffold / "scripts").mkdir()
     (scaffold / "scripts" / "session_exit.sh").write_text(
-        'cat > "$HOME/boot2_stdin"; echo "$@" > "$HOME/boot2_started"\n')
+        'cat > "$HOME/boot2_stdin"; echo "$@" > "$HOME/boot2_started"; sleep 60\n')
     env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "HOME": str(home),
            "ATTNBENCH_GCP_PROJECT": "stub-project"}
     p = subprocess.Popen(["bash", str(ROOT / "scripts" / "t61_rehearsal_interrupt.sh"),
@@ -241,7 +245,8 @@ def test_the_interrupt_starts_boot2_and_no_ssh_in_it_reads_stdin(tmp_path):
         out = p.stdout.read()
     except subprocess.TimeoutExpired:
         os.killpg(p.pid, signal.SIGKILL)
-        pytest.fail("the interrupt script did not return: an ssh is reading stdin")
+        pytest.fail("the interrupt script did not return: an ssh is reading stdin, or "
+                    "boot 2 holds the ssh's stdout")
     finally:
         try:
             os.killpg(p.pid, signal.SIGKILL)
