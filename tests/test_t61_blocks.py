@@ -336,3 +336,17 @@ def test_collect_pools_no_row_of_a_block_whose_late_check_did_not_pass(tmp_path)
     got = BD.collect([d1, d2], ground_truth_dir=S.step_dir(Path(), "ground_truth", T64).name)
     assert got["rows"] == [] and got["blocks"] == ["b1"]
     assert got["unpassed"] == [{"block": "b2", "dir": str(d2), "steps": ["late_check"]}]
+
+
+def test_a_rehearsal_block_runs_from_its_own_spec_and_p4s_does_not(tmp_path):
+    """The rehearsal is exploratory (its rows are never evidence) and runs
+    from its own block spec, not a T4.1 lock; a P4 block from a spec alone
+    is refused (ruling 1d)."""
+    import t61_rehearsal as R
+    br, why = S.block_run(R.REHEARSAL, Namespace(lock=str(S.ROOT / R.LOCK), block="b1",
+                                                 dry_run=False, import_block=[]))
+    assert why is None and br is not None
+    spec_only = write_lock(tmp_path)
+    _, why = S.block_run(T64, Namespace(lock=str(spec_only), block="b1", dry_run=False,
+                                        import_block=[]))
+    assert "complete lock" in why

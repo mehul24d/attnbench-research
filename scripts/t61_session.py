@@ -1980,7 +1980,7 @@ def block_run(cfg: SessionConfig, args) -> tuple:
         spec = B.parse(json.loads(raw), cfg.pairing)
     except (ValueError, B.BlockSpecError) as e:
         return None, str(e)
-    if not args.dry_run:
+    if not args.dry_run and not cfg.exploratory:     # a rehearsal runs its own spec
         why = real_block_lock_problem(cfg, json.loads(raw), spec)
         if why:
             return None, why
