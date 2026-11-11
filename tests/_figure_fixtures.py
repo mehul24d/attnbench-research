@@ -119,7 +119,7 @@ def ground_truth(xattn_ms=20000.0, dense_ms=10000.0, **over) -> dict:
             {"arm": "dense", "prefill_ms_median": dense_ms, "prefill_ms_p90": dense_ms,
              "prefill_ms_p99": dense_ms, "arm_kind": "dense", "context_length": 4,
              "batch": 1, "mask_density": None, "executed_density": 1.0, "builder_kind": None}]
-    r = {"traced": False, "complete": True,
+    r = {"traced": False, "complete": True, "clean_rounds": 10,
          "first_timed_block_started_at": STARTED_AT.timestamp(), "rows": rows}
     r.update(over)
     return r

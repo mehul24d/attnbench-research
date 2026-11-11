@@ -126,14 +126,26 @@ def cell_floors(sessions: Mapping[str, Sequence[tuple[str, Mapping]]], *, quanti
 
 
 def _leg1(reports: Mapping[str, Mapping]) -> dict:
-    per = {}
+    """Carries each session's cell count and exclusions; a session whose
+    report states no cell read is not applied (adviser's ruling 2d of
+    11 Nov 2026; T4.3 read A, finding 7e)."""
+    per, n, excluded = {}, {}, {}
     for s, rep in reports.items():
-        below = rep["predictors"]["all"]["recursion_below"]
+        scope = rep["predictors"]["all"]
+        below = scope["recursion_below"]
         per[s] = {p: bool(below[p]) for p in LEG1_RIVALS}
+        n[s] = ((scope.get("by_predictor") or {}).get("recursion") or {}).get("n")
+        excluded[s] = {"excluded_groups": rep.get("excluded_groups", []),
+                       "unmeasured": rep.get("unmeasured", [])}
+    rule = ("the recursion's median absolute relative error below the sum's and the "
+            "step form's over every cell, in every session")
+    unread = [s for s, k in n.items() if not (isinstance(k, int) and k > 0)]
+    if unread:
+        return {"verdict": NOT_APPLIED, "n_cells": n, "recursion_below": per, "rule": rule,
+                "why": f"no cell count in {unread}'s leg 1"}
     ok = all(all(v.values()) for v in per.values())
-    return {"verdict": HOLDS if ok else FAILS, "recursion_below": per,
-            "rule": "the recursion's median absolute relative error below the sum's and the "
-                    "step form's over every cell, in every session"}
+    return {"verdict": HOLDS if ok else FAILS, "n_cells": n, "exclusions": excluded,
+            "recursion_below": per, "rule": rule}
 
 
 def _leg2(reports: Mapping[str, Mapping]) -> dict:
@@ -155,6 +167,16 @@ def _leg3(reports: Mapping[str, Mapping]) -> dict:
     if any(v["status"] == NOT_MEASURED for v in sl.values()):
         return {"verdict": NOT_APPLIED, "why": "the slopes are not measured in "
                 + ", ".join(s for s, v in sl.items() if v["status"] == NOT_MEASURED)}
+    ranged = [s for s, v in sl.items() if "within_range" in v]
+    if ranged:                     # Gate A v2's leg 3 (Appendix A, 8 Nov 2026)
+        if len(ranged) != len(sl):
+            raise GateAError(f"only {ranged} were read at Gate A v2's slope range")
+        if any(not v["within_range"] for v in sl.values()):
+            raise GateAError("a v2 leg 3 with no mechanism holds vacuously")
+        ok = all(all(v["within_range"].values()) and not v.get("missing") for v in sl.values())
+        return {"verdict": HOLDS if ok else FAILS,
+                "within_range": {s: v["within_range"] for s, v in sl.items()},
+                "missing": {s: v.get("missing", []) for s, v in sl.items()}}
     if any("within_bound" not in v for v in sl.values()):
         return {"verdict": NOT_APPLIED, "why": "no slope bound is set (a lock value)"}
     ok = all(v["within_bound"] for v in sl.values())

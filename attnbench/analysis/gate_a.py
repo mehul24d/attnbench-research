@@ -102,12 +102,12 @@ def place_row(cp: CommittedPrediction, row: Mapping, name: str):
 
 def short_of_rounds(result: Mapping, min_clean_rounds: int = MIN_CLEAN_ROUNDS) -> bool:
     """An untraced group that is not complete, or has fewer clean rounds than
-    `min_clean_rounds`."""
+    `min_clean_rounds`; a group that states no clean rounds is short
+    (adviser's ruling 2d of 11 Nov 2026; T4.3 read A, finding 7d)."""
     if result.get("traced") is not False:
         return False                       # refused by `check_result`, not excluded
     clean = result.get("clean_rounds")
-    return result.get("complete") is not True or (clean is not None
-                                                  and int(clean) < min_clean_rounds)
+    return result.get("complete") is not True or clean is None or int(clean) < min_clean_rounds
 
 
 def measured(cp: CommittedPrediction, results: Sequence[tuple[str, Mapping]], *,
@@ -240,16 +240,45 @@ def recorded_sequence(trace: Path, sequence: Path):
     return seq
 
 
-def replay_report(seq, trace_s: Mapping[int, float], priced_ops: Sequence[Mapping]) -> dict:
+def replay_report(seq, trace_s: Mapping[int, float], priced_ops: Optional[Sequence[Mapping]],
+                  pricing: Optional[Mapping] = None) -> dict:
     """One cell's replay-versus-trace report: the priced device time at each
     position the trace timed (`priced_ops` is step 6's cell `ops`, one per
-    sequence position) against the trace's (`op_sequence.device_durations`)."""
+    sequence position, or None where step 6 priced nothing) against the
+    trace's (`op_sequence.device_durations`).
+
+    The structure and no-replay guards of `replay.check_passes` are fed
+    (adviser's ruling 2d of 11 Nov 2026): a trace position with no priced
+    device time, or one step 6's `pricing` summary lists as `unpriced`
+    (neither replay matched it by structure), has no replay and counts as
+    unmatched. Nodes step 6 dropped (`replay.EXTRA_NODE_DROPPED`: stand-ins
+    and an eager run's copies, by the 7 Nov 2026 rule) are carried, not
+    failed: **plan default, flagged**."""
     from ..components import replay
-    if len(priced_ops) != len(seq.ops):
+    if priced_ops is not None and len(priced_ops) != len(seq.ops):
         raise GateAError(f"{len(priced_ops)} priced operations for a sequence of "
                          f"{len(seq.ops)}")
-    priced = {i: float(priced_ops[i]["device"]) for i in trace_s}
-    return replay.replay_vs_trace(seq, trace_s, priced)
+    unpriced = set((pricing or {}).get("unpriced") or ())
+    priced = {}
+    for i in trace_s:
+        v = None if priced_ops is None or i in unpriced else priced_ops[i].get("device")
+        if v is not None:
+            priced[i] = float(v)
+    rep = replay.replay_vs_trace(seq, trace_s, priced)
+    missing = sorted(set(trace_s) - set(priced))
+    rep["kernel_name_mismatch"] = {
+        "unmatched_positions": len(missing),
+        "families": sorted({op_sequence_family(seq, i) for i in missing}),
+        "extra_nodes": 0,
+        "extra_nodes_dropped": dict((pricing or {}).get(replay.EXTRA_NODE_DROPPED) or {}),
+        "evidence": "step 6's pricing summary" if pricing is not None else
+                    "step 6's priced operations only"}
+    return rep
+
+
+def op_sequence_family(seq, i: int) -> str:
+    from ..components.op_sequence import operation_family
+    return operation_family(seq.ops[i])
 
 
 V2_SLOPE_RANGE = (2 ** -0.5, 2 ** 0.5)   # Gate A v2's leg 3 (Appendix A, 8 Nov 2026)
@@ -322,6 +351,9 @@ def slopes(measured_slopes: Optional[Mapping], *, bound: Optional[float],
     outside it."""
     if slope_range is not None and bound is not None:
         raise GateAError("leg 3 takes a bound about 1.0 or a range, not both")
+    if measured_slopes and not mechanisms:
+        raise GateAError("leg 3 names the synchronisation mechanisms it reads; none were "
+                         "given, so every check would hold vacuously")
     if measured_slopes and slope_range is not None:
         lo, hi = slope_range
         got = {m: s.slope for m, s in measured_slopes.items()}

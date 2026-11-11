@@ -181,7 +181,6 @@ def test_F5d_nothing_calls_drift():
 
 
 # ---------------------------------------------------- F6: check_passes degenerate inputs
-@WAVE2("2d")
 def test_F6a_check_passes_nan_difference():
     rep = {"families": {"mm": {"n": 3, "trace_s": 1.0, "replay_s": float("nan"),
                                "relative_difference": float("nan")}},
@@ -191,7 +190,6 @@ def test_F6a_check_passes_nan_difference():
 
 
 # ------------------------------------------------------- F7: Gate A v2 leg 3 in as_written
-@WAVE2("2d")
 def test_F7_as_written_reads_a_v2_leg3():
     def rep(within):
         return {"predictors": {"all": {"recursion_below": {"sum": True, "step_form": True}}},
@@ -205,16 +203,15 @@ def test_F7_as_written_reads_a_v2_leg3():
     assert bad["legs"]["leg3"]["verdict"] == GR.FAILS, bad["legs"]["leg3"]
 
 
-@WAVE2("2d")
 def test_F7b_vacuous_v2_slope_leg():
     class Sl:
         slope = 5.0
-    out = GA.slopes({"item": Sl()}, bound=None, mechanisms=(), slope_range=GA.V2_SLOPE_RANGE)
-    assert out["within_range"], "mechanisms=() gives within_range == {} : all([]) is True"
+    # Import edit (ruling 2d): an empty mechanism list is refused, not read as vacuously within.
+    with pytest.raises(GA.GateAError, match="names the synchronisation mechanisms"):
+        GA.slopes({"item": Sl()}, bound=None, mechanisms=(), slope_range=GA.V2_SLOPE_RANGE)
 
 
 # ------------------------------------------------------ F8: short-group rule bypass
-@WAVE2("2d")
 def test_F8_missing_clean_rounds_is_not_complete_enough():
     assert GA.short_of_rounds({"traced": False, "complete": True, "rows": []}), \
         "a group with no clean_rounds field is treated as having 10 or more"
@@ -229,7 +226,6 @@ def test_F12_degenerate_bootstrap_interval_decides_a_sign():
 
 
 # --------------------------- F6b: Gate A's leg 2 feeds check_passes no kernel-name evidence
-@WAVE2("2d")
 def test_F6b_gate_a_report_carries_kernel_name_evidence():
     import copy, sys, pathlib
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
@@ -242,7 +238,6 @@ def test_F6b_gate_a_report_carries_kernel_name_evidence():
 
 
 # ------------------------- F13: leg 1 HOLDS on any n; its verdict carries no cell count
-@WAVE2("2d")
 def test_F13_leg1_verdict_carries_the_number_of_cells_read():
     def rep(n):
         return {"predictors": {"all": {"by_predictor": {"recursion": {"n": n}},

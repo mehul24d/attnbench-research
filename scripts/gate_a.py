@@ -100,7 +100,7 @@ def family_reports(cells_json: Path, recordings: Path) -> dict:
         rec = recordings / name
         seq = G.recorded_sequence(rec / "trace.json", rec / "sequence.json")
         trace_s = ops.device_durations(rec / "trace.json", seq)
-        out[name] = G.replay_report(seq, trace_s, e["ops"])
+        out[name] = G.replay_report(seq, trace_s, e["ops"], e.get("pricing"))
     return out
 
 

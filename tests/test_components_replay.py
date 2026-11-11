@@ -407,12 +407,27 @@ def test_cache_effect_is_isolated_minus_in_order():
 
 def test_replay_vs_trace_and_the_gate_at_an_explicit_bound():
     trace = {0: 1.0, 2: 1.0, 4: 2.0, 5: 1.0}
-    rep = RP.replay_vs_trace(SEQ, trace, {0: 1.05, 2: 1.0, 4: 2.0, 5: 1.05})
+    full = RP.match(SEQ, nodes(("gemm", 1.0), ("scan", 0.5), ("write", 0.25),
+                               ("g0", 2.0), ("g1", 3.0), ("gemm", 4.0)))
+    rep = RP.replay_vs_trace(SEQ, trace, {0: 1.05, 2: 1.0, 4: 2.0, 5: 1.05}, full)
     assert rep["families"]["kernel:aten::mm"]["relative_difference"] == pytest.approx(0.05)
     assert RP.check_passes(rep, 0.1) == (True, [])
+    # ruling 2d (11 Nov 2026): a report with no match behind it is not a pass
+    unfed = RP.replay_vs_trace(SEQ, trace, {0: 1.05, 2: 1.0, 4: 2.0, 5: 1.05})
+    ok, why = RP.check_passes(unfed, 0.1)
+    assert not ok and why == ["no structure evidence: the replay's match was not fed to the report"]
+    nothing = RP.replay_vs_trace(SEQ, {}, {}, full)
+    assert RP.check_passes(nothing, 0.1) == (False, ["no operation family was compared"])
+    # Section 5.6: a family fails when its difference is above the bound; equal is not above
+    # (binary-exact: 1.25 against 1.0 is 0.25)
+    edge = RP.replay_vs_trace(SEQ, {0: 1.0}, {0: 1.25}, full)
+    assert RP.check_passes(edge, 0.25)[0] and not RP.check_passes(edge, 0.2)[0]
+    nan = dict(rep, families={"kernel:aten::mm": dict(rep["families"]["kernel:aten::mm"],
+                                                      relative_difference=float("nan"))})
+    assert not RP.check_passes(nan, 0.1)[0]
     ok, why = RP.check_passes(rep, 0.01)
     assert not ok and len(why) == 1 and why[0].startswith("kernel:aten::mm: relative difference 0.05")
-    short = RP.replay_vs_trace(SEQ, trace, {0: 1.0, 2: 1.0, 5: 1.0})
+    short = RP.replay_vs_trace(SEQ, trace, {0: 1.0, 2: 1.0, 5: 1.0}, full)
     assert short["positions_without_replay"] == [4]
     assert not RP.check_passes(short, 0.5)[0]
     m = RP.match(SEQ, nodes(("gemm", 1.0)))
