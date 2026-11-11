@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import t64_blocks as B  # noqa: E402
 from t64_session import T64  # noqa: E402
+from t61_card import prelaunch_pass  # noqa: E402
 
 MINUTES = ROOT / "configs" / "t64" / "p4_card_minutes.json"
 CARD = B.CARDS["P4"]
@@ -95,6 +96,8 @@ def build(minutes: dict, on: str) -> str:
     out += [
         "",
         f"Steps total {run_min:.0f} minutes.",
+        "",
+        prelaunch_pass("p4"),
         "",
         "## Time and cost: Flex-start, Spot blocks, on-demand",
         "",

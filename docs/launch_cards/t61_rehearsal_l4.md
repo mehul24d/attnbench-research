@@ -70,6 +70,8 @@ Instance A `attnbench-l4-reh-a-20261110-0653` ran on the researcher's third yes.
 
 What it cannot show: anything the device decides (timings, recompiles, masks, the GPU's traces, memory). The harness is in the session's scratchpad, not the repo. The commit `main` moves to after this card is merged adds P2's staged-input checks at step 1 (`p2_staged_inputs`), which the rehearsal does not run (`staged` is None for `P2-R`), so the deploy commit stays `40b6df5`.
 
+**The pre-launch CPU pass in the repository (11 Nov 2026, adviser's ruling 4 of the 11 Nov 2026 paste).** The harness above is now `scripts/prelaunch_cpu_pass.sh rehearsal <training file>`. It also runs the real start checks and the real `prereqs`, and runs the GPU steps' dry bodies where the harness used launch 3's results. On 11 Nov 2026, on this card's branch, it PASSED: b1's 15 steps, the reset b2 refused and discarded, the new b2 passed, and the drift script ran. The code added since `40b6df5` does not touch the rehearsal's path (its `staged` and its timed-path pin are off, and it reads the training file under its own lock), so launch 4 stays at `40b6df5`, whose pass is the harness run above.
+
 ## What it rehearses (adviser's scope, by priority)
 
 | Scope | Where | What is measured or checked |

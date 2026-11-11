@@ -79,6 +79,7 @@ def test_a_session_without_the_recorded_wheel_hash_is_refused_at_the_start(sha):
 def test_a_real_start_needs_both_banking_times(monkeypatch):
     monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
     monkeypatch.setattr(S, "tree_clean", lambda: True)
+    monkeypatch.setattr(S, "timed_path_refusal", lambda: None)
     one = Namespace(dry_run=False, banked_at=["P1=2026-11-20T00:00:00+00:00"], fa3_sha256=SHA)
     assert "missing: ['P2']" in S.start_refusal(T64, one)
     both = Namespace(dry_run=False, fa3_sha256=SHA,
@@ -402,3 +403,46 @@ def test_the_halt_schedules_a_shutdown_and_fails_loudly_if_it_cannot(tmp_path, m
     monkeypatch.setattr(S, "run", lambda cmd, **kw: 1)
     with pytest.raises(S.StepFailed, match="still billing"):
         P4.real_halt(GATE, args_for(tmp_path))
+
+
+def test_p4s_staged_inputs_are_refused_at_step_one(tmp_path, monkeypatch):
+    """P4 checks at step 1 what P2 does (adviser's ruling 4 of the 11 Nov 2026
+    paste): the lock's bound and P2's masks for `masks`, the P1 training file
+    at the lock's sha256, P2's training rows and the learned configuration for
+    `predict`. P2's rows are not built yet (T6.1), so a real P4 refuses here."""
+    import hashlib
+    from types import SimpleNamespace
+    import t31_steps as st
+    from attnbench.lock import checklist
+    from attnbench.predict import learned as LM
+    assert T64.staged is P4.p4_staged_inputs
+    session = tmp_path / "s"
+    session.mkdir()
+    training = tmp_path / "p1_training.json.gz"
+    training.write_bytes(b"rows")
+    lock = tmp_path / "lock_values.json"
+    monkeypatch.setattr(st, "LOCK_FILE", lock)
+    monkeypatch.setattr(S, "P1_TRAINING", training)
+    monkeypatch.setattr(checklist, "check", lambda lk, text: SimpleNamespace(complete=True))
+    monkeypatch.setattr(S, "banked_masks", lambda base: [1, 2])
+    monkeypatch.setattr(LM, "LOCKED_CONFIG", LM.LearnedConfig("seconds"))
+
+    def write(sha):
+        lock.write_text(json.dumps({"p1_training": {"file_sha256": sha}, "values": {
+            "mask_gate_bound": {"value": 0.01},
+            "compiled_versus_eager_density_flag_tolerance": {"value": 0.01}}}))
+    write(hashlib.sha256(b"rows").hexdigest())
+    args = Namespace(session=str(session), dry_run=False)
+    found, bad = P4.p4_staged_inputs(T64, args, T64.names)
+    assert found == {"mask_gate_bound": 0.01, "p2_mask_cells": 2,
+                     "p1_training_sha256": hashlib.sha256(b"rows").hexdigest()}
+    assert bad == ["not built: ['P2']'s training rows, which P4 is also trained on (T6.1); "
+                   "prereqs should have refused this session"]
+    write("0" * 64)
+    bad = P4.p4_staged_inputs(T64, args, T64.names)[1]
+    assert any("the lock's " + "0" * 64 in b for b in bad)
+    assert P4.p4_staged_inputs(T64, args, ("prereqs", "preflight", "fa3_import")) == ({}, [])
+    training.unlink()
+    monkeypatch.setattr(LM, "LOCKED_CONFIG", None)
+    bad = P4.p4_staged_inputs(T64, args, ("predict",))[1]
+    assert any("no P1 training file" in b for b in bad) and any("LOCKED_CONFIG" in b for b in bad)
