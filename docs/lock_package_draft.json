@@ -301,11 +301,11 @@
    "basis": "Appendix A, 8 Nov 2026; attnbench/analysis/block_drift.py"
   },
   "timed_path_identity_for_p2_and_p4": {
-   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py`: `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
+   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
    "value": null,
    "source": null,
-   "status": "decided (10 Nov 2026, adviser's ruling 2 of the 10 Nov paste), fixed by the lock commit",
-   "proposed": "8716d7db4449d52872eee03bed28450ef0c951295d3d833c410654d70e53f3be: scripts/timed_path.py at main (ac3f563), unchanged since 050a96d",
+   "status": "decided (10 Nov 2026, adviser's ruling 2 of the 10 Nov paste); the method is whole files since ruling 1f of 11 Nov 2026 (Appendix A), so the value is re-pinned at each T4.3 wave's last code commit and fixed by the lock commit",
+   "proposed": "0cc328c9346920b55505ace9ce14cdc96cd2f1dcca73c8736228ccc993c13cd8: scripts/timed_path.py --pin (whole files, ruling 1f of 11 Nov 2026) at c45b526, T4.3 wave 1's last code commit; re-pinned after wave 2. Before: 8716d7db4449d528... by the 8 Nov method (main ac3f563, unchanged since 050a96d)",
    "basis": "Appendix A, 10 Nov 2026; scripts/timed_path.py 02cfc1d 050a96d (the only change from T3.2d's 4e78a962...: ground_truth.py appended tracer_layout/tracer_entries, t31_steps._real_cells and trace_labels), all outside the timed region",
    "decided": "P2's and P4's timed ground-truth path is 8716d7db... Pooling needs identical timed paths only across P1 sessions (T3.2c and T3.2d, 4e78a962...); P2 is never pooled with P1; across P1 and P2 or P4 only protocol identity inside the timed region is claimed, not byte identity"
   },
