@@ -38,6 +38,7 @@ from attnbench.predict.dispatcher import (
     h6_line, kernel_speedup_rule, margin_frontier, score_policy)
 from attnbench.predict.scoring import (CORRECT, FALSE_PROFITABLE,
                                        MISSED_PROFITABLE)
+from attnbench.lock.floors import FloorTable
 from attnbench.predict.training import CellKey
 
 M = "m"
@@ -59,7 +60,16 @@ KERN = {
     32768: {DENSE: 200, A: 160, B: 220},
     8192: {DENSE: 10, A: 8, B: 5},
 }
-FLOOR = 5.0
+FLOOR_S = 5.0
+
+
+def ft(x):
+    """A floor table at `x` seconds over the grid's lengths, batch 1 (the
+    dispatcher takes the lock's table, never one scalar)."""
+    return FloorTable({(L, 1): x for L in (8192, 16384, 32768)})
+
+
+FLOOR = ft(FLOOR_S)
 
 
 def key(L, c, code_path="cp"):
@@ -152,9 +162,9 @@ def test_the_dispatcher_picks_the_best_predicted_admissible_configuration():
 def test_faster_by_exactly_the_floor_is_dense_and_by_more_is_sparse():
     pts = points()
     p = by_point(pts, 32768)                     # 400 - 395 = 5
-    assert dispatcher(p, BOTH, 5.0) == DENSE
-    assert dispatcher(p, BOTH, 4.999) == A
-    assert dispatcher(p, BOTH, 0.0) == A
+    assert dispatcher(p, BOTH, ft(5.0)) == DENSE
+    assert dispatcher(p, BOTH, ft(4.999)) == A
+    assert dispatcher(p, BOTH, ft(0.0)) == A
 
 
 def test_a_predicted_tie_with_dense_is_dense():
@@ -162,7 +172,7 @@ def test_a_predicted_tie_with_dense_is_dense():
     pred[key(16384, A)] = 100
     pred[key(16384, B)] = 100
     p = by_point(build_points(pred, dense_arms={"dense"}), 16384)
-    assert dispatcher(p, BOTH, 0.0) == DENSE
+    assert dispatcher(p, BOTH, ft(0.0)) == DENSE
 
 
 def test_equal_predicted_sparse_times_go_to_the_smaller_configuration():
@@ -176,7 +186,7 @@ def test_equal_predicted_sparse_times_go_to_the_smaller_configuration():
 def test_nothing_admissible_is_dense_and_the_floor_is_checked():
     p = by_point(points(), 16384)
     assert dispatcher(p, frozenset(), FLOOR) == DENSE
-    for bad in (-1, float("nan"), True, None):
+    for bad in (-1, float("nan"), True, None, 5.0):      # a scalar is refused too
         with pytest.raises(DispatchError, match="resolution floor"):
             dispatcher(p, BOTH, bad)
 
@@ -434,10 +444,39 @@ def test_h6_line_compares_with_the_primary_comparator():
     # The reverse comparison fails on every count.
     rev = h6_line(out["kernel_speedup_rule"], out["dispatcher"])
     assert not rev.lower_mean_regret and not rev.no_more_decision_errors
-    # An unscored side gives no verdict on regret.
-    none = h6_line(score_policy(points(), {}, measured(), BOTH, FLOOR),
-                   out["kernel_speedup_rule"])
+    # Two scores over different points are refused (ruling 2b, 11 Nov 2026).
+    with pytest.raises(DispatchError, match="same points"):
+        h6_line(score_policy(points(), {}, measured(), BOTH, FLOOR),
+                out["kernel_speedup_rule"])
+    # No scored point on either side: "not scored", no verdict on anything.
+    empty = score_policy(points(), {}, measured(), BOTH, FLOOR)
+    none = h6_line(empty, empty)
+    assert none.verdict == D.NOT_SCORED and none.no_more_decision_errors is None
     assert none.lower_mean_regret is None and none.lower_worst_regret is None
+
+
+def test_batch_4_is_not_scored_and_realised_lengths_read_their_budget():
+    """Section 4 H6 (batch 4 not scored); lock table row 27 (realised keys)."""
+    pred = {CellKey(M, "cp", c.arm, c.density, L, b): v
+            for (L, b) in ((16370, 1), (16370, 4), (32700, 1))
+            for c, v in {DENSE: 100.0, A: 80.0}.items() if not (b > 1 and c != DENSE)}
+    pts = build_points(pred, dense_arms={"dense"})
+    meas = {Point(M, 16370, 1): {DENSE: 100.0, A: 80.0}, Point(M, 16370, 4): {DENSE: 400.0},
+            Point(M, 32700, 1): {DENSE: 100.0, A: 80.0}}
+    table = FloorTable({(16384, 1): 5.0, (16384, 4): 5.0, (32768, 1): 5.0})
+    s = score_policy(pts, choices_of("always_dense", pts, BOTH, table), meas, BOTH, table)
+    assert [p.point for p in s.points] == [Point(M, 16370, 1), Point(M, 32700, 1)]
+
+
+def test_each_point_reads_its_own_floor():
+    """Appendix A, 8 Nov 2026: a 50 ms predicted gain is sparse under 13.77 ms
+    (16384) and dense under 101.16 ms (32768)."""
+    pred = {key(16384, DENSE): 1.0, key(16384, A): 0.95,
+            key(32768, DENSE): 4.0, key(32768, A): 3.95}
+    pts = build_points(pred, dense_arms={"dense"})
+    table = FloorTable({(16384, 1): 0.01377, (32768, 1): 0.10116})
+    ch = choices_of("dispatcher", pts, BOTH, table)
+    assert ch == {P(16384): A, P(32768): DENSE}
 
 
 # --------------------------------------------------------------------------
@@ -499,7 +538,7 @@ def test_the_frontier_sweeps_the_margin_and_reports_what_each_set_buys():
 # --------------------------------------------------------------------------
 
 def spec(**kw):
-    args = dict(predictor="recursion", floor_s=FLOOR, dense_arms=("dense",),
+    args = dict(predictor="recursion", floors=FLOOR, dense_arms=("dense",),
                 admissible={"uncorrected": (A, B), "holm": (A,)},
                 kernel_times=kernel(), use_code_path={})
     args.update(kw)

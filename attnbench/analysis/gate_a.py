@@ -180,16 +180,22 @@ def predictors(cp: CommittedPrediction, seconds: Mapping, *, dense_arm: str,
 
 
 def sanity(cp: CommittedPrediction, seconds: Mapping, *, dense_arm: str,
-           resolution_floor_s: float, predictors: Sequence[str] = GATE_PREDICTORS) -> dict:
+           floors, predictors: Sequence[str] = GATE_PREDICTORS) -> dict:
     """Per arm and predictor: the median absolute relative error, and the
     sparse-versus-dense sign agreement (`scoring.sign_agreement`) of each of
     the arm's cells with the dense cell of the same model, length and batch,
-    a measured difference inside `resolution_floor_s` not scored."""
+    a measured difference inside the cell's floor in `floors` (the
+    per-(length, batch) `FloorTable`) not scored."""
+    from attnbench.lock.floors import FloorsError, as_table
+    try:
+        floors = as_table(floors)
+    except FloorsError as e:
+        raise GateAError(str(e)) from e
     res = _residuals(cp, seconds, dense_arm=dense_arm, relative_floor=0.0,
                      predictors=predictors)
     cells = {c.key: c for c in cp.cells}
     dense = {(k.model, k.context_length, k.batch): k for k in seconds if k.arm == dense_arm}
-    out: dict = {"label": DESCRIPTIVE, "resolution_floor_s": resolution_floor_s, "arms": {}}
+    out: dict = {"label": DESCRIPTIVE, "resolution_floors": floors.to_json(), "arms": {}}
     for arm in sorted({r.arm for r in res}):
         row: dict = {}
         for p in predictors:
@@ -203,7 +209,8 @@ def sanity(cp: CommittedPrediction, seconds: Mapping, *, dense_arm: str,
                     if d is None:
                         continue
                     s = scoring.sign_agreement(cells[k].predictions[p], cells[d].predictions[p],
-                                               seconds[k], seconds[d], floor=resolution_floor_s)
+                                               seconds[k], seconds[d],
+                                               floor=floors.at(k.context_length, k.batch))
                     if s is None:
                         inside += 1
                     else:
@@ -335,7 +342,7 @@ def slopes(measured_slopes: Optional[Mapping], *, bound: Optional[float],
 
 
 def report(*, label: str, cp: CommittedPrediction, results: Sequence[tuple[str, Mapping]],
-           dense_arm: str, relative_floor: float, resolution_floor_s: float,
+           dense_arm: str, relative_floor: float, floors,
            family_reports: Mapping[str, Mapping], family_bound: Optional[float],
            family_bound_provisional: bool, measured_slopes: Optional[Mapping] = None,
            slope_bound: Optional[float] = None, mechanisms: Sequence[str] = (),
@@ -356,7 +363,7 @@ def report(*, label: str, cp: CommittedPrediction, results: Sequence[tuple[str, 
                              cell_floors_s=cell_floors_s),
         "slopes": slopes(measured_slopes, bound=slope_bound, mechanisms=mechanisms,
                          slope_range=slope_range),
-        "sanity": sanity(cp, secs, dense_arm=dense_arm, resolution_floor_s=resolution_floor_s),
+        "sanity": sanity(cp, secs, dense_arm=dense_arm, floors=floors),
         "decision": "the researcher's (T3.3); this report gives the inputs only",
     }
 
@@ -414,7 +421,10 @@ def to_markdown(rep: Mapping) -> str:
     L += [
           "", f"## Per arm ({rep['sanity']['label']})", "",
           f"Sign agreement against the dense cell of the same length and batch; a measured "
-          f"difference within {rep['sanity']['resolution_floor_s'] * 1e3:.1f} ms is not scored.",
+          "difference within its cell's resolution floor ("
+          + ", ".join(f"{k} {v * 1e3:.1f} ms"
+                      for k, v in rep['sanity']['resolution_floors']['floors_s'].items())
+          + ") is not scored.",
           "", "| Arm | Predictor | n | Median abs. rel. error | Sign agrees | Disagrees | Inside floor |",
           "|---|---|---|---|---|---|---|"]
     for arm, row in rep["sanity"]["arms"].items():

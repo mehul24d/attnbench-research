@@ -145,8 +145,10 @@ def crossover(inp: Inputs, series: Sequence[PT.CrossoverSeries], path) -> Path:
         fig, axes = _grid(len(series))
         for ax, s in zip(axes, series):
             L = list(s.lengths)
-            f = inp.resolution_floor_s
-            ax.axhspan(-f, f, color=FLOOR, lw=0, label="resolution floor")
+            # Each length's own floor (the lock's table, per length and batch).
+            f = [inp.resolution_floors.at(x, s.series[-1]) for x in L]
+            ax.fill_between(L, [-x for x in f], f, color=FLOOR, lw=0, step="mid",
+                            label="resolution floor")
             ax.axhline(0, color=INK, lw=0.6)
             for diffs, label, style in (
                     (s.measured_diffs, "measured", {"color": INK, "marker": "o",

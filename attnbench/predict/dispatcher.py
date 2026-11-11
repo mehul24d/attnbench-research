@@ -51,7 +51,16 @@ session (Section 5.9):
     resolution floor is not scored (Appendix A, 26 and 27 Oct 2026);
   - *time gained or lost against always-dense*, and the speedup over it.
 
-H6 is scored at 16384 and 32768 tokens (`H6_LENGTHS`). When no admissible
+H6 is scored at 16384 and 32768 tokens (`H6_LENGTHS`, budget labels: a point
+keyed by its realised token count is read at its budget,
+`floors.FloorTable.budget_of`) and at batch 1 only (`H6_BATCHES`; Section 4:
+"at batch 4 every rule chooses dense, so batch 4 is not scored"). Every
+policy is scored on one common set of points, those where dense, the
+dispatcher's choice and the kernel-speedup rule's choice were all measured;
+a point outside it is listed with the reason, for every policy (adviser's
+ruling 2b of 11 Nov 2026; T4.3 read A, findings 1 to 3). A policy with no
+choice at a common point (a fixed configuration absent there) is listed
+unscored there. With no common point, H6 reads "not scored". When no admissible
 sparse configuration is measured faster anywhere, always-dense has zero regret
 by construction and the dispatcher can only tie it; `PolicyScore.
 dense_best_everywhere` says so and the test reduces to whether the dispatcher
@@ -60,6 +69,11 @@ avoids the kernel-speedup rule's losses (Section 4, H6).
 **Ties** (nothing in the plan names a rule, so these are proposals): equal
 predicted times, or equal kernel speedups, go to the configuration with the
 smaller `(arm, density)`. A predicted tie with dense is dense, as everywhere.
+
+The resolution floor is the lock's table per (context length, batch)
+(`floors.FloorTable`, from P1 only; Appendix A, 8 Nov 2026): every function
+that decides or scores takes the table and reads each point's own floor; a
+single number is refused.
 
 Units are seconds. This module imports nothing from `commit.py`, so the
 committed file can carry its choices (`DispatchSpec`, `make_choices`) and
@@ -74,10 +88,14 @@ from dataclasses import dataclass
 from typing import (Callable, Iterable, Mapping, NamedTuple, Optional,
                     Sequence)
 
+from ..lock.floors import FloorTable, FloorsError, as_table
 from .scoring import CORRECT, FALSE_PROFITABLE, MISSED_PROFITABLE, NOT_INTERPRETED
 from .training import CellKey, partner_of
 
-H6_LENGTHS = (16384, 32768)
+H6_LENGTHS = (16384, 32768)     # budget labels
+H6_BATCHES = (1,)
+# The policies whose choices define the common scored set (module docstring).
+COMMON_SET = ("dispatcher", "kernel_speedup_rule")
 POLICIES = ("dispatcher", "kernel_speedup_rule", "always_dense",
             "best_kernel_config", "nearest_pairing")
 
@@ -134,12 +152,18 @@ def _positive(x, what: str) -> float:
     return float(x)
 
 
-def _floor(floor) -> float:
-    if isinstance(floor, bool) or not isinstance(floor, (int, float)) \
-            or not math.isfinite(floor) or floor < 0:
-        raise DispatchError(
-            f"the resolution floor is a time >= 0 (fixed at lock), got {floor!r}")
-    return float(floor)
+def _floors(floors) -> FloorTable:
+    try:
+        return as_table(floors)
+    except FloorsError as e:
+        raise DispatchError(str(e)) from e
+
+
+def _floor_at(floors: FloorTable, point: Point) -> float:
+    try:
+        return floors.at(point.context_length, point.batch)
+    except FloorsError as e:
+        raise DispatchError(f"{tuple(point)}: {e}") from e
 
 
 def build_points(predicted: Mapping[CellKey, float], *, dense_arms: Iterable[str],
@@ -202,10 +226,11 @@ def _admissible(p: PointInputs, admissible) -> list[Candidate]:
     return [c for c in p.sparse if c.config in admissible]
 
 
-def dispatcher(p: PointInputs, admissible, floor_s: float) -> Config:
+def dispatcher(p: PointInputs, admissible, floors: FloorTable) -> Config:
     """Section 5.9: the admissible configuration with the shortest predicted
-    time, and dense unless it is faster than dense by more than the floor."""
-    floor_s = _floor(floor_s)
+    time, and dense unless it is faster than dense by more than the point's
+    floor."""
+    floor_s = _floor_at(_floors(floors), p.point)
     adm = _admissible(p, admissible)
     if not adm:
         return p.dense.config
@@ -214,7 +239,7 @@ def dispatcher(p: PointInputs, admissible, floor_s: float) -> Config:
         else p.dense.config
 
 
-def always_dense(p: PointInputs, admissible=None, floor_s=None) -> Config:
+def always_dense(p: PointInputs, admissible=None, floors=None) -> Config:
     return p.dense.config
 
 
@@ -234,7 +259,7 @@ def _kernel_speedups(p: PointInputs, admissible) -> list[tuple[float, Candidate]
     return [(dk / _kernel(c, p), c) for c in adm]
 
 
-def kernel_speedup_rule(p: PointInputs, admissible, floor_s=None) -> Config:
+def kernel_speedup_rule(p: PointInputs, admissible, floors=None) -> Config:
     """Section 5.1: use an estimator at its admissible density wherever its
     sparse kernel alone beats the selected dense kernel; among those, the
     best kernel speedup."""
@@ -317,11 +342,11 @@ class PolicyScore:
 
 
 def choice_outcome(p: PointInputs, chosen: Config, measured: Mapping[Config, float],
-                   admissible, floor_s: float) -> str:
+                   admissible, floors: FloorTable) -> str:
     """Sparse chosen where dense was measured faster, or dense chosen where
-    an admissible sparse configuration was measured faster; inside the floor
-    is not interpreted (module docstring)."""
-    floor_s = _floor(floor_s)
+    an admissible sparse configuration was measured faster; inside the
+    point's floor is not interpreted (module docstring)."""
+    floor_s = _floor_at(_floors(floors), p.point)
     dense = p.dense.config
     td = measured[dense]
     if chosen != dense:
@@ -339,17 +364,34 @@ def choice_outcome(p: PointInputs, chosen: Config, measured: Mapping[Config, flo
     return NOT_INTERPRETED if gap > 0 else CORRECT
 
 
+def in_scope(p: PointInputs, floors: FloorTable, lengths: Optional[Iterable[int]],
+             batches: Optional[Iterable[int]]) -> bool:
+    """Whether a point is at the scored budget labels and batches (None:
+    every one)."""
+    if batches is not None and p.point.batch not in set(batches):
+        return False
+    if lengths is None:
+        return True
+    try:
+        budget = floors.budget_of(p.point.context_length, p.point.batch)
+    except FloorsError as e:
+        raise DispatchError(f"{tuple(p.point)}: {e}") from e
+    return budget in set(lengths)
+
+
 def score_policy(points: Sequence[PointInputs],
                  choices: Mapping[Point, Optional[Config]],
                  measured: Mapping[Point, Mapping[Config, float]], admissible,
-                 floor_s: float, *, lengths: Optional[Iterable[int]] = H6_LENGTHS
-                 ) -> PolicyScore:
-    """Score `choices` on the measured grid, at `lengths` (None: every
-    point). A point with no measured dense time, or whose chosen
-    configuration was not measured, or with no choice, is listed and not
-    scored."""
-    floor_s = _floor(floor_s)
-    keep = None if lengths is None else set(lengths)
+                 floors: FloorTable, *, lengths: Optional[Iterable[int]] = H6_LENGTHS,
+                 batches: Optional[Iterable[int]] = H6_BATCHES,
+                 outside: Optional[Mapping[Point, str]] = None) -> PolicyScore:
+    """Score `choices` on the measured grid, at `lengths` (budget labels)
+    and `batches` (None: every point). A point with no measured dense time,
+    or whose chosen configuration was not measured, or with no choice, or
+    named in `outside` (point -> why, the points outside the common set), is
+    listed and not scored."""
+    floors = _floors(floors)
+    outside = dict(outside or {})
     scores, regrets = [], []
     decisions = {CORRECT: 0, FALSE_PROFITABLE: 0, MISSED_PROFITABLE: 0}
     inside = 0
@@ -357,12 +399,14 @@ def score_policy(points: Sequence[PointInputs],
     dense_total = chosen_total = 0.0
     dense_best = True
     for p in points:
-        if keep is not None and p.point.context_length not in keep:
+        if not in_scope(p, floors, lengths, batches):
             continue
         ch = choices.get(p.point)
         m = measured.get(p.point, {})
         why = None
-        if p.dense.config not in m:
+        if p.point in outside:
+            why = outside[p.point]
+        elif p.dense.config not in m:
             why = "no measured dense time"
         elif ch is None:
             why = "the policy has no choice here"
@@ -373,7 +417,7 @@ def score_policy(points: Sequence[PointInputs],
             continue
         best = best_measured_choice(p, m, admissible)
         regret = m[ch] / m[best] - 1.0
-        outcome = choice_outcome(p, ch, m, admissible, floor_s)
+        outcome = choice_outcome(p, ch, m, admissible, floors)
         g = m[p.dense.config] - m[ch]
         scores.append(PointScore(p.point, ch, best, regret,
                                  None if outcome == NOT_INTERPRETED else outcome,
@@ -396,14 +440,14 @@ def score_policy(points: Sequence[PointInputs],
         dense_best_everywhere=bool(regrets) and dense_best)
 
 
-def choices_of(policy: str, points: Sequence[PointInputs], admissible, floor_s: float,
+def choices_of(policy: str, points: Sequence[PointInputs], admissible, floors: FloorTable,
                *, nearest: Optional[Mapping[Point, Config]] = None
                ) -> dict[Point, Optional[Config]]:
     """Every point's choice under a named policy."""
     if policy not in POLICIES:
         raise DispatchError(f"policy must be one of {POLICIES}, got {policy!r}")
     if policy == "dispatcher":
-        return {p.point: dispatcher(p, admissible, floor_s) for p in points}
+        return {p.point: dispatcher(p, admissible, floors) for p in points}
     if policy == "kernel_speedup_rule":
         return {p.point: kernel_speedup_rule(p, admissible) for p in points}
     if policy == "always_dense":
@@ -417,45 +461,84 @@ def choices_of(policy: str, points: Sequence[PointInputs], admissible, floor_s: 
     return {p.point: static_choice(p, nearest.get(p.point)) for p in points}
 
 
+def outside_common_set(points: Sequence[PointInputs],
+                       choices: Mapping[str, Mapping[Point, Optional[Config]]],
+                       measured: Mapping[Point, Mapping[Config, float]]) -> dict[Point, str]:
+    """Point -> why, for every point where dense or a `COMMON_SET` policy's
+    choice was not measured: no policy is scored there (module docstring)."""
+    out = {}
+    for p in points:
+        m = measured.get(p.point, {})
+        if p.dense.config not in m:
+            out[p.point] = "no measured dense time"
+            continue
+        for name in COMMON_SET:
+            ch = choices[name].get(p.point)
+            if ch is None or ch not in m:
+                out[p.point] = (f"not in the common set: {name}'s choice "
+                                f"{None if ch is None else tuple(ch)} was not measured")
+                break
+    return out
+
+
 def evaluate(points: Sequence[PointInputs], measured: Mapping[Point, Mapping[Config, float]],
-             admissible_sets: Mapping[str, Iterable[Config]], floor_s: float, *,
+             admissible_sets: Mapping[str, Iterable[Config]], floors: FloorTable, *,
              nearest: Optional[Mapping[Point, Config]] = None,
-             lengths: Optional[Iterable[int]] = H6_LENGTHS
+             lengths: Optional[Iterable[int]] = H6_LENGTHS,
+             batches: Optional[Iterable[int]] = H6_BATCHES
              ) -> dict[str, dict[str, PolicyScore]]:
-    """label -> policy -> `PolicyScore`, for every admissible set. The
+    """label -> policy -> `PolicyScore`, for every admissible set, every
+    policy on the common set of points (module docstring). The
     nearest-pairing comparator is scored only when `nearest` is given."""
     if not admissible_sets:
         raise DispatchError("give at least one admissible set")
+    floors = _floors(floors)
     out = {}
     for label, adm in admissible_sets.items():
         adm = frozenset(Config(a, float(d)) for a, d in adm)
-        row = {}
-        for name in POLICIES:
-            if name == "nearest_pairing" and nearest is None:
-                continue
-            ch = choices_of(name, points, adm, floor_s, nearest=nearest)
-            row[name] = score_policy(points, ch, measured, adm, floor_s,
-                                     lengths=lengths)
-        out[label] = row
+        names = [n for n in POLICIES if not (n == "nearest_pairing" and nearest is None)]
+        chs = {n: choices_of(n, points, adm, floors, nearest=nearest) for n in names}
+        outside = outside_common_set(points, chs, measured)
+        out[label] = {n: score_policy(points, chs[n], measured, adm, floors, lengths=lengths,
+                                      batches=batches, outside=outside)
+                      for n in names}
     return out
+
+
+NOT_SCORED = "not scored"
 
 
 @dataclass(frozen=True)
 class H6Line:
-    """The dispatcher against the kernel-speedup rule on one pairing (H6).
-    The regret bound and the other lock values are the caller's."""
+    """The dispatcher against the kernel-speedup rule on one pairing (H6),
+    over the same scored points. With none, every comparison is None and
+    `verdict` reads "not scored". The regret bound and the other lock values
+    are the caller's."""
 
     lower_mean_regret: Optional[bool]
     lower_worst_regret: Optional[bool]
-    no_more_decision_errors: bool
+    no_more_decision_errors: Optional[bool]
     dispatcher_mean_regret: Optional[float]
     rule_mean_regret: Optional[float]
     dispatcher_errors: int
     rule_errors: int
     dense_best_everywhere: bool       # the test reduces to avoiding the rule's losses
+    n_scored: int = 0
+    verdict: Optional[str] = None     # NOT_SCORED when no point is scored
 
 
 def h6_line(disp: PolicyScore, rule: PolicyScore) -> H6Line:
+    """Refuses two scores over different points (`evaluate` scores both on
+    the common set)."""
+    def scored(s):
+        return {p.point for p in s.points if p.regret is not None}
+    if scored(disp) != scored(rule):
+        raise DispatchError(
+            f"the dispatcher is scored at {len(scored(disp))} points and the rule at "
+            f"{len(scored(rule))}: H6 compares them on the same points (`evaluate`)")
+    if disp.n_scored == 0:
+        return H6Line(None, None, None, None, None, 0, 0, False, 0, NOT_SCORED)
+
     def lower(a, b):
         return None if a is None or b is None else a < b
     return H6Line(
@@ -464,7 +547,7 @@ def h6_line(disp: PolicyScore, rule: PolicyScore) -> H6Line:
         no_more_decision_errors=disp.decision_errors <= rule.decision_errors,
         dispatcher_mean_regret=disp.mean_regret, rule_mean_regret=rule.mean_regret,
         dispatcher_errors=disp.decision_errors, rule_errors=rule.decision_errors,
-        dense_best_everywhere=disp.dense_best_everywhere)
+        dense_best_everywhere=disp.dense_best_everywhere, n_scored=disp.n_scored)
 
 
 # --------------------------------------------------------------------------
@@ -499,9 +582,10 @@ class FrontierRow:
 def margin_frontier(points: Sequence[PointInputs],
                     measured: Mapping[Point, Mapping[Config, float]],
                     lower_pts: Mapping[Config, float], margins_pts: Sequence[float],
-                    floor_s: float, *, policies: Sequence[str] = (
+                    floors: FloorTable, *, policies: Sequence[str] = (
                         "dispatcher", "kernel_speedup_rule"),
-                    lengths: Optional[Iterable[int]] = H6_LENGTHS) -> list[FrontierRow]:
+                    lengths: Optional[Iterable[int]] = H6_LENGTHS,
+                    batches: Optional[Iterable[int]] = H6_BATCHES) -> list[FrontierRow]:
     """For each margin, the admissible set it gives and what the policies
     buy on the measured grid. Computed from the accuracy rows and the
     ground-truth grid alone."""
@@ -511,8 +595,9 @@ def margin_frontier(points: Sequence[PointInputs],
     for m in sorted(set(margins_pts)):
         adm = admissible_at_margin(lower_pts, m)
         for name in policies:
-            ch = choices_of(name, points, adm, floor_s)
-            s = score_policy(points, ch, measured, adm, floor_s, lengths=lengths)
+            ch = choices_of(name, points, adm, floors)
+            s = score_policy(points, ch, measured, adm, floors, lengths=lengths,
+                             batches=batches)
             rows.append(FrontierRow(
                 margin_pts=float(m), n_admissible=len(adm), policy=name,
                 n_scored=s.n_scored, speedup_vs_dense=s.speedup_vs_dense,
@@ -537,7 +622,7 @@ class DispatchSpec:
     """Everything the dispatcher read, as the file records it."""
 
     predictor: str
-    floor_s: float
+    floors: FloorTable
     dense_arms: tuple[str, ...]
     admissible: Mapping[str, tuple[Config, ...]]
     kernel_times: Mapping[CellKey, float]
@@ -546,7 +631,7 @@ class DispatchSpec:
 
     def to_json(self) -> dict:
         return {
-            "predictor": self.predictor, "floor_s": self.floor_s,
+            "predictor": self.predictor, "floors": self.floors.to_json(),
             "dense_arms": sorted(self.dense_arms),
             "admissible": {k: [[c.arm, c.density] for c in sorted(v)]
                            for k, v in sorted(self.admissible.items())},
@@ -562,7 +647,7 @@ class DispatchSpec:
 def spec_from_json(d: Mapping) -> DispatchSpec:
     try:
         return DispatchSpec(
-            predictor=d["predictor"], floor_s=_floor(d["floor_s"]),
+            predictor=d["predictor"], floors=FloorTable.from_json(d["floors"]),
             dense_arms=tuple(d["dense_arms"]),
             admissible={k: tuple(Config(a, float(x)) for a, x in v)
                         for k, v in d["admissible"].items()},
@@ -572,7 +657,7 @@ def spec_from_json(d: Mapping) -> DispatchSpec:
             nearest=None if d["nearest"] is None else
             {Point(*e["point"]): Config(e["arm"], float(e["density"]))
              for e in d["nearest"]})
-    except (KeyError, TypeError, ValueError) as e:
+    except (KeyError, TypeError, ValueError, FloorsError) as e:
         raise DispatchError(f"unreadable dispatch record: {e!r}") from e
 
 
@@ -590,7 +675,7 @@ def make_choices(spec: DispatchSpec, predicted: Mapping[CellKey, float]) -> list
         names = list(FILE_POLICIES) + (["nearest_pairing"] if spec.nearest is not None
                                        else [])
         for name in names:
-            ch = choices_of(name, pts, adm, spec.floor_s, nearest=spec.nearest)
+            ch = choices_of(name, pts, adm, spec.floors, nearest=spec.nearest)
             for p in pts:
                 c = ch[p.point]
                 cand = None if c is None else p.candidate(c)

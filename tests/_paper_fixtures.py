@@ -123,7 +123,7 @@ def write_spec(d: Path, cp, *, crossover=True, results=None, **over) -> Path:
                         "arms": {a: key(a, L) for a in ("xattn", "oracle", "dense")}})
     spec = {"schema": SPEC_SCHEMA, "prediction_sha256": cp.sha256,
             "results": entries, "result_classes": dict(CLASSES), "dense_arm": "dense",
-            "relative_floor": 0.05, "floor_provisional": True, "resolution_floor_s": 0.5,
+            "relative_floor": 0.05, "floor_provisional": True, "resolution_floors": {"pairing": "P1", "floors_s": {f"{L}x1": 0.5 for L in LENGTHS}},
             "admissible": [{"cell": key(a, L), "admissible": v}
                            for (a, L), v in ADMISSIBLE.items()]}
     if crossover:

@@ -38,8 +38,9 @@ name, and every named file carries the sha256 it was written for:
     refused. Without either, no crossover is computed, and the outputs say
     so.
   - `relative_floor` (the noise floor, a relative error), whether it is
-    provisional, and `resolution_floor_s` (seconds): lock values with no
-    default (Section 5.6).
+    provisional, and `resolution_floors` (the per-(length, batch) table,
+    `floors.FloorTable.to_json`'s form, seconds): lock values with no
+    default (Section 5.6; Appendix A, 8 Nov 2026).
 
 Every grouping keeps the model and the code path, so nothing is pooled
 across code paths (rule 3).
@@ -167,7 +168,7 @@ class Inputs:
     predictors: tuple[str, ...]
     relative_floor: float
     floor_provisional: bool
-    resolution_floor_s: float
+    resolution_floors: "FloorTable"
     crossover: Optional[Mapping]                 # protocol and predicted intervals
     files: tuple[dict, ...]                      # every input by role, name, sha256
     builder_kinds: Mapping[str, Optional[str]] = None   # arm -> "cpu", "gpu" or None
@@ -231,8 +232,11 @@ def build_inputs(spec: Mapping, base: Union[str, Path], cp: CommittedPrediction,
                               f"{spec.get('prediction_sha256')!r}, not {cp.sha256}; "
                               f"refusing stale input")
     rel_floor = _finite(spec.get("relative_floor"), "relative_floor (a lock value, no default)")
-    res_floor = _finite(spec.get("resolution_floor_s"),
-                        "resolution_floor_s (a lock value, no default)")
+    from attnbench.lock.floors import FloorTable, FloorsError
+    try:
+        res_floor = FloorTable.from_json(spec.get("resolution_floors"))
+    except (FloorsError, TypeError, AttributeError) as e:
+        raise PaperInputError(f"resolution_floors (a lock value, no default): {e}") from e
     prov = spec.get("floor_provisional")
     if not isinstance(prov, bool):
         raise PaperInputError("say whether the floors are provisional (floor_provisional)")
@@ -309,7 +313,7 @@ def build_inputs(spec: Mapping, base: Union[str, Path], cp: CommittedPrediction,
     return Inputs(cp=cp, measured=measured, samples_s=samples, classes=classes,
                   admissible=admissible, dense_arm=dense_arm, predictors=predictors,
                   relative_floor=rel_floor, floor_provisional=prov,
-                  resolution_floor_s=res_floor, crossover=crossover, files=tuple(files),
+                  resolution_floors=res_floor, crossover=crossover, files=tuple(files),
                   builder_kinds=builders, builder_sources=sources)
 
 

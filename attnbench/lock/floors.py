@@ -112,8 +112,13 @@ class ResolutionFloor:
     @property
     def floor_s(self) -> float:
         """The floor in seconds, the unit `predict.scoring` and
-        `lock.hdbi_fit` take. The only ms-to-seconds conversion."""
-        return self.floor_ms / MS_PER_S
+        `lock.hdbi_fit` take, by `ms_to_s`."""
+        return ms_to_s(self.floor_ms)
+
+
+def ms_to_s(ms: float) -> float:
+    """The only ms-to-seconds conversion of the lock tools."""
+    return ms / MS_PER_S
 
 
 def resolution_floor(series: Mapping, *, quantile: float, pairing: str) -> ResolutionFloor:
@@ -149,6 +154,115 @@ def resolution_floors_by_length(series: Mapping, *, length_of: Callable, quantil
     return {g: resolution_floor(s, quantile=quantile, pairing=pairing)
             for g, s in sorted(groups.items())}
 
+
+
+def cell_label(length: int, batch: int) -> str:
+    """"<length>x<batch>", the floors' key in files (`gate_a_repeats.cell_floors`)."""
+    return f"{int(length)}x{int(batch)}"
+
+
+@dataclass(frozen=True)
+class FloorTable:
+    """The resolution floor per (context length, batch), in seconds: the
+    lock's table, from P1 only (Appendix A, 8 Nov 2026; T4.1; adviser's
+    ruling 1a of 11 Nov 2026). Every consumer that scores or decides across
+    cells takes one of these, never one scalar for every length (T4.3 read
+    A, finding 4).
+
+    The table is keyed by the token budget, as the floors are computed
+    (`gate_a_repeats.cell_key`); a prediction is keyed by its realised token
+    count, the budget a label (lock table row 27). **Plan default,
+    flagged:** a realised length reads the floor of the smallest tabled
+    budget at or above it at the same batch (1951 -> 2048, 16370 -> 16384);
+    a length above every budget, at or below half the budget it would read
+    (the grid doubles), or at a batch the table lacks, is refused."""
+
+    floors_s: Mapping             # {(budget, batch): seconds}
+    pairing: str = FLOOR_PAIRING
+
+    def __post_init__(self) -> None:
+        _pairing(self.pairing)
+        if not isinstance(self.floors_s, Mapping) or not self.floors_s:
+            raise FloorsError("a floor table holds at least one (length, batch)")
+        clean = {}
+        for k, v in self.floors_s.items():
+            if not (isinstance(k, tuple) and len(k) == 2
+                    and all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in k)):
+                raise FloorsError(f"a floor table key is (length, batch), got {k!r}")
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
+                    or v < 0:
+                raise FloorsError(f"the floor at {k} is a time >= 0 in seconds, got {v!r}")
+            clean[k] = float(v)
+        object.__setattr__(self, "floors_s", dict(sorted(clean.items())))
+
+    def budget_of(self, length, batch) -> int:
+        """The tabled budget a realised `length` at `batch` reads (class docstring)."""
+        budgets = sorted(L for (L, b) in self.floors_s if b == int(batch))
+        if not budgets:
+            raise FloorsError(f"the floor table has no batch {batch}")
+        for L in budgets:
+            if int(length) <= L:
+                if int(length) <= L // 2:      # the grid doubles: no tabled budget holds it
+                    raise FloorsError(f"length {length} has no tabled budget at batch {batch} "
+                                      f"({budgets}); the next is {L}")
+                return L
+        raise FloorsError(f"length {length} is above every tabled budget at batch {batch} "
+                          f"({budgets})")
+
+    def at(self, length, batch) -> float:
+        """The floor, seconds, of the cell at realised `length` and `batch`."""
+        return self.floors_s[(self.budget_of(length, batch), int(batch))]
+
+    def to_json(self) -> dict:
+        return {"pairing": self.pairing,
+                "floors_s": {cell_label(L, b): v for (L, b), v in self.floors_s.items()}}
+
+    @classmethod
+    def from_json(cls, d: Mapping) -> "FloorTable":
+        try:
+            return cls(floors_s={_parse_label(k): v for k, v in d["floors_s"].items()},
+                       pairing=d["pairing"])
+        except (KeyError, TypeError, AttributeError) as e:
+            raise FloorsError(f"unreadable floor table: {e!r}") from e
+
+    @classmethod
+    def from_ms(cls, table: Mapping, *, pairing: str) -> "FloorTable":
+        """From {"<length>x<batch>": ms}, the lock value's form."""
+        if not isinstance(table, Mapping):
+            raise FloorsError(f"the resolution floors are a table, got {table!r}")
+        out = {}
+        for k, v in table.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise FloorsError(f"the floor at {k!r} is not a time in ms: {v!r}")
+            out[_parse_label(k)] = ms_to_s(v)
+        return cls(floors_s=out, pairing=pairing)
+
+    @classmethod
+    def from_lock(cls, lock: Mapping) -> "FloorTable":
+        """The lock file's `resolution_and_noise_floors` value:
+        {"pairing": "P1", "resolution_floor_ms": {"<L>x<b>": ms}, ...}."""
+        try:
+            v = lock["values"]["resolution_and_noise_floors"]["value"]
+            return cls.from_ms(v["resolution_floor_ms"], pairing=v["pairing"])
+        except (KeyError, TypeError) as e:
+            raise FloorsError(f"the lock holds no resolution floor table: {e!r}") from e
+
+
+def _parse_label(k) -> tuple:
+    import re
+    m = re.fullmatch(r"(\d+)x(\d+)", str(k))
+    if not m:
+        raise FloorsError(f"a floor key is '<length>x<batch>', got {k!r}")
+    return int(m.group(1)), int(m.group(2))
+
+
+def as_table(floors, what: str = "the resolution floor") -> FloorTable:
+    """`floors` if it is a table; a single number is refused (one scalar for
+    every length is the defect the table replaces)."""
+    if isinstance(floors, FloorTable):
+        return floors
+    raise FloorsError(f"{what} is a per-(length, batch) table (`FloorTable`, from the lock), "
+                      f"not {floors!r}")
 
 @dataclass(frozen=True)
 class CellFloor:

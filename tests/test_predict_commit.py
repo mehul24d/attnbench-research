@@ -1099,13 +1099,15 @@ def test_a_schema_1_file_is_refused(tmp_path):
 # the fixed best-kernel configuration pick xattn: the loss the dispatcher is
 # meant to avoid, committed before anything is timed.
 
+from attnbench.lock.floors import FloorTable
 from attnbench.predict import dispatcher as DSP
 
 XCFG = DSP.Config("xattn", 0.5)
 
 
 def dspec(**kw):
-    args = dict(predictor="recursion", floor_s=1.0, dense_arms=("dense",),
+    args = dict(predictor="recursion", floors=FloorTable({(4, 1): 1.0, (8, 1): 1.0}),
+                dense_arms=("dense",),
                 admissible={"uncorrected": (XCFG,), "holm": ()},
                 kernel_times={XKEY: 2.0, DKEY: 4.0}, use_code_path={})
     args.update(kw)
@@ -1181,8 +1183,9 @@ def test_raising_the_floor_after_the_fact_is_refused_when_it_changes_the_choice(
     cells = [cell(ops=OPS_HOST, arm="xattn"), cell(ops=OPS, arm="dense", density=1.0)]
     store = MemoryStore(Clock(T0))
     _, r = committed(tmp_path, p1_record(cells=cells, dispatch=dspec()), store, T0)
-    assert load(store, r, T0 + timedelta(seconds=1)).dispatch_spec.floor_s == 1.0
-    _tamper(store, r, lambda rec: rec["dispatch"]["spec"].update(floor_s=100.0))
+    assert load(store, r, T0 + timedelta(seconds=1)).dispatch_spec.floors.at(4, 1) == 1.0
+    _tamper(store, r, lambda rec: rec["dispatch"]["spec"]["floors"]["floors_s"].update(
+        {"4x1": 100.0, "8x1": 100.0}))
     with pytest.raises(PredictionCommitError, match="do not follow"):
         load(store, r, T0 + timedelta(seconds=1))
 
@@ -1225,7 +1228,7 @@ def test_the_dispatcher_reads_the_predictor_the_spec_names(tmp_path):
     for name in ("recursion", "sum", "step_form"):
         d = tmp_path / name
         d.mkdir()
-        cp = _read_back(p1_record(cells=cells, dispatch=dspec(predictor=name,
-                                                              floor_s=6.0)), d)
+        cp = _read_back(p1_record(cells=cells, dispatch=dspec(
+            predictor=name, floors=FloorTable({(4, 1): 6.0, (8, 1): 6.0}))), d)
         picked[name] = choice(cp, "dispatcher")
     assert picked == {"recursion": "xattn", "sum": "dense", "step_form": "xattn"}

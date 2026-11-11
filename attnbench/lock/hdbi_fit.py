@@ -51,6 +51,8 @@ class HdbiRow:
     cell: tuple                  # the cell key, for the record
     hdbi: float                  # of the sparse cell's components
     measured_difference: float   # sparse minus dense, in seconds, as the floor
+    context_length: int          # the cell's, for its floor in the lock's table
+    batch: int = 1
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,7 @@ class HdbiFit:
     n_scored: int
     n_inside_floor: int
     pairings: tuple[str, ...]
-    floor: float
+    floors: object               # the `FloorTable` the rows were read against
     curve: tuple[tuple[float, int], ...]   # (candidate, agreements), ascending
 
     @property
@@ -80,14 +82,20 @@ def _finite(x, name: str, lo=-math.inf, hi=math.inf) -> float:
 
 
 def fit_threshold(rows: Iterable[HdbiRow], *, training_pairings: Sequence[str],
-                  floor: float) -> HdbiFit:
+                  floors) -> HdbiFit:
     """The threshold with the most sign agreements on the training pairings'
-    rows; ties to the lower value (module docstring). `floor` is the
-    resolution floor in seconds: pass `lock.floors.ResolutionFloor.floor_s`."""
+    rows; ties to the lower value (module docstring). `floors` is the lock's
+    resolution floor table (`lock.floors.FloorTable`, seconds); each row is
+    read against its cell's floor, so a row names its `context_length` and
+    `batch`."""
+    from .floors import FloorsError, as_table
     training = tuple(sorted(set(training_pairings)))
     if not training:
         raise HdbiFitError("name the training pairings")
-    floor = _finite(floor, "the resolution floor", 0.0)
+    try:
+        floors = as_table(floors)
+    except FloorsError as e:
+        raise HdbiFitError(str(e)) from e
     scored = []
     inside = 0
     seen = set()
@@ -101,6 +109,10 @@ def fit_threshold(rows: Iterable[HdbiRow], *, training_pairings: Sequence[str],
         seen.add((r.pairing, r.cell))
         h = _finite(r.hdbi, f"HDBI of {r.cell}", 0.0, 1.0)
         d = _finite(r.measured_difference, f"the measured difference of {r.cell}")
+        try:
+            floor = floors.at(r.context_length, r.batch)
+        except FloorsError as e:
+            raise HdbiFitError(f"cell {r.cell} of {r.pairing}: {e}") from e
         if abs(d) <= floor:
             inside += 1
             continue
@@ -114,5 +126,5 @@ def fit_threshold(rows: Iterable[HdbiRow], *, training_pairings: Sequence[str],
     best = max(a for _, a in curve)
     threshold = min(t for t, a in curve if a == best)
     return HdbiFit(threshold=threshold, agreements=best, n_scored=len(scored),
-                   n_inside_floor=inside, pairings=training, floor=floor,
+                   n_inside_floor=inside, pairings=training, floors=floors,
                    curve=tuple(curve))

@@ -109,7 +109,7 @@ def test_the_floor_is_the_config_s_or_the_session_s_never_invented(tmp_path):
     d.mkdir(parents=True)
     (d / "session_floor.json").write_text(json.dumps({"floor_ms": 0.7}))
     assert st.session_floor_ms({"resolution_floor_ms": None}, tmp_path) == 0.7
-    assert st.rerun_budget({"max_rerun_rounds": None}) == 0
+    assert st.rerun_budget({"pairing": "P1", "max_rerun_rounds": None}) == 0
     assert st.rerun_budget({"max_rerun_rounds": 2}) == 2
 
 

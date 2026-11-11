@@ -39,6 +39,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
+from ..lock.floors import FloorTable, FloorsError, as_table
 from .recursion import CostModelError
 
 CORRECT = "correct"
@@ -140,14 +141,20 @@ class ScoredCells:
         return sum(self.decision.values())
 
 
-def score_cells(cells, *, floor: float) -> ScoredCells:
+def score_cells(cells, *, floors: FloorTable) -> ScoredCells:
     """`cells`: iterable of (key, predicted_sparse, predicted_dense,
-    measured_sparse, measured_dense, admissible). "Inside the floor" is
+    measured_sparse, measured_dense, admissible), `key` naming its
+    `context_length` and `batch` (a `CellKey`), whose floor in the lock's
+    table (`floors.FloorTable`) the cell is read against. "Inside the floor" is
     decided on measured time alone, |sparse - dense| <= floor, and such a
     cell is listed in `inside_floor` and scored by neither metric. That
     includes an inadmissible cell: `decision_error` on its own scores one as
     correct whatever the times, since it can never be profitable, but here
     the floor rule applies to every cell."""
+    try:
+        floors = as_table(floors)
+    except FloorsError as e:
+        raise CostModelError(str(e)) from e
     decision = {CORRECT: 0, FALSE_PROFITABLE: 0, MISSED_PROFITABLE: 0}
     agree = disagree = 0
     inside = []
@@ -156,6 +163,10 @@ def score_cells(cells, *, floor: float) -> ScoredCells:
         if key in seen:
             raise CostModelError(f"cell {key!r} appears twice")
         seen.add(key)
+        try:
+            floor = floors.at(key.context_length, key.batch)
+        except (AttributeError, FloorsError) as e:
+            raise CostModelError(f"cell {key!r}: no floor in the table ({e})") from e
         sign = sign_agreement(ps, pd, ms, md, floor=floor)
         outcome = decision_error(ps, pd, ms, md, admissible=admissible, floor=floor)
         if sign is None:

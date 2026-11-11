@@ -83,6 +83,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -116,10 +117,28 @@ WORKING_KEYS = ("densities", "gt_groups", "reps", "dense_rounds", "sampler_inter
                 "pricing_mismatch_share")
 WORKING_STATUS = "working, pre-lock"
 WORKING_PAIRING = "P1"
-# A later pairing's session values come from the lock file instead (T4.1):
-# its `pairing_values` block, the working keys plus the rerun budget.
+# A later pairing's session values come from the lock file instead (T4.1).
+# Every T4.1 item the session reads comes from the lock's typed `values` and
+# nowhere else (adviser's ruling 1b of 11 Nov 2026; T4.3 read B, finding 4):
+# session key -> (T4.1 item, how the session key is read from its value). The
+# repository config must leave each of these null; `pairing_values` is never
+# read for them. `pairing_values` holds only the session values T4.1 does not
+# list (`PAIRING_KEYS`).
 LOCK_FILE = ROOT / "docs" / "lock_values.json"
-LOCK_KEYS = WORKING_KEYS + ("max_rerun_rounds",)
+GRID_ITEM = "context_grid_checked_against_each_model_s_position_limit"
+LOCK_SOURCED = {
+    "densities": ("ground_truth_density_set", lambda v: v),
+    "lengths": (GRID_ITEM, lambda v: v["lengths"]),
+    "batches": (GRID_ITEM, lambda v: v["batches"]),
+    "flag_reasons": ("throttle_set", lambda v: v),
+    "max_rerun_rounds": ("rerun_budget", lambda v: v["max_rerun_rounds"]),
+    "resolution_floor_ms": ("resolution_and_noise_floors", lambda v: v["resolution_floor_ms"]),
+    "chain_check_tolerance": ("chain_check_tolerance", lambda v: v),
+    "residual_spread_tolerance": ("residual_spread_tolerance", lambda v: v),
+    "pricing_mismatch_share": ("pricing_mismatch_share", lambda v: v),
+}
+PAIRING_KEYS = ("gt_groups", "reps", "dense_rounds", "sampler_interval_s")
+LOCK_KEYS = PAIRING_KEYS + tuple(LOCK_SOURCED)
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
 # oracle's scoring pass and the mean-pool estimator, which refuse a batch
@@ -304,12 +323,15 @@ def fill_working_values(cfg: dict, path=None) -> dict:
 
 
 def fill_lock_values(cfg: dict, path=None, plan_text=None) -> dict:
-    """A later pairing's null session values from the lock file's
-    `pairing_values` block for that pairing (T4.1, Gate B), recorded as
-    filled. With no lock file nothing is filled, and `fill_working_values`
-    refuses P1's values for it as before. A lock file the checker does not
-    find complete against this plan is refused: no pairing's values are taken
-    from a lock that is not one."""
+    """A later pairing's session values from the lock file (T4.1, Gate B),
+    recorded as filled: each T4.1 item it reads (`LOCK_SOURCED`) from the
+    lock's typed `values`, the others (`PAIRING_KEYS`) from its
+    `pairing_values` block for that pairing. A T4.1 key the repository
+    config also sets is refused (two sources); one `pairing_values` also
+    names is not read, and is listed as ignored. With no lock file nothing is
+    filled, and `fill_working_values` refuses P1's values for it as before. A
+    lock file the checker does not find complete against this plan is
+    refused: no pairing's values are taken from a lock that is not one."""
     from attnbench.lock import checklist
     p = Path(path or LOCK_FILE)
     if not p.exists():
@@ -323,7 +345,15 @@ def fill_lock_values(cfg: dict, path=None, plan_text=None) -> dict:
     vals = (lock.get("pairing_values") or {}).get(cfg.get("pairing")) or {}
     cfg = dict(cfg)
     filled = []
-    for k in LOCK_KEYS:
+    twice = [k for k in LOCK_SOURCED if cfg.get(k) is not None]
+    if twice:
+        raise StepFailed(f"the session config sets {twice}, which are T4.1 items: they come "
+                         f"from the lock only (leave them null in the repository config)")
+    for k, (item, read) in LOCK_SOURCED.items():
+        cfg[k] = read(lock["values"][item]["value"])
+        filled.append(k)
+    ignored = sorted(k for k in vals if k in LOCK_SOURCED)
+    for k in PAIRING_KEYS:
         if k == "gt_groups":
             groups = dict(cfg.get(k) or {})
             for g, arms in (vals.get(k) or {}).items():
@@ -337,7 +367,8 @@ def fill_lock_values(cfg: dict, path=None, plan_text=None) -> dict:
     if filled:
         import hashlib
         cfg["lock_values"] = {"source": p.name, "filled": filled,
-                              "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+                              "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                              "ignored_pairing_values": ignored}
     return cfg
 
 
@@ -633,11 +664,27 @@ def code_path_definition(cp) -> dict:
             "libraries": [list(x) for x in cp.libraries], "python_optimize": cp.python_optimize}
 
 
-def session_floor_ms(cfg, session: Path) -> float:
-    """The resolution floor the ground truth flags against: the config's if
-    the lock has set one, else the session floor `dense_select` derived."""
+def floor_ms_at(cfg, length: int, batch: int) -> float:
+    """The resolution floor of the cell at (`length`, `batch`), ms: from the
+    lock's per-(length, batch) table (`floors.FloorTable`, P1 only) when the
+    config holds the table, else the config's one P1 working floor."""
+    v = cfg["resolution_floor_ms"]
+    if isinstance(v, dict):
+        from attnbench.lock.floors import FloorTable
+        return FloorTable.from_ms(v, pairing="P1").at(length, batch) * 1e3
+    return float(v)
+
+
+def session_floor_ms(cfg, session: Path, length: Optional[int] = None,
+                     batch: Optional[int] = None) -> float:
+    """The resolution floor the ground truth flags against at a cell: the
+    lock's for that (length, batch) if the lock has set the table
+    (`floor_ms_at`), else the session floor `dense_select` derived (P1)."""
     if cfg.get("resolution_floor_ms") is not None:
-        return float(cfg["resolution_floor_ms"])
+        if isinstance(cfg["resolution_floor_ms"], dict) and length is None:
+            raise StepFailed("the lock's resolution floor is per (length, batch): name the cell")
+        return floor_ms_at(cfg, length, batch) if length is not None \
+            else float(cfg["resolution_floor_ms"])
     p = step_dir(session, "dense_select") / "session_floor.json"
     if not p.exists():
         raise StepFailed(f"no session floor at {p}: dense_select has not derived one")
@@ -645,9 +692,16 @@ def session_floor_ms(cfg, session: Path) -> float:
 
 
 def rerun_budget(cfg) -> int:
-    """Extra rounds allowed for flagged ones: none until it is decided (T3.2)."""
+    """Extra rounds allowed for flagged ones: P1's none until it is decided
+    (T3.2); a later pairing's is a lock value (T4.1 "rerun budget") and is
+    refused when missing, never read as 0 (T4.3 read B, finding 4)."""
     v = cfg.get("max_rerun_rounds")
-    return 0 if v is None else int(v)
+    if v is None:
+        if cfg.get("pairing") != WORKING_PAIRING:
+            raise StepFailed(f"{cfg.get('pairing')}'s rerun budget is a lock value (T4.1): "
+                             f"max_rerun_rounds is missing")
+        return 0
+    return int(v)
 
 
 def label_outside_layers(operations) -> list:
@@ -935,9 +989,16 @@ def step_dense_select(args, cfg) -> dict:
     from dataclasses import replace
     from attnbench import dense_selection as ds
     from attnbench.components.shakedown_arms import ARMS
+    from attnbench.lock import floors as F
+    if cfg.get("resolution_floor_ms") is None and cfg.get("pairing") != F.FLOOR_PAIRING:
+        # Nothing is clocked before `predict` (T4.3 read B, finding 1): a later
+        # pairing's floor is the lock's P1 table, never derived here.
+        raise F.FloorsError(f"{cfg.get('pairing')}'s resolution floor is the lock's P1 table "
+                            f"(T4.1); it is null, so the lock was not filled. Nothing is "
+                            f"clocked to derive it.")
     h = _harness(args)
     found = {}
-    if cfg.get("resolution_floor_ms") is None:      # null as an input: derive it here
+    if cfg.get("resolution_floor_ms") is None:      # null as an input: derive it here (P1)
         floor = derive_session_floor(h, cfg, Path(args.out))
         cfg = dict(cfg, resolution_floor_ms=floor["floor_ms"])
         found["session_floor"] = floor
@@ -947,7 +1008,7 @@ def step_dense_select(args, cfg) -> dict:
             attn_cfg = replace(h._cfg(ARMS["dense"], L), batch=b)
             choice = ds.select_dense_baseline(
                 cell, attn_cfg, ds.registry_candidates(cfg["card"]),
-                rounds=cfg["dense_rounds"], resolution_floor_ms=cfg["resolution_floor_ms"],
+                rounds=cfg["dense_rounds"], resolution_floor_ms=floor_ms_at(cfg, L, b),
                 device=_device())
             path = ds.write_choice(choice, Path(args.out))
             found[cell.key] = {"chosen": choice.chosen, "complete": choice.complete,
@@ -964,9 +1025,11 @@ def derive_session_floor(h, cfg, out: Path, *, clock=time.perf_counter) -> dict:
     `lock.floors.resolution_floor` over those series at the provisional
     shakedown quantile, labelled working, pre-lock. The series are saved so
     the lock can recompute the floor at its own quantile. Run only when the
-    config's floor is null; a floor the lock has set is used as it is."""
-    import torch
+    config's floor is null; a floor the lock has set is used as it is. Any
+    pairing but P1 is refused before anything is run (ruling 1a, 11 Nov 2026)."""
     from attnbench.lock import floors
+    floors._pairing(cfg["pairing"])
+    import torch
     series = {}
     for L in cfg["lengths"]:
         for b in cfg["batches"].get(str(L), [1]):
@@ -1946,7 +2009,9 @@ def cmd_ground_truth_one(args) -> int:
     else:
         _need_gpu("the ground truth")
         h = _harness(args)
-        floor, rerun = session_floor_ms(cfg, Path(args.session)), rerun_budget(cfg)
+        L0 = cfg["lengths"][0]          # each cell takes its own floor in `_real_cells`
+        floor = session_floor_ms(cfg, Path(args.session), L0, cfg["batches"].get(str(L0), [1])[0])
+        rerun = rerun_budget(cfg)
     with _sampler(cfg, args.dry_run) as sampler:
         controls = gt.Controls(resolution_floor_ms=floor, max_rerun_rounds=rerun,
                                sampler=sampler)
@@ -2075,8 +2140,14 @@ def _real_cells(h, gt, cfg, controls, args, receipt, out) -> list:
                     a, run, second_ids=ids_b, n_layers=n_layers)
             tracer = TraceExport(gt, _tracer(), out / "traces", f"trace_L{L}_b{b}",
                                  trace_labels(names, dens), cfg["warmup"])
+            # The cell's own floor when the lock's per-(length, batch) table is set
+            # (ruling 1a); P1's one working floor is the controls' as they are.
+            cell_controls = controls
+            if isinstance(cfg.get("resolution_floor_ms"), dict):
+                from dataclasses import replace as _replace
+                cell_controls = _replace(controls, resolution_floor_ms=floor_ms_at(cfg, L, b))
             both = gt.time_with_profiler_overhead(
-                wrapped, ids, arms, reps=cfg["reps"], controls=controls, tracer=tracer,
+                wrapped, ids, arms, reps=cfg["reps"], controls=cell_controls, tracer=tracer,
                 warmup=cfg["warmup"], density_of=gt.kernel_densities,
                 synchronize=torch.cuda.synchronize, score_kwargs=score_kwargs,
                 compiled_check_of=check_of)

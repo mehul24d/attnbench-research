@@ -33,12 +33,12 @@ PLAN_TEXT = CL.PLAN.read_text(encoding="utf-8")
 
 
 def complete_lock(value="x", **extra):
-    lock = CL.skeleton(PLAN_TEXT)
-    for e in lock["values"].values():
-        e["value"], e["source"] = value, "reader B fixture"
-    lock["scored_pairings"] = {"H0": ["P1"], "H2": ["P1"]}
-    lock.update(extra)
-    return lock
+    # Edit on import (T4.3 fixes, ruling 1b): the lock's values are typed per
+    # item and every hypothesis states its pairings, so "x" for every value
+    # and H0/H2 alone no longer make a complete lock. The fixture takes typed
+    # test values (tests/lock_fixture.py); no assertion changes.
+    import lock_fixture as LF
+    return LF.complete_lock(PLAN_TEXT, **extra)
 
 
 # ---------------------------------------------------------------- F1: dense prefill before predict
@@ -174,7 +174,8 @@ def _p2_load(tmp_path, monkeypatch, pairing_values):
     lock = complete_lock(pairing_values={"P2": pairing_values})
     lock["values"]["ground_truth_density_set"]["value"] = {"oracle": [0.25]}
     lock["values"]["throttle_set"]["value"] = ["hw_slowdown"]
-    lock["values"]["rerun_budget"]["value"] = 2
+    # Edit on import: the rerun budget is typed (flagged rounds and minimum clean rounds).
+    lock["values"]["rerun_budget"]["value"] = {"max_rerun_rounds": 2, "min_clean_rounds": 3}
     p = tmp_path / "lock_values.json"
     p.write_text(json.dumps(lock))
     monkeypatch.setattr(st, "LOCK_FILE", p)
@@ -189,7 +190,7 @@ def test_F4_runner_reads_values_the_complete_lock_does_not_hold(tmp_path, monkey
           "residual_spread_tolerance": 0.1, "pricing_mismatch_share": 0.05}   # no max_rerun_rounds
     lock, cfg = _p2_load(tmp_path, monkeypatch, pv)
     problems = []
-    if st.rerun_budget(cfg) != lock["values"]["rerun_budget"]["value"]:
+    if st.rerun_budget(cfg) != lock["values"]["rerun_budget"]["value"]["max_rerun_rounds"]:
         problems.append(f"rerun budget {st.rerun_budget(cfg)} (lock: 2)")
     if cfg["densities"] != lock["values"]["ground_truth_density_set"]["value"]:
         problems.append(f"densities {cfg['densities']} (lock item: {{'oracle': [0.25]}})")

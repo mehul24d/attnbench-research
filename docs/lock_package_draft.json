@@ -308,6 +308,22 @@
    "proposed": "8716d7db4449d52872eee03bed28450ef0c951295d3d833c410654d70e53f3be: scripts/timed_path.py at main (ac3f563), unchanged since 050a96d",
    "basis": "Appendix A, 10 Nov 2026; scripts/timed_path.py 02cfc1d 050a96d (the only change from T3.2d's 4e78a962...: ground_truth.py appended tracer_layout/tracer_entries, t31_steps._real_cells and trace_labels), all outside the timed region",
    "decided": "P2's and P4's timed ground-truth path is 8716d7db... Pooling needs identical timed paths only across P1 sessions (T3.2c and T3.2d, 4e78a962...); P2 is never pooled with P1; across P1 and P2 or P4 only protocol identity inside the timed region is claimed, not byte identity"
+  },
+  "bootstrap_settings": {
+   "item": "the bootstrap settings (its level, `n_boot` and seed, which fix the size and order of every bootstrap the analysis draws; Appendix A, 11 Nov 2026)",
+   "value": null,
+   "source": null,
+   "status": "owed: decision (adviser's ruling 2a of 11 Nov 2026 makes it a T4.1 item)",
+   "proposed": "level 0.95, n_boot 10000, seed 0 (plan default: the 95% two-sided interval Section 5.4 reports; n_boot and seed as `intervals.bootstrap`'s tests use them)",
+   "basis": "T4.3 read A, finding 5"
+  },
+  "analysis_commit": {
+   "item": "the analysis commit (the commit whose analysis code scores P2 and P4, pinned by the lock; Appendix A, 11 Nov 2026)",
+   "value": null,
+   "source": null,
+   "status": "owed: the lock commit's wave-2 merge",
+   "proposed": "the merge commit of T4.3's wave 2 (the H0 to H6 analysis), named at the lock",
+   "basis": "adviser's ruling 2a of 11 Nov 2026"
   }
  },
  "scored_pairings": {
@@ -340,43 +356,41 @@
   }
  },
  "pairing_values_proposed": "P1's working values (docs/lock_value_table.md) for P2 and P4, max_rerun_rounds 1; P4's gt groups are its blocks' (configs/t64)",
- "banked_files": {
-  "p1_training": {
-   "path": "results/p1_training/p1_training.json.gz",
-   "file_sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
-   "record_sha256": "361c69c86806a6d2de57fe346a701efe4c952021ef6f6f39ce68a9d0cfeecc7a",
-   "schema": "attnbench.p1_training/2",
-   "rows": 35,
-   "repeats": [
-    "T3.2d",
-    "T3.2c"
-   ],
-   "features_from": "T3.2d",
-   "backups": [
-    "~/Desktop/research/attnbench_backups/p1_training/p1_training_t32dc_20261109.json.gz",
-    "~/attnbench_backups/p1_training/p1_training_t32dc_20261109.json.gz"
-   ],
-   "uploaded": {
-    "bucket_path": "banked/p1_training/p1_training_t32dc_20261109.json.gz",
-    "sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
-    "bytes": 1399192,
-    "verified": "passed, 9 Nov 2026: the bucket copy, downloaded after the upload, is 1,399,192 bytes with sha256 de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f, equal to the local file and both backups"
-   },
-   "superseded": {
-    "path": "banked/p1_training/p1_training.json.gz",
-    "file_sha256": "083b66134ebd3e2e72ca9cd6d576ffe561b128a61a2de93418fde49978045bdf",
-    "repeats": [
-     "T3.2a",
-     "T3.2b"
-    ],
-    "kept": "as the sensitivity's file; not overwritten"
-   },
-   "path_note": "the path t61_session.P1_TRAINING reads; the backups and the bucket copy carry the dated name p1_training_t32dc_20261109.json.gz"
-  }
- },
  "committed_predictors": {
   "status": "proposed lock wording (adviser's ruling 3 of the ninth 9 Nov 2026 paste; the researcher's confirmation of the Gate A recommendation, 9 Nov 2026, 19:38 IST)",
   "wording": "The recursion is the predictor under test, as pre-registered (H1), and is not replaced. For P2 and P4, and every later pairing, the committed prediction file holds, per cell and before the workload is timed, both the recursion and the KernelSight-style step form, with the sum, the sum with s_0, the fitted sum and the learned predictor (T2.11; commit.COMPUTED). H1 is scored as written: its primary comparison is the recursion against the fitted sum; the step form, the sum and the learned predictor are secondary comparators; the step form's own error is reported beside the recursion's on every pairing and every arm class, including where it is lower. Neither predictor is chosen after the data. Gate A's failing legs on P1 (leg 1: the step form below the recursion; leg 2: 6 of 35 cells) are limitations, and P1 is never counted as a test.",
   "code": "attnbench/predict/commit.py: COMPUTED = (recursion, sum, sum_plus_s0, step_form), recomputed by verify_bytes; no code change needed"
+ },
+ "p1_training": {
+  "path": "results/p1_training/p1_training.json.gz",
+  "file_sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
+  "record_sha256": "361c69c86806a6d2de57fe346a701efe4c952021ef6f6f39ce68a9d0cfeecc7a",
+  "schema": "attnbench.p1_training/2",
+  "rows": 35,
+  "repeats": [
+   "T3.2d",
+   "T3.2c"
+  ],
+  "features_from": "T3.2d",
+  "backups": [
+   "~/Desktop/research/attnbench_backups/p1_training/p1_training_t32dc_20261109.json.gz",
+   "~/attnbench_backups/p1_training/p1_training_t32dc_20261109.json.gz"
+  ],
+  "uploaded": {
+   "bucket_path": "banked/p1_training/p1_training_t32dc_20261109.json.gz",
+   "sha256": "de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f",
+   "bytes": 1399192,
+   "verified": "passed, 9 Nov 2026: the bucket copy, downloaded after the upload, is 1,399,192 bytes with sha256 de7f0f4497e87d7993681f4a6ba6544dcb9196853fb4e25d36ef1770df8a8c5f, equal to the local file and both backups"
+  },
+  "superseded": {
+   "path": "banked/p1_training/p1_training.json.gz",
+   "file_sha256": "083b66134ebd3e2e72ca9cd6d576ffe561b128a61a2de93418fde49978045bdf",
+   "repeats": [
+    "T3.2a",
+    "T3.2b"
+   ],
+   "kept": "as the sensitivity's file; not overwritten"
+  },
+  "path_note": "the path t61_session.P1_TRAINING reads; the backups and the bucket copy carry the dated name p1_training_t32dc_20261109.json.gz"
  }
 }
