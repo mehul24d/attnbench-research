@@ -34,8 +34,9 @@ def test_the_cards_step_table_is_the_runners_steps_with_the_minutes_files_sums()
 def test_the_block_planner_reads_the_card_back_to_its_own_blocks():
     card = _card()
     n = B.card_numbers(card)
+    assert n["suite_min"] == C.load_minutes()["suite_record_min"]["value"]
     blocks = B.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=B.BOOT["P2"],
-                           rate=B.SPOT_RATES["P2"])
+                           rate=B.SPOT_RATES["P2"], suite_min=n["suite_min"])
     for i, b in enumerate(blocks, 1):
         assert f"| b{i} | {', '.join(f'`{x}`' for x in b.steps)} | {b.planned_h:.2f} | " \
                f"{b.cap_inr} | {b.halt_min} | {b.delete_min} |" in card
@@ -53,18 +54,32 @@ def test_a_minutes_file_off_the_runners_steps_is_refused(tmp_path):
 def test_the_prerequisites_follow_the_plan():
     plan = C.PLAN.read_text()
     done = "\n".join(f"| {r.task} | x | Done (9 Nov 2026) |" for r in S.T61.requirements)
-    assert "**As the plan stands, 0 of" in _card(done)
+    assert f"As the plan stands, all {len(S.T61.requirements)} are met." in _card(done)
     first = S.T61.requirements[0].task
     one_short = done.replace(f"| {first} | x | Done", f"| {first} | x | Partly built")
-    assert f"| {first} | {S.T61.requirements[0].why} | Partly built (9 Nov 2026) | no |" in _card(one_short)
+    assert f"| {first} | {S.T61.requirements[0].why} |  | Partly built (9 Nov 2026) | no |" in _card(one_short)
     assert "**As the plan stands, 1 of" in _card(one_short)
+    a = "\n\n## Appendix A. Decision record\n\n- **11 Nov 2026.** **x.**\n"
+    waived = done.replace(f"| {first} | x | Done (9 Nov 2026)",
+                          f"| {first} | x | Waived for P2 (Appendix A, 11 Nov 2026): x") + a
+    assert f"| {first} | {S.T61.requirements[0].why} |  | Waived for P2 (Appendix A, 11 Nov 2026) | waived |" in _card(waived)
+    gate = next(r for r in S.T61.requirements if r.gate)
+    on_gate = done.replace(f"| {gate.task} | x | Done (9 Nov 2026)",
+                           f"| {gate.task} | x | Waived for P2 (Appendix A, 11 Nov 2026): x") + a
+    assert f"| {gate.task} | {gate.why} | yes | Waived for P2 (Appendix A, 11 Nov 2026) | no |" in _card(on_gate)
     assert plan          # the real plan builds too
 
 
-def test_the_card_says_the_suite_record_is_not_in_the_setup_and_no_command_passes_it():
-    """Adviser's ruling of 10 Nov 2026 (reversing ruling h): no `--suite-record`
-    in P2's bootstrap, and its 20 minutes in no cap."""
+def test_the_suite_record_is_in_the_setup_and_in_every_cap():
+    """Adviser's ruling 1h dated 10 Nov 2026: `--suite-record` in P2's bootstrap,
+    its 20 minutes in the Flex-start cap and in block b1's."""
+    m = C.load_minutes()
     text = _card()
-    assert "**No suite record in the setup**" in text and "20 minutes" in text
-    assert not [l for l in text.splitlines() if "gcp_bootstrap_instance.sh" in l and "--suite-record" in l]
-    assert "| Setup: write gate, deploy, preflight, bootstrap with XAttention | 0.5 |" in text
+    assert "**The suite record is in the setup**" in text and "--suite-record" in text
+    assert "| Suite record: `--suite-record`, first boot only | 20 min |" in text
+    no_suite = {**m, "suite_record_min": {"value": 0, "basis": "x"}}
+    *_, flex, blocks = C.costs(m)
+    *_, flex0, blocks0 = C.costs(no_suite)
+    assert abs(flex.planned_h - flex0.planned_h - 20 / 60) < 0.002
+    assert flex.cap_inr > flex0.cap_inr and blocks[0].planned_h > blocks0[0].planned_h
+    assert C.caps(m) == {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks)}

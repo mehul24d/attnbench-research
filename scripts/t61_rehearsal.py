@@ -80,7 +80,8 @@ def rehearsal_prereqs(cfg, args) -> dict:
     """The deployed files, checked as P2 checks them; P2's unmet tasks are
     recorded, not refused on."""
     text = (S.ROOT / "docs" / "RESEARCH_PLAN.md").read_text()
-    would = S.unmet(S.T61.requirements, S.plan_statuses(text))
+    would = S.unmet(S.T61.requirements, S.plan_statuses(text), S.appendix_a_dates(text),
+                    S.T61.pairing)
     findings = S.body_prereqs(cfg, args)
     findings["p2_would_refuse"] = would
     return findings

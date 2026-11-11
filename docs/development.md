@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6241 passed, 163 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6266 passed, 167 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -21,11 +21,11 @@ architecture-gated, and the harness must import on a machine where a kernel is
 unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
 learned baseline (T2.10); without it one more test skips.
 
-The 163 skips are the honest part, and they split eight ways: **39** need CUDA
+The 167 skips are the honest part, and they split eight ways: **39** need CUDA
 or the GPU image's x-attention and block-sparse-attn, **86** read banked result
-files that `results/` keeps out of git, **15** are scripts
+files that `results/` keeps out of git, **17** are scripts
 `test_script_call_sites.py` has nothing to check because they import nothing
-from `attnbench`, **15** are the same scripts skipped again by
+from `attnbench`, **17** are the same scripts skipped again by
 `test_import_resolution.py`, **4** need the pinned RULER data directory
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
 `~/.cache/attnbench/ruler_data`; one of them wants a pinned build), **2** need the pinned Llama tokenizer in the local Hugging
@@ -33,11 +33,11 @@ Face cache, **1** needs the primary model's pinned `config.json` there, and **1*
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 6331 passed, 73 skipped**, because
+**With `results/` present the suite reads 6356 passed, 77 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6326 passed, 78 skipped). All three
-totals are 6404, which is
+present and those two hidden it reads 6351 passed, 82 skipped). All three
+totals are 6433, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it.
 

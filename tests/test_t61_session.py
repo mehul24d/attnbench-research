@@ -449,6 +449,65 @@ def test_only_done_meets_a_requirement():
     assert S.unmet(reqs[:1], {"T2.1": "Built (25 Oct 2026)"})[0]["task"] == "T2.1"
 
 
+WAIVER_PLAN = """\
+| T2.21 | compiled | Code | | Runs | Waived for P2 (Appendix A, 11 Nov 2026): conditions |
+| T2.17 | asserts | Code | | Runs | Waived for P2 (Appendix A, 12 Nov 2026): no such line |
+| T2.26 | suite | Code | | Runs | Waived for P2: no citation |
+| T3.3 | Gate A | Code | | Runs | Waived for P2 (Appendix A, 11 Nov 2026): a gate |
+
+## Appendix A. Decision record
+
+- **11 Nov 2026.** **A waiver.**
+
+## Appendix B. Glossary
+
+- **12 Nov 2026.** **Not in Appendix A.**
+"""
+
+
+def test_a_waiver_needs_p2_a_dated_appendix_a_line_and_no_gate():
+    st, app = S.plan_statuses(WAIVER_PLAN), S.appendix_a_dates(WAIVER_PLAN)
+    assert app == {"11 Nov 2026"}
+    reqs = [S.Requirement("T2.21", "w"), S.Requirement("T2.17", "w"),
+            S.Requirement("T2.26", "w"), S.Requirement("T3.3", "w", gate=True)]
+    assert [r["task"] for r in S.unmet(reqs, st, app, "P2")] == ["T2.17", "T2.26", "T3.3"]
+    # P4, the rehearsal, or no pairing: a waiver meets nothing
+    for pairing in ("P4", "P2-R", None):
+        assert len(S.unmet(reqs, st, app, pairing)) == 4
+    # without the Appendix A dates the citation cannot be checked, so it fails
+    assert len(S.unmet(reqs, st, frozenset(), "P2")) == 4
+    assert S.unmet(reqs[:1], {"T2.21": "Done (1 Nov 2026)"}, frozenset(), "P4") == []
+
+
+def test_every_gate_requirement_is_marked_and_cannot_be_waived():
+    gates = {r.task for r in T61.requirements if r.gate}
+    assert gates == {"T2.23", "T3.1", "T3.3", "T4.4"}
+    from t64_session import T64
+    assert {r.task for r in T64.requirements if r.gate} == gates | {"T6.1"}
+
+
+def test_the_mask_gate_runs_before_the_long_host_step():
+    # adviser's ruling 1a dated 10 Nov 2026: P2's two-path verdict comes before the
+    # 79-minute host_components step (T3.2d, L4), so a failed gate costs minutes
+    names = T61.names
+    assert names.index("mask_gate") < names.index("host_components")
+    assert all(n in ("prereqs", "preflight", "link", "launch_queue", "probe")
+               for n in names[:names.index("mask_gate")])
+
+
+def test_prereqs_records_waived_tasks_and_does_not_refuse_on_them(tmp_path, monkeypatch):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "RESEARCH_PLAN.md").write_text(WAIVER_PLAN)
+    monkeypatch.setattr(S, "ROOT", tmp_path)
+    cfg = dataclasses.replace(T61, requirements=(S.Requirement("T2.21", "w"),), files=(),
+                              staged=None)
+    out = S.body_prereqs(cfg, args_for(tmp_path, tmp_path, dry_run=False))
+    assert out["unmet"] == [] and out["waived"] == ["T2.21"]
+    gate = dataclasses.replace(cfg, requirements=(S.Requirement("T3.3", "w", gate=True),))
+    with pytest.raises(S.StepFailed, match="T3.3"):
+        S.body_prereqs(gate, args_for(tmp_path, tmp_path, dry_run=False))
+
+
 def test_prereqs_refuses_a_real_session_and_skips_a_dry_one(tmp_path, monkeypatch):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "RESEARCH_PLAN.md").write_text(PLAN)
@@ -467,12 +526,14 @@ def test_prereqs_refuses_a_real_session_and_skips_a_dry_one(tmp_path, monkeypatc
 
 
 def test_this_branchs_plan_is_not_ready_for_p2():
-    rows = S.unmet(T61.requirements, S.plan_statuses(
-        (ROOT / "docs" / "RESEARCH_PLAN.md").read_text()))
+    text = (ROOT / "docs" / "RESEARCH_PLAN.md").read_text()
+    rows = S.unmet(T61.requirements, S.plan_statuses(text), S.appendix_a_dates(text), "P2")
     tasks = {r["task"] for r in rows}
-    # 10 Nov 2026 (docs/prereqs_20261109.md): T2.3 done; T2.21 waived on conditions the check
-    # cannot read, T2.23 flagged, T2.17 and T2.26 in the rehearsal, T4.4 the lock
-    assert tasks == {"T2.17", "T2.21", "T2.23", "T2.26", "T4.4"}
+    # 11 Nov 2026 (Appendix A): T2.17, T2.23 and T2.26 Done on the rehearsal's evidence,
+    # T2.21 waived for P2 with a dated citation; only the lock is left
+    assert tasks == {"T4.4"}
+    # without the waiver path T2.21 would refuse too
+    assert {r["task"] for r in S.unmet(T61.requirements, S.plan_statuses(text))} == {"T2.21", "T4.4"}
 
 
 def test_the_strict_stamp_is_a_file_check():

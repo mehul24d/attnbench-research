@@ -169,9 +169,9 @@ def _t64() -> S.SessionConfig:
             S.Step("fa3_import", "T2.16", "FA3 wheel: hash, tags, install, import, backend"),
         ) + S.COMMON_STEPS_TAIL,
         requirements=S.PHASE2 + (
-            S.Requirement("T2.23", "the mask recording P4's Triton masks use"),
+            S.Requirement("T2.23", "the mask recording P4's Triton masks use", gate=True),
         ) + S.GATES + (
-            S.Requirement("T6.1", "P2 banked: P4 is trained on P1 and P2"),
+            S.Requirement("T6.1", "P2 banked: P4 is trained on P1 and P2", gate=True),
         ),
         files=S.BUILT_FILES + (
             ("scripts/fa3_import_check.sh", None),
