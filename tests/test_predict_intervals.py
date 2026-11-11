@@ -12,6 +12,7 @@ import statistics
 import numpy as np
 import pytest
 
+from attnbench.predict import intervals as IV  # noqa: E402
 from attnbench.predict.intervals import (
     Interval, bootstrap, percentile_interval)
 from attnbench.predict.recursion import (
@@ -19,11 +20,32 @@ from attnbench.predict.recursion import (
     sync_op)
 
 
-def test_one_repeat_per_measurement_gives_a_zero_width_interval():
-    b = bootstrap({"h": [2.0], "d": [3.0]},
-                  lambda v: {"t": v["h"] + v["d"]}, n_boot=50, seed=1)
-    iv = b.interval("t", 0.9)
-    assert (iv.point, iv.lo, iv.hi) == (5.0, 5.0, 5.0)
+def test_one_repeat_or_one_replicate_is_refused():
+    """Adviser's ruling 2e of 11 Nov 2026 (T4.3 read A, finding 8): either
+    gives a zero-width interval, which would decide a sign."""
+    with pytest.raises(CostModelError, match="at least two finite repeats"):
+        bootstrap({"h": [2.0], "d": [3.0, 4.0]}, lambda v: {"t": v["h"] + v["d"]},
+                  n_boot=50, seed=1)
+    with pytest.raises(CostModelError, match="n_boot must be an int >= 2"):
+        bootstrap({"h": [2.0, 3.0]}, lambda v: {"t": v["h"]}, n_boot=1, seed=1)
+    bootstrap({"h": [2.0, 3.0]}, lambda v: {"t": v["h"]}, n_boot=2, seed=1)
+
+
+def test_below_the_locks_n_boot_is_refused(monkeypatch):
+    lock = {"values": {"bootstrap_settings": {"value": {"level": 0.95, "n_boot": 1000,
+                                                        "seed": 0}}}}
+    st = IV.settings_from_lock(lock)
+    assert st == IV.Settings(0.95, 1000, 0)
+    monkeypatch.setattr(IV, "LOCKED", st)
+    with pytest.raises(CostModelError, match="below the lock's 1000"):
+        bootstrap({"h": [2.0, 3.0]}, lambda v: {"t": v["h"]}, n_boot=999, seed=0)
+    assert bootstrap({"h": [2.0, 3.0]}, lambda v: {"t": v["h"]}, n_boot=1000,
+                     seed=0).n_boot == 1000
+    for bad in (None, "TBD", {"level": 0.95, "n_boot": None, "seed": 0},
+                {"level": 1.0, "n_boot": 1000, "seed": 0}, {"level": 0.95, "n_boot": 1, "seed": 0},
+                {"level": 0.95, "n_boot": True, "seed": 0}):
+        with pytest.raises(CostModelError):
+            IV.settings_from_lock({"values": {"bootstrap_settings": {"value": bad}}})
 
 
 def test_the_point_is_the_full_sample_statistic_not_the_replicate_mean():
@@ -31,6 +53,7 @@ def test_the_point_is_the_full_sample_statistic_not_the_replicate_mean():
                   n_boot=200, seed=3)
     assert b.point["t"] == 2.0                     # the median
     assert statistics.mean(b.replicates["t"]) != 2.0
+    assert b.interval("t", 0.9).point == 2.0       # the interval carries it too
 
 
 def _protocol(samples, f, n_boot, seed, stat=statistics.median):
@@ -122,12 +145,12 @@ def test_bootstrap_arguments_are_checked(kw, match):
 
 
 def test_bad_measurements_and_outputs_are_refused():
-    with pytest.raises(CostModelError, match="at least one finite"):
+    with pytest.raises(CostModelError, match="at least two finite"):
         bootstrap({"x": []}, lambda v: {"t": 1.0}, n_boot=2, seed=0)
-    with pytest.raises(CostModelError, match="at least one finite"):
+    with pytest.raises(CostModelError, match="at least two finite"):
         bootstrap({"x": [1.0, float("nan")]}, lambda v: {"t": 1.0}, n_boot=2, seed=0)
     with pytest.raises(CostModelError, match="not a finite number"):
-        bootstrap({"x": [1.0]}, lambda v: {"t": float("inf")}, n_boot=2, seed=0)
+        bootstrap({"x": [1.0, 2.0]}, lambda v: {"t": float("inf")}, n_boot=2, seed=0)
     calls = []
 
     def changing(v):
@@ -135,7 +158,7 @@ def test_bad_measurements_and_outputs_are_refused():
         return {"t": 1.0} if len(calls) == 1 else {"u": 1.0}
 
     with pytest.raises(CostModelError, match="same outputs"):
-        bootstrap({"x": [1.0]}, changing, n_boot=2, seed=0)
+        bootstrap({"x": [1.0, 2.0]}, changing, n_boot=2, seed=0)
 
 
 @pytest.mark.parametrize("level", [0, 1, 1.5, -0.1, True])

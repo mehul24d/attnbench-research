@@ -16,13 +16,6 @@ from attnbench.predict import intervals as I
 from attnbench.predict.dispatcher import Config, Point, build_points, evaluate, h6_line
 from attnbench.predict.training import CellKey
 
-def WAVE2(ruling):
-    """Import edit (T4.3, 12 Nov 2026): expected to fail until wave 2 builds
-    `ruling`; strict, so the test fails the suite once it passes and the
-    marker must be removed. No assertion is changed."""
-    return pytest.mark.xfail(strict=True, reason=f"T4.3 wave 2, ruling {ruling} of 11 Nov 2026")
-
-
 M = "m"
 S = Config("a", 0.5)
 DENSE = Config("dense", 1.0)
@@ -218,11 +211,13 @@ def test_F8_missing_clean_rounds_is_not_complete_enough():
 
 
 # -------------------------------------------- F12: a one-replicate bootstrap is 'determined'
-@WAVE2("2e")
 def test_F12_degenerate_bootstrap_interval_decides_a_sign():
-    bs = I.bootstrap({"x": [1.0]}, lambda v: {"d": v["x"] - 0.5}, n_boot=1, seed=0)
-    iv = bs.difference("d", "d", 0.95) if False else bs.interval("d", 0.95)
-    assert iv.lo < iv.hi, f"one repeat, one replicate: interval [{iv.lo}, {iv.hi}] has zero width"
+    # Import edit (ruling 2e): one repeat or one replicate is refused, so the zero-width
+    # interval is never built.
+    with pytest.raises(I.CostModelError, match="n_boot must be an int >= 2|at least two"):
+        I.bootstrap({"x": [1.0]}, lambda v: {"d": v["x"] - 0.5}, n_boot=1, seed=0)
+    with pytest.raises(I.CostModelError, match="at least two finite repeats"):
+        I.bootstrap({"x": [1.0]}, lambda v: {"d": v["x"] - 0.5}, n_boot=2, seed=0)
 
 
 # --------------------------- F6b: Gate A's leg 2 feeds check_passes no kernel-name evidence
