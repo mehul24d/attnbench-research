@@ -986,7 +986,7 @@ def test_the_block_drift_check_reads_t31s_rows_by_their_grid_cell(tmp_path):
         anchor = ("dense", 1.0, 8192, 1)
         S.tag_rows(r, {"id": bid, "anchor": anchor, "cells": [], "run_cells": [anchor]})
         rows += r["untraced"]["rows"]
-    out = BD.drift(rows, order=["b1", "b2"])
+    out = BD.drift(rows, order=["b1", "b2"], bound=BD.WORKING_BOUND)
     assert out["anchor"] == ("dense", 1.0, 8192, 1)
     assert out["per_block"]["b2"]["relative_difference"] == pytest.approx(50 / 700)
     assert out["above"] == ["b2"] and out["passed"] is False

@@ -26,6 +26,9 @@ def WAVE2(ruling):
 M = "m"
 S = Config("a", 0.5)
 DENSE = Config("dense", 1.0)
+# Import edit (ruling 1a): the floor is the lock's table; 5.0 at every (length, batch).
+from attnbench.lock.floors import FloorTable  # noqa: E402
+F5 = FloorTable({(L, b): 5.0 for L in (8192, 16384, 32768) for b in (1, 4)})
 
 
 def key(L, c, b=1):
@@ -48,7 +51,6 @@ def grid(lengths_batches, pred, kern=None):
 
 
 # ---------------------------------------------------------------- F1: batch 4 is scored
-@WAVE2("2b")
 def test_F1_batch_4_is_not_scored_for_h6():
     """Section 4 H6 / 5.9 / App. A 1 Nov: "at batch 4 every rule chooses dense, so
     batch 4 is not scored"."""
@@ -57,7 +59,7 @@ def test_F1_batch_4_is_not_scored_for_h6():
     pts = build_points(grid([(16384, 1), (16384, 4)], pred), dense_arms={"dense"},
                        kernel=kern([(16384, 1), (16384, 4)]))
     measured = {Point(M, 16384, 1): meas, Point(M, 16384, 4): {DENSE: 400.0}}
-    out = evaluate(pts, measured, {"u": {S}}, 5.0)
+    out = evaluate(pts, measured, {"u": {S}}, F5)
     sc = out["u"]["always_dense"]
     # always-dense at the batch-1 point has regret 0.25; at batch 4 it is 0.
     # Batch 4 must not be in the mean: expected n_scored == 1, mean regret 0.25.
@@ -65,7 +67,6 @@ def test_F1_batch_4_is_not_scored_for_h6():
 
 
 # ------------------------------------------------- F2: realised-token keys never match
-@WAVE2("2b")
 def test_F2_h6_lengths_filter_matches_realised_token_keys():
     """App. A 9 Nov: prediction cells are keyed by REALISED token counts (T3.2a-d:
     1951..32700). H6_LENGTHS is the budget labels (16384, 32768)."""
@@ -74,18 +75,19 @@ def test_F2_h6_lengths_filter_matches_realised_token_keys():
                        kernel=kern([(16370, 1), (32700, 1)]))
     measured = {Point(M, 16370, 1): {DENSE: 100.0, S: 80.0},
                 Point(M, 32700, 1): {DENSE: 400.0, S: 300.0}}
-    out = evaluate(pts, measured, {"u": {S}}, 5.0)
+    out = evaluate(pts, measured, {"u": {S}}, F5)
     d = out["u"]["dispatcher"]
     assert d.n_scored == 2, f"scored {d.n_scored} points; unscored listed: {len(d.unscored)}"
 
 
-@WAVE2("2b")
 def test_F2b_empty_score_reads_as_no_more_decision_errors():
+    # Import edit (ruling 2b): 16370 is now read at its 16384 budget and scored, so the
+    # empty score is made at 8190, outside H6's lengths.
     pred = {DENSE: 100.0, S: 80.0}
-    pts = build_points(grid([(16370, 1)], pred, None), dense_arms={"dense"},
-                       kernel={key(16370, DENSE): 40.0, key(16370, S): 20.0})
-    measured = {Point(M, 16370, 1): {DENSE: 100.0, S: 130.0}}   # sparse is slower: rule errs
-    out = evaluate(pts, measured, {"u": {S}}, 5.0)
+    pts = build_points(grid([(8190, 1)], pred, None), dense_arms={"dense"},
+                       kernel={key(8190, DENSE): 40.0, key(8190, S): 20.0})
+    measured = {Point(M, 8190, 1): {DENSE: 100.0, S: 130.0}}   # sparse is slower: rule errs
+    out = evaluate(pts, measured, {"u": {S}}, F5)
     line = h6_line(out["u"]["dispatcher"], out["u"]["kernel_speedup_rule"])
     assert out["u"]["kernel_speedup_rule"].n_scored == 0
     assert line.no_more_decision_errors is not True or out["u"]["dispatcher"].n_scored > 0, \
@@ -118,7 +120,6 @@ def test_F3b_crossover_takes_one_scalar_floor():
 
 
 # --------------------------------- F4: policies compared over different scored points
-@WAVE2("2b")
 def test_F4_h6_line_compares_policies_over_the_same_points():
     pred = {DENSE: 100.0, S: 80.0, Config("b", 0.25): 70.0}
     pts = build_points(grid([(16384, 1), (32768, 1)], pred), dense_arms={"dense"},
@@ -128,7 +129,7 @@ def test_F4_h6_line_compares_policies_over_the_same_points():
     # ground truth: b (the dispatcher's pick) was NOT measured at 32768, where it would be awful
     measured = {Point(M, 16384, 1): {DENSE: 100.0, S: 80.0, B: 80.0},
                 Point(M, 32768, 1): {DENSE: 100.0, S: 80.0}}
-    out = evaluate(pts, measured, {"u": {S, B}}, 5.0)
+    out = evaluate(pts, measured, {"u": {S, B}}, F5)
     d, r = out["u"]["dispatcher"], out["u"]["kernel_speedup_rule"]
     assert d.n_scored == r.n_scored, f"dispatcher scored {d.n_scored} points, rule {r.n_scored}"
 
@@ -145,25 +146,25 @@ def _rows(medians, anchor_blocks=None):
     return rows
 
 
-@WAVE2("2c")
 def test_F5a_a_block_without_an_anchor_row_is_not_silently_passed():
     rows = _rows({"b1": 100.0, "b2": 101.0, "b3": 130.0}, anchor_blocks={"b1", "b2"})
-    dr = BD.drift(rows, order=["b1", "b2", "b3"])
-    assert dr["passed"] is not True, f"b3 has no anchor row and drift says passed={dr['passed']}"
+    # Import edit (ruling 2c): the bound is required, and a block with no anchor row is
+    # refused, so "not passed" is asserted as the refusal.
+    with pytest.raises(BD.BlockDriftError, match=r"\['b3'\] have no anchor row"):
+        BD.drift(rows, order=["b1", "b2", "b3"], bound=BD.WORKING_BOUND)
 
 
-@WAVE2("2c")
 def test_F5b_nan_anchor_median_is_not_a_pass():
     rows = _rows({"b1": 100.0, "b2": float("nan")})
-    dr = BD.drift(rows, order=["b1", "b2"])
-    assert dr["passed"] is not True, f"a NaN anchor median passes: {dr}"
+    # Import edit (ruling 2c): as F5a, a NaN anchor is refused.
+    with pytest.raises(BD.BlockDriftError, match="not a finite positive time"):
+        BD.drift(rows, order=["b1", "b2"], bound=BD.WORKING_BOUND)
 
 
-@WAVE2("2c")
 def test_F5c_reference_block_can_be_the_odd_one_out():
     # b1 is 8% away from both b2 and b3, which agree. The sensitivity run should drop b1.
     rows = _rows({"b1": 100.0, "b2": 108.0, "b3": 108.0})
-    dr = BD.drift(rows, order=["b1", "b2", "b3"])
+    dr = BD.drift(rows, order=["b1", "b2", "b3"], bound=BD.WORKING_BOUND)   # import edit: bound
     assert "b1" in dr["above"], f"flagged {dr['above']}; the odd block b1 is the reference and cannot be flagged"
 
 
