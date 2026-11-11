@@ -30,7 +30,7 @@ from attnbench.analysis import gate_a_repeats as GR  # noqa: E402
 from attnbench.figures import results as RS  # noqa: E402
 from attnbench.lock.floors import FloorTable, FloorsError  # noqa: E402
 from attnbench.predict import commit as C  # noqa: E402
-from attnbench.predict.commit import REQUIRED_SYNC_GAP_S  # noqa: E402
+from attnbench.predict.commit import CLOCK_SKEW_ALLOWED_S  # noqa: E402
 from attnbench.predict.recursion import CostModelError  # noqa: E402
 import _load  # noqa: E402
 import gate_a as GA  # noqa: E402
@@ -49,7 +49,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--floors-provisional", action="store_true")
     ap.add_argument("--family-bound", type=float, default=None)
     ap.add_argument("--family-bound-provisional", action="store_true")
-    ap.add_argument("--clock-skew-s", type=float, default=REQUIRED_SYNC_GAP_S)
+    ap.add_argument("--clock-skew-s", type=float, default=CLOCK_SKEW_ALLOWED_S)
     ap.add_argument("--out", required=True)
     return ap
 

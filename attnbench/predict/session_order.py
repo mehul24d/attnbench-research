@@ -7,10 +7,10 @@ the store's clock and the instance's. Appendix A (27 Oct 2026, strict rule):
 the stamp the late-prediction check reads is the start of the first clocked
 block of any kind, the dense control's clocked warm-up forwards included.
 
-`commit.load_committed` refuses a file when `synced_at + skew >= start`, with
-`synced_at` by the store's clock (an upper bound) and `start` by the
-instance's. So nothing clocked may start until the instance clock reads
-`synced_at + skew + guard`. The session runner holds there (`hold`), and the
+`commit.load_committed` refuses a file when `start < synced_at + gap + skew`,
+with `synced_at` by the store's clock (an upper bound) and `start` by the
+instance's (ruling 1g, 11 Nov 2026). So nothing clocked may start until the
+instance clock reads `synced_at + gap + skew + guard`. The session runner holds there (`hold`), and the
 ground-truth process checks the same condition again itself
 (`ready_to_clock`), so a process started by hand, or out of order, refuses
 too.
@@ -34,11 +34,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, Mapping
 
-from .commit import (PLANNED_SYNC_WAIT_S, REQUIRED_SYNC_GAP_S, SYNC_WAIT_MARGIN_S, SyncReceipt,
+from .commit import (CLOCK_SKEW_ALLOWED_S, PLANNED_SYNC_WAIT_S, REQUIRED_SYNC_GAP_S,
+                     SYNC_WAIT_MARGIN_S, SyncReceipt,
                      ground_truth_start)
 
 # The one source of the numbers is `commit` (Appendix A, 25 and 31 Oct 2026).
-REQUIRED_SKEW = timedelta(seconds=REQUIRED_SYNC_GAP_S)
+REQUIRED_GAP = timedelta(seconds=REQUIRED_SYNC_GAP_S)
+REQUIRED_SKEW = timedelta(seconds=CLOCK_SKEW_ALLOWED_S)
 PLANNED_GUARD = timedelta(seconds=SYNC_WAIT_MARGIN_S)
 PLANNED_WAIT = timedelta(seconds=PLANNED_SYNC_WAIT_S)
 
@@ -61,9 +63,14 @@ def receipt_from_dict(d: Mapping) -> SyncReceipt:
                                         "synced_at"))
 
 
-def check_session_skew(clock_skew: timedelta, guard: timedelta, *, dry_run: bool) -> None:
-    """A real session holds the planned wait (the gap plus the margin, `commit`);
-    a dry run may shorten it."""
+def check_session_skew(clock_skew: timedelta, guard: timedelta, *, dry_run: bool,
+                       gap: timedelta = REQUIRED_GAP) -> None:
+    """A real session holds the planned wait (the gap plus the skew plus the
+    margin, `commit`); a dry run may shorten it."""
+    if not dry_run and gap != REQUIRED_GAP:
+        raise HoldError(f"a real session's gap is {REQUIRED_GAP}, not {gap}")
+    if gap < timedelta(0):
+        raise HoldError(f"the gap must be >= 0, got {gap}")
     if guard < timedelta(0):
         raise HoldError(f"the guard must be >= 0, got {guard}")
     if clock_skew < timedelta(0):
@@ -73,22 +80,23 @@ def check_session_skew(clock_skew: timedelta, guard: timedelta, *, dry_run: bool
             f"a session holds at least {REQUIRED_SKEW.total_seconds():.0f} s after the "
             f"sync (Appendix A, 25 Oct 2026); {clock_skew.total_seconds():.0f} s is "
             f"allowed only in a dry run")
-    if not dry_run and clock_skew + guard < PLANNED_WAIT:
+    if not dry_run and gap + clock_skew + guard < PLANNED_WAIT:
         raise HoldError(
             f"a session holds the planned {PLANNED_WAIT.total_seconds():.0f} s after the "
-            f"sync; {(clock_skew + guard).total_seconds():.0f} s is allowed only in a dry run")
+            f"sync; {(gap + clock_skew + guard).total_seconds():.0f} s is allowed "
+            f"only in a dry run")
 
 
 def release_at(synced_at: datetime, *, clock_skew: timedelta,
-               guard: timedelta) -> datetime:
+               guard: timedelta, gap: timedelta = REQUIRED_GAP) -> datetime:
     """The first instance-clock time at which a clocked block may start."""
-    return _aware(synced_at, "synced_at") + clock_skew + guard
+    return _aware(synced_at, "synced_at") + gap + clock_skew + guard
 
 
 def ready_to_clock(synced_at: datetime, now: datetime, *, clock_skew: timedelta,
-                   guard: timedelta) -> None:
+                   guard: timedelta, gap: timedelta = REQUIRED_GAP) -> None:
     """Refuse unless `now` (instance clock) is at or past the release."""
-    rel = release_at(synced_at, clock_skew=clock_skew, guard=guard)
+    rel = release_at(synced_at, clock_skew=clock_skew, guard=guard, gap=gap)
     if _aware(now, "now") < rel:
         raise HoldError(
             f"the prediction was synced by {synced_at.isoformat()}; no clocked block "
@@ -102,12 +110,13 @@ def utc_now() -> datetime:
 def hold(synced_at: datetime, *, clock_skew: timedelta, guard: timedelta,
          now: Callable[[], datetime] = utc_now,
          sleep: Callable[[float], None] = time.sleep,
-         max_wait: timedelta = timedelta(minutes=10)) -> datetime:
+         max_wait: timedelta = timedelta(minutes=10),
+         gap: timedelta = REQUIRED_GAP) -> datetime:
     """Wait until a clocked block may start, and return that instance time.
 
     `max_wait` bounds a hold whose release is implausibly far ahead (a clock
     that jumped, or a receipt from another session)."""
-    rel = release_at(synced_at, clock_skew=clock_skew, guard=guard)
+    rel = release_at(synced_at, clock_skew=clock_skew, guard=guard, gap=gap)
     t = _aware(now(), "now")
     if rel - t > max_wait:
         raise HoldError(f"the release {rel.isoformat()} is more than {max_wait} away "

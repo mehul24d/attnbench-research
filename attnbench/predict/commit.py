@@ -99,15 +99,20 @@ TRAINED_REQUIRED = ("fitted_sum", "learned")
 TRAINED_OPTIONAL = ("fitted_sum_plus_s0",)
 
 # Plan Section 5.1 (Appendix A, 25 Oct 2026): the timed workload starts at
-# least this long after the prediction's sync, and the analysis allows this
-# much skew between the store's clock and the instance's. The one source of
-# the number: the session runners and the analysis both read it from here.
+# least this long after the prediction's sync, and the analysis allows
+# CLOCK_SKEW_ALLOWED_S of skew between the store's clock and the instance's.
+# The one source of the numbers: the session runners and the analysis both
+# read them from here.
 REQUIRED_SYNC_GAP_S = 60.0
-# A session waits the required gap plus this margin after the sync, so the
-# store's whole-second round-up and the upload and read-back times never eat
-# the gap (audit C2, finding 1).
+CLOCK_SKEW_ALLOWED_S = 60.0
+# The analysis requires start >= synced + gap + skew, with the start by the
+# instance's clock and the sync by the store's, so a real gap of 60 s
+# survives the full skew (ruling 1g, 11 Nov 2026; T4.3 read B, finding 8).
+# A session holds that plus this margin, so the store's whole-second
+# round-up and the upload and read-back times never eat the gap (audit C2,
+# finding 1).
 SYNC_WAIT_MARGIN_S = 30.0
-PLANNED_SYNC_WAIT_S = REQUIRED_SYNC_GAP_S + SYNC_WAIT_MARGIN_S
+PLANNED_SYNC_WAIT_S = REQUIRED_SYNC_GAP_S + CLOCK_SKEW_ALLOWED_S + SYNC_WAIT_MARGIN_S
 
 NOT_FITTED_REASON = ("no pairing was banked before this prediction, so no "
                      "fitted baseline exists; Gate A uses the sum and the "
@@ -1088,13 +1093,17 @@ def load_committed(store: Store, remote: str, *,
                    ground_truth_started_at: datetime,
                    clock_skew: timedelta,
                    banked_at: Mapping[str, datetime],
-                   local: Optional[Path | str] = None) -> CommittedPrediction:
+                   local: Optional[Path | str] = None,
+                   sync_gap: timedelta = timedelta(seconds=REQUIRED_SYNC_GAP_S),
+                   ) -> CommittedPrediction:
     """The committed prediction the analysis may score, or a refusal.
 
     `ground_truth_started_at` is when the pairing's first clocked block began
     (`ground_truth_start`). `clock_skew` is the largest difference allowed
     between the store's clock and the instance's; it only ever makes the
-    check stricter; pass `timedelta(seconds=REQUIRED_SYNC_GAP_S)`.
+    check stricter; pass `timedelta(seconds=CLOCK_SKEW_ALLOWED_S)`. The
+    start must be at least `sync_gap` plus the skew after the sync;
+    `sync_gap` is the plan's required gap unless a dry run names its own.
     `banked_at` gives when each pairing's ground truth was banked, for every
     pairing banked so far (`{}` when none is). The pairings the committed
     baselines were trained on must be exactly those banked before the
@@ -1117,11 +1126,14 @@ def load_committed(store: Store, remote: str, *,
     synced_at = max(_check_aware(store.created(remote), "a creation time"),
                     _check_aware(store.created(remote_side), "a creation time"))
 
-    if synced_at + clock_skew >= start:
+    if not isinstance(sync_gap, timedelta) or sync_gap < timedelta(0):
+        raise PredictionCommitError(f"sync_gap must be a timedelta >= 0, got {sync_gap!r}")
+    gap = sync_gap
+    if start < synced_at + gap + clock_skew:
         raise LatePredictionError(
-            f"{filename} was synced by {_iso(synced_at)} (store clock, allowing "
-            f"{clock_skew} of skew), not before the timed workload started at "
-            f"{_iso(start)}; the analysis refuses it (K9)")
+            f"{filename} was synced by {_iso(synced_at)} (store clock); the timed "
+            f"workload started at {_iso(start)}, less than the {gap} required plus "
+            f"{clock_skew} of skew after it; the analysis refuses it (K9)")
     if cp.written_at > synced_at + clock_skew:
         raise PredictionCommitError(
             f"{filename} says it was written at {_iso(cp.written_at)}, after "

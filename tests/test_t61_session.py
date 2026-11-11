@@ -154,7 +154,7 @@ def test_a_dry_run_in_process_matches_and_holds_on_the_virtual_clock(tmp_path):
     synced = S.epoch(json.loads((session / S.RECEIPT).read_text())["synced_at"])
     opened = S.epoch(json.loads((session / S.OPENED).read_text())[0]["opened_at"])
     assert opened - synced >= S.PLANNED_SYNC_WAIT_S
-    assert json.loads((session / S.DRY_CLOCK).read_text())["offset_s"] >= 90
+    assert json.loads((session / S.DRY_CLOCK).read_text())["offset_s"] >= 150
 
 
 # --- the hold ---------------------------------------------------------------------------
@@ -169,8 +169,8 @@ def test_the_hold_waits_out_the_planned_wait(tmp_path):
     t = S.now(session, True)
     _receipt(session, t)
     opened = S.hold_for_sync(session, True)
-    assert opened >= t + 90.0
-    assert opened < t + 90.0 + 5.1           # it steps in at most 5 s
+    assert opened >= t + 150.0                # gap + skew + 30 s (ruling 1g)
+    assert opened < t + 150.0 + 5.1          # it steps in at most 5 s
     assert len(json.loads((session / S.OPENED).read_text())) == 1
 
 

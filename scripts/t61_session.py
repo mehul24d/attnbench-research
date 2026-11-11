@@ -113,15 +113,16 @@ if str(ROOT) not in sys.path:
 PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
 EXIT = {PASSED: 0, FAILED: 1, SKIPPED: 3}
 
-from attnbench.predict.commit import (PLANNED_SYNC_WAIT_S,  # noqa: E402
-                                      REQUIRED_SYNC_GAP_S)
+from attnbench.predict.commit import (CLOCK_SKEW_ALLOWED_S,  # noqa: E402
+                                      PLANNED_SYNC_WAIT_S, REQUIRED_SYNC_GAP_S)
 
 # Plan Section 5.1: the workload starts at least the required gap after the
-# sync, and the analysis allows the same gap as skew between the store's clock
-# and the instance's. Both come from predict/commit.py, the one source; the
-# runner holds for the planned wait, the gap plus 30 s (audit C2, finding 1).
+# sync, and the analysis allows skew between the store's clock and the
+# instance's. Both come from predict/commit.py, the one source; the runner
+# holds for the planned wait, the gap plus the skew plus 30 s (audit C2,
+# finding 1; ruling 1g, 11 Nov 2026).
 MIN_GAP_S = REQUIRED_SYNC_GAP_S
-CLOCK_SKEW_S = REQUIRED_SYNC_GAP_S
+CLOCK_SKEW_S = CLOCK_SKEW_ALLOWED_S
 STRICT_KEY = "first_clocked_block_started_at"   # Appendix A, 27 Oct 2026
 OLD_KEY = "first_timed_block_started_at"        # the 25 Oct 2026 rule; refused
 

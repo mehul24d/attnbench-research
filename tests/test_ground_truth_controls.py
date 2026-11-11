@@ -527,7 +527,7 @@ def test_the_late_prediction_check_reads_this_timestamp_and_refuses_what_is_late
 
     epoch = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc).timestamp()
     rig = Rig()
-    start = 10.0                       # the instance starts its first clocked block 10 s after the file
+    start = 70.0                       # the first clocked block starts 70 s after the file (> the 60 s gap)
     out = rig.run(wall_clock=lambda: epoch + start + rig.clock.t)
     stamp = out["first_clocked_block_started_at"]
     warmup_s = WARMUP * (30.0 + 18.0) / 1e3

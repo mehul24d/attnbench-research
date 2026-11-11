@@ -198,7 +198,7 @@ def test_write_sync_load_round_trip(tmp_path, locked):
     assert receipt.synced_at == T0 + timedelta(seconds=5)
     cp = load_committed(store, receipt.remote,
                         ground_truth_started_at=T0 + timedelta(seconds=6),
-                        clock_skew=NO_SKEW, banked_at={"P1": T0 - timedelta(days=1)},
+                        clock_skew=NO_SKEW, sync_gap=NO_SKEW, banked_at={"P1": T0 - timedelta(days=1)},
                         local=f.path)
     assert cp.pairing == "P2" and cp.sha256 == f.sha256 and cp.queue_depth == 8
     assert cp.synced_at == receipt.synced_at and cp.written_at == T0
@@ -491,7 +491,7 @@ def test_sync_reports_the_later_creation_time(tmp_path):
 def load(store, receipt, start, skew=NO_SKEW, banked_at=None, **kw):
     banked_at = {} if banked_at is None else banked_at
     return load_committed(store, receipt.remote, ground_truth_started_at=start,
-                          clock_skew=skew, banked_at=banked_at, **kw)
+                          clock_skew=skew, banked_at=banked_at, **{"sync_gap": NO_SKEW, **kw})
 
 
 def test_a_prediction_synced_before_the_workload_is_accepted(tmp_path):
@@ -508,8 +508,11 @@ def test_a_prediction_synced_at_or_after_the_start_is_refused(tmp_path,
     store = MemoryStore(Clock(T0))
     sync_at = T0 + timedelta(seconds=10)
     _, r = committed(tmp_path, p1_record(), store, sync_at)
-    with pytest.raises(LatePredictionError, match="refuses it"):
-        load(store, r, sync_at + start_after_sync)
+    for gap in (NO_SKEW, timedelta(seconds=C.REQUIRED_SYNC_GAP_S)):
+        if gap == NO_SKEW and start_after_sync == timedelta(0):
+            continue          # start >= synced + gap + skew accepts equality (ruling 1g)
+        with pytest.raises(LatePredictionError, match="refuses it"):
+            load(store, r, sync_at + start_after_sync, sync_gap=gap)
 
 
 def test_the_clock_skew_only_makes_the_check_stricter(tmp_path):
@@ -517,8 +520,9 @@ def test_the_clock_skew_only_makes_the_check_stricter(tmp_path):
     _, r = committed(tmp_path, p1_record(), store, T0 + timedelta(seconds=1))
     start = T0 + timedelta(seconds=2)
     load(store, r, start, skew=timedelta(milliseconds=999))
+    load(store, r, start, skew=timedelta(seconds=1))        # start >= synced + skew (ruling 1g)
     with pytest.raises(LatePredictionError):
-        load(store, r, start, skew=timedelta(seconds=1))
+        load(store, r, start, skew=timedelta(milliseconds=1001))
     with pytest.raises(PredictionCommitError, match="clock_skew"):
         load(store, r, start, skew=-timedelta(seconds=1))
 
@@ -676,7 +680,7 @@ def test_a_renamed_file_is_refused(tmp_path):
     store.times[new] = store.times[new + ".sha256"] = T0
     with pytest.raises(PredictionCommitError, match="does not match its own"):
         load_committed(store, new, ground_truth_started_at=T0 + timedelta(1),
-                       clock_skew=NO_SKEW, banked_at={})
+                       clock_skew=NO_SKEW, sync_gap=NO_SKEW, banked_at={})
 
 
 def test_a_sidecar_naming_another_file_is_refused(tmp_path):
@@ -789,13 +793,17 @@ def test_gsutil_store_round_trip(tmp_path, fake_gsutil):
     cp = load_committed(GsutilStore(), r.remote,
                         ground_truth_started_at=datetime(2026, 11, 2, 3, 0, 9,
                                                          tzinfo=UTC),
-                        clock_skew=NO_SKEW, banked_at={})
+                        clock_skew=NO_SKEW, sync_gap=NO_SKEW, banked_at={})
     assert cp.sha256 == f.sha256
-    # Created at 03:00:07 and printed so; the workload starting at 03:00:08
-    # could follow it by under a second, so it is refused.
+    # Created at 03:00:07 and printed so; read as 03:00:08, so with the
+    # required gap a workload at 03:01:08 is accepted and one under a second
+    # earlier, which could follow the true creation by under 60 s, is refused.
+    load_committed(GsutilStore(), r.remote,
+                   ground_truth_started_at=datetime(2026, 11, 2, 3, 1, 8, tzinfo=UTC),
+                   clock_skew=NO_SKEW, banked_at={})
     with pytest.raises(LatePredictionError):
         load_committed(GsutilStore(), r.remote,
-                       ground_truth_started_at=datetime(2026, 11, 2, 3, 0, 8,
+                       ground_truth_started_at=datetime(2026, 11, 2, 3, 1, 7, 500000,
                                                         tzinfo=UTC),
                        clock_skew=NO_SKEW, banked_at={})
 

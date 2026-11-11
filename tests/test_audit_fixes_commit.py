@@ -30,10 +30,27 @@ class RoundedStore(MemoryStore):
 
 # --- finding 1: one required gap, a planned wait derived from it ---------------------
 
-def test_the_planned_wait_is_the_required_gap_plus_30_s():
+def test_the_planned_wait_is_the_required_gap_plus_the_skew_plus_30_s():
+    """Ruling 1g (11 Nov 2026): hold = gap + skew + 30 s."""
     assert C.REQUIRED_SYNC_GAP_S == 60.0
+    assert C.CLOCK_SKEW_ALLOWED_S == 60.0
     assert C.SYNC_WAIT_MARGIN_S == 30.0
-    assert C.PLANNED_SYNC_WAIT_S == C.REQUIRED_SYNC_GAP_S + C.SYNC_WAIT_MARGIN_S
+    assert C.PLANNED_SYNC_WAIT_S == \
+        C.REQUIRED_SYNC_GAP_S + C.CLOCK_SKEW_ALLOWED_S + C.SYNC_WAIT_MARGIN_S
+
+
+@pytest.mark.parametrize("after_s, ok", [(120.0, True), (119.999, False), (61.0, False)])
+def test_the_analysis_requires_the_gap_plus_the_skew(tmp_path, after_s, ok):
+    """Ruling 1g: start >= synced + gap + skew (instance clock against store clock)."""
+    store = MemoryStore(Clock(T0))
+    _, receipt = committed(tmp_path, p1_record(), store, T0)
+    kw = dict(ground_truth_started_at=T0 + timedelta(seconds=after_s),
+              clock_skew=timedelta(seconds=C.CLOCK_SKEW_ALLOWED_S), banked_at={})
+    if ok:
+        load_committed(store, receipt.remote, **kw)
+    else:
+        with pytest.raises(LatePredictionError):
+            load_committed(store, receipt.remote, **kw)
 
 
 @pytest.mark.parametrize("upload_ms, readback_ms", [(400, 200), (999, 999), (1, 1)])
@@ -68,7 +85,7 @@ def test_a_pairing_banked_before_the_write_but_left_out_is_refused(tmp_path):
     _, r = committed(tmp_path, p1_record(), store, T0 + timedelta(seconds=1))
     with pytest.raises(PredictionCommitError, match="leaves P0 out"):
         load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                       clock_skew=timedelta(0), banked_at={"P0": T0 - timedelta(hours=1)})
+                       clock_skew=timedelta(0), sync_gap=timedelta(0), banked_at={"P0": T0 - timedelta(hours=1)})
 
 
 def test_a_pairing_named_but_banked_after_the_write_is_still_refused(tmp_path, locked):
@@ -76,7 +93,7 @@ def test_a_pairing_named_but_banked_after_the_write_is_still_refused(tmp_path, l
     _, r = committed(tmp_path, p2_record(), store, T0 + timedelta(seconds=1))
     with pytest.raises(LatePredictionError, match="P1"):
         load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                       clock_skew=timedelta(0), banked_at={"P1": T0 + timedelta(hours=1)})
+                       clock_skew=timedelta(0), sync_gap=timedelta(0), banked_at={"P1": T0 + timedelta(hours=1)})
 
 
 def test_the_named_and_the_banked_sets_agreeing_is_accepted(tmp_path, locked):
@@ -84,7 +101,7 @@ def test_the_named_and_the_banked_sets_agreeing_is_accepted(tmp_path, locked):
     _, r = committed(tmp_path, p2_record(), store, T0 + timedelta(seconds=1))
     # P3 was banked after the write: neither named nor required.
     load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                   clock_skew=timedelta(0),
+                   clock_skew=timedelta(0), sync_gap=timedelta(0),
                    banked_at={"P1": T0 - timedelta(hours=1), "P3": T0 + timedelta(days=1)})
 
 
@@ -94,7 +111,7 @@ def test_a_pairing_banked_within_the_skew_of_the_write_is_refused(tmp_path):
     _, r = committed(tmp_path, p1_record(), store, T0 + timedelta(seconds=1))
     with pytest.raises(PredictionCommitError, match="cannot be ordered"):
         load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=40),
-                       clock_skew=timedelta(seconds=10),
+                       clock_skew=timedelta(seconds=10), sync_gap=timedelta(0),
                        banked_at={"P0": T0 - timedelta(seconds=5)})
 
 
@@ -103,17 +120,17 @@ def test_the_banking_times_must_be_stated(tmp_path):
     _, r = committed(tmp_path, p1_record(), store, T0 + timedelta(seconds=1))
     with pytest.raises(TypeError):
         load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                       clock_skew=timedelta(0))
+                       clock_skew=timedelta(0), sync_gap=timedelta(0))
     with pytest.raises(PredictionCommitError, match="banked_at"):
         load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                       clock_skew=timedelta(0), banked_at=None)
+                       clock_skew=timedelta(0), sync_gap=timedelta(0), banked_at=None)
 
 
 def test_this_pairings_own_banking_time_is_not_a_training_pairing(tmp_path):
     store = MemoryStore(Clock(T0))
     _, r = committed(tmp_path, p1_record(), store, T0 + timedelta(seconds=1))
     load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                   clock_skew=timedelta(0), banked_at={"P1": T0 + timedelta(hours=2)})
+                   clock_skew=timedelta(0), sync_gap=timedelta(0), banked_at={"P1": T0 + timedelta(hours=2)})
 
 
 def test_this_pairings_own_ground_truth_banked_before_its_prediction_is_refused(tmp_path):
@@ -121,7 +138,7 @@ def test_this_pairings_own_ground_truth_banked_before_its_prediction_is_refused(
     _, r = committed(tmp_path, p1_record(), store, T0 + timedelta(seconds=1))
     with pytest.raises(LatePredictionError, match="own ground truth"):
         load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                       clock_skew=timedelta(0), banked_at={"P1": T0 - timedelta(hours=2)})
+                       clock_skew=timedelta(0), sync_gap=timedelta(0), banked_at={"P1": T0 - timedelta(hours=2)})
 
 
 # --- finding 3: H1 and residual scoring take only a loaded prediction ------------------
@@ -154,7 +171,7 @@ def test_residuals_accept_a_loaded_prediction(tmp_path):
     store = MemoryStore(Clock(T0))
     _, r = committed(tmp_path, p1_record(), store, T0 + timedelta(seconds=1))
     cp = load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                        clock_skew=timedelta(0), banked_at={})
+                        clock_skew=timedelta(0), sync_gap=timedelta(0), banked_at={})
     assert C.require_loaded(cp) is cp
     rs = residuals(cp, MEASURED, statistic=cp.statistic, dense_arms=["dense"],
                    relative_floor=0.05)
@@ -181,7 +198,7 @@ def _t61():
 def test_the_p2_runner_takes_the_gap_and_the_wait_from_commit():
     S = _t61()
     assert S.MIN_GAP_S == C.REQUIRED_SYNC_GAP_S
-    assert S.CLOCK_SKEW_S == C.REQUIRED_SYNC_GAP_S
+    assert S.CLOCK_SKEW_S == C.CLOCK_SKEW_ALLOWED_S
     assert S.PLANNED_SYNC_WAIT_S is C.PLANNED_SYNC_WAIT_S
 
 

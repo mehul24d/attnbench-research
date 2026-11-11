@@ -47,7 +47,7 @@ from attnbench.analysis import gate_a as G  # noqa: E402
 from attnbench.figures import results as RS  # noqa: E402
 from attnbench.lock.floors import FloorTable, FloorsError  # noqa: E402
 from attnbench.predict import commit as C  # noqa: E402
-from attnbench.predict.commit import REQUIRED_SYNC_GAP_S  # noqa: E402
+from attnbench.predict.commit import CLOCK_SKEW_ALLOWED_S  # noqa: E402
 from attnbench.predict.recursion import CostModelError  # noqa: E402
 import _load  # noqa: E402
 
@@ -73,7 +73,7 @@ def parser() -> argparse.ArgumentParser:
                     help="v2: JSON, '<length>x<batch>' -> resolution floor (ms)")
     ap.add_argument("--delay-injection", default=None,
                     help="step 12's delay_injection.json (leg 3)")
-    ap.add_argument("--clock-skew-s", type=float, default=REQUIRED_SYNC_GAP_S)
+    ap.add_argument("--clock-skew-s", type=float, default=CLOCK_SKEW_ALLOWED_S)
     ap.add_argument("--out", required=True)
     return ap
 

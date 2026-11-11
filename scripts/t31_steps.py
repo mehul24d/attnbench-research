@@ -89,7 +89,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from attnbench.predict import session_order as so  # noqa: E402
-from attnbench.predict.commit import (PLANNED_SYNC_WAIT_S,  # noqa: E402,F401
+from attnbench.predict.commit import (CLOCK_SKEW_ALLOWED_S, PLANNED_SYNC_WAIT_S,  # noqa: E402,F401
                                       REQUIRED_SYNC_GAP_S, SYNC_WAIT_MARGIN_S)
 
 PASSED, FAILED, SKIPPED, INCOMPLETE = "passed", "failed", "skipped", "incomplete"
@@ -186,7 +186,7 @@ DRY_CONFIG = {
     "flag_reasons": ["hw_slowdown", "sw_thermal_slowdown", "hw_thermal_slowdown",
                      "hw_power_brake_slowdown"],
     "sampler_interval_s": None,
-    "clock_skew_s": 2, "hold_guard_s": 1,
+    "clock_skew_s": 2, "hold_guard_s": 1, "sync_gap_s": 2,
     "prediction_prefix": "predictions/P1-dryrun",
     "delay_injection": {"arm": "dense", "length": 64, "batch": 1,
                         "mechanisms": ["synchronize", "item", "copy_to_host_pinned",
@@ -209,7 +209,7 @@ CPU_BOUNDARY_CONFIG = {
     "resolution_floor_ms": None, "dense_rounds": 2,
     "flag_reasons": DRY_CONFIG["flag_reasons"],
     "sampler_interval_s": None,
-    "clock_skew_s": 2, "hold_guard_s": 1,
+    "clock_skew_s": 2, "hold_guard_s": 1, "sync_gap_s": 2,
     "prediction_prefix": "predictions/P1-cpu-boundary-rehearsal",
     # Leg 3's real path behind the boundary (8 Nov 2026): every mechanism, small
     # counts, the injections a stand-in that does nothing on the CPU.
@@ -751,15 +751,24 @@ def link_costs(seq, row) -> dict[int, float]:
 
 
 def _skew(cfg, dry_run: bool = False) -> tuple[timedelta, timedelta]:
-    """(clock skew, guard): the gap and the margin of `commit`, whose sum is
-    PLANNED_SYNC_WAIT_S. Only a dry run's config may name its own."""
+    """(clock skew, guard): the skew and the margin of `commit`, which with
+    the gap (`_gap`) sum to PLANNED_SYNC_WAIT_S. Only a dry run's config may
+    name its own."""
     if not dry_run:
-        if "clock_skew_s" in cfg or "hold_guard_s" in cfg:
+        if "clock_skew_s" in cfg or "hold_guard_s" in cfg or "sync_gap_s" in cfg:
             raise StepFailed("a real session's hold is PLANNED_SYNC_WAIT_S; its config "
-                             "may not set clock_skew_s or hold_guard_s")
+                             "may not set clock_skew_s, hold_guard_s or sync_gap_s")
         return so.REQUIRED_SKEW, so.PLANNED_GUARD
-    return (timedelta(seconds=cfg.get("clock_skew_s", REQUIRED_SYNC_GAP_S)),
+    return (timedelta(seconds=cfg.get("clock_skew_s", CLOCK_SKEW_ALLOWED_S)),
             timedelta(seconds=cfg.get("hold_guard_s", SYNC_WAIT_MARGIN_S)))
+
+
+def _gap(cfg, dry_run: bool = False) -> timedelta:
+    """The required gap after the sync (`commit`); a dry run's config may
+    shorten it, so its hold does not wait out the real one."""
+    _skew(cfg, dry_run)
+    return so.REQUIRED_GAP if not dry_run else \
+        timedelta(seconds=cfg.get("sync_gap_s", REQUIRED_SYNC_GAP_S))
 
 
 # --- stores --------------------------------------------------------------------
@@ -1928,10 +1937,11 @@ def _receipt(session: Path):
 def step_hold(args, cfg) -> dict:
     """Wait until the instance clock is past synced_at + skew + guard."""
     skew, guard = _skew(cfg, _local(args))
-    so.check_session_skew(skew, guard, dry_run=_local(args))
+    gap = _gap(cfg, _local(args))
+    so.check_session_skew(skew, guard, dry_run=_local(args), gap=gap)
     receipt, _ = _receipt(Path(args.session))
     t0 = so.utc_now()
-    released = so.hold(receipt.synced_at, clock_skew=skew, guard=guard)
+    released = so.hold(receipt.synced_at, clock_skew=skew, guard=guard, gap=gap)
     return {"synced_at": receipt.synced_at.isoformat(), "released_at": released.isoformat(),
             "held_s": round((released - t0).total_seconds(), 3),
             "skew_s": skew.total_seconds(), "guard_s": guard.total_seconds()}
@@ -1997,9 +2007,10 @@ def cmd_ground_truth_one(args) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     skew, guard = _skew(cfg, args.dry_run)
-    so.check_session_skew(skew, guard, dry_run=args.dry_run)
+    gap = _gap(cfg, args.dry_run)
+    so.check_session_skew(skew, guard, dry_run=args.dry_run, gap=gap)
     receipt, _ = _receipt(Path(args.session))
-    so.ready_to_clock(receipt.synced_at, so.utc_now(), clock_skew=skew, guard=guard)
+    so.ready_to_clock(receipt.synced_at, so.utc_now(), clock_skew=skew, guard=guard, gap=gap)
     not_before = time.time()          # before this process's first forward of any kind
     arms_in_group = cfg["gt_groups"][args.group]
     if args.dry_run:
@@ -2226,7 +2237,8 @@ def step_verify(args, cfg) -> dict:
     skew, _guard = _skew(cfg, _local(args))
     try:
         cp = C.load_committed(store, f"{base}/{receipt.remote}", ground_truth_started_at=start,
-                              clock_skew=skew, banked_at={}, local=local)   # P1 is the first pairing: none banked
+                              clock_skew=skew, banked_at={}, local=local,
+                              sync_gap=_gap(cfg, _local(args)))   # P1 is the first pairing: none banked
     except C.PredictionCommitError as e:
         raise StepFailed(f"{type(e).__name__}: {e}")
     return {"start": start.isoformat(), "synced_at": cp.synced_at.isoformat(),
