@@ -28,9 +28,9 @@ sys.path.insert(0, str(ROOT / "scripts" / "figures"))
 from attnbench.analysis import gate_a as G  # noqa: E402
 from attnbench.analysis import gate_a_repeats as GR  # noqa: E402
 from attnbench.figures import results as RS  # noqa: E402
-from attnbench.lock.floors import FloorsError  # noqa: E402
+from attnbench.lock.floors import FloorTable, FloorsError  # noqa: E402
 from attnbench.predict import commit as C  # noqa: E402
-from attnbench.predict.commit import REQUIRED_SYNC_GAP_S  # noqa: E402
+from attnbench.predict.commit import CLOCK_SKEW_ALLOWED_S  # noqa: E402
 from attnbench.predict.recursion import CostModelError  # noqa: E402
 import _load  # noqa: E402
 import gate_a as GA  # noqa: E402
@@ -49,7 +49,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--floors-provisional", action="store_true")
     ap.add_argument("--family-bound", type=float, default=None)
     ap.add_argument("--family-bound-provisional", action="store_true")
-    ap.add_argument("--clock-skew-s", type=float, default=REQUIRED_SYNC_GAP_S)
+    ap.add_argument("--clock-skew-s", type=float, default=CLOCK_SKEW_ALLOWED_S)
     ap.add_argument("--out", required=True)
     return ap
 
@@ -77,7 +77,11 @@ def main(argv=None, store=None) -> int:
             reports[r["name"]] = G.report(
                 label=f"{args.label}: {r['name']}", cp=cp, results=results,
                 dense_arm=args.dense_arm, relative_floor=fl["noise_floor_relative"],
-                resolution_floor_s=fl["resolution_floor_ms"] / 1e3,
+                floors=FloorTable.from_ms(
+                    {k: v["floor_ms"] for k, v in GR.cell_floors(
+                        {s: res for s, (res, _) in gts.items()},
+                        quantile=args.floors_quantile, pairing="P1").items()},
+                    pairing="P1"),
                 family_reports=GA.family_reports(Path(r["cells"]), Path(r["recordings"])),
                 family_bound=args.family_bound,
                 family_bound_provisional=args.family_bound_provisional)

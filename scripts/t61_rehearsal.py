@@ -30,7 +30,8 @@ test:
     cannot run here and is not rehearsed;
   - `predict`: the learned predictor's configuration is a lock value, unset,
     so the rehearsal fits the working one, configuration 4 of
-    `docs/learned_cv_p1_20261109.json` (provisional), and says so;
+    `docs/learned_cv_p1_20261109.json` (provisional), and says so; `late_check`
+    refits the learned values under the same one (ruling 1e, 11 Nov 2026);
   - the grid is 2048 and 8192 at batch 1 (`configs/t61/rehearsal_l4.json`);
     the measurement protocol is the working values', unchanged.
 
@@ -57,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import json
 import re
 import sys
@@ -145,19 +147,25 @@ def working_learned_config():
     return d["winner"], LearnedConfig(target=won["target"], params=dict(won["params"]))
 
 
-def rehearsal_predict(cfg, args) -> dict:
-    """P2's predict, with the learned predictor on the working configuration
-    for this process only."""
+def _on_working_config(body, cfg, args) -> dict:
+    """`body` with the learned predictor on the working configuration for
+    this process only."""
     from attnbench.predict import learned as LM
     index, config = working_learned_config()
     before = LM.LOCKED_CONFIG
     LM.LOCKED_CONFIG = config
     try:
-        found = S.body_predict(cfg, args)
+        found = body(cfg, args)
     finally:
         LM.LOCKED_CONFIG = before
-    return {**found, "learned_config": f"working: configuration {index} of {LEARNED_CV.name}, "
-                                      f"not a lock value"}
+    return {**found, "learned_config": f"working: configuration {index} of "
+                                      f"{LEARNED_CV.name}, not a lock value"}
+
+
+# P2's predict, and its late check, which refits the learned values under the
+# same configuration (ruling 1e, 11 Nov 2026).
+rehearsal_predict = functools.partial(_on_working_config, S.body_predict)
+rehearsal_late_check = functools.partial(_on_working_config, S.body_late_check)
 
 
 def _rehearsal() -> S.SessionConfig:
@@ -166,6 +174,7 @@ def _rehearsal() -> S.SessionConfig:
     reals["mask_gate"] = rehearsal_mask_gate
     fakes["mask_gate"] = S.fake_files("mask_gate.json", verdict="pass", rehearsal=True)
     reals["predict"] = fakes["predict"] = rehearsal_predict
+    reals["late_check"] = fakes["late_check"] = rehearsal_late_check
     cfg = S.SessionConfig(
         task="T6.1-rehearsal", pairing=PAIRING,
         title="The L4 rehearsal of the P2 session runner (exploratory)",

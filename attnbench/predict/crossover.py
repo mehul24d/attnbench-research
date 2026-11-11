@@ -39,6 +39,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 
+from ..lock.floors import FloorTable, FloorsError, as_table
 from .recursion import CostModelError
 
 SPARSE_BECOMES_FASTER = "sparse becomes faster"   # sign + to -
@@ -104,11 +105,19 @@ def _check_grid(lengths: Sequence[int]) -> None:
         raise CostModelError(f"grid lengths must increase: {list(lengths)}")
 
 
-def crossover_brackets(diffs: Sequence[GridDifference], *,
-                       floor: float) -> CrossoverResult:
+def crossover_brackets(diffs: Sequence[GridDifference], *, floors: FloorTable,
+                       batch: int = 1) -> CrossoverResult:
+    """The brackets over `diffs`, each length's sign read against that
+    length's floor at `batch` (the lock's table, Appendix A, 8 Nov 2026;
+    sparse arms run at batch 1)."""
+    try:
+        floors = as_table(floors)
+        per = [floors.at(d.length, batch) for d in diffs]
+    except FloorsError as e:
+        raise CostModelError(str(e)) from e
     lengths = tuple(int(d.length) for d in diffs)
     _check_grid(lengths)
-    signs = tuple(sign_at(d, floor) for d in diffs)
+    signs = tuple(sign_at(d, f) for d, f in zip(diffs, per))
     determined = [(i, s) for i, s in enumerate(signs) if s != 0]
     brackets = []
     for (i, s), (j, t) in zip(determined, determined[1:]):

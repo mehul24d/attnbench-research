@@ -98,7 +98,8 @@ def collect(inp: Inputs, decision: Sequence[PT.DecisionGroup],
             crossover: Optional[Sequence[PT.CrossoverSeries]]) -> Numbers:
     N = Numbers(inp)
     N.add("relative noise floor", inp.relative_floor, "fraction")
-    N.add("resolution floor", inp.resolution_floor_s, "seconds")
+    for k, v in inp.resolution_floors.to_json()["floors_s"].items():
+        N.add(f"resolution floor {k}", v, "seconds")
     N.add("queue depth", inp.cp.queue_depth, "launches")
     N.add("committed cells", len(inp.cp.cells), "count")
     N.add("measured cells", len(inp.measured), "count")

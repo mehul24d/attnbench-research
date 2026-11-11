@@ -113,15 +113,16 @@ if str(ROOT) not in sys.path:
 PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
 EXIT = {PASSED: 0, FAILED: 1, SKIPPED: 3}
 
-from attnbench.predict.commit import (PLANNED_SYNC_WAIT_S,  # noqa: E402
-                                      REQUIRED_SYNC_GAP_S)
+from attnbench.predict.commit import (CLOCK_SKEW_ALLOWED_S,  # noqa: E402
+                                      PLANNED_SYNC_WAIT_S, REQUIRED_SYNC_GAP_S)
 
 # Plan Section 5.1: the workload starts at least the required gap after the
-# sync, and the analysis allows the same gap as skew between the store's clock
-# and the instance's. Both come from predict/commit.py, the one source; the
-# runner holds for the planned wait, the gap plus 30 s (audit C2, finding 1).
+# sync, and the analysis allows skew between the store's clock and the
+# instance's. Both come from predict/commit.py, the one source; the runner
+# holds for the planned wait, the gap plus the skew plus 30 s (audit C2,
+# finding 1; ruling 1g, 11 Nov 2026).
 MIN_GAP_S = REQUIRED_SYNC_GAP_S
-CLOCK_SKEW_S = REQUIRED_SYNC_GAP_S
+CLOCK_SKEW_S = CLOCK_SKEW_ALLOWED_S
 STRICT_KEY = "first_clocked_block_started_at"   # Appendix A, 27 Oct 2026
 OLD_KEY = "first_timed_block_started_at"        # the 25 Oct 2026 rule; refused
 
@@ -135,8 +136,10 @@ EXPLORATORY = "EXPLORATORY.md"
 # Set by scripts/session_exit.sh, whose exit path syncs and halts; a real
 # session refuses to start without it (researcher's item 4, 8 Nov 2026).
 EXIT_WRAPPER_ENV = "ATTNBENCH_SESSION_EXIT"
-# What a later block's preflight must share with every block it imports.
-BLOCK_IDENTITY = ("instance_type", "gpu_name", "cpu_model")
+# What a later block's preflight must share with every block it imports;
+# a field missing on either side refuses (ruling 1d, 11 Nov 2026).
+BLOCK_IDENTITY = ("instance_type", "gpu_name", "cpu_model", "zone", "boot_image", "driver",
+                  "bootstrap_sha256")
 
 
 class Skip(Exception):
@@ -346,6 +349,9 @@ class DirStore:
     def get(self, remote: str) -> bytes:
         return self._path(remote).read_bytes()
 
+    def exists(self, remote: str) -> bool:
+        return self._path(remote).exists()
+
     def created(self, remote: str) -> datetime:
         return datetime.fromtimestamp(read_json(self.index, {})[remote], tz=timezone.utc)
 
@@ -376,6 +382,11 @@ def store_for(args):
     """(store, prefix) where prefix + receipt path is the remote URI."""
     if args.dry_run:
         session = Path(args.session)
+        # a receipt names the dry store its prediction is in (a redone block's
+        # is its discarded attempt's)
+        held = (read_json(session / RECEIPT) or {}).get("dry_store")
+        if held:
+            return DirStore(Path(held), lambda: now(session, True)), DirStore.PREFIX
         # a block reads the prediction from the dry store of the block that committed it,
         # as every real block reads the one bucket
         b = load_manifest(session).get("block") or {}
@@ -383,6 +394,51 @@ def store_for(args):
         return DirStore(home / "dry_store", lambda: now(session, True)), DirStore.PREFIX
     from attnbench.predict.commit import GsutilStore
     return GsutilStore(), results_bucket() + "/"
+
+
+def ledger_for(cfg: SessionConfig, args, pairing: Optional[str] = None):
+    """The pairing's prediction ledger (`attnbench.predict.ledger`; ruling 1c,
+    11 Nov 2026): in the bucket beside the predictions, or for a dry run in
+    a store beside the session directory, shared by every dry session of the
+    pairing run side by side."""
+    from attnbench.predict.ledger import Ledger
+    if args.dry_run:
+        session = Path(args.session)
+        return Ledger(DirStore(session.parent / "dry_pairing_store",
+                               lambda: now(session, True)), DirStore.PREFIX,
+                      pairing or cfg.pairing)
+    from attnbench.predict.commit import GsutilStore
+    return Ledger(GsutilStore(), results_bucket() + "/", pairing or cfg.pairing)
+
+
+def banked_times(cfg: SessionConfig, args) -> tuple:
+    """({pairing: banked at}, {pairing: training file sha256}) for every
+    pairing this one is trained on. A real run reads both from each pairing's
+    ledger entry (ruling 1e, 11 Nov 2026: the store's creation time of
+    `banked.json`, written by `scripts/bank_pairing.py`) and refuses a typed
+    --banked-at; a dry run takes --banked-at as given."""
+    if args.dry_run:
+        return parse_banked_at(args.banked_at), {}
+    if args.banked_at:
+        raise StepFailed("a real run reads each banking time from the pairing ledger "
+                         "(ruling 1e, 11 Nov 2026); --banked-at is for a dry run only")
+    times, files = {}, {}
+    for p in cfg.banked:
+        got = ledger_for(cfg, args, p).banked()
+        if got is None:
+            raise StepFailed(f"{p} has no banked entry in the pairing ledger; bank it with "
+                             f"scripts/bank_pairing.py before {cfg.pairing} predicts")
+        times[p], files[p] = got[0], got[1]["training_file_sha256"]
+    return times, files
+
+
+def ground_truth_cells(session: Path, block: Optional[dict]) -> list:
+    """The ledger cells this ground-truth process clocks: a block's own and
+    its anchor, else every cell the session's prediction covers."""
+    from attnbench.predict.ledger import cell_name
+    if block:
+        return sorted({cell_name(c[0], c[2], c[3]) for c in block["run_cells"]})
+    return list((read_json(session / RECEIPT) or {}).get("cells") or ())
 
 
 # --- plan statuses ------------------------------------------------------------------------
@@ -603,7 +659,9 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
     problems += vproblems
     findings = {"provisioning_model": row.get("provisioning_model"),
                 "instance_type": row.get("instance_type"), "gpu_name": row.get("gpu_name"),
-                "cpu_model": row.get("cpu_model"),
+                "cpu_model": row.get("cpu_model"), "zone": row.get("zone"),
+                "boot_image": row.get("boot_image"), "driver": row.get("driver"),
+                "bootstrap_sha256": row.get("bootstrap_sha256"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
                 "triton": tri.stdout.strip() or None, "gpu_variants": variants,
                 "imports_checked": sorted(found["required"]),
@@ -636,7 +694,9 @@ def fake_preflight(cfg: SessionConfig, args) -> dict:
     write_json(Path(args.out) / "host_speed_start.json", row)
     findings = {"provisioning_model": row["provisioning_model"], "fake": True,
                 "instance_type": row["instance_type"], "gpu_name": row["gpu_name"],
-                "cpu_model": os.environ.get("ATTNBENCH_FAKE_CPU_MODEL", "fake cpu")}
+                "cpu_model": os.environ.get("ATTNBENCH_FAKE_CPU_MODEL", "fake cpu"),
+                "zone": "dry-zone", "boot_image": "dry-image", "driver": "dry",
+                "bootstrap_sha256": "0" * 64}
     if cfg.preflight_findings is not None:
         findings.update(cfg.preflight_findings(row))
     return findings
@@ -797,15 +857,20 @@ def fake_record(cfg: SessionConfig, written_at: datetime) -> dict:
 
 
 P1_TRAINING = ROOT / "results" / "p1_training" / "p1_training.json.gz"
+P2_TRAINING = ROOT / "results" / "p2_training" / "p2_training.json.gz"
 
 
-def training_rows(cfg: SessionConfig, path: Optional[Path] = None) -> list:
+def training_rows(cfg: SessionConfig, path: Optional[Path] = None,
+                  p2_path: Optional[Path] = None) -> list:
     """The banked pairings' ground-truth rows this pairing's committed fits
     train on. P1's are its training file (`attnbench.predict.p1_training`,
     researcher's decision, 8 Nov 2026: one row per cell, both repeats pooled);
-    no later pairing's rows are banked in a form a fit reads yet."""
+    P2's, for P4, are P2's training file (`attnbench.predict.p2_training`,
+    ruling 1h, 11 Nov 2026), whose sha256 is the pairing ledger's P2 entry
+    (`training_files`, checked against the ledger by `real_record`)."""
     from attnbench.predict import p1_training as PT
-    later = [p for p in cfg.banked if p != PT.PAIRING]
+    from attnbench.predict import p2_training as P2T
+    later = [p for p in cfg.banked if p not in (PT.PAIRING, P2T.PAIRING)]
     if later:
         raise NotBuilt("T6.1", f"{later}'s training rows, which {cfg.pairing} is also trained on")
     path = Path(path or P1_TRAINING)
@@ -815,13 +880,38 @@ def training_rows(cfg: SessionConfig, path: Optional[Path] = None) -> list:
         _, why = p1_training_check(path)
         if why:
             raise StepFailed(why)
+    # The rows carry the model shape the learned predictor's features
+    # need (attempt 2 of the L4 rehearsal stopped at `predict` without it).
+    from attnbench.predict.intensity import shape_for
     try:
-        # The rows carry the model shape the learned predictor's features
-        # need (attempt 2 of the L4 rehearsal stopped at `predict` without it).
-        from attnbench.predict.intensity import shape_for
-        return PT.rows_from_record(PT.load(path), model=shape_for("primary"))
-    except PT.TrainingRowsError as e:
+        rows = PT.rows_from_record(PT.load(path), model=shape_for("primary"))
+    except (PT.TrainingRowsError, OSError, ValueError, KeyError, TypeError) as e:
         raise StepFailed(str(e)) from e
+    if P2T.PAIRING not in cfg.banked:
+        return rows
+    p2 = Path(p2_path or P2_TRAINING)
+    if not p2.exists():
+        raise StepFailed(f"no P2 training file at {p2}: build it with scripts/p2_training.py "
+                         f"and fetch it (its sha256 is the pairing ledger's P2 entry)")
+    try:
+        return rows + P2T.rows_from_record(P2T.load(p2), model=shape_for("primary"))
+    except (P2T.TrainingRowsError, OSError, ValueError, KeyError, TypeError) as e:
+        raise StepFailed(str(e)) from e
+
+
+def training_files(cfg: SessionConfig) -> dict:
+    """{pairing: sha256} of the training files `training_rows` reads."""
+    import hashlib
+    out = {}
+    for p, path, how in (("P1", P1_TRAINING, "its sha256 is the lock's"),
+                         ("P2", P2_TRAINING, "its sha256 is the pairing ledger's P2 entry")):
+        if p not in cfg.banked:
+            continue
+        path = Path(path)
+        if not path.exists():
+            raise StepFailed(f"no {p} training file at {path}: fetch it ({how})")
+        out[p] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return out
 
 
 def real_record(cfg: SessionConfig, args, written_at: datetime) -> dict:
@@ -833,14 +923,22 @@ def real_record(cfg: SessionConfig, args, written_at: datetime) -> dict:
     from attnbench.predict import baselines as BL
     from attnbench.predict import learned as LM
     from attnbench.predict.training import committed_training_set
-    banked = parse_banked_at(args.banked_at)
+    from attnbench.predict import commit as C
+    banked, files = banked_times(cfg, args)
     missing = [p for p in cfg.banked if p not in banked]
     if missing:
         raise StepFailed(f"{cfg.pairing} is trained on {list(cfg.banked)}; give each one's "
                          f"banking time with --banked-at (missing: {missing})")
-    ts = committed_training_set(training_rows(cfg), cfg.pairing, cfg.banked)
+    rows = training_rows(cfg)
+    read = training_files(cfg)
+    if not args.dry_run and files != read:
+        raise StepFailed(f"the pairing ledger names training files {files}; this session "
+                         f"reads {read}")
+    ts = committed_training_set(rows, cfg.pairing, cfg.banked)
+    # Ruling 1e: the record names the files and the rows it was fitted on.
     fitted = {"banked": list(cfg.banked), "fitted_sum": BL.fit_fitted_sum(ts),
-              "fitted_sum_plus_s0": BL.fit_fitted_sum(ts, add_s0=True)}
+              "fitted_sum_plus_s0": BL.fit_fitted_sum(ts, add_s0=True),
+              "training_files": read, "rows_sha256": C.training_rows_sha256(ts.rows)}
     if LM.LOCKED_CONFIG is None:
         raise StepFailed("the learned predictor's configuration is a lock value (Gate B): "
                          "learned.LOCKED_CONFIG is not set, so no committed prediction can "
@@ -869,6 +967,30 @@ def body_predict(cfg: SessionConfig, args, *, record_fn=None) -> dict:
         record_fn = (lambda: fake_record(cfg, written_at)) if args.dry_run else \
             (lambda: real_record(cfg, args, written_at))
     record = record_fn()
+    # The pairing's ledger first (ruling 1c, 11 Nov 2026): one prediction per
+    # cell, none after any ground truth of the cell has started, and a redone
+    # block's re-prediction bit for bit its discarded attempt's.
+    from attnbench.predict import ledger as LG
+    ledger = ledger_for(cfg, args)
+    cells = LG.record_cells(record)
+    digest = LG.predictions_digest(record)
+    bid = (load_manifest(session).get("block") or {}).get("id")
+    try:
+        original = ledger.check_prediction(cells, digest, block=bid)
+    except LG.LedgerError as e:
+        raise StepFailed(str(e))
+    if original is not None:
+        # Nothing new is committed: the session uses the original file, synced
+        # before any ground truth; the re-prediction is kept beside it.
+        write_json(Path(args.out) / "re_prediction.json", record)
+        local = Path(args.out) / Path(original["remote_path"]).name
+        out = {**original["receipt"], "local": str(local), "re_predicted": True}
+        write_json(session / RECEIPT, out)
+        store, prefix = store_for(args)          # the original's store, from the receipt
+        local.write_bytes(store.get(prefix + original["remote_path"]))
+        write_json(Path(args.out) / RECEIPT, out)
+        write_json(Path(args.out) / T31_RECEIPT, {**original["t31_receipt"], "local": local.name})
+        return {k: out[k] for k in ("sha256", "remote_path", "synced_at", "written_at")}
     committed = C.write_prediction(record, Path(args.out))
     store, prefix = store_for(args)
     rel = f"predictions/{cfg.pairing}/{session.name}"
@@ -877,12 +999,22 @@ def body_predict(cfg: SessionConfig, args, *, record_fn=None) -> dict:
            "local": str(committed.path), "remote_path": f"{rel}/{committed.path.name}",
            "synced_at": receipt.synced_at.isoformat(timespec="microseconds"),
            "written_at": record["written_at"], "store": "dir" if args.dry_run else "gcs",
-           "dry_run": args.dry_run}
+           "dry_run": args.dry_run, "cells": cells}
+    if args.dry_run:
+        out["dry_store"] = str(store.root)
+    t31 = {**receipt.to_dict(), "local": committed.path.name}
+    try:
+        ledger.record_prediction(cells, {
+            "session": session.name, "block": bid, "sha256": committed.sha256,
+            "predictions_digest": digest, "remote_path": out["remote_path"],
+            "receipt": out, "t31_receipt": t31})
+    except LG.LedgerError as e:
+        raise StepFailed(str(e))
     write_json(session / RECEIPT, out)
     write_json(Path(args.out) / RECEIPT, out)
     # T3.1's steps read the receipt at <predict>/receipt.json, in its own form
     # (`session_order.receipt_from_dict`, with the file's name in `local`).
-    write_json(Path(args.out) / T31_RECEIPT, {**receipt.to_dict(), "local": committed.path.name})
+    write_json(Path(args.out) / T31_RECEIPT, t31)
     return {k: out[k] for k in ("sha256", "remote_path", "synced_at", "written_at")}
 
 
@@ -1098,6 +1230,13 @@ def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
     if harness is None:
         harness = FakeHarness(session) if args.dry_run else real_harness
     block = block_plan(session)
+    # The pairing's ledger records the start before anything is clocked (ruling 1c).
+    gt_cells = ground_truth_cells(session, block)
+    if not gt_cells:
+        raise StepFailed("no ledger cells for this ground truth: the receipt names none")
+    ledger_for(cfg, args).record_ground_truth_start(
+        gt_cells, {"session": session.name, "block": (block or {}).get("id"),
+                   "opened_at": iso(opened_at)})
     result = harness(cfg, args, block) if block else harness(cfg, args)
     ended = now(session, args.dry_run)
     if block:
@@ -1158,12 +1297,21 @@ def body_late_check(cfg: SessionConfig, args) -> dict:
     if receipt is None or start is None:
         raise StepFailed("no receipt or no ground-truth start in this session")
     store, prefix = store_for(args)
-    banked = parse_banked_at(args.banked_at)
+    banked, files = banked_times(cfg, args)
+    # The learned values are refitted from the rows (ruling 1e); a dry
+    # record fits nothing.
+    rows = training_rows(cfg) if cfg.banked and not args.dry_run else None
+    # The pairing's earliest ground-truth start over the prediction's cells
+    # (ruling 1c), not only this session's.
+    first = ledger_for(cfg, args).earliest_start(receipt.get("cells") or ())
+    if first is not None:
+        start = min(start, first.timestamp())
     try:
         cp = C.load_committed(store, prefix + receipt["remote_path"],
                               ground_truth_started_at=datetime.fromtimestamp(start, tz=timezone.utc),
                               clock_skew=timedelta(seconds=CLOCK_SKEW_S),
-                              banked_at=banked, local=receipt["local"])
+                              banked_at=banked, local=receipt["local"],
+                              training_rows=rows, training_files=files or None)
     except C.PredictionCommitError as e:
         raise StepFailed(f"the analysis would refuse this prediction: {e}")
     if cp.sha256 != receipt["sha256"]:
@@ -1627,6 +1775,17 @@ def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, d
         if now is not None and manifest.get("boot_id") is None:
             manifest["boot_id"] = now
             write_json(session / "manifest.json", manifest)
+    # One commit per session or block (ruling 1c, 11 Nov 2026): `--from` at
+    # another commit refuses.
+    head = code_commit(dry_run)
+    if manifest["attempts"] and manifest.get("code_commit") not in (None, head):
+        print(f"REFUSING --from {start}: this session began at commit "
+              f"{manifest['code_commit']} and HEAD is {head}; a session (or block) runs one "
+              f"commit: start a new one", file=sys.stderr)
+        return 2
+    if manifest.get("code_commit") is None:
+        manifest["code_commit"] = head
+        write_json(session / "manifest.json", manifest)
     done = last_status(manifest)
     total = len(cfg.steps)
     for step in steps[steps.index(start):]:
@@ -1765,16 +1924,49 @@ def start_block(cfg: SessionConfig, session: Path, manifest: dict, block: BlockR
 
 def block_identity_problems(cfg: SessionConfig, session: Path, block: BlockRun) -> list:
     """This block's preflight against every block it imported: the same
-    instance type, GPU and CPU model, or the blocks are not one pairing."""
+    instance type, GPU, CPU model, zone, boot image, driver and bootstrap
+    script, each recorded on both sides, or the blocks are not one pairing."""
     mine = (read_json(step_dir(session, "preflight", cfg) / "result.json") or {}).get("findings", {})
-    out = []
+    out = [f"{k} is not recorded here" for k in BLOCK_IDENTITY if mine.get(k) is None]
     for bid, d in block.imports:
         theirs = (read_json(step_dir(Path(d), "preflight", cfg) / "result.json") or {}) \
             .get("findings", {})
         for k in BLOCK_IDENTITY:
-            if mine.get(k) != theirs.get(k):
+            if theirs.get(k) is None:
+                out.append(f"{k} is not recorded in block {bid}")
+            elif mine.get(k) is not None and mine.get(k) != theirs.get(k):
                 out.append(f"{k} is {mine.get(k)!r} here and {theirs.get(k)!r} in block {bid}")
     return out
+
+
+def real_block_lock_problem(cfg: SessionConfig, lock: dict, spec,
+                            lock_file: Optional[Path] = None) -> Optional[str]:
+    """Why a real block may not run from `lock`, or None (ruling 1d, 11 Nov
+    2026): it must be a complete lock (`checklist.check`) and its block spec
+    the one in `docs/lock_values.json`, the lock every other step reads."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    from attnbench.lock import blocks as B
+    from attnbench.lock import checklist
+    try:
+        res = checklist.check(lock, checklist.PLAN.read_text(encoding="utf-8"))
+    except checklist.LockListError as e:
+        return f"a real block runs from a complete lock (T4.1): {e}"
+    if not res.complete:
+        return (f"a real block runs from a complete lock (T4.1); this file is not one "
+                f"({len(res.missing)} missing, {len(res.unset)} unset, "
+                f"{len(res.mistyped)} mistyped, plan matches: {res.plan_matches})")
+    p = Path(lock_file or st.LOCK_FILE)
+    held = read_json(p)
+    if held is None:
+        return f"no lock at {p} to check the block spec against"
+    try:
+        theirs = B.parse(held, cfg.pairing)
+    except (ValueError, B.BlockSpecError) as e:
+        return f"{p.name}: {e}"
+    if theirs != spec:
+        return f"the block spec differs from {p.name}'s, the lock every step reads"
+    return None
 
 
 def block_run(cfg: SessionConfig, args) -> tuple:
@@ -1788,6 +1980,10 @@ def block_run(cfg: SessionConfig, args) -> tuple:
         spec = B.parse(json.loads(raw), cfg.pairing)
     except (ValueError, B.BlockSpecError) as e:
         return None, str(e)
+    if not args.dry_run and not cfg.exploratory:     # a rehearsal runs its own spec
+        why = real_block_lock_problem(cfg, json.loads(raw), spec)
+        if why:
+            return None, why
     problems = B.check(spec, cfg.names, cfg.boot_steps, complete=not args.dry_run)
     if problems:
         return None, f"the block spec in {args.lock}: " + "; ".join(problems)
@@ -1899,13 +2095,13 @@ def start_refusal(cfg: SessionConfig, args) -> Optional[str]:
                     f"was built, got {sha!r}")
     if not args.dry_run:
         try:
-            banked = parse_banked_at(args.banked_at)
+            banked, _ = banked_times(cfg, args)
         except (StepFailed, ValueError) as e:
             return str(e)
         missing = [p for p in cfg.banked if p not in banked]
         if missing:
-            return (f"{cfg.pairing} is trained on {list(cfg.banked)}: give each banking "
-                    f"time with --banked-at PAIRING=ISO (missing: {missing})")
+            return (f"{cfg.pairing} is trained on {list(cfg.banked)}: each is banked in the "
+                    f"pairing ledger first (missing: {missing})")
     return None
 
 
@@ -1928,10 +2124,10 @@ def timed_path_refusal(lock_path=None, commit: str = "HEAD") -> Optional[str]:
     want = ((lock.get("values") or {}).get(TIMED_PATH_ITEM) or {}).get("value")
     if not (isinstance(want, str) and re.fullmatch(r"[0-9a-f]{64}", want)):
         return f"{p.name}'s timed-path identity is {want!r}, not a 64-hex sha256"
-    got = timed_path.path_hash(commit)["sha256"]
+    got = timed_path.pin_hash(commit)["sha256"]       # ruling 1f: whole files + configs
     if got != want:
         return (f"the timed path at {commit} hashes to {got}, the lock pins {want}: "
-                f"`python3 scripts/timed_path.py <locked commit> {commit}` names what changed")
+                f"`python3 scripts/timed_path.py <locked commit> {commit} --pin` names what changed")
     return None
 
 

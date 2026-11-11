@@ -70,7 +70,7 @@ def committed(tmp_path, cells, Q=4, *, loaded=False, **kw):
     store = MemoryStore(Clock(T0 + timedelta(seconds=1)))
     receipt = sync_prediction(f, store, "gs://bucket/predictions/P1")
     return load_committed(store, receipt.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
-                          clock_skew=timedelta(0), banked_at={})
+                          clock_skew=timedelta(0), sync_gap=timedelta(0), banked_at={})
 
 
 # --------------------------------------------------------------------------

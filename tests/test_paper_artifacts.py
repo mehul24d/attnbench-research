@@ -174,7 +174,7 @@ def test_an_interval_not_centred_on_the_committed_difference_is_refused(setup):
         PI.build_inputs(PI.read_spec(spec), spec.parent, cp)
 
 
-@pytest.mark.parametrize("field", ["relative_floor", "resolution_floor_s",
+@pytest.mark.parametrize("field", ["relative_floor", "resolution_floors",
                                    "floor_provisional"])
 def test_lock_values_have_no_default(setup, field):
     cp, _, _, _, tmp = setup
@@ -413,8 +413,9 @@ def test_numbers_tex_matches_numbers_json(setup):
     n = f"abDecisionMissedProfitableRecursionMMinusSmall{letter[F.CP2]}Oracle"
     assert macros[n] == "1"
     assert macros["abRelativeNoiseFloor"] == "5.00"
-    assert macros["abResolutionFloor"] == "0.5000"
-    assert m["floors"] == {"relative": 0.05, "resolution_s": 0.5, "provisional": True}
+    assert macros["abResolutionFloorFourXOne"] == "0.5000"   # per (length, batch)
+    assert m["floors"] == {"relative": 0.05, "provisional": True, "resolution_s": {
+        "pairing": "P1", "floors_s": {"4x1": 0.5, "8x1": 0.5, "16x1": 0.5}}}
 
 
 def test_two_numbers_with_one_name_are_refused(setup):

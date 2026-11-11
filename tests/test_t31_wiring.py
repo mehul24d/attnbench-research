@@ -109,7 +109,7 @@ def test_the_floor_is_the_config_s_or_the_session_s_never_invented(tmp_path):
     d.mkdir(parents=True)
     (d / "session_floor.json").write_text(json.dumps({"floor_ms": 0.7}))
     assert st.session_floor_ms({"resolution_floor_ms": None}, tmp_path) == 0.7
-    assert st.rerun_budget({"max_rerun_rounds": None}) == 0
+    assert st.rerun_budget({"pairing": "P1", "max_rerun_rounds": None}) == 0
     assert st.rerun_budget({"max_rerun_rounds": 2}) == 2
 
 
@@ -605,14 +605,18 @@ def test_a_trained_prediction_with_the_learned_baseline_builds_from_the_session_
     rec = PT.to_record(PT.training_rows(a, b), TP.HW)
     ts = committed_training_set(PT.rows_from_record(rec, model=shape_for("primary")), "P2", ["P1"])
     fitted = {"banked": ["P1"], "fitted_sum": BL.fit_fitted_sum(ts),
-              "learned": LM.fit_learned(ts, conf, model_factory=lambda params: Mean())}
+              "learned": LM.fit_learned(ts, conf, model_factory=lambda params: Mean()),
+              # ruling 1e: the training file and rows each fit was trained on
+              "training_files": {"P1": "e" * 64}, "rows_sha256": C.training_rows_sha256(ts.rows)}
     out = st.build_prediction(cfg, session, dry_run=False, baselines=fitted)
     assert out["cells"] and all("learned" in c["predictions"] for c in out["cells"])
     # Launch 3 stopped here: the rehearsal runs P1's config as P2-R, and the
     # record took the config's name, P1, trained on P1.
     ts = committed_training_set(PT.rows_from_record(rec, model=shape_for("primary")), "P2-R", ["P1"])
     fitted = {"banked": ["P1"], "fitted_sum": BL.fit_fitted_sum(ts),
-              "learned": LM.fit_learned(ts, conf, model_factory=lambda params: Mean())}
+              "learned": LM.fit_learned(ts, conf, model_factory=lambda params: Mean()),
+              # ruling 1e: the training file and rows each fit was trained on
+              "training_files": {"P1": "e" * 64}, "rows_sha256": C.training_rows_sha256(ts.rows)}
     with pytest.raises(C.PredictionCommitError, match="P1 is listed as banked before"):
         st.build_prediction({**cfg, "pairing": "P1"}, session, dry_run=False, baselines=fitted)
     out = st.build_prediction({**cfg, "pairing": "P1"}, session, dry_run=False,

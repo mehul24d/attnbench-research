@@ -76,15 +76,17 @@ def test_a_session_without_the_recorded_wheel_hash_is_refused_at_the_start(sha):
     assert "--fa3-sha256" in S.start_refusal(T64, a)
 
 
-def test_a_real_start_needs_both_banking_times(monkeypatch):
+def test_a_real_start_needs_both_banking_times(monkeypatch, tmp_path):
+    from test_t61_session import bank
     monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
     monkeypatch.setattr(S, "tree_clean", lambda: True)
     monkeypatch.setattr(S, "timed_path_refusal", lambda: None)
-    one = Namespace(dry_run=False, banked_at=["P1=2026-11-20T00:00:00+00:00"], fa3_sha256=SHA)
-    assert "missing: ['P2']" in S.start_refusal(T64, one)
-    both = Namespace(dry_run=False, fa3_sha256=SHA,
-                     banked_at=["P1=2026-11-20T00:00:00+00:00", "P2=2026-11-25T00:00:00+00:00"])
-    assert S.start_refusal(T64, both) is None
+    a = Namespace(dry_run=False, banked_at=[], fa3_sha256=SHA)
+    bank(monkeypatch, tmp_path / "one", P1=("2026-11-20T00:00:00+00:00", "e" * 64))
+    assert "P2 has no banked entry" in S.start_refusal(T64, a)
+    bank(monkeypatch, tmp_path / "both", P1=("2026-11-20T00:00:00+00:00", "e" * 64),
+         P2=("2026-11-25T00:00:00+00:00", "d" * 64))
+    assert S.start_refusal(T64, a) is None
 
 
 def _fake_tree(tmp_path, monkeypatch):
@@ -181,14 +183,22 @@ def test_the_masks_step_records_p4s_triton_masks_on_p2s_cells_and_compares(tmp_p
     assert r["verdict"] == "fail" and r["decision"] == MG.P6_RECORDS
 
 
-def test_the_real_record_needs_both_banking_times(tmp_path):
+def test_the_real_record_needs_both_banking_times(tmp_path, monkeypatch):
     from datetime import datetime, timezone
+    from test_t61_session import bank
     a = args_for(tmp_path)
-    a.banked_at = ["P1=2026-11-19T00:00:00+00:00"]
-    with pytest.raises(S.StepFailed, match=r"missing: \['P2'\]"):
+    bank(monkeypatch, tmp_path / "one", P1=("2026-11-19T00:00:00+00:00", "e" * 64))
+    with pytest.raises(S.StepFailed, match=r"P2 has no banked entry"):
         S.real_record(T64, a, datetime(2026, 12, 1, tzinfo=timezone.utc))
-    a.banked_at += ["P2=2026-11-25T00:00:00+00:00"]
-    with pytest.raises(S.NotBuilt, match=r"\['P2'\]'s training rows"):
+    bank(monkeypatch, tmp_path / "both", P1=("2026-11-19T00:00:00+00:00", "e" * 64),
+         P2=("2026-11-25T00:00:00+00:00", "d" * 64))
+    # Ruling 1h: P4 trains on P2's training file too, which is not there yet.
+    from test_t61_session import _lock_training, _p1_training_file
+    (tmp_path / "p1").mkdir()
+    monkeypatch.setattr(S, "P1_TRAINING", _lock_training(
+        tmp_path, monkeypatch, _p1_training_file(tmp_path / "p1")))
+    monkeypatch.setattr(S, "P2_TRAINING", tmp_path / "absent.json.gz")
+    with pytest.raises(S.StepFailed, match=r"no P2 training file"):
         S.real_record(T64, a, datetime(2026, 12, 1, tzinfo=timezone.utc))
 
 
@@ -408,21 +418,26 @@ def test_the_halt_schedules_a_shutdown_and_fails_loudly_if_it_cannot(tmp_path, m
 def test_p4s_staged_inputs_are_refused_at_step_one(tmp_path, monkeypatch):
     """P4 checks at step 1 what P2 does (adviser's ruling 4 of the 11 Nov 2026
     paste): the lock's bound and P2's masks for `masks`, the P1 training file
-    at the lock's sha256, P2's training rows and the learned configuration for
-    `predict`. P2's rows are not built yet (T6.1), so a real P4 refuses here."""
+    at the lock's sha256, P2's training file (ruling 1h, 11 Nov 2026: its own
+    sha256, and the pairing ledger's P2 entry) and the learned configuration
+    for `predict`."""
     import hashlib
     from types import SimpleNamespace
     import t31_steps as st
     from attnbench.lock import checklist
     from attnbench.predict import learned as LM
+    from attnbench.predict import p2_training as P2T
+    from test_t61_session import _p1_training_file, _sha, bank
     assert T64.staged is P4.p4_staged_inputs
     session = tmp_path / "s"
     session.mkdir()
-    training = tmp_path / "p1_training.json.gz"
-    training.write_bytes(b"rows")
+    (tmp_path / "p1").mkdir()
+    training = _p1_training_file(tmp_path / "p1")
     lock = tmp_path / "lock_values.json"
     monkeypatch.setattr(st, "LOCK_FILE", lock)
     monkeypatch.setattr(S, "P1_TRAINING", training)
+    p2 = tmp_path / "p2_training.json.gz"
+    monkeypatch.setattr(S, "P2_TRAINING", p2)
     monkeypatch.setattr(checklist, "check", lambda lk, text: SimpleNamespace(complete=True))
     monkeypatch.setattr(S, "banked_masks", lambda base: [1, 2])
     monkeypatch.setattr(LM, "LOCKED_CONFIG", LM.LearnedConfig("seconds"))
@@ -431,17 +446,34 @@ def test_p4s_staged_inputs_are_refused_at_step_one(tmp_path, monkeypatch):
         lock.write_text(json.dumps({"p1_training": {"file_sha256": sha}, "values": {
             "mask_gate_bound": {"value": 0.01},
             "compiled_versus_eager_density_flag_tolerance": {"value": 0.01}}}))
-    write(hashlib.sha256(b"rows").hexdigest())
+    write(_sha(training))
     args = Namespace(session=str(session), dry_run=False)
     found, bad = P4.p4_staged_inputs(T64, args, T64.names)
     assert found == {"mask_gate_bound": 0.01, "p2_mask_cells": 2,
-                     "p1_training_sha256": hashlib.sha256(b"rows").hexdigest()}
-    assert bad == ["not built: ['P2']'s training rows, which P4 is also trained on (T6.1); "
-                   "prereqs should have refused this session"]
+                     "p1_training_sha256": _sha(training)}
+    assert len(bad) == 1 and bad[0].startswith(f"no P2 training file at {p2}")
+    # P2's file, synthetic: P1's rows relabelled, banked in the ledger
+    from dataclasses import replace
+    from attnbench.predict import p1_training as PT
+    from attnbench.predict.training import HardwareFeatures
+    rows = [type(r)(cell=replace(r.cell, pairing="P2"), measured=r.measured)
+            for r in PT.rows_from_record(PT.load(training))]
+    P2T.dump(P2T.to_record({"rows": rows, "metadata": [{}] * len(rows), "left_out": [],
+                            "blocks": ["b1"], "unpassed": [], "min_clean_rounds": 10,
+                            "prediction": "x"}, HardwareFeatures(1e10, 5e9)), p2)
+    bank(monkeypatch, tmp_path, P1=("2026-11-19T00:00:00+00:00", _sha(training)),
+         P2=("2026-11-25T00:00:00+00:00", _sha(p2)))
+    found, bad = P4.p4_staged_inputs(T64, args, T64.names)
+    assert bad == [] and found["p2_training_rows"] == 2
+    assert found["p2_training_sha256"] == _sha(p2)
     write("0" * 64)
     bad = P4.p4_staged_inputs(T64, args, T64.names)[1]
     assert any("the lock's " + "0" * 64 in b for b in bad)
     assert P4.p4_staged_inputs(T64, args, ("prereqs", "preflight", "fa3_import")) == ({}, [])
+    training.write_bytes(b"rows")          # a file that does not read: refused, not raised
+    write(hashlib.sha256(b"rows").hexdigest())
+    bad = P4.p4_staged_inputs(T64, args, ("predict",))[1]
+    assert any("gzip" in b for b in bad), bad
     training.unlink()
     monkeypatch.setattr(LM, "LOCKED_CONFIG", None)
     bad = P4.p4_staged_inputs(T64, args, ("predict",))[1]

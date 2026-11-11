@@ -30,10 +30,9 @@ def git(repo, *args):
 
 
 def lock_json(complete=True) -> str:
-    lock = checklist.skeleton(PLAN_TEXT)
-    for k, e in lock["values"].items():
-        e["value"], e["source"] = f"v_{k}", "test"
-    lock["scored_pairings"] = {"H0": ["P1", "P2"], "H2": ["P2", "P4"]}
+    # Typed values and every hypothesis's pairings (ruling 1b, 11 Nov 2026).
+    import lock_fixture as LF
+    lock = LF.complete_lock(PLAN_TEXT)
     if not complete:
         lock["values"]["mask_gate_bound"]["value"] = None
     return json.dumps(lock, indent=1)

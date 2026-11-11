@@ -4,25 +4,29 @@ from __future__ import annotations
 
 import json
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from attnbench.lock import checklist as L
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lock_fixture as LF  # noqa: E402
 
 PLAN_TEXT = L.PLAN.read_text(encoding="utf-8")
 
 
 def _filled(plan_text=PLAN_TEXT) -> dict:
-    lock = L.skeleton(plan_text)
-    for k, e in lock["values"].items():
-        e["value"] = f"value of {k}"
-        e["source"] = "Appendix A, test"
-    lock["scored_pairings"] = {"H0": ["P1", "P2"], "H2": ["P2", "P4"]}
+    """A typed, complete lock (ruling 1b, 11 Nov 2026)."""
+    lock = LF.complete_lock(PLAN_TEXT)
+    lock["plan_sha256"] = L.plan_sha256(plan_text)
     return lock
 
 
 def test_the_list_is_read_from_the_plans_t41_row():
     items = L.lock_items(PLAN_TEXT)
-    assert len(items) == 37
+    assert len(items) == 39
     keys = list(items)
     assert keys[0] == "h0_to_h3_tolerances"
     # three of the researcher's rulings of 31 Oct 2026, the chain check of
@@ -30,11 +34,13 @@ def test_the_list_is_read_from_the_plans_t41_row():
     # spread after Shakedown 6, the pricing gate of 6 Nov 2026 and the block
     # drift bound of 7 Nov 2026, and the timed-path identity of 10 Nov 2026
     # close the list
-    assert keys[-10:] == ["budget_cut_order", "compiled_versus_eager_density_flag_tolerance",
+    # and T4.3's bootstrap settings and analysis commit (11 Nov 2026)
+    assert keys[-12:] == ["budget_cut_order", "compiled_versus_eager_density_flag_tolerance",
                          "probe_length_rule", "flagged_memset_sensitivity_bound",
                          "chain_check_tolerance", "recompile_gate",
                          "residual_spread_tolerance", "pricing_mismatch_share",
-                         "block_drift_bound", "timed_path_identity_for_p2_and_p4"]
+                         "block_drift_bound", "timed_path_identity_for_p2_and_p4",
+                         "bootstrap_settings", "analysis_commit"]
     # Parentheticals are part of the item's text but not of its key, and a
     # comma inside one does not split the item.
     assert items["replay_versus_trace_bound_for_gate_a"].startswith(
@@ -47,7 +53,7 @@ def test_the_list_is_read_from_the_plans_t41_row():
 def test_a_complete_lock_file_passes_and_its_report_says_so():
     result = L.check(_filled(), PLAN_TEXT)
     assert result.complete
-    assert result.report().startswith("37 values listed by T4.1; complete")
+    assert result.report().startswith("39 values listed by T4.1; complete")
 
 
 def test_missing_unset_unsourced_and_unknown_entries_are_each_named():
@@ -66,6 +72,56 @@ def test_missing_unset_unsourced_and_unknown_entries_are_each_named():
     text = r.report()
     for k in ("h6_regret_bound", "mask_gate_bound", "budget_cut_order"):
         assert k in text
+
+
+@pytest.mark.parametrize("key, bad", [
+    ("mask_gate_bound", "TBD"), ("mask_gate_bound", False), ("mask_gate_bound", "0.01"),
+    ("mask_gate_bound", float("nan")), ("mask_gate_bound", -0.01),
+    ("rerun_budget", {"max_rerun_rounds": 1}),                         # a key missing
+    ("rerun_budget", {"max_rerun_rounds": 1, "min_clean_rounds": None}),
+    ("rerun_budget", {"max_rerun_rounds": 1.5, "min_clean_rounds": 3}),
+    ("resolution_and_noise_floors", {"pairing": "P2", "noise_floor_relative": 0.05,
+                                     "resolution_floor_ms": {"2048x1": 1.0}}),
+    ("resolution_and_noise_floors", {"pairing": "P1", "noise_floor_relative": 0.05,
+                                     "resolution_floor_ms": {"2048": None}}),
+    ("throttle_set", [None]), ("throttle_set", ["owed"]), ("delay_injection_slope_bound", [2, 1]),
+    ("h4_confirmatory_family", {"m": 18, "tests": ["a", "b"]}),
+    ("timed_path_identity_for_p2_and_p4", "8716d7db"),
+    ("ground_truth_density_set", {"oracle": [0.25, 0.25]}),
+    ("bootstrap_settings", {"level": 0.95, "n_boot": 1, "seed": 0}),
+])
+def test_a_value_of_the_wrong_type_is_not_fixed(key, bad):
+    """Ruling 1b (11 Nov 2026): typed per key; T4.3 read B, finding 4."""
+    lock = _filled()
+    lock["values"][key]["value"] = bad
+    r = L.check(lock, PLAN_TEXT)
+    assert not r.complete and {k for k, _ in r.mistyped} == {key}
+    assert "mistyped" in r.report()
+
+
+def test_a_placeholder_source_is_unsourced():
+    lock = _filled()
+    lock["values"]["mask_gate_bound"]["source"] = "TBD"
+    assert L.check(lock, PLAN_TEXT).unsourced == ("mask_gate_bound",)
+
+
+def test_every_t41_item_has_a_type():
+    assert set(L.lock_items(PLAN_TEXT)) <= set(L.SCHEMA)
+    assert L.type_problems("an_item_with_no_type", 1) != []
+
+
+def test_every_hypothesis_states_its_pairings_and_p1_is_never_a_test_of_h1():
+    assert L.hypotheses(PLAN_TEXT) == ("H0", "H1", "H2", "H3", "H4", "H5", "H6")
+    lock = _filled()
+    del lock["scored_pairings"]["H6"]
+    assert "H6 is not stated" in L.check(lock, PLAN_TEXT).scored_problems
+    for h in ("H1", "H3", "H6"):
+        lock = _filled()
+        lock["scored_pairings"][h] = ["P1", "P2"]
+        assert any("development pairing" in p for p in L.check(lock, PLAN_TEXT).scored_problems)
+    lock = _filled()
+    lock["scored_pairings"]["H0"] = ["P1", "P2"]           # H0 compares P1 with P2
+    assert L.check(lock, PLAN_TEXT).complete
 
 
 def test_a_lock_file_written_against_another_plan_is_not_complete():

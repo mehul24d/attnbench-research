@@ -126,13 +126,27 @@ def p2_parts(rows=None):
             fit_learned(ts, CONFIG, model_factory=MeanModel))
 
 
+# The P1 training file's sha256 a trained record names (ruling 1e, 11 Nov 2026).
+TRAIN_SHA = "e" * 64
+
+
+def p1_rows_sha256():
+    return C.training_rows_sha256(committed_training_set(p1_rows(), "P2", banked=["P1"]).rows)
+
+
+def trained():
+    """What load_committed refits a trained record's learned values from."""
+    return {"training_rows": p1_rows(), "model_factory": MeanModel}
+
+
 def p2_record(**kw):
     fs, fs0, lm = p2_parts()
     args = dict(pairing="P2", cells=[cell("P2"), cell("P2", ops=OPS_HOST,
                                                       arm="dense", density=1.0)],
                 queue_depth=8, banked=["P1"], fitted_sum=fs, learned=lm,
                 fitted_sum_plus_s0=fs0, code=CLEAN, written_at=T0,
-                code_paths=CODE_PATHS)
+                code_paths=CODE_PATHS, training_files={"P1": TRAIN_SHA},
+                rows_sha256=p1_rows_sha256())
     args.update(kw)
     return build_record(**args)
 
@@ -198,8 +212,8 @@ def test_write_sync_load_round_trip(tmp_path, locked):
     assert receipt.synced_at == T0 + timedelta(seconds=5)
     cp = load_committed(store, receipt.remote,
                         ground_truth_started_at=T0 + timedelta(seconds=6),
-                        clock_skew=NO_SKEW, banked_at={"P1": T0 - timedelta(days=1)},
-                        local=f.path)
+                        clock_skew=NO_SKEW, sync_gap=NO_SKEW, banked_at={"P1": T0 - timedelta(days=1)},
+                        local=f.path, **trained())
     assert cp.pairing == "P2" and cp.sha256 == f.sha256 and cp.queue_depth == 8
     assert cp.synced_at == receipt.synced_at and cp.written_at == T0
     x = cp.cell(MODEL, CP, "xattn", 0.5, 4, 1)
@@ -491,7 +505,8 @@ def test_sync_reports_the_later_creation_time(tmp_path):
 def load(store, receipt, start, skew=NO_SKEW, banked_at=None, **kw):
     banked_at = {} if banked_at is None else banked_at
     return load_committed(store, receipt.remote, ground_truth_started_at=start,
-                          clock_skew=skew, banked_at=banked_at, **kw)
+                          clock_skew=skew, banked_at=banked_at,
+                          **{"sync_gap": NO_SKEW, **trained(), **kw})
 
 
 def test_a_prediction_synced_before_the_workload_is_accepted(tmp_path):
@@ -508,8 +523,11 @@ def test_a_prediction_synced_at_or_after_the_start_is_refused(tmp_path,
     store = MemoryStore(Clock(T0))
     sync_at = T0 + timedelta(seconds=10)
     _, r = committed(tmp_path, p1_record(), store, sync_at)
-    with pytest.raises(LatePredictionError, match="refuses it"):
-        load(store, r, sync_at + start_after_sync)
+    for gap in (NO_SKEW, timedelta(seconds=C.REQUIRED_SYNC_GAP_S)):
+        if gap == NO_SKEW and start_after_sync == timedelta(0):
+            continue          # start >= synced + gap + skew accepts equality (ruling 1g)
+        with pytest.raises(LatePredictionError, match="refuses it"):
+            load(store, r, sync_at + start_after_sync, sync_gap=gap)
 
 
 def test_the_clock_skew_only_makes_the_check_stricter(tmp_path):
@@ -517,8 +535,9 @@ def test_the_clock_skew_only_makes_the_check_stricter(tmp_path):
     _, r = committed(tmp_path, p1_record(), store, T0 + timedelta(seconds=1))
     start = T0 + timedelta(seconds=2)
     load(store, r, start, skew=timedelta(milliseconds=999))
+    load(store, r, start, skew=timedelta(seconds=1))        # start >= synced + skew (ruling 1g)
     with pytest.raises(LatePredictionError):
-        load(store, r, start, skew=timedelta(seconds=1))
+        load(store, r, start, skew=timedelta(milliseconds=1001))
     with pytest.raises(PredictionCommitError, match="clock_skew"):
         load(store, r, start, skew=-timedelta(seconds=1))
 
@@ -676,7 +695,7 @@ def test_a_renamed_file_is_refused(tmp_path):
     store.times[new] = store.times[new + ".sha256"] = T0
     with pytest.raises(PredictionCommitError, match="does not match its own"):
         load_committed(store, new, ground_truth_started_at=T0 + timedelta(1),
-                       clock_skew=NO_SKEW, banked_at={})
+                       clock_skew=NO_SKEW, sync_gap=NO_SKEW, banked_at={})
 
 
 def test_a_sidecar_naming_another_file_is_refused(tmp_path):
@@ -789,13 +808,17 @@ def test_gsutil_store_round_trip(tmp_path, fake_gsutil):
     cp = load_committed(GsutilStore(), r.remote,
                         ground_truth_started_at=datetime(2026, 11, 2, 3, 0, 9,
                                                          tzinfo=UTC),
-                        clock_skew=NO_SKEW, banked_at={})
+                        clock_skew=NO_SKEW, sync_gap=NO_SKEW, banked_at={})
     assert cp.sha256 == f.sha256
-    # Created at 03:00:07 and printed so; the workload starting at 03:00:08
-    # could follow it by under a second, so it is refused.
+    # Created at 03:00:07 and printed so; read as 03:00:08, so with the
+    # required gap a workload at 03:01:08 is accepted and one under a second
+    # earlier, which could follow the true creation by under 60 s, is refused.
+    load_committed(GsutilStore(), r.remote,
+                   ground_truth_started_at=datetime(2026, 11, 2, 3, 1, 8, tzinfo=UTC),
+                   clock_skew=NO_SKEW, banked_at={})
     with pytest.raises(LatePredictionError):
         load_committed(GsutilStore(), r.remote,
-                       ground_truth_started_at=datetime(2026, 11, 2, 3, 0, 8,
+                       ground_truth_started_at=datetime(2026, 11, 2, 3, 1, 7, 500000,
                                                         tzinfo=UTC),
                        clock_skew=NO_SKEW, banked_at={})
 
@@ -1099,13 +1122,15 @@ def test_a_schema_1_file_is_refused(tmp_path):
 # the fixed best-kernel configuration pick xattn: the loss the dispatcher is
 # meant to avoid, committed before anything is timed.
 
+from attnbench.lock.floors import FloorTable
 from attnbench.predict import dispatcher as DSP
 
 XCFG = DSP.Config("xattn", 0.5)
 
 
 def dspec(**kw):
-    args = dict(predictor="recursion", floor_s=1.0, dense_arms=("dense",),
+    args = dict(predictor="recursion", floors=FloorTable({(4, 1): 1.0, (8, 1): 1.0}),
+                dense_arms=("dense",),
                 admissible={"uncorrected": (XCFG,), "holm": ()},
                 kernel_times={XKEY: 2.0, DKEY: 4.0}, use_code_path={})
     args.update(kw)
@@ -1181,8 +1206,9 @@ def test_raising_the_floor_after_the_fact_is_refused_when_it_changes_the_choice(
     cells = [cell(ops=OPS_HOST, arm="xattn"), cell(ops=OPS, arm="dense", density=1.0)]
     store = MemoryStore(Clock(T0))
     _, r = committed(tmp_path, p1_record(cells=cells, dispatch=dspec()), store, T0)
-    assert load(store, r, T0 + timedelta(seconds=1)).dispatch_spec.floor_s == 1.0
-    _tamper(store, r, lambda rec: rec["dispatch"]["spec"].update(floor_s=100.0))
+    assert load(store, r, T0 + timedelta(seconds=1)).dispatch_spec.floors.at(4, 1) == 1.0
+    _tamper(store, r, lambda rec: rec["dispatch"]["spec"]["floors"]["floors_s"].update(
+        {"4x1": 100.0, "8x1": 100.0}))
     with pytest.raises(PredictionCommitError, match="do not follow"):
         load(store, r, T0 + timedelta(seconds=1))
 
@@ -1225,7 +1251,65 @@ def test_the_dispatcher_reads_the_predictor_the_spec_names(tmp_path):
     for name in ("recursion", "sum", "step_form"):
         d = tmp_path / name
         d.mkdir()
-        cp = _read_back(p1_record(cells=cells, dispatch=dspec(predictor=name,
-                                                              floor_s=6.0)), d)
+        cp = _read_back(p1_record(cells=cells, dispatch=dspec(
+            predictor=name, floors=FloorTable({(4, 1): 6.0, (8, 1): 6.0}))), d)
         picked[name] = choice(cp, "dispatcher")
     assert picked == {"recursion": "xattn", "sum": "dense", "step_form": "xattn"}
+
+
+# --------------------------------------------------------------------------
+# Ruling 1e (11 Nov 2026): the training source, and learned values recomputed
+# --------------------------------------------------------------------------
+
+def _p2_loaded(tmp_path, rec, **kw):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    store = MemoryStore(Clock(T0))
+    _, r = committed(tmp_path, rec, store, T0 + timedelta(seconds=1))
+    return load(store, r, T0 + timedelta(seconds=2),
+                banked_at={"P1": T0 - timedelta(days=1)}, **kw)
+
+
+def test_every_fit_record_names_the_training_files_and_rows(locked):
+    rec = p2_record()
+    for name in ("fitted_sum", "fitted_sum_plus_s0", "learned"):
+        assert rec["training"][name]["training_files"] == {"P1": TRAIN_SHA}
+        assert rec["training"][name]["rows_sha256"] == p1_rows_sha256()
+    assert rec["training"]["learned"]["inputs"]["model"]["hidden"] == TOY.hidden
+    with pytest.raises(PredictionCommitError, match="training files"):
+        p2_record(training_files={})
+    with pytest.raises(PredictionCommitError, match="64 hex"):
+        p2_record(rows_sha256="abc")
+
+
+def test_a_record_without_its_training_source_is_refused(tmp_path, locked):
+    rec = p2_record()
+    del rec["training"]["learned"]["rows_sha256"]
+    f = write_prediction(rec, tmp_path)
+    with pytest.raises(PredictionCommitError, match="learned record"):
+        verify_bytes(f.path.read_bytes(), f.sidecar.read_text(), f.path.name)
+
+
+def test_the_learned_values_are_refitted_and_compared_at_load(tmp_path, locked):
+    assert _p2_loaded(tmp_path / "ok", p2_record()).pairing == "P2"
+    with pytest.raises(PredictionCommitError, match="none were given"):
+        _p2_loaded(tmp_path / "none", p2_record(), training_rows=None)
+    other = p1_rows()
+    other[0] = GroundTruthRow(cell=other[0].cell, measured=21.0)
+    with pytest.raises(PredictionCommitError, match="fitted on rows"):
+        _p2_loaded(tmp_path / "rows", p2_record(), training_rows=other)
+    # Values from another fit, under the same rows hash: the refit disagrees.
+    ts = committed_training_set(other, "P2", banked=["P1"])
+    rec = p2_record(learned=fit_learned(ts, CONFIG, model_factory=MeanModel))
+    with pytest.raises(PredictionCommitError, match="not the locked fit"):
+        _p2_loaded(tmp_path / "vals", rec)
+    with pytest.raises(PredictionCommitError, match="names training files"):
+        _p2_loaded(tmp_path / "files", p2_record(), training_files={"P1": "f" * 64})
+
+
+def test_a_learned_configuration_other_than_the_locked_one_is_refused_at_load(tmp_path,
+                                                                             monkeypatch):
+    monkeypatch.setattr(L, "LOCKED_CONFIG", CONFIG)
+    rec = p2_record()
+    monkeypatch.setattr(L, "LOCKED_CONFIG", LearnedConfig(target="log_seconds"))
+    with pytest.raises(PredictionCommitError, match="not the locked"):
+        _p2_loaded(tmp_path, rec)

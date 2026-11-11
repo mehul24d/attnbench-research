@@ -16,21 +16,18 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import t31_steps as st  # noqa: E402
 from attnbench.lock import checklist as L  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lock_fixture as LF  # noqa: E402
+
 P2_CONFIG = ROOT / "configs" / "t61" / "p2_session.json"
-P2_VALUES = {"densities": {"dense": [1.0], "oracle": [0.25], "meanpool": [0.25],
-                           "xattention": ["calibrated"], "xattention_noassert": ["calibrated"]},
-             "gt_groups": {"eager": ["dense", "oracle"], "compiled_default": [],
+# `pairing_values` holds only what T4.1 does not list (ruling 1b, 11 Nov 2026).
+P2_VALUES = {"gt_groups": {"eager": ["dense", "oracle"], "compiled_default": [],
                            "compiled_capture": []},
-             "reps": 12, "dense_rounds": 5, "sampler_interval_s": 0.1,
-             "max_rerun_rounds": 1, "chain_check_tolerance": {"aggregate": 0.1},
-             "residual_spread_tolerance": 0.1, "pricing_mismatch_share": 0.05}
+             "reps": 12, "dense_rounds": 5, "sampler_interval_s": 0.1}
 
 
 def lock(complete=True, values=P2_VALUES) -> dict:
-    out = L.skeleton(L.PLAN.read_text(encoding="utf-8"))
-    for k, e in out["values"].items():
-        e["value"], e["source"] = f"value of {k}", "Appendix A, test"
-    out["scored_pairings"] = {"H0": ["P1", "P2"], "H2": ["P2", "P4"]}
+    out = LF.complete_lock(L.PLAN.read_text(encoding="utf-8"))
     if not complete:
         next(iter(out["values"].values()))["value"] = None
     out["pairing_values"] = {"P2": values}
@@ -52,12 +49,46 @@ def test_without_a_lock_file_p2_is_refused_p1s_working_values(tmp_path, monkeypa
 def test_a_complete_lock_fills_p2s_values_and_says_so(tmp_path, monkeypatch):
     monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
     cfg = st.load_config(str(P2_CONFIG), dry_run=False)
-    assert cfg["densities"] == P2_VALUES["densities"] and cfg["reps"] == 12
+    v = LF.VALUES
+    assert cfg["densities"] == v["ground_truth_density_set"] and cfg["reps"] == 12
     assert cfg["gt_groups"] == P2_VALUES["gt_groups"] and cfg["max_rerun_rounds"] == 1
+    assert cfg["flag_reasons"] == v["throttle_set"]
+    assert cfg["lengths"] == v[st.GRID_ITEM]["lengths"]
+    assert cfg["resolution_floor_ms"] == v["resolution_and_noise_floors"]["resolution_floor_ms"]
+    assert cfg["chain_check_tolerance"] == v["chain_check_tolerance"]
     assert "working_values" not in cfg
     assert cfg["lock_values"]["source"] == "lock_values.json"
     assert set(cfg["lock_values"]["filled"]) >= {"densities", "reps", "dense_rounds",
                                                  "gt_groups.eager", "max_rerun_rounds"}
+
+
+def test_t41_items_come_from_the_lock_values_never_from_pairing_values(tmp_path, monkeypatch):
+    """Ruling 1b (11 Nov 2026); T4.3 read B, finding 4."""
+    shadow = dict(P2_VALUES, densities={"oracle": [0.5]}, max_rerun_rounds=0)
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock(values=shadow)))
+    cfg = st.load_config(str(P2_CONFIG), dry_run=False)
+    assert cfg["densities"] == LF.VALUES["ground_truth_density_set"]
+    assert cfg["max_rerun_rounds"] == 1
+    assert cfg["lock_values"]["ignored_pairing_values"] == ["densities", "max_rerun_rounds"]
+
+
+@pytest.mark.parametrize("key, value", [("flag_reasons", ["hw_slowdown"]),
+                                        ("lengths", [2048]), ("resolution_floor_ms", 5.0)])
+def test_a_t41_item_the_repository_config_also_sets_is_refused(tmp_path, monkeypatch,
+                                                                key, value):
+    c = json.loads(P2_CONFIG.read_text())
+    c[key] = value
+    p = tmp_path / "p2.json"
+    p.write_text(json.dumps(c))
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
+    with pytest.raises(st.StepFailed, match="T4.1 items"):
+        st.load_config(str(p), dry_run=False)
+
+
+def test_a_missing_rerun_budget_is_refused_not_zero():
+    with pytest.raises(st.StepFailed, match="rerun budget"):
+        st.rerun_budget({"pairing": "P2", "max_rerun_rounds": None})
+    assert st.rerun_budget({"pairing": "P1", "max_rerun_rounds": None}) == 0
 
 
 def test_an_incomplete_lock_is_refused(tmp_path, monkeypatch):

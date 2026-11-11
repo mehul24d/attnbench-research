@@ -171,8 +171,9 @@ def test_the_resolution_floor_converts_to_seconds_in_one_place():
     assert scoring.decision_error(1.0, 2.0, 1.000, 1.005, admissible=True,
                                   floor=f.floor_s) == scoring.CORRECT
     # The HDBI fit reads the same seconds.
-    rows = [HdbiRow("P1", "a", 0.2, +0.003), HdbiRow("P1", "b", 0.8, -0.005)]
-    fit = fit_threshold(rows, training_pairings=["P1"], floor=f.floor_s)
+    rows = [HdbiRow("P1", "a", 0.2, +0.003, 2048), HdbiRow("P1", "b", 0.8, -0.005, 2048)]
+    fit = fit_threshold(rows, training_pairings=["P1"],
+                        floors=F.FloorTable({(2048, 1): f.floor_s}))
     assert (fit.n_scored, fit.n_inside_floor) == (1, 1)
 
 

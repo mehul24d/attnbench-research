@@ -23,7 +23,12 @@ listed.
         --remote gs://<bucket>/predictions/P1-T3.2a/<session>/prediction_P1_<t>.json \\
         --local prediction_P1_<t>.json --ground-truth 09_ground_truth \\
         --cells 06_device_components/cells.json --recordings 05_host_components \\
-        --relative-floor 0 --resolution-floor-ms 0 --out gate_a_t32a
+        --relative-floor 0 --resolution-floors cell_floors.json --out gate_a_t32a
+
+`--resolution-floors` is the per-(length, batch) table the sign agreement
+reads, '<length>x<batch>' -> ms (the `--cell-floors` format); one floor for
+every length is no longer taken (T4.3 read A, finding 4; ruling 1a, 11 Nov
+2026).
 """
 
 from __future__ import annotations
@@ -40,8 +45,9 @@ sys.path.insert(0, str(ROOT / "scripts" / "figures"))
 
 from attnbench.analysis import gate_a as G  # noqa: E402
 from attnbench.figures import results as RS  # noqa: E402
+from attnbench.lock.floors import FloorTable, FloorsError  # noqa: E402
 from attnbench.predict import commit as C  # noqa: E402
-from attnbench.predict.commit import REQUIRED_SYNC_GAP_S  # noqa: E402
+from attnbench.predict.commit import CLOCK_SKEW_ALLOWED_S  # noqa: E402
 from attnbench.predict.recursion import CostModelError  # noqa: E402
 import _load  # noqa: E402
 
@@ -57,8 +63,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--dense-arm", default="dense")
     ap.add_argument("--relative-floor", type=float, required=True,
                     help="the noise floor, a relative error (a lock value)")
-    ap.add_argument("--resolution-floor-ms", type=float, required=True,
-                    help="the resolution floor for the sign agreement (a lock value)")
+    ap.add_argument("--resolution-floors", required=True,
+                    help="JSON, '<length>x<batch>' -> the resolution floor (ms) the sign "
+                         "agreement reads per cell (a lock value)")
     ap.add_argument("--family-bound", type=float, default=None)
     ap.add_argument("--family-bound-provisional", action="store_true")
     ap.add_argument("--v2", action="store_true", help="Gate A v2 (Appendix A, 8 Nov 2026)")
@@ -66,7 +73,7 @@ def parser() -> argparse.ArgumentParser:
                     help="v2: JSON, '<length>x<batch>' -> resolution floor (ms)")
     ap.add_argument("--delay-injection", default=None,
                     help="step 12's delay_injection.json (leg 3)")
-    ap.add_argument("--clock-skew-s", type=float, default=REQUIRED_SYNC_GAP_S)
+    ap.add_argument("--clock-skew-s", type=float, default=CLOCK_SKEW_ALLOWED_S)
     ap.add_argument("--out", required=True)
     return ap
 
@@ -134,7 +141,8 @@ def main(argv=None, store=None) -> int:
         from attnbench.predict.recursion import PRICED_MECHANISMS
         rep = G.report(label=args.label, cp=cp, results=results, dense_arm=args.dense_arm,
                        relative_floor=args.relative_floor,
-                       resolution_floor_s=args.resolution_floor_ms / 1e3,
+                       floors=FloorTable.from_ms(
+                           json.loads(Path(args.resolution_floors).read_text()), pairing="P1"),
                        family_reports=fams, family_bound=args.family_bound,
                        family_bound_provisional=args.family_bound_provisional,
                        measured_slopes=leg3(args.delay_injection),
@@ -144,7 +152,7 @@ def main(argv=None, store=None) -> int:
                                       if args.v2 else None))
         j, md = G.write(rep, Path(args.out))
     except (G.GateAError, RS.ResultsError, C.PredictionCommitError, CostModelError,
-            OSError, KeyError, TypeError, ValueError) as e:
+            FloorsError, OSError, KeyError, TypeError, ValueError) as e:
         print(f"gate_a: {e}", file=sys.stderr)
         return 2
     print(f"wrote {j} and {md}")

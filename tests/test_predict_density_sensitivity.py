@@ -316,7 +316,9 @@ def test_the_fitted_sum_is_recomputed_from_its_committed_coefficients(
     fs, lm = fit_fitted_sum(ts), fit_learned(ts, CONFIG, model_factory=MeanModel)
     p2 = family(pairing="P2")
     rec = build_record("P2", p2, 8, banked=["P1"], fitted_sum=fs, learned=lm,
-                       code=CLEAN, written_at=T0, code_paths=CODE_PATHS)
+                       code=CLEAN, written_at=T0, code_paths=CODE_PATHS,
+                       training_files={"P1": "e" * 64},          # ruling 1e
+                       rows_sha256=C.training_rows_sha256(ts.rows))
     f = write_prediction(rec, tmp_path)
     cp = verify_bytes(f.path.read_bytes(), f.sidecar.read_text(), f.path.name)
     res = density_sensitivity(cp, deltas={"x": 0.125}, dense_arms={"dense"})

@@ -37,6 +37,13 @@ def cp(tmp_path):
     return FX.loaded_p1(tmp_path)[0]
 
 
+def _ft(x):
+    """The lock's per-(length, batch) floor table at `x` seconds, over the
+    fixture's lengths (ruling 1a, 11 Nov 2026)."""
+    from attnbench.lock.floors import FloorTable
+    return FloorTable({(L, 1): x for L in (4, 8, 16, 32)})
+
+
 def gt(**over):
     """The fixture's ground truth with rows labelled as `time_arms` labels
     them: the xattn arm at its nominal density, dense by name."""
@@ -164,20 +171,20 @@ def test_leg_one_needs_the_recursion(cp):
 # --- the descriptive per-arm table ----------------------------------------------------
 
 def test_sanity_is_labelled_descriptive_and_scores_the_sign_against_dense(cp):
-    s = G.sanity(cp, seconds(cp), dense_arm="dense", resolution_floor_s=0.0)
+    s = G.sanity(cp, seconds(cp), dense_arm="dense", floors=_ft(0.0))
     assert "descriptive" in s["label"] and "not a hypothesis test" in s["label"]
     x = s["arms"]["xattn"]["recursion"]
     assert x["median_abs_relative"] == pytest.approx(0.20)
     # predicted 16 against dense's 8, measured 20 against 10: sparse slower both ways
     assert (x["sign_agree"], x["sign_disagree"], x["inside_floor"]) == (1, 0, 0)
     assert "sign_agree" not in s["arms"]["dense"]["recursion"]
-    s = G.sanity(cp, seconds(cp), dense_arm="dense", resolution_floor_s=10.0)
+    s = G.sanity(cp, seconds(cp), dense_arm="dense", floors=_ft(10.0))
     assert s["arms"]["xattn"]["sum"]["inside_floor"] == 1         # |20 - 10| <= 10
 
 
 def test_a_sign_disagreement_is_counted(cp):
     secs = G.measured(cp, [("gt.json", gt(xattn_ms=5000.0))])["seconds"]
-    x = G.sanity(cp, secs, dense_arm="dense", resolution_floor_s=0.0)["arms"]["xattn"]
+    x = G.sanity(cp, secs, dense_arm="dense", floors=_ft(0.0))["arms"]["xattn"]
     assert all((v["sign_agree"], v["sign_disagree"]) == (0, 1) for v in x.values())
 
 
@@ -273,7 +280,7 @@ def test_leg_three_is_not_measured_without_slopes():
 def test_the_report_holds_every_leg_and_leaves_the_decision_to_the_researcher(cp, tmp_path):
     reps, _ = _reports()
     rep = G.report(label="fixture", cp=cp, results=[("gt.json", gt())], dense_arm="dense",
-                   relative_floor=0.25, resolution_floor_s=0.0, family_reports=reps,
+                   relative_floor=0.25, floors=_ft(0.0), family_reports=reps,
                    family_bound=0.1, family_bound_provisional=True)
     assert rep["decision"].startswith("the researcher's")
     assert rep["slopes"]["status"] == G.NOT_MEASURED
@@ -291,7 +298,7 @@ def test_the_script_refuses_a_provisional_flag_without_a_bound(capsys):
     import gate_a as script
     argv = ["--label", "x", "--remote", "gs://b/p.json", "--local", "p.json",
             "--ground-truth", "g", "--cells", "c", "--recordings", "r",
-            "--relative-floor", "0", "--resolution-floor-ms", "0", "--out", "o",
+            "--relative-floor", "0", "--resolution-floors", "f.json", "--out", "o",
             "--family-bound-provisional"]
     assert script.main(argv) == 2
     assert "needs --family-bound" in capsys.readouterr().err

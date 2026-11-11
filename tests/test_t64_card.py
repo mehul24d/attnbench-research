@@ -62,7 +62,7 @@ def test_flex_is_first_and_the_fallback_is_four_blocks_at_2_3_hours():
     steps = B.card_numbers(C.CARD.read_text())["steps"]
     blocks, refusal = C.spot_blocks(steps, 0.6, 0.15)
     assert len(blocks) == 4 and all(b.planned_h <= 2.3 + 1e-9 for b in blocks)
-    assert "Flex-start first, its request submitted right after the lock (14 Nov 2026)" in card
+    assert "Flex-start first, its request submitted right after the lock (16 Nov 2026)" in card
     assert "if no grant has come by about 22 Nov 2026, Spot in 4 blocks of 2.3 h" in card
     # why not 2.2 h is stated, not hidden
     assert refusal == "host_components takes 79 min, more than a block's 78"

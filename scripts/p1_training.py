@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "figures"))
 from attnbench.figures import results as RS  # noqa: E402
 from attnbench.predict import commit as C  # noqa: E402
 from attnbench.predict import p1_training as PT  # noqa: E402
-from attnbench.predict.commit import REQUIRED_SYNC_GAP_S  # noqa: E402
+from attnbench.predict.commit import CLOCK_SKEW_ALLOWED_S  # noqa: E402
 from attnbench.predict.training import HardwareFeatures  # noqa: E402
 import _load  # noqa: E402
 import gate_a as GA  # noqa: E402
@@ -43,7 +43,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--repeat", nargs=len(FIELDS), action="append", required=True,
                     metavar=tuple(f.upper() for f in FIELDS))
     ap.add_argument("--b-failed", default=None, help="why T3.2b is not used (repeat a alone)")
-    ap.add_argument("--clock-skew-s", type=float, default=REQUIRED_SYNC_GAP_S)
+    ap.add_argument("--clock-skew-s", type=float, default=CLOCK_SKEW_ALLOWED_S)
     ap.add_argument("--out", required=True)
     return ap
 

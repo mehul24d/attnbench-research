@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 from argparse import Namespace
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,9 +68,48 @@ def _config():
     raise SystemExit(f"ATTNBENCH_PRELAUNCH={CONFIG!r}: rehearsal, p2 or p4")
 
 
-def _banked(cfg) -> list:
+BANKED["P2"] = "2026-11-18T23:00:00+00:00"     # a stand-in: P2 is not banked yet
+
+
+def bank(monkeypatch, cfg, home: Path) -> dict:
+    """The pairing ledger in a directory store (ruling 1c: the bucket is
+    mocked), each pairing `cfg` trains on banked at its time with its
+    training file's sha256, as `scripts/bank_pairing.py` banks it (ruling
+    1e: a real run reads both from here, never from --banked-at)."""
+    import hashlib
+    from attnbench.predict.ledger import Ledger
     given = dict(x.split("=", 1) for x in os.environ.get("ATTNBENCH_PRELAUNCH_BANKED", "").split())
-    return [f"--banked-at={p}={given.get(p, BANKED.get(p, ''))}" for p in cfg.banked]
+    clock = {"t": 0.0}
+    store = S.DirStore(home / "pairing_store", lambda: clock["t"] or time.time())
+    files = {"P1": S.P1_TRAINING, "P2": S.P2_TRAINING}
+    out = {}
+    for p in cfg.banked:
+        out[p] = given.get(p, BANKED[p])
+        clock["t"] = datetime.fromisoformat(out[p]).timestamp()
+        Ledger(store, S.DirStore.PREFIX, p).record_banked(
+            {"training_file_sha256": hashlib.sha256(Path(files[p]).read_bytes()).hexdigest()})
+    clock["t"] = 0.0
+    monkeypatch.setattr(S, "ledger_for", lambda c, args, pairing=None: Ledger(
+        store, S.DirStore.PREFIX, pairing or c.pairing))
+    return out
+
+
+def synthetic_p2(p1: Path, path: Path) -> Path:
+    """P4's P2 rows before P2 has run (ruling 1h's CPU pass): P1's cells,
+    relabelled P2, each target 0.8 of P1's, in P2's training file."""
+    from dataclasses import replace
+    from attnbench.predict import p1_training as PT
+    from attnbench.predict import p2_training as P2T
+    rec = PT.load(p1)
+    rows = [type(r)(cell=replace(r.cell, pairing="P2"), measured=0.8 * r.measured)
+            for r in PT.rows_from_record(rec)]
+    out = {"rows": rows, "metadata": [{"cell": [r.cell.arm, r.cell.context_length,
+                                                r.cell.batch], "synthetic": True} for r in rows],
+           "left_out": [], "blocks": ["synthetic"], "unpassed": [], "min_clean_rounds": 0,
+           "prediction": "synthetic: P1's cells relabelled P2"}
+    from attnbench.predict.training import HardwareFeatures
+    P2T.dump(P2T.to_record(out, HardwareFeatures(**rec["hardware"])), path)
+    return path
 
 
 class Trace:
@@ -215,7 +255,13 @@ def test_the_real_session_passes_on_this_commit_with_only_the_gpu_mocked(tmp_pat
                                           "the bucket (a directory store)"],
            "passed": False}
     mock_device(monkeypatch, training)
-    opts = _banked(cfg) + ([f"--fa3-sha256={'0' * 64}"] if "fa3_import" in cfg.names else [])
+    if "P2" in cfg.banked:
+        p2 = os.environ.get("ATTNBENCH_PRELAUNCH_P2_TRAINING")
+        monkeypatch.setattr(S, "P2_TRAINING", Path(p2) if p2 else synthetic_p2(
+            training, tmp_path / "p2_training.json.gz"))
+        rec["p2_training_file"] = p2 or "synthetic: P1's cells relabelled P2 (ruling 1h)"
+    rec["banked"] = bank(monkeypatch, cfg, tmp_path)
+    opts = [f"--fa3-sha256={'0' * 64}"] if "fa3_import" in cfg.names else []
 
     # the start checks, as `main` makes them under the armed exit wrapper
     monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")

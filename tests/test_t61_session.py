@@ -74,6 +74,26 @@ def args_for(session, out, *, dry_run=True, banked=()):
                      banked_at=list(banked), fa3_sha256=None)
 
 
+def bank(monkeypatch, tmp_path, **pairings):
+    """A pairing ledger in a directory store, each of `pairings` (name:
+    (ISO time, training file sha256)) banked at its time; a real run reads
+    its banking times from here (ruling 1e, 11 Nov 2026)."""
+    from attnbench.predict.ledger import Ledger
+    clock = {"t": 0.0}
+    store = S.DirStore(Path(tmp_path) / "ledger_store", lambda: clock["t"])
+    for p, (t, sha) in pairings.items():
+        clock["t"] = datetime.fromisoformat(t).timestamp()
+        Ledger(store, S.DirStore.PREFIX, p).record_banked({"training_file_sha256": sha})
+    monkeypatch.setattr(S, "ledger_for", lambda cfg, args, pairing=None: Ledger(
+        store, S.DirStore.PREFIX, pairing or cfg.pairing))
+    return store
+
+
+def _sha(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 # --- the order -----------------------------------------------------------------------
 
 def test_the_p2_steps_are_section_5_3_in_order():
@@ -154,7 +174,7 @@ def test_a_dry_run_in_process_matches_and_holds_on_the_virtual_clock(tmp_path):
     synced = S.epoch(json.loads((session / S.RECEIPT).read_text())["synced_at"])
     opened = S.epoch(json.loads((session / S.OPENED).read_text())[0]["opened_at"])
     assert opened - synced >= S.PLANNED_SYNC_WAIT_S
-    assert json.loads((session / S.DRY_CLOCK).read_text())["offset_s"] >= 90
+    assert json.loads((session / S.DRY_CLOCK).read_text())["offset_s"] >= 150
 
 
 # --- the hold ---------------------------------------------------------------------------
@@ -169,8 +189,8 @@ def test_the_hold_waits_out_the_planned_wait(tmp_path):
     t = S.now(session, True)
     _receipt(session, t)
     opened = S.hold_for_sync(session, True)
-    assert opened >= t + 90.0
-    assert opened < t + 90.0 + 5.1           # it steps in at most 5 s
+    assert opened >= t + 150.0                # gap + skew + 30 s (ruling 1g)
+    assert opened < t + 150.0 + 5.1          # it steps in at most 5 s
     assert len(json.loads((session / S.OPENED).read_text())) == 1
 
 
@@ -353,10 +373,11 @@ def test_a_dry_session_is_not_resumed_as_a_real_one(tmp_path, capsys):
     assert rc == 2 and "dry T6.1 session" in capsys.readouterr().err
 
 
-def test_a_real_start_needs_the_exit_wrapper(monkeypatch):
+def test_a_real_start_needs_the_exit_wrapper(monkeypatch, tmp_path):
     monkeypatch.setattr(S, "tree_clean", lambda: True)
     monkeypatch.setattr(S, "timed_path_refusal", lambda: None)   # its own test, below
-    a = Namespace(dry_run=False, banked_at=["P1=2026-11-20T10:00:00+00:00"])
+    bank(monkeypatch, tmp_path, P1=("2026-11-20T10:00:00+00:00", "e" * 64))
+    a = Namespace(dry_run=False, banked_at=[])
     monkeypatch.delenv(S.EXIT_WRAPPER_ENV, raising=False)
     assert "scripts/session_exit.sh" in S.start_refusal(T61, a)
     monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "yes")
@@ -367,17 +388,22 @@ def test_a_real_start_needs_the_exit_wrapper(monkeypatch):
     assert S.start_refusal(T61, Namespace(dry_run=True, banked_at=[])) is None   # a dry run needs none
 
 
-def test_a_real_start_needs_a_clean_tree_and_the_banking_times(monkeypatch):
+def test_a_real_start_needs_a_clean_tree_and_the_banking_times(monkeypatch, tmp_path):
     monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
     monkeypatch.setattr(S, "tree_clean", lambda: False)
-    a = Namespace(dry_run=False, banked_at=["P1=2026-11-20T10:00:00+00:00"])
+    a = Namespace(dry_run=False, banked_at=[])
     assert "dirty" in S.start_refusal(T61, a)
     monkeypatch.setattr(S, "tree_clean", lambda: True)
     monkeypatch.setattr(S, "timed_path_refusal", lambda: None)
+    bank(monkeypatch, tmp_path / "none")
+    assert "no banked entry" in S.start_refusal(T61, a)
+    bank(monkeypatch, tmp_path, P1=("2026-11-20T10:00:00+00:00", "e" * 64))
     assert S.start_refusal(T61, a) is None
-    assert "missing: ['P1']" in S.start_refusal(T61, Namespace(dry_run=False, banked_at=[]))
-    assert "UTC offset" in S.start_refusal(
-        T61, Namespace(dry_run=False, banked_at=["P1=2026-11-20T10:00:00"]))
+    # Ruling 1e: a real run's banking times come from the ledger, never typed.
+    assert "dry run only" in S.start_refusal(
+        T61, Namespace(dry_run=False, banked_at=["P1=2026-11-20T10:00:00+00:00"]))
+    with pytest.raises(S.StepFailed, match="UTC offset"):     # a dry run's typed time
+        S.banked_times(T61, Namespace(dry_run=True, banked_at=["P1=2026-11-20T10:00:00"]))
 
 
 # --- the late check ------------------------------------------------------------------
@@ -980,11 +1006,12 @@ def test_t31s_ground_truth_is_incomplete_if_any_group_is_and_never_traced(tmp_pa
 def test_the_real_record_needs_p1s_banking_time_first(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "P1_TRAINING", tmp_path / "absent.json.gz")
     w = datetime(2026, 11, 20, tzinfo=timezone.utc)
-    with pytest.raises(S.StepFailed, match="missing: \\['P1'\\]"):
+    bank(monkeypatch, tmp_path / "none")
+    with pytest.raises(S.StepFailed, match="no banked entry"):
         S.real_record(T61, args_for(tmp_path, tmp_path, dry_run=False), w)
-    banked = args_for(tmp_path, tmp_path, dry_run=False, banked=["P1=2026-11-19T00:00:00+00:00"])
+    bank(monkeypatch, tmp_path, P1=("2026-11-19T00:00:00+00:00", "e" * 64))
     with pytest.raises(S.StepFailed, match="no P1 training file"):
-        S.real_record(T61, banked, w)
+        S.real_record(T61, args_for(tmp_path, tmp_path, dry_run=False), w)
 
 
 def _p1_training_file(tmp_path):
@@ -1019,7 +1046,12 @@ def test_the_real_record_fits_the_sums_on_p1s_pooled_rows_and_waits_for_the_lear
     fits = []
     real = BL.fit_fitted_sum
     monkeypatch.setattr(BL, "fit_fitted_sum", lambda ts, **kw: fits.append((ts, kw)) or real(ts, **kw))
-    a = args_for(tmp_path, tmp_path, dry_run=False, banked=["P1=2026-11-19T00:00:00+00:00"])
+    a = args_for(tmp_path, tmp_path, dry_run=False)
+    bank(monkeypatch, tmp_path, P1=("2026-11-19T00:00:00+00:00", "f" * 64))
+    with pytest.raises(S.StepFailed, match="pairing ledger names training files"):
+        S.real_record(T61, a, datetime(2026, 11, 20, tzinfo=timezone.utc))
+    fits.clear()
+    bank(monkeypatch, tmp_path / "right", P1=("2026-11-19T00:00:00+00:00", _sha(S.P1_TRAINING)))
     with pytest.raises(S.StepFailed, match="lock value \\(Gate B\\)"):
         S.real_record(T61, a, datetime(2026, 11, 20, tzinfo=timezone.utc))
     assert [kw for _, kw in fits] == [{}, {"add_s0": True}]
@@ -1198,7 +1230,8 @@ def test_the_real_record_is_named_for_the_session_not_its_components_config(tmp_
     seen = {}
     monkeypatch.setattr(st, "build_prediction", lambda comp, session, **kw: seen.update(
         comp=comp["pairing"], **kw) or {})
-    a = args_for(tmp_path, tmp_path, dry_run=False, banked=["P1=2026-11-19T00:00:00+00:00"])
+    a = args_for(tmp_path, tmp_path, dry_run=False)
+    bank(monkeypatch, tmp_path, P1=("2026-11-19T00:00:00+00:00", _sha(S.P1_TRAINING)))
     S.real_record(R.REHEARSAL, a, datetime(2026, 11, 20, tzinfo=timezone.utc))
     assert seen["comp"] == "P1" and seen["pairing"] == "P2-R"
     assert seen["baselines"]["learned"] == ("learned", "P2-R")
@@ -1215,7 +1248,7 @@ def test_a_real_p2_or_p4_start_refuses_a_timed_path_the_lock_does_not_pin(tmp_pa
     import timed_path
     lock = tmp_path / "lock_values.json"
     monkeypatch.setattr(st, "LOCK_FILE", lock)
-    monkeypatch.setattr(timed_path, "path_hash", lambda commit: {"sha256": "a" * 64})
+    monkeypatch.setattr(timed_path, "pin_hash", lambda commit: {"sha256": "a" * 64})
     assert "no lock file" in S.timed_path_refusal()
 
     def pin(v):
@@ -1231,8 +1264,9 @@ def test_a_real_p2_or_p4_start_refuses_a_timed_path_the_lock_does_not_pin(tmp_pa
     # wired into the start of P2, P4 and the block runner (every boot is a start)
     monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
     monkeypatch.setattr(S, "tree_clean", lambda: True)
-    a = Namespace(dry_run=False, fa3_sha256="ab" * 32,
-                  banked_at=["P1=2026-11-20T00:00:00+00:00", "P2=2026-11-25T00:00:00+00:00"])
+    a = Namespace(dry_run=False, fa3_sha256="ab" * 32, banked_at=[])
+    bank(monkeypatch, tmp_path / "ledger", P1=("2026-11-20T00:00:00+00:00", "e" * 64),
+         P2=("2026-11-25T00:00:00+00:00", "d" * 64))
     assert T61.pin_timed_path and P4.T64.pin_timed_path
     assert not R.REHEARSAL.pin_timed_path and not P4.T64_GATE.pin_timed_path
     for cfg in (T61, P4.T64):
@@ -1248,7 +1282,7 @@ def test_the_deployed_timed_path_is_the_one_decided_for_the_lock():
     import timed_path
     draft = json.loads((ROOT / "docs" / "lock_package_draft.json").read_text())
     decided = draft["values"][S.TIMED_PATH_ITEM]["proposed"].split(":")[0]
-    assert timed_path.path_hash("HEAD")["sha256"] == decided
+    assert timed_path.pin_hash("HEAD")["sha256"] == decided
 
 
 def test_a_real_session_reads_its_training_file_against_the_lock_at_the_step_too(

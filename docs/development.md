@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6266 passed, 167 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6364 passed, 167 skipped, 14 xfailed, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -33,13 +33,13 @@ Face cache, **1** needs the primary model's pinned `config.json` there, and **1*
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 6356 passed, 77 skipped**, because
+**With `results/` present the suite reads 6454 passed, 77 skipped, 14 xfailed**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6351 passed, 82 skipped). All three
-totals are 6433, which is
+present and those two hidden it reads 6449 passed, 82 skipped). All three
+totals are 6545, which is
 what `pytest --collect-only` reports, and
-`test_the_suite_counts_match_the_collected_suite` asserts it.
+`test_the_suite_counts_match_the_collected_suite` asserts it. The 14 xfailed are T4.3 reader A's reproductions that wave 2 fixes. Each is a strict `xfail` (`docs/t43/import_edits.md`), so it fails the suite once it passes.
 
 To measure the fresh-clone count on a machine that has the RULER data and the
 tokenizer, point `ATTNBENCH_RULER_DATA` and `HF_HOME` at empty directories. An empty string is not the same

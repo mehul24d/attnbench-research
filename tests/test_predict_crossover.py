@@ -19,14 +19,22 @@ from attnbench.predict.crossover import (
     UNRESOLVED, Bracket, CrossoverResult, GridDifference, bracket_of,
     crossover_brackets, crossover_error, differences_from_intervals,
     fit_quadratic, quadratic_crossovers, sign_at)
+from attnbench.lock.floors import FloorTable
 from attnbench.predict.intervals import Interval
 from attnbench.predict.recursion import CostModelError
+from attnbench.predict.training import CellKey
 from attnbench.predict.scoring import (
     CORRECT, FALSE_PROFITABLE, MISSED_PROFITABLE, NOT_INTERPRETED,
     absolute_relative_error, decision_error, measured_profitable,
     predicted_profitable, score_cells, sign_agreement)
 
 GRID = (2048, 4096, 8192, 16384, 32768)
+
+
+def ft(x, lengths=tuple(2 ** i for i in range(17)), batch=1):
+    """A floor table at `x` seconds over `lengths` (consumers take the lock's
+    per-(length, batch) table, never one scalar; ruling 1a, 11 Nov 2026)."""
+    return FloorTable({(L, batch): x for L in lengths})
 
 
 def diffs(*triples, grid=GRID):
@@ -43,14 +51,14 @@ UND = (-0.2, -1.0, 0.5)    # interval straddles 0
 # --------------------------------------------------------------------------
 
 def test_an_adjacent_sign_change_is_a_one_step_bracket():
-    r = crossover_brackets(diffs(POS, POS, NEG, NEG, NEG), floor=0)
+    r = crossover_brackets(diffs(POS, POS, NEG, NEG, NEG), floors=ft(0))
     assert r.status == CROSSOVER and r.signs == (1, 1, -1, -1, -1)
     assert r.brackets == (Bracket(4096, 8192, 1, 2, SPARSE_BECOMES_FASTER),)
 
 
 def test_an_undetermined_length_widens_the_bracket():
     # Signs +, +, 0, -, -: the bracket runs from 4096 to 16384.
-    r = crossover_brackets(diffs(POS, POS, UND, NEG, NEG), floor=0)
+    r = crossover_brackets(diffs(POS, POS, UND, NEG, NEG), floors=ft(0))
     assert r.brackets == (Bracket(4096, 16384, 1, 3, SPARSE_BECOMES_FASTER),)
 
 
@@ -58,7 +66,7 @@ def test_a_point_inside_the_floor_is_undetermined_even_with_a_clear_interval():
     small = (0.4, 0.1, 0.7)            # interval clear of 0, point below 0.5
     assert sign_at(GridDifference(8192, *small), 0.5) == 0
     assert sign_at(GridDifference(8192, *small), 0.3) == 1
-    r = crossover_brackets(diffs(NEG, small, POS, POS, POS), floor=0.5)
+    r = crossover_brackets(diffs(NEG, small, POS, POS, POS), floors=ft(0.5))
     assert r.brackets == (Bracket(2048, 8192, 0, 2, SPARSE_BECOMES_SLOWER),)
 
 
@@ -68,7 +76,7 @@ def test_the_floor_is_strict_at_its_edge():
 
 
 def test_two_crossovers_are_two_brackets():
-    r = crossover_brackets(diffs(NEG, POS, POS, UND, NEG), floor=0)
+    r = crossover_brackets(diffs(NEG, POS, POS, UND, NEG), floors=ft(0))
     assert r.status == CROSSOVER
     assert r.brackets == (Bracket(2048, 4096, 0, 1, SPARSE_BECOMES_SLOWER),
                           Bracket(8192, 32768, 2, 4, SPARSE_BECOMES_FASTER))
@@ -77,7 +85,7 @@ def test_two_crossovers_are_two_brackets():
 
 
 def test_none_in_range_needs_every_length_determined():
-    r = crossover_brackets(diffs(POS, POS, POS, POS, POS), floor=0)
+    r = crossover_brackets(diffs(POS, POS, POS, POS, POS), floors=ft(0))
     assert r.status == NONE_IN_RANGE and r.brackets == ()
     assert bracket_of(r) is None
 
@@ -86,14 +94,14 @@ def test_none_in_range_needs_every_length_determined():
     (POS, POS, POS, POS, UND), (UND,) * 5, (POS, UND, POS, POS, POS),
     (UND, NEG, NEG, NEG, NEG)])
 def test_without_a_determined_change_any_undetermined_length_is_unresolved(signs):
-    assert crossover_brackets(diffs(*signs), floor=0).status == UNRESOLVED
+    assert crossover_brackets(diffs(*signs), floors=ft(0)).status == UNRESOLVED
 
 
 @pytest.mark.parametrize("seed", range(40))
 def test_brackets_match_a_scan_written_another_way(seed):
     rng = random.Random(5500 + seed)
     ds = diffs(*[rng.choice([POS, NEG, UND]) for _ in GRID])
-    r = crossover_brackets(ds, floor=0)
+    r = crossover_brackets(ds, floors=ft(0))
     # Independent scan: walk the grid carrying the last determined sign.
     last, found = None, []
     for i, d in enumerate(ds):
@@ -107,13 +115,13 @@ def test_brackets_match_a_scan_written_another_way(seed):
 
 def test_bracket_inputs_are_checked():
     with pytest.raises(CostModelError, match="at least two"):
-        crossover_brackets(diffs(POS, grid=(2048,)), floor=0)
+        crossover_brackets(diffs(POS, grid=(2048,)), floors=ft(0))
     with pytest.raises(CostModelError, match="must increase"):
-        crossover_brackets(diffs(POS, NEG, grid=(4096, 2048)), floor=0)
+        crossover_brackets(diffs(POS, NEG, grid=(4096, 2048)), floors=ft(0))
     with pytest.raises(CostModelError, match="outside its interval"):
-        crossover_brackets(diffs((5.0, 1.0, 3.0), POS), floor=0)
+        crossover_brackets(diffs((5.0, 1.0, 3.0), POS), floors=ft(0))
     with pytest.raises(CostModelError, match="resolution floor"):
-        crossover_brackets(diffs(POS, NEG), floor=-1)
+        crossover_brackets(diffs(POS, NEG), floors=-1)
 
 
 def test_differences_from_intervals():
@@ -197,7 +205,7 @@ def test_quadratic_inputs_are_checked():
 
 def res(*signs):
     m = {1: POS, -1: NEG, 0: UND}
-    return crossover_brackets(diffs(*[m[s] for s in signs]), floor=0)
+    return crossover_brackets(diffs(*[m[s] for s in signs]), floors=ft(0))
 
 
 def test_a_measured_bracket_inside_the_predicted_interval():
@@ -238,7 +246,7 @@ def test_crossover_error_statuses():
     assert not c.direction_agrees
     with pytest.raises(CostModelError, match="different grids"):
         crossover_error(one, crossover_brackets(diffs(POS, NEG, grid=(1, 2)),
-                                                floor=0))
+                                                floors=ft(0)))
 
 
 # --------------------------------------------------------------------------
@@ -326,16 +334,28 @@ def test_sign_agreement_is_decision_error_without_admissibility():
 
 
 def test_cells_inside_the_floor_are_not_scored_and_are_listed():
+    a, b, c, d, e = (CellKey("m", "cp", n, 0.5, 2048, 1) for n in "abcde")
     got = score_cells([
-        ("a", 1.0, 2.0, 1.0, 2.0, True),    # correct, signs agree
-        ("b", 2.0, 2.0, 1.0, 2.0, True),    # tie missed a profitable cell
-        ("c", 1.0, 2.0, 2.05, 2.0, True),   # inside the floor
-        ("d", 1.0, 2.0, 1.95, 2.0, False),  # inside the floor, inadmissible
-        ("e", 1.0, 2.0, 3.0, 2.0, True),    # predicted profitable, it is not
-    ], floor=0.1)
-    assert got.inside_floor == ("c", "d")
+        (a, 1.0, 2.0, 1.0, 2.0, True),    # correct, signs agree
+        (b, 2.0, 2.0, 1.0, 2.0, True),    # tie missed a profitable cell
+        (c, 1.0, 2.0, 2.05, 2.0, True),   # inside the floor
+        (d, 1.0, 2.0, 1.95, 2.0, False),  # inside the floor, inadmissible
+        (e, 1.0, 2.0, 3.0, 2.0, True),    # predicted profitable, it is not
+    ], floors=ft(0.1))
+    assert got.inside_floor == (c, d)
     assert got.decision == {CORRECT: 1, MISSED_PROFITABLE: 1, FALSE_PROFITABLE: 1}
     assert (got.sign_agree, got.sign_disagree) == (1, 2)
     assert got.n_scored == 3
     with pytest.raises(CostModelError, match="twice"):
-        score_cells([("a", 1, 2, 1, 2, True)] * 2, floor=0.1)
+        score_cells([(a, 1, 2, 1, 2, True)] * 2, floors=ft(0.1))
+
+
+def test_score_cells_reads_each_cells_own_floor_and_refuses_a_scalar():
+    """Appendix A, 8 Nov 2026: the floor is per (length, batch)."""
+    k16, k32 = (CellKey("m", "cp", "a", 0.5, L, 1) for L in (16370, 32700))
+    table = FloorTable({(16384, 1): 0.01377, (32768, 1): 0.10116})
+    got = score_cells([(k16, 1.0, 2.0, 1.95, 2.0, True), (k32, 1.0, 2.0, 1.95, 2.0, True)],
+                      floors=table)
+    assert got.inside_floor == (k32,) and got.n_scored == 1
+    with pytest.raises(CostModelError, match="table"):
+        score_cells([(k16, 1.0, 2.0, 1.95, 2.0, True)], floors=0.05)

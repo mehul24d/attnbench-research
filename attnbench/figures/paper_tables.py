@@ -171,7 +171,7 @@ def decision(inp: Inputs) -> list[DecisionGroup]:
                 m_s, m_d = inp.measured[k], inp.measured[d]
                 cells.append((k, p_s, p_d, m_s, m_d, inp.admissible[k]))
             out.append(DecisionGroup(pred, model, cpath, cls, bk or None,
-                                     SC.score_cells(cells, floor=inp.resolution_floor_s)))
+                                     SC.score_cells(cells, floors=inp.resolution_floors)))
     return out
 
 
@@ -220,8 +220,8 @@ def crossover(inp: Inputs) -> Optional[list[CrossoverSeries]]:
                 pd.append(X.GridDifference(k.context_length, iv.point, iv.lo, iv.hi))
                 m = measured_difference(inp, k, dk)
                 md.append(X.GridDifference(k.context_length, m.point, m.lo, m.hi))
-            p = X.crossover_brackets(pd, floor=inp.resolution_floor_s)
-            m = X.crossover_brackets(md, floor=inp.resolution_floor_s)
+            p = X.crossover_brackets(pd, floors=inp.resolution_floors, batch=s[-1])
+            m = X.crossover_brackets(md, floors=inp.resolution_floors, batch=s[-1])
             out.append(CrossoverSeries(pred, s, inp.classes[s[2]], inp.builder(s[2]),
                                        p.lengths, p, m,
                                        tuple(pd), tuple(md), X.crossover_error(p, m)))
@@ -280,8 +280,10 @@ def booktabs(header: Sequence[str], align: str, rows: Sequence[Sequence[str]], *
 
 def _floor_note(inp: Inputs) -> str:
     p = "provisional " if inp.floor_provisional else ""
-    return (f"{p}noise floor {inp.relative_floor:g} (relative), {p}resolution floor "
-            f"{inp.resolution_floor_s:g} s")
+    return (f"{p}noise floor {inp.relative_floor:g} (relative), {p}resolution floor per "
+            f"(length, batch) "
+            + ", ".join(f"{k} {v:g} s" for k, v in
+                        inp.resolution_floors.to_json()["floors_s"].items()))
 
 
 def _caption(inp: Inputs, what: str) -> str:
