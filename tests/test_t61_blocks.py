@@ -350,3 +350,24 @@ def test_a_rehearsal_block_runs_from_its_own_spec_and_p4s_does_not(tmp_path):
     _, why = S.block_run(T64, Namespace(lock=str(spec_only), block="b1", dry_run=False,
                                         import_block=[]))
     assert "complete lock" in why
+
+
+@pytest.mark.parametrize("pairing", ["P2", "P4"])
+def test_a_real_pairing_marked_exploratory_cannot_skip_the_lock(tmp_path, pairing):
+    """Adviser's ruling 3 dated 12 Nov 2026: the skip is keyed on the
+    exploratory flag and refused for P2 and P4 by name, at the block spec and
+    at the training file's lock check."""
+    import dataclasses
+    import t61_rehearsal as R
+    base = {"P2": S.T61, "P4": T64}[pairing]
+    cfg = dataclasses.replace(base, exploratory="marked exploratory by mistake")
+    assert S.skips_lock(R.REHEARSAL) and not S.skips_lock(base)
+    for lock in (S.ROOT / R.LOCK, write_lock(tmp_path)):
+        for dry in (False, True):
+            br, why = S.block_run(cfg, Namespace(lock=str(lock), block="b1", dry_run=dry,
+                                                 import_block=[]))
+            assert br is None and f"{pairing} is a real pairing" in why
+    f = tmp_path / "p1_training.json.gz"
+    f.write_bytes(b"not read: refused first")
+    with pytest.raises(S.StepFailed, match=f"{pairing} is a real pairing"):
+        S.training_rows(cfg, path=f)

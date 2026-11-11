@@ -876,7 +876,7 @@ def training_rows(cfg: SessionConfig, path: Optional[Path] = None,
     path = Path(path or P1_TRAINING)
     if not path.exists():
         raise StepFailed(f"no P1 training file at {path}: fetch it (its sha256 is the lock's)")
-    if not cfg.exploratory:            # a rehearsal reads the file under its own lock
+    if not skips_lock(cfg):            # a rehearsal reads the file under its own lock
         _, why = p1_training_check(path)
         if why:
             raise StepFailed(why)
@@ -1939,6 +1939,22 @@ def block_identity_problems(cfg: SessionConfig, session: Path, block: BlockRun) 
     return out
 
 
+REAL_PAIRINGS = ("P2", "P4")
+
+
+def skips_lock(cfg: SessionConfig) -> bool:
+    """True for a rehearsal, which runs under its own lock and spec; False for
+    any other session. A P2 or P4 config marked exploratory is refused by
+    name: a real pairing never skips its lock checks (adviser's ruling 3
+    dated 12 Nov 2026)."""
+    if not cfg.exploratory:
+        return False
+    if cfg.pairing in REAL_PAIRINGS:
+        raise StepFailed(f"{cfg.pairing} is a real pairing: it runs from the complete lock, "
+                         f"and a config marked exploratory may not skip its lock checks")
+    return True
+
+
 def real_block_lock_problem(cfg: SessionConfig, lock: dict, spec,
                             lock_file: Optional[Path] = None) -> Optional[str]:
     """Why a real block may not run from `lock`, or None (ruling 1d, 11 Nov
@@ -1975,12 +1991,16 @@ def block_run(cfg: SessionConfig, args) -> tuple:
     from attnbench.lock import blocks as B
     if not (args.lock and args.block):
         return None, "--lock and --block go together"
+    try:
+        own_spec = skips_lock(cfg)                    # a rehearsal runs its own spec
+    except StepFailed as e:
+        return None, str(e)
     raw = Path(args.lock).read_bytes()
     try:
         spec = B.parse(json.loads(raw), cfg.pairing)
     except (ValueError, B.BlockSpecError) as e:
         return None, str(e)
-    if not args.dry_run and not cfg.exploratory:     # a rehearsal runs its own spec
+    if not args.dry_run and not own_spec:
         why = real_block_lock_problem(cfg, json.loads(raw), spec)
         if why:
             return None, why
