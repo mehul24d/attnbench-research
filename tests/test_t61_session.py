@@ -83,7 +83,8 @@ def bank(monkeypatch, tmp_path, **pairings):
     store = S.DirStore(Path(tmp_path) / "ledger_store", lambda: clock["t"])
     for p, (t, sha) in pairings.items():
         clock["t"] = datetime.fromisoformat(t).timestamp()
-        Ledger(store, S.DirStore.PREFIX, p).record_banked({"training_file_sha256": sha})
+        Ledger(store, S.DirStore.PREFIX, p).record_banked({"training_file_sha256": sha,
+                                                           "banked_at": t})
     monkeypatch.setattr(S, "ledger_for", lambda cfg, args, pairing=None: Ledger(
         store, S.DirStore.PREFIX, pairing or cfg.pairing))
     return store

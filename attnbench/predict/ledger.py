@@ -33,10 +33,12 @@ its creation times are the store's clock:
 
 **Banking** (ruling 1e): `banked.json` at the pairing's ledger root is
 written once, when the pairing's ground truth is banked
-(`scripts/bank_pairing.py`), naming its training file's sha256. Its store
-creation time is the pairing's banking time every later prediction's
-`--banked-at` was typed from before; an entry written after the banking only
-makes the order check stricter.
+(`scripts/bank_pairing.py`), naming its training file's sha256 and its
+banking time, the latest teardown of the sessions that banked it, read from
+their records (adviser's ruling 2 dated 12 Nov 2026: never typed). It is the
+time every later prediction's `--banked-at` was typed from before. A time
+after the entry's own store creation time is refused: nothing is banked
+after it was recorded as banked.
 
 **The cell** is (arm, token budget, batch): the budget is the smallest power
 of two at or above the realised length, as the grid doubles (lock table row
@@ -92,6 +94,19 @@ def predictions_digest(record: Mapping) -> str:
 
 def _HEX64(v) -> bool:
     return isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v)
+
+
+def _banked_at(entry: Mapping) -> datetime:
+    """The entry's banking time: an ISO time with its offset."""
+    v = entry.get("banked_at")
+    try:
+        t = datetime.fromisoformat(v)
+    except (TypeError, ValueError):
+        t = None
+    if t is None or t.tzinfo is None:
+        raise LedgerError(f"a banked entry states banked_at, an ISO time with its offset "
+                          f"read from the sessions' records, got {v!r}")
+    return t
 
 
 def ledger_root(prefix: str, pairing: str) -> str:
@@ -185,15 +200,21 @@ class Ledger:
         """Once, when the pairing's ground truth is banked."""
         if not _HEX64(entry.get("training_file_sha256")):
             raise LedgerError("a banked entry names its training file's sha256 (64 hex)")
+        _banked_at(entry)
         if not self._put_uri(self.root + BANKED, {**entry, "pairing": self.pairing}):
             raise LedgerError(f"{self.pairing} is already banked: {self.banked()[1]}")
 
     def banked(self) -> Optional[tuple[datetime, dict]]:
-        """(the store's creation time, the entry), or None if not banked."""
+        """(the entry's banking time, the entry), or None if not banked."""
         uri = self.root + BANKED
         if not _exists(self.store, uri):
             return None
-        return self.store.created(uri), json.loads(self.store.get(uri))
+        entry = json.loads(self.store.get(uri))
+        at, made = _banked_at(entry), self.store.created(uri)
+        if at > made:
+            raise LedgerError(f"{self.pairing}'s banked entry says {at.isoformat()}, after "
+                              f"the entry itself was written ({made.isoformat()})")
+        return at, entry
 
     def earliest_start(self, cells: Iterable[str]) -> Optional[datetime]:
         """The store's creation time of the first ground-truth start of any
