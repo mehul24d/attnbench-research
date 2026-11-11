@@ -160,9 +160,12 @@ class NotBuilt(StepFailed):
 
 @dataclass(frozen=True)
 class Requirement:
-    """A plan task whose Section 8 status must start with "Done"."""
+    """A plan task whose Section 8 status must start with "Done", or, for P2
+    and a task that is not a gate, "Waived for P2" with a dated Appendix A
+    citation (`unmet`)."""
     task: str
     why: str
+    gate: bool = False
 
 
 @dataclass(frozen=True)
@@ -396,11 +399,34 @@ def plan_statuses(text: str) -> dict:
     return out
 
 
-def unmet(requirements, statuses: dict) -> list:
+WAIVER = "Waived for P2"
+_CITATION = re.compile(r"Appendix A, (\d{1,2} [A-Z][a-z]{2} \d{4})")
+_A_LINE = re.compile(r"^- \*\*(\d{1,2} [A-Z][a-z]{2} \d{4})\.\*\*", re.M)
+
+
+def appendix_a_dates(text: str) -> frozenset:
+    """The dates Appendix A has a line for ("- **10 Nov 2026.** ...")."""
+    a = text.find("## Appendix A")
+    b = text.find("## Appendix B", a)
+    return frozenset(_A_LINE.findall(text[a:b if b > a else None])) if a >= 0 else frozenset()
+
+
+def waived(r: Requirement, status: str, appendix: frozenset, pairing: str | None) -> bool:
+    """A waiver meets a requirement only for P2, never for a gate, and only
+    when the status cites an Appendix A line that exists (adviser's ruling 1b
+    dated 10 Nov 2026)."""
+    if pairing != "P2" or r.gate or not status.startswith(WAIVER):
+        return False
+    m = _CITATION.search(status)
+    return m is not None and m.group(1) in appendix
+
+
+def unmet(requirements, statuses: dict, appendix: frozenset = frozenset(),
+          pairing: str | None = None) -> list:
     rows = []
     for r in requirements:
         s = statuses.get(r.task)
-        if s is None or not s.startswith("Done"):
+        if s is None or not (s.startswith("Done") or waived(r, s, appendix, pairing)):
             rows.append({"task": r.task, "why": r.why,
                          "status": (s or "no row in Section 8")[:160]})
     return rows
@@ -434,10 +460,13 @@ def body_prereqs(cfg: SessionConfig, args) -> dict:
     and the deployed tree holds the files the session calls. A real run
     refuses otherwise; a dry run records what is missing and skips."""
     text = (ROOT / "docs" / "RESEARCH_PLAN.md").read_text()
-    rows = unmet(cfg.requirements, plan_statuses(text))
+    statuses, appendix = plan_statuses(text), appendix_a_dates(text)
+    rows = unmet(cfg.requirements, statuses, appendix, cfg.pairing)
     files = missing_files(cfg.files)
     findings = {"unmet": rows, "missing_files": files,
-                "required": [r.task for r in cfg.requirements]}
+                "required": [r.task for r in cfg.requirements],
+                "waived": [r.task for r in cfg.requirements
+                           if waived(r, statuses.get(r.task) or "", appendix, cfg.pairing)]}
     bad = []
     if cfg.staged is not None:
         runs = (load_manifest(Path(args.session)).get("block") or {}).get("steps") or cfg.names
@@ -1362,9 +1391,9 @@ PHASE2 = (
 )
 
 GATES = (
-    Requirement("T3.1", "P1 banked: P2 is trained on it"),
-    Requirement("T3.3", "Gate A recorded"),
-    Requirement("T4.4", "Gate B: the tagged lock commit"),
+    Requirement("T3.1", "P1 banked: P2 is trained on it", gate=True),
+    Requirement("T3.3", "Gate A recorded", gate=True),
+    Requirement("T4.4", "Gate B: the tagged lock commit", gate=True),
 )
 
 BUILT_FILES = (
@@ -1374,7 +1403,7 @@ BUILT_FILES = (
 )
 
 COMMON_STEPS_HEAD = (
-    Step("prereqs", "Section 8", "plan rows Done; deployed files present"),
+    Step("prereqs", "Section 8", "plan rows Done (or waived, P2); deployed files present"),
     Step("preflight", "T2.20, T2.1", "provenance on the probe's row; host speed (start); Triton"),
     Step("link", "T2.5", "link microbenchmarks, one stamped row"),
     Step("launch_queue", "T2.6", "launch-queue depth Q"),
@@ -1436,7 +1465,7 @@ def _t61() -> SessionConfig:
             Step("mask_gate", "T2.23", "mask gate: Triton against PyTorch on one card; "
                                        "masks recorded untimed if it fails"),
         ) + COMMON_STEPS_COMPONENTS + COMMON_STEPS_TAIL,
-        requirements=PHASE2 + (Requirement("T2.23", "the mask gate on P2"),) + GATES,
+        requirements=PHASE2 + (Requirement("T2.23", "the mask gate on P2", gate=True),) + GATES,
         files=BUILT_FILES, fakes=fakes, reals=reals, staged=p2_staged_inputs)
     validate(cfg)
     return cfg

@@ -27,9 +27,17 @@
 set -uo pipefail
 
 TIMED=tests/test_timed_region_setup.py
+# The tests that assume a CPU-only host (tests/gpu_host_deselect.txt; adviser's
+# ruling 1h dated 10 Nov 2026) are deselected, so the record can pass on a GPU host.
+DESELECT=(--deselect "$TIMED")
+while IFS= read -r id; do
+  case "$id" in ''|'#'*) continue ;; esac
+  DESELECT+=(--deselect "$id")
+done < tests/gpu_host_deselect.txt
+echo "=== S9 suite: ${#DESELECT[@]} deselect arguments (the timed-region file and tests/gpu_host_deselect.txt)"
 
 bash scripts/run_phase.sh s9_suite -- \
-    python3 -m pytest -q --deselect "$TIMED"
+    python3 -m pytest -q "${DESELECT[@]}"
 SUITE_RC=$?
 echo "=== S9 suite rc=$SUITE_RC"
 

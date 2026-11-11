@@ -1,147 +1,235 @@
-# T4.3: the two adversarial reads, prompts A and B (10 Nov 2026)
+# T4.3: the two adversarial reads, prompts A and B (11 Nov 2026)
 
-These are the prompts for T4.3's two independent adversarial reads (Section 8). The researcher
-starts each read in a fresh session, one prompt per session, and the two run in parallel
-(adviser's ruling of 9 Nov 2026). **Flag:** the researcher's decision of 31 Oct 2026 runs the
-reads in sequence, the second after T4.1 has written the lock values. The plan has not
-reconciled the two (Appendix A, 10 Nov 2026). Prompt B therefore reads the lock *draft* and
-the lock tooling, not written lock values.
+Built by `scripts/t43_prompts.py`; rebuild it, do not edit it. Adviser's rulings dated 10 Nov 2026 (item 1e and item 2): the two reads run in parallel, superseding the sequence of 31 Oct 2026 for calendar reasons; both readers cover all four areas, reader B in reverse order; after both reads the findings are fixed, then the suite and the mutation checks are rerun, with no third read (Appendix A, 11 Nov 2026). The researcher starts each in a fresh session, one prompt per session, and pins the commit: `python3 scripts/t43_prompts.py --print A --commit <main's full sha>` prints prompt A with `<COMMIT>` filled in. Deadline: Friday 13 Nov 2026, 12:00 IST.
 
-Both reads are pinned to `main` at `ef43165` (`ef43165f10ed8baa382e46b141a2b23d7363ec22`). Deadline: Friday 13 Nov 2026, 12:00 IST. Each prompt is
-self-contained, and a reader is given only its own prompt.
+Not launched by Claude Code.
 
 ---
 
-## Prompt A: scoring and gate arithmetic
+## Prompt A
 
-You are an independent adversarial reader for a pre-registered benchmarking study. Your job
-is to find the ways its scoring code and decision gates could report a result that the
-written plan would not allow: a pass that should be a fail, a number that cannot be
-contradicted, or a gap between what the plan says and what the code computes. You did not
-write this code. Assume it is wrong somewhere and find where.
+You are independent adversarial reader A for a pre-registered benchmarking study. Each hardware pairing's latency prediction is written, hashed and synced to a store before any of that pairing's ground truth is measured, and is trained only on pairings banked earlier. Your job is to find the ways the code and the written plan could let a result through that the plan would not allow: a pass that should be a fail, a number nothing could contradict, a prediction that could see its own ground truth, or a lock accepted while incomplete. You did not write this code. Assume it is wrong somewhere and find where.
 
-**Repository.** `https://github.com/mehul24d/attnbench-research`. Clone it, run
-`git checkout ef43165`, and read only that commit. The plan is `docs/RESEARCH_PLAN.md`, the
-single source of truth. Read Sections 4 (hypotheses), 5.1, 5.3 and 5.4 (definitions, the
-session protocol, the cost model), 7 (decision gates) and Appendix A (dated decisions; a later
-line overrides an earlier one).
+**Repository.** `https://github.com/mehul24d/attnbench-research`. Clone it into your session's scratchpad directory, run `git checkout <COMMIT>`, the full sha of `main`'s tip that the researcher gives you when starting this session, and read only that commit. The plan is `docs/RESEARCH_PLAN.md`, the single source of truth; Appendix A holds dated decisions, and a later line overrides an earlier one.
 
-**Your scope: scoring and gate arithmetic.**
+**Section numbers.** This prompt cites the plan by section number. Before relying on one, check it against the plan's own headings (`grep -n '^#' docs/RESEARCH_PLAN.md`). These are the headings it expects: 4 Hypotheses; 5.1 Definitions; 5.3 Per-pairing session protocol; 5.4 Cost model; 5.6 Confounders and controls; 5.7 Quality measures; 6 Operating rules (both Claudes, every session); 7 Decision gates. Report any mismatch as a finding.
 
-- `attnbench/predict/scoring.py`, `residuals.py`, `intervals.py`, `naive.py`, `baselines.py`,
-  `hdbi.py`
-- `attnbench/lock/floors.py`, `hdbi_fit.py`, `holm.py`
-- `attnbench/analysis/gate_a.py`, `gate_a_repeats.py`, `decision.py`, `block_drift.py`,
-  `exact_noninferiority.py`
-- the tests for each, under `tests/`
+**Your scope: all four areas below, in this order.** Read each area's files and their tests under `tests/`, then answer its questions with evidence.
 
-**Questions to answer, each with evidence:**
+### 1. Area 1: Scoring and gate arithmetic
 
-1. For each hypothesis H0 to H6 and each gate, does the code compute exactly the statistic,
-   tolerance, aggregation (median, quantile, per pairing or pooled) and multiple-comparison
-   correction the plan states? Name every mismatch.
-2. Which cells or rows can silently drop out of a score: the resolution floor ("not
-   interpreted"), missing rounds, flagged clocks, density mismatches, the 16384-only label, or
-   an empty group? Does a drop ever make a pass easier? Is each drop counted and reported?
-3. Can a gate pass on too few observations, or with a degenerate input such as all rows equal,
-   one block, one session, a zero denominator or a NaN?
-4. Is the block drift bound (`block_drift.py`) applied to the anchor cell the plan names, at
-   the bound the plan names, before blocks are pooled?
-5. Are the bootstrap and the Holm correction seeded, sized and applied in the order the plan
-   requires?
-6. Is any number that the analysis reports produced by nothing that could contradict it, such
-   as a constant, a default or a value read back from its own output?
+Plan: Sections 4 (hypotheses), 5.1 (definitions), 5.7 (quality measures: H4's scoring and the Holm correction) and 7 (decision gates).
+
+Files:
+
+- `attnbench/predict/scoring.py`
+- `attnbench/predict/residuals.py`
+- `attnbench/predict/intervals.py`
+- `attnbench/predict/naive.py`
+- `attnbench/predict/baselines.py`
+- `attnbench/predict/hdbi.py`
+- `attnbench/lock/floors.py`
+- `attnbench/lock/hdbi_fit.py`
+- `attnbench/lock/holm.py`
+- `attnbench/analysis/gate_a.py`
+- `attnbench/analysis/gate_a_repeats.py`
+- `attnbench/analysis/decision.py`
+- `attnbench/analysis/block_drift.py`
+- `attnbench/analysis/exact_noninferiority.py`
+- `attnbench/components/mask_gate.py` (and `mask_gate_bound` in `scripts/t61_session.py`)
+
+Questions:
+
+1. For each hypothesis H0 to H6 and each gate, does the code compute exactly the statistic, tolerance, aggregation (median, quantile, per pairing or pooled) and multiple-comparison correction the plan states? Name every mismatch.
+2. Which cells or rows can silently drop out of a score: the resolution floor ("not interpreted"), missing rounds, flagged clocks, density mismatches, the 16384-only label, or an empty group? Does a drop ever make a pass easier? Is each drop counted and reported?
+3. Can a gate pass on too few observations, or on a degenerate input such as all rows equal, one block, one session, a zero denominator or a NaN?
+4. Is the mask gate's verdict the two code paths on one card, at the bound the lock holds, with agreement reported only, as Appendix A (9 and 11 Nov 2026) states? Is the block drift bound applied to the anchor cell the plan names, before blocks are pooled?
+5. Are the bootstrap and the Holm correction seeded, sized and applied in the order the plan requires, over H4's family of m = 18?
+6. Is any number the analysis reports produced by nothing that could contradict it, such as a constant, a default or a value read back from its own output?
+
+### 2. Area 2: The commit machinery
+
+Plan: Sections 5.3 (the session protocol), 6 (operating rules) and 7 (Gate B).
+
+Files:
+
+- `attnbench/predict/commit.py` (`build_record`, `write_prediction`, `sync_prediction`, `load_committed`)
+- `attnbench/predict/session_order.py`
+- `scripts/t61_session.py:` the `predict`, `ground_truth` and `late_check` steps, the hold, the strict stamp, blocks and their imports, the interrupted-block discard, `prereqs` (`unmet`, `waived`, `appendix_a_dates`)
+- `scripts/t31_steps.py:` `build_prediction` and the ground-truth step
+- `scripts/timed_path.py` and the timed-path identity (Appendix A, 10 Nov 2026)
+
+Questions:
+
+1. Can ground truth start, or any of its rows be read, before the prediction is synced plus the plan's gap and skew? Consider clocks moving, a resumed session, a second attempt, blocks on different instances and the store's creation time.
+2. Can a committed prediction be replaced, edited or re-synced after ground truth begins without `load_committed` refusing it? Consider the hash, the sidecar, a dirty tree, the code stamp and a store that clobbers.
+3. Are blocks of one pairing pooled only when they ran one commit, one spec and one instance identity, and is an interrupted block discarded in full?
+4. Can `prereqs` pass a session that the plan's Section 8 statuses say is not ready: a waiver on a gate, a waiver citing an Appendix A date that has no line, or a waiver for a pairing other than P2?
+
+### 3. Area 3: Design leakage
+
+Plan: Sections 5.3 and 5.4 (the cost model: which pairings each prediction is trained on).
+
+Files:
+
+- `attnbench/predict/training.py` (`committed_training_set`)
+- `attnbench/predict/p1_training.py`
+- `attnbench/predict/learned.py`
+- `scripts/t61_session.py:` `p2_staged_inputs`
+
+Questions:
+
+1. No P2 or P4 data exist yet, so "leakage" here means design leakage: a path by which, once those data exist, a prediction could see them. Can the training set for a pairing include that pairing's own rows, a later pairing's rows, or rows banked after its prediction was written?
+2. Can the learned predictor's configuration, features or hyperparameters be chosen, or re-chosen, using the pairing's own data?
+3. Is any input the session reads not hashed or checked against the lock: the training file, the banked masks, the configs?
+
+### 4. Area 4: The lock tooling
+
+Plan: Section 8's Phase 4 rows (T4.1 to T4.4) and Appendix A (dated decisions; a later line overrides an earlier one).
+
+Files:
+
+- `attnbench/lock/checklist.py`
+- `attnbench/lock/blocks.py`
+- `scripts/t31_steps.py:` `fill_lock_values` and `LOCK_FILE` (`docs/lock_values.json`), the lock-file loader P2's session reads
+- `scripts/tag_lock.py`
+- `docs/lock_package_draft.json` (a draft: every value is null, and a test keeps it from reading as a lock)
+
+Questions:
+
+1. Can `checklist.py` accept a lock file with a missing, null or wrongly-typed value, or one whose `plan_sha256` is not the plan's?
+2. Can a session runner read a value the lock does not fix, or fall back to a working value when the lock is absent?
+3. Does every item T4.1 lists have a key in the checklist and the draft, and is any value the draft marks decided (H0, H1 to H3, H4's bound and m = 18, the ±0.01 density tolerance, the timed-path identity) chosen after data it could have seen?
 
 **Rules.**
 
-- Read code and run CPU tests only: `python3 -m pytest tests/ -q` works on a CPU with no GPU.
-- Do not run any `scripts/gcp_*` script or any cloud, `gcloud`, `gsutil` or `aws` command.
-  Read the scripts if you need to. Do not read any bucket.
-- Do not push, open a pull request or change files in the repository. Write your findings to
-  a new file outside the repository.
-- `docs/t43_first_read.md` is an earlier read by the agent that wrote much of the code.
-  Read it only after your own findings are written. Then add a short section on where you
-  agree, where you disagree, and what it missed.
+- Read code and run CPU tests only: `python3 -m pytest tests/ -q` works on a CPU with no GPU. A CPU dry run is allowed: `python3 scripts/t61_session.py run --dry-run --session <a scratch dir>`.
+- Do not run any `scripts/gcp_*` script or any cloud, `gcloud`, `gsutil` or `aws` command, and do not read any bucket. Read the scripts if you need to.
+- Do not push, open a pull request or change files in the repository.
+- Do not read the other reader's report (`T43_read_A.md` or `T43_read_B.md`, whichever is not yours) or any other session's files, and do not contact another session. The two reads run in parallel and must stay independent.
+- `docs/t43_first_read.md` is an earlier read by the agent that wrote much of the code. Read it only after your own findings are written, then add a short section on where you agree, where you disagree and what it missed.
 
-**Deliverable.** One Markdown file, `t43_read_A_<your name or session>.md`, with:
+**Deliverable.** One Markdown file, `T43_read_A.md`, saved in your session's scratchpad directory (not in the repository), and its full text printed to the user at the end of your session. It holds:
 
-- your findings, most severe first; for each, the file and line, the plan sentence it
-  conflicts with (quoted, with its section), a concrete failure scenario (the inputs and the
-  wrong result), and whether you verified it by running code or only suspect it;
-- a list of what you did not read;
+- the commit you read (full sha);
+- your findings, most severe first; for each, the area, the file and line, the plan sentence it conflicts with (quoted, with its section), a concrete failure scenario (the inputs and the wrong result), and whether you verified it by running code or only suspect it;
+- any section number that did not match the plan's headings;
+- what you did not read;
 - the section comparing your findings with `docs/t43_first_read.md`.
 
-Keep the report under 2,000 words. Deadline: Friday 13 Nov 2026, 12:00 IST.
+Keep the report under 2,500 words. Deadline: Friday 13 Nov 2026, 12:00 IST.
 
 ---
 
-## Prompt B: commit machinery, leakage, and the lock tooling
+## Prompt B
 
-You are an independent adversarial reader for a pre-registered benchmarking study. Each
-hardware pairing's latency prediction is written, hashed and synced to a store *before* any
-of that pairing's ground truth is measured, and it is trained only on pairings banked earlier.
-Your job is to find any way that rule can be broken without the code refusing: a prediction
-that sees its own ground truth, a training set that leaks the pairing's own or later rows, a
-committed file that can be swapped, or a lock that can be accepted while incomplete or while
-holding values chosen after the confirmatory data. You did not write this code. Assume it is
-wrong somewhere and find where.
+You are independent adversarial reader B for a pre-registered benchmarking study. Each hardware pairing's latency prediction is written, hashed and synced to a store before any of that pairing's ground truth is measured, and is trained only on pairings banked earlier. Your job is to find the ways the code and the written plan could let a result through that the plan would not allow: a pass that should be a fail, a number nothing could contradict, a prediction that could see its own ground truth, or a lock accepted while incomplete. You did not write this code. Assume it is wrong somewhere and find where.
 
-**Repository.** `https://github.com/mehul24d/attnbench-research`. Clone it, run
-`git checkout ef43165`, and read only that commit. The plan is `docs/RESEARCH_PLAN.md`, the
-single source of truth. Read Sections 5.3 and 5.4 (the session protocol, the cost model), 6
-(operating rules), 7 (Gate B), Section 8's Phase 4 rows (T4.1 to T4.4) and Appendix A (dated
-decisions; a later line overrides an earlier one).
+**Repository.** `https://github.com/mehul24d/attnbench-research`. Clone it into your session's scratchpad directory, run `git checkout <COMMIT>`, the full sha of `main`'s tip that the researcher gives you when starting this session, and read only that commit. The plan is `docs/RESEARCH_PLAN.md`, the single source of truth; Appendix A holds dated decisions, and a later line overrides an earlier one.
 
-**Your scope: the commit machinery, leakage and the lock tooling.**
+**Section numbers.** This prompt cites the plan by section number. Before relying on one, check it against the plan's own headings (`grep -n '^#' docs/RESEARCH_PLAN.md`). These are the headings it expects: 4 Hypotheses; 5.1 Definitions; 5.3 Per-pairing session protocol; 5.4 Cost model; 5.6 Confounders and controls; 5.7 Quality measures; 6 Operating rules (both Claudes, every session); 7 Decision gates. Report any mismatch as a finding.
 
-- `attnbench/predict/commit.py` (`build_record`, `write_prediction`, `sync_prediction`,
-  `load_committed`), `session_order.py`, `training.py` (`committed_training_set`),
-  `p1_training.py`, `learned.py`
-- `scripts/t61_session.py`: the `predict`, `ground_truth` and `late_check` steps, the hold, the
-  strict stamp, blocks and their imports, and the interrupted-session discard
-- `scripts/t31_steps.py`: `build_prediction`, `fill_lock_values`, the ground-truth step
-- `attnbench/lock/checklist.py`, `blocks.py`; `docs/lock_package_draft.json` (a draft: every
-  value is null, and a test keeps it from reading as a lock)
-- `scripts/timed_path.py` and the timed-path identity in Appendix A, 10 Nov 2026
-- the tests for each, under `tests/`
+**Your scope: all four areas below, in this order (reverse order: area 4 first).** Read each area's files and their tests under `tests/`, then answer its questions with evidence.
 
-**Questions to answer, each with evidence:**
+### 1. Area 4: The lock tooling
 
-1. Can ground truth start, or any of its rows be read, before the prediction is synced plus the
-   plan's gap and skew? Consider clocks moving, a resumed session, a second attempt, blocks run
-   on different instances, and the store's creation time.
-2. Can a committed prediction be replaced, edited or re-synced after ground truth begins
-   without `load_committed` refusing it? Consider the hash, the sidecar, a dirty tree, the code
-   stamp, and a store that clobbers.
-3. Can the training set for a pairing include that pairing's own rows, a later pairing's rows,
-   or rows banked after its prediction was written? Can the learned predictor's configuration
-   or features be chosen using the pairing's data?
-4. Can the lock checker (`checklist.py`) accept a lock file with a missing, null or
-   wrongly-typed value? Can the session runners read a value that the lock does not fix?
-5. Are blocks of one pairing pooled only when they ran one commit, one spec and one instance
-   identity, and is an interrupted block discarded in full?
-6. Is there any input the session reads that is not hashed or checked against the lock: the
-   training file, the banked masks or the configs?
+Plan: Section 8's Phase 4 rows (T4.1 to T4.4) and Appendix A (dated decisions; a later line overrides an earlier one).
+
+Files:
+
+- `attnbench/lock/checklist.py`
+- `attnbench/lock/blocks.py`
+- `scripts/t31_steps.py:` `fill_lock_values` and `LOCK_FILE` (`docs/lock_values.json`), the lock-file loader P2's session reads
+- `scripts/tag_lock.py`
+- `docs/lock_package_draft.json` (a draft: every value is null, and a test keeps it from reading as a lock)
+
+Questions:
+
+1. Can `checklist.py` accept a lock file with a missing, null or wrongly-typed value, or one whose `plan_sha256` is not the plan's?
+2. Can a session runner read a value the lock does not fix, or fall back to a working value when the lock is absent?
+3. Does every item T4.1 lists have a key in the checklist and the draft, and is any value the draft marks decided (H0, H1 to H3, H4's bound and m = 18, the ±0.01 density tolerance, the timed-path identity) chosen after data it could have seen?
+
+### 2. Area 3: Design leakage
+
+Plan: Sections 5.3 and 5.4 (the cost model: which pairings each prediction is trained on).
+
+Files:
+
+- `attnbench/predict/training.py` (`committed_training_set`)
+- `attnbench/predict/p1_training.py`
+- `attnbench/predict/learned.py`
+- `scripts/t61_session.py:` `p2_staged_inputs`
+
+Questions:
+
+1. No P2 or P4 data exist yet, so "leakage" here means design leakage: a path by which, once those data exist, a prediction could see them. Can the training set for a pairing include that pairing's own rows, a later pairing's rows, or rows banked after its prediction was written?
+2. Can the learned predictor's configuration, features or hyperparameters be chosen, or re-chosen, using the pairing's own data?
+3. Is any input the session reads not hashed or checked against the lock: the training file, the banked masks, the configs?
+
+### 3. Area 2: The commit machinery
+
+Plan: Sections 5.3 (the session protocol), 6 (operating rules) and 7 (Gate B).
+
+Files:
+
+- `attnbench/predict/commit.py` (`build_record`, `write_prediction`, `sync_prediction`, `load_committed`)
+- `attnbench/predict/session_order.py`
+- `scripts/t61_session.py:` the `predict`, `ground_truth` and `late_check` steps, the hold, the strict stamp, blocks and their imports, the interrupted-block discard, `prereqs` (`unmet`, `waived`, `appendix_a_dates`)
+- `scripts/t31_steps.py:` `build_prediction` and the ground-truth step
+- `scripts/timed_path.py` and the timed-path identity (Appendix A, 10 Nov 2026)
+
+Questions:
+
+1. Can ground truth start, or any of its rows be read, before the prediction is synced plus the plan's gap and skew? Consider clocks moving, a resumed session, a second attempt, blocks on different instances and the store's creation time.
+2. Can a committed prediction be replaced, edited or re-synced after ground truth begins without `load_committed` refusing it? Consider the hash, the sidecar, a dirty tree, the code stamp and a store that clobbers.
+3. Are blocks of one pairing pooled only when they ran one commit, one spec and one instance identity, and is an interrupted block discarded in full?
+4. Can `prereqs` pass a session that the plan's Section 8 statuses say is not ready: a waiver on a gate, a waiver citing an Appendix A date that has no line, or a waiver for a pairing other than P2?
+
+### 4. Area 1: Scoring and gate arithmetic
+
+Plan: Sections 4 (hypotheses), 5.1 (definitions), 5.7 (quality measures: H4's scoring and the Holm correction) and 7 (decision gates).
+
+Files:
+
+- `attnbench/predict/scoring.py`
+- `attnbench/predict/residuals.py`
+- `attnbench/predict/intervals.py`
+- `attnbench/predict/naive.py`
+- `attnbench/predict/baselines.py`
+- `attnbench/predict/hdbi.py`
+- `attnbench/lock/floors.py`
+- `attnbench/lock/hdbi_fit.py`
+- `attnbench/lock/holm.py`
+- `attnbench/analysis/gate_a.py`
+- `attnbench/analysis/gate_a_repeats.py`
+- `attnbench/analysis/decision.py`
+- `attnbench/analysis/block_drift.py`
+- `attnbench/analysis/exact_noninferiority.py`
+- `attnbench/components/mask_gate.py` (and `mask_gate_bound` in `scripts/t61_session.py`)
+
+Questions:
+
+1. For each hypothesis H0 to H6 and each gate, does the code compute exactly the statistic, tolerance, aggregation (median, quantile, per pairing or pooled) and multiple-comparison correction the plan states? Name every mismatch.
+2. Which cells or rows can silently drop out of a score: the resolution floor ("not interpreted"), missing rounds, flagged clocks, density mismatches, the 16384-only label, or an empty group? Does a drop ever make a pass easier? Is each drop counted and reported?
+3. Can a gate pass on too few observations, or on a degenerate input such as all rows equal, one block, one session, a zero denominator or a NaN?
+4. Is the mask gate's verdict the two code paths on one card, at the bound the lock holds, with agreement reported only, as Appendix A (9 and 11 Nov 2026) states? Is the block drift bound applied to the anchor cell the plan names, before blocks are pooled?
+5. Are the bootstrap and the Holm correction seeded, sized and applied in the order the plan requires, over H4's family of m = 18?
+6. Is any number the analysis reports produced by nothing that could contradict it, such as a constant, a default or a value read back from its own output?
 
 **Rules.**
 
-- Read code and run CPU tests only: `python3 -m pytest tests/ -q` works on a CPU with no GPU.
-  A CPU dry run of a session is allowed:
-  `python3 scripts/t61_session.py run --dry-run --session /tmp/<dir>`.
-- Do not run any `scripts/gcp_*` script or any cloud, `gcloud`, `gsutil` or `aws` command.
-  Read the scripts if you need to. Do not read any bucket.
-- Do not push, open a pull request or change files in the repository. Write your findings to
-  a new file outside the repository.
-- `docs/t43_first_read.md` is an earlier read by the agent that wrote much of the code.
-  Read it only after your own findings are written. Then add a short section on where you
-  agree, where you disagree, and what it missed.
+- Read code and run CPU tests only: `python3 -m pytest tests/ -q` works on a CPU with no GPU. A CPU dry run is allowed: `python3 scripts/t61_session.py run --dry-run --session <a scratch dir>`.
+- Do not run any `scripts/gcp_*` script or any cloud, `gcloud`, `gsutil` or `aws` command, and do not read any bucket. Read the scripts if you need to.
+- Do not push, open a pull request or change files in the repository.
+- Do not read the other reader's report (`T43_read_A.md` or `T43_read_B.md`, whichever is not yours) or any other session's files, and do not contact another session. The two reads run in parallel and must stay independent.
+- `docs/t43_first_read.md` is an earlier read by the agent that wrote much of the code. Read it only after your own findings are written, then add a short section on where you agree, where you disagree and what it missed.
 
-**Deliverable.** One Markdown file, `t43_read_B_<your name or session>.md`, with:
+**Deliverable.** One Markdown file, `T43_read_B.md`, saved in your session's scratchpad directory (not in the repository), and its full text printed to the user at the end of your session. It holds:
 
-- your findings, most severe first; for each, the file and line, the plan sentence it
-  conflicts with (quoted, with its section), a concrete failure scenario (the inputs and the
-  wrong result), and whether you verified it by running code or only suspect it;
-- a list of what you did not read;
+- the commit you read (full sha);
+- your findings, most severe first; for each, the area, the file and line, the plan sentence it conflicts with (quoted, with its section), a concrete failure scenario (the inputs and the wrong result), and whether you verified it by running code or only suspect it;
+- any section number that did not match the plan's headings;
+- what you did not read;
 - the section comparing your findings with `docs/t43_first_read.md`.
 
-Keep the report under 2,000 words. Deadline: Friday 13 Nov 2026, 12:00 IST.
+Keep the report under 2,500 words. Deadline: Friday 13 Nov 2026, 12:00 IST.

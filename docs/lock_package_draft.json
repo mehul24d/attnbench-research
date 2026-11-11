@@ -1,5 +1,5 @@
 {
- "plan_sha256": "49f44c13148d73efe3198e2e2bc566c16ab4020faf5f1046daff6d89a5758f35",
+ "plan_sha256": "e16c3cc62b81e3b4fb0ffc956bca40f15bff250368a39083bd6cadf810ee614e",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -43,7 +43,7 @@
    "item": "H4 confirmatory family",
    "value": null,
    "source": null,
-   "status": "decided (10 Nov 2026, adviser's ruling 2 of the 10 Nov paste), stated before any P2 data",
+   "status": "decided (10 Nov 2026), final (11 Nov 2026, adviser's ruling 1f dated 10 Nov 2026: T1.7 not built before the lock), stated before any P2 data",
    "proposed": "m = 30 under the ruling's default (no primary estimator is declared; the control at each block size): 18 pair tests + 12 control tests at k = 4; m = 18 if the window arm (T1.7) is not built by the lock",
    "basis": "docs/lock_decisions_20261109.md (H4 for the adviser's next relay, eleventh paste)",
    "decided": "m = 18: the window arm is not built (T1.7 Not started), so k = 3 (oracle, mean-pool, XAttention); 3 pairs x 3 block sizes (32, 64, 128) + the random control against each estimator at each block size (9), Holm-corrected together; power-rule n about 2,150 x p. A window arm built later is exploratory for H4."
@@ -92,7 +92,7 @@
    "item": "mask-gate bound",
    "value": null,
    "source": null,
-   "status": "decided (9 Nov 2026) and accepted as built (10 Nov 2026, adviser's ruling 3 of the 10 Nov paste); its value is the compiled-versus-eager tolerance's, still owed with it",
+   "status": "decided (9 Nov 2026), accepted as built (10 Nov 2026); its value, the compiled-versus-eager tolerance's, decided 11 Nov 2026 (ruling 1c): +-0.01",
    "proposed": "the compiled-versus-eager density flag tolerance (working +-0.01 absolute), one value; agreement reported only; P2's verdict on its own card, across cards a flag",
    "basis": "docs/RESEARCH_PLAN.md Appendix A, 9 Nov 2026; t61_session.mask_gate_bound refuses a lock whose two values differ"
   },
@@ -238,10 +238,11 @@
    "item": "the compiled-versus-eager density flag tolerance (working ±0.01 absolute)",
    "value": null,
    "source": null,
-   "status": "owed: data",
+   "status": "decided (11 Nov 2026, adviser's ruling 1c dated 10 Nov 2026), stated before any compiled or P2 data; fixed only by the lock commit",
    "proposed": "Keep +-0.01; T3.2 ran eager only, so no new compiled rows",
    "basis": "lock table row 29",
-   "note_10_nov": "T2.21's P2 waiver holds only if this is fixed at its declared +-0.01, not from compiled data (Appendix A, 10 Nov 2026), since it is also the mask-gate bound"
+   "note_10_nov": "T2.21's P2 waiver holds only if this is fixed at its declared +-0.01, not from compiled data (Appendix A, 10 Nov 2026), since it is also the mask-gate bound",
+   "decided": "+-0.01 absolute, fixed by the lock at its declared value, not from compiled data (T2.21's P2 waiver condition); the same value is the mask-gate bound"
   },
   "probe_length_rule": {
    "item": "the probe-length rule (T2.18: three lengths at or below 32768 with distinct chunk counts of at least two, else two plus a full recording at 32768)",
@@ -313,7 +314,7 @@
   "H0": [],
   "H2": []
  },
- "status": "draft: proposals only, nothing fixed (8 Nov 2026); items 1 (H1 to H3), 2 and 5 decided 9 Nov 2026, fixed only by the lock commit; H0 and H4 (bound and family) decided 10 Nov 2026; the timed-path identity for P2 and P4 decided 10 Nov 2026",
+ "status": "draft: proposals only, nothing fixed (8 Nov 2026); items 1 (H1 to H3), 2 and 5 decided 9 Nov 2026, fixed only by the lock commit; H0 and H4 (bound and family) decided 10 Nov 2026; the timed-path identity for P2 and P4 decided 10 Nov 2026; the compiled-versus-eager tolerance (+-0.01) decided and H4's m = 18 final, 11 Nov 2026",
  "pairing_values": {
   "P2": {
    "densities": null,

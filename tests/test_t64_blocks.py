@@ -30,15 +30,18 @@ def plan(h=None, pairing="P4"):
     h = h or {"P2": 2.2, "P4": 2.3}[pairing]     # P4 at 2.2 h refuses (below)
     n = B.card_numbers(B.CARDS[pairing].read_text())
     return B.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=B.BOOT[pairing],
-                         rate=B.SPOT_RATES[pairing], max_hours=h)
+                         rate=B.SPOT_RATES[pairing], max_hours=h, suite_min=n["suite_min"])
 
 
 def test_the_spot_terms_are_cap_1_3_halt_1_3_rounded_down_and_delete_10_minutes_after():
     # researcher, 7 Nov 2026: halt = 1.3 x planned hours, hard delete = halt + 10 min
     for pairing in ("P4", "P2"):
         n, rate = B.card_numbers(B.CARDS[pairing].read_text()), B.SPOT_RATES[pairing]
-        for b in plan(pairing=pairing):
-            planned = n["setup_h"] + b.run_min / 60 + n["teardown_h"]
+        for i, b in enumerate(plan(pairing=pairing)):
+            # the suite record (ruling 1h dated 10 Nov 2026) on the first boot only
+            suite = n["suite_min"] if i == 0 else 0.0
+            assert n["suite_min"] == 20
+            planned = n["setup_h"] + (suite + b.run_min) / 60 + n["teardown_h"]
             assert b.cap_inr == math.ceil(rate * planned * 1.3)
             assert b.halt_min == math.floor(1.3 * planned * 60)
             assert b.delete_min == b.halt_min + 10
@@ -64,7 +67,7 @@ def test_p4_refuses_2_2_hour_blocks_and_is_four_blocks_at_2_3():
         plan(2.2)
     blocks = plan(2.3)
     assert len(blocks) == 4 and all(b.planned_h <= 2.3 + 1e-9 for b in blocks)
-    assert [b.planned_h for b in blocks] == [1.517, 2.217, 2.3, 1.5]
+    assert [b.planned_h for b in blocks] == [1.85, 2.217, 2.3, 1.5]   # b1 + the 20 min suite record
     assert blocks[1].steps == ("host_components",)
     assert sum(b.ground_truth_min for b in blocks) == dict(N["steps"])["ground_truth"]
     gt = [b for b in blocks if "ground_truth" in b.steps]

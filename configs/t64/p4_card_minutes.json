@@ -1,6 +1,7 @@
 {
  "_comment": "The P4 launch card's minutes per step (scripts/t64_card.py), each with its basis. 'measured' names the P1 session and step it was read from (L4, Cascade Lake, docs/spend_ledger.md); nothing here has run on an H100, whose host is Sapphire Rapids, so a measured row is a basis, not a forecast. 'estimate' is not measured anywhere (the 28 Oct 2026 card). The compiled groups are not in (adviser's ruling 2 of the tenth 9 Nov 2026 paste).",
  "setup_h": {"value": 0.6, "basis": "estimate: write gate, deploy, preflight, bootstrap with XAttention (28 Oct 2026 card); Flex waiting time is not counted, the VM is not running"},
+ "suite_record_min": {"value": 20, "basis": "adviser's ruling 1h dated 10 Nov 2026: about 20 min. The L4 rehearsal's record took 9 min 41 s for the suite and the S8 run after it (attempt 1); the bootstrap bounds it at SUITE_RECORD_MIN, 25. First boot only: on Spot, block b1"},
  "teardown_h": {"value": 0.15, "basis": "estimate: logs and manifests pull, delete, cleanup check (28 Oct 2026 card)"},
  "steps": {
   "prereqs": {"minutes": [1], "basis": "estimate"},

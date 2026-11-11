@@ -22,7 +22,7 @@ from t64_session import T64  # noqa: E402
 
 
 def _built():
-    return C.build(C.load_minutes(), "2026-11-10")
+    return C.build(C.load_minutes(), "2026-11-11")
 
 
 def test_the_card_on_disk_is_this_build():
@@ -44,11 +44,11 @@ def test_flex_and_spot_come_from_the_same_minutes_with_each_boots_overhead():
     m = C.load_minutes()
     steps = [(s.name, float(sum(m["steps"][s.name]["minutes"]))) for s in T64.steps]
     run = sum(x for _, x in steps)
-    planned = 0.6 + run / 60 + 0.15
+    planned = 0.6 + (m["suite_record_min"]["value"] + run) / 60 + 0.15   # ruling 1h
     card = _built()
     assert f"| Expected, nothing fails | ₹{math.ceil(round(planned, 3) * C.FLEX_RATE)} |" in card
     assert f"₹{math.ceil(round(planned, 3) * C.FLEX_RATE * B.CAP_FACTOR)} (halt" in card
-    blocks, refusal = C.spot_blocks(steps, 0.6, 0.15)
+    blocks, refusal = C.spot_blocks(steps, 0.6, 0.15, m["suite_record_min"]["value"])
     boot = sum(dict(steps)[s] for s in B.BOOT["P4"])
     # every block pays setup, its boot steps and teardown again
     assert sum(b.planned_h for b in blocks) > planned + (len(blocks) - 1) * (0.75 + boot / 60) - 1e-6
@@ -84,7 +84,16 @@ def test_a_minutes_file_off_the_runners_steps_is_refused(tmp_path):
         C.load_minutes(p)
 
 
-def test_the_card_says_the_suite_record_is_not_in_the_setup_and_no_command_passes_it():
+def test_the_suite_record_is_in_the_setup_and_in_every_cap():
+    # adviser's ruling 1h dated 10 Nov 2026: first boot only, so on Spot in b1
+    m = C.load_minutes()
     text = _built()
-    assert "**No suite record in the setup**" in text and "20 minutes" in text
-    assert not [l for l in text.splitlines() if "gcp_bootstrap_instance.sh" in l and "--suite-record" in l]
+    assert "**The suite record is in the setup**" in text
+    assert "| Suite record: `--suite-record`, first boot only | 20 min |" in text
+    _, _, _, _, flex, blocks, _ = C.costs(m)
+    _, _, _, _, flex0, blocks0, _ = C.costs({**m, "suite_record_min": {"value": 0, "basis": "x"}})
+    assert abs(flex.planned_h - flex0.planned_h - 20 / 60) < 0.002
+    assert blocks[0].planned_h > blocks0[0].planned_h
+    assert C.caps(m) == {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks)}
+    card = C.CARD.read_text()
+    assert 'gcp_bootstrap_instance.sh "$NAME" "$ZONE" --suite-record' in card

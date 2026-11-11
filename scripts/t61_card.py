@@ -26,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import budget_interlock as BI  # noqa: E402
 import t61_session as S  # noqa: E402
 import t64_blocks as B  # noqa: E402
 
@@ -51,14 +52,30 @@ def status_head(status: str) -> str:
     return status.split(":")[0].split(";")[0].strip() if status else "no row in Section 8"
 
 
-def build(minutes: dict, plan_text: str, on: str) -> str:
+def costs(minutes: dict):
+    """(steps, setup h, teardown h, suite min, the Flex-start session, the Spot blocks)."""
     steps = [(s.name, float(sum(minutes["steps"][s.name]["minutes"]))) for s in S.T61.steps]
     setup, tear = minutes["setup_h"]["value"], minutes["teardown_h"]["value"]
+    suite = float(minutes["suite_record_min"]["value"])
     run_min = sum(m for _, m in steps)
-    flex = B._block([n for n, _ in steps], 0.0, run_min, setup, tear, FLEX_RATE)
-    blocks = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P2"], rate=SPOT_RATE)
+    flex = B._block([n for n, _ in steps], 0.0, run_min, setup, tear, FLEX_RATE, suite)
+    blocks = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P2"], rate=SPOT_RATE,
+                           suite_min=suite)
+    return steps, setup, tear, suite, flex, blocks
+
+
+def caps(minutes: dict | None = None) -> dict:
+    """P2's cap on each provisioning, for the budget interlock."""
+    *_, flex, blocks = costs(minutes or load_minutes())
+    return {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks)}
+
+
+def build(minutes: dict, plan_text: str, on: str) -> str:
+    steps, setup, tear, suite, flex, blocks = costs(minutes)
+    run_min = sum(m for _, m in steps)
     statuses = S.plan_statuses(plan_text)
-    unmet = {r["task"] for r in S.unmet(S.T61.requirements, statuses)}
+    appendix = S.appendix_a_dates(plan_text)
+    unmet = {r["task"] for r in S.unmet(S.T61.requirements, statuses, appendix, S.T61.pairing)}
     measured = [n for n, _ in steps if "measured" in minutes["steps"][n]["basis"]]
     out = [
         "# Launch card: the P2 session (T6.1, Cascade Lake + A100)",
@@ -147,18 +164,22 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         "the plan's all-in planning rates (Section 5.2); `GCP_RATE_INR_HR` takes the rate "
         "of the model actually created.",
         "",
-        "**No suite record in the setup** (adviser's ruling of 10 Nov 2026, reversing the "
-        "ruling h that would have added it): the bootstrap is run without `--suite-record`, "
-        "and the 20 minutes it would have added are in neither the setup row nor any cap "
-        "below. T2.26's five GPU variants still run in every preflight. The whole suite on a "
-        "GPU host fails 27 tests that assume a CPU-only host "
-        "(`docs/gpu_suite_failures_20261110.md`), and `scripts/gpu_suite_record.sh` is not "
-        "run until it selects GPU-safe tests.",
+        "**The suite record is in the setup** (adviser's ruling 1h dated 10 Nov 2026, which "
+        "supersedes the earlier 10 Nov ruling that left it out): the bootstrap runs "
+        "`gcp_bootstrap_instance.sh \"$NAME\" \"$ZONE\" --suite-record` on the first boot "
+        f"(on Spot, block b1 only), and its {suite:.0f} minutes are in the row below and in "
+        "every cap. `scripts/gpu_suite_record.sh` deselects the 27 tests that assume a "
+        "CPU-only host (`tests/gpu_host_deselect.txt`, from "
+        "`docs/gpu_suite_failures_20261110.md`). **Risk:** the selection has not run on any "
+        "GPU host; a test that fails on the A100 for a reason the L4 did not show stops the "
+        "bootstrap, before any step, at the cost of the setup.",
         "",
         "| | Hours | ₹ |",
         "|---|---|---|",
         f"| Setup: write gate, deploy, preflight, bootstrap with XAttention | {setup} | "
         f"{math.ceil(setup * FLEX_RATE)} |",
+        f"| Suite record: `--suite-record`, first boot only | {suite:.0f} min | "
+        f"{math.ceil(suite / 60 * FLEX_RATE)} |",
         f"| The steps ({run_min:.0f} minutes) | {run_min / 60:.2f} | "
         f"{math.ceil(run_min / 60 * FLEX_RATE)} |",
         f"| Teardown: logs and manifests pull, delete, cleanup check | {tear} | "
@@ -189,18 +210,23 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         f"cell ({B.ANCHOR_MIN:g} min, an estimate). Zone `{ZONE}`, `a2-ultragpu-1g`. P2 and P4 "
         "cannot overlap: the GPU quota across regions is 1.",
         "",
+        *BI.section("P2"),
         "## What `prereqs` checks",
         "",
-        f"The step refuses a real session unless every task below reads Done in the deployed "
-        f"plan. **As the plan stands, {len(unmet)} of {len(S.T61.requirements)} do not**, so "
-        "the session would stop at step 1.",
+        "The step refuses a real session unless every task below reads Done in the deployed "
+        f"plan, or, for a task that is not a gate, \"{S.WAIVER}\" with a citation of a dated "
+        "Appendix A line that exists (adviser's ruling 1b dated 10 Nov 2026). "
+        + (f"**As the plan stands, {len(unmet)} of {len(S.T61.requirements)} are not met**, so "
+           "the session would stop at step 1." if unmet else
+           f"As the plan stands, all {len(S.T61.requirements)} are met."),
         "",
-        "| Task | Why the session needs it | Status in the plan | Done |",
-        "|---|---|---|---|",
+        "| Task | Why the session needs it | Gate | Status in the plan | Met |",
+        "|---|---|---|---|---|",
     ]
     for r in S.T61.requirements:
-        out.append(f"| {r.task} | {r.why} | {status_head(statuses.get(r.task, ''))} | "
-                   f"{'no' if r.task in unmet else 'yes'} |")
+        s = statuses.get(r.task, '')
+        met = "no" if r.task in unmet else ("waived" if S.waived(r, s, appendix, "P2") else "yes")
+        out.append(f"| {r.task} | {r.why} | {'yes' if r.gate else ''} | {status_head(s)} | {met} |")
     return "\n".join(out) + "\n"
 
 

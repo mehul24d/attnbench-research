@@ -77,19 +77,22 @@ class Block:
 
 
 def card_numbers(text: str) -> dict:
-    """{'steps': [(name, minutes)], 'setup_h', 'teardown_h'} from the card's tables."""
+    """{'steps': [(name, minutes)], 'setup_h', 'teardown_h', 'suite_min'} from the
+    card's tables; 'suite_min' is 0 where the card has no suite-record row."""
     steps = []
     for m in re.finditer(r"^\|\s*\d+\s*\|\s*`(\w+)`\s*\|.*\|\s*([\d +]+?)\s*\|\s*$", text, re.M):
         steps.append((m.group(1), float(sum(int(x) for x in m.group(2).split("+")))))
     setup = re.search(r"^\|\s*Setup:[^|]*\|\s*([\d.]+)\s*\|", text, re.M)
     tear = re.search(r"^\|\s*Teardown:[^|]*\|\s*([\d.]+)\s*\|", text, re.M)
+    suite = re.search(r"^\|\s*Suite record:[^|]*\|\s*([\d.]+) min\s*\|", text, re.M)
     if not steps or not setup or not tear:
         raise ValueError("the card's step table, setup row or teardown row was not found")
-    return {"steps": steps, "setup_h": float(setup.group(1)), "teardown_h": float(tear.group(1))}
+    return {"steps": steps, "setup_h": float(setup.group(1)), "teardown_h": float(tear.group(1)),
+            "suite_min": float(suite.group(1)) if suite else 0.0}
 
 
-def _block(steps, gt_min, run_min, setup_h, teardown_h, rate) -> Block:
-    planned = setup_h + run_min / 60 + teardown_h
+def _block(steps, gt_min, run_min, setup_h, teardown_h, rate, suite_min: float = 0.0) -> Block:
+    planned = setup_h + (suite_min + run_min) / 60 + teardown_h
     halt = math.floor(HALT_FACTOR * planned * 60)
     b = Block(tuple(steps), gt_min, run_min, round(planned, 3),
               math.ceil(rate * planned * CAP_FACTOR), halt, halt + DELETE_AFTER_HALT_MIN,
@@ -102,39 +105,46 @@ def _block(steps, gt_min, run_min, setup_h, teardown_h, rate) -> Block:
 
 def plan_blocks(steps, setup_h: float, teardown_h: float, *, boot=BOOT["P4"],
                 rate: float = SPOT_RATE_INR_HR, max_hours: float = MAX_BLOCK_HOURS,
-                anchor_min: float = ANCHOR_MIN) -> list:
+                anchor_min: float = ANCHOR_MIN, suite_min: float = 0.0) -> list:
     """Greedy blocks in step order, each at most `max_hours` planned hours,
-    ground truth split across them by its minutes."""
+    ground truth split across them by its minutes. The suite record
+    (`suite_min`, the bootstrap's `--suite-record`) runs on the first boot
+    only: the image, the commit and the GPU model are the same on every
+    block, so it is one record per pairing (a plan default, 11 Nov 2026)."""
     mins = dict(steps)
     boot_min = sum(mins.get(s, 0.0) for s in boot)
-    room = max_hours * 60 - (setup_h + teardown_h) * 60 - boot_min
+    room0 = max_hours * 60 - (setup_h + teardown_h) * 60 - boot_min
     followers = [s for s in SPLIT_FOLLOWERS if s in mins]
     gt_extra = anchor_min + sum(mins[s] for s in followers)
-    if room <= gt_extra:
+    if room0 - suite_min <= gt_extra:
         raise ValueError("setup, teardown and the boot steps alone fill the block")
     order = [n for n, _ in steps if n not in boot and n not in followers]
     blocks, cur, used = [], [], 0.0
     gt_used = 0.0
 
+    def room():
+        return room0 - (suite_min if not blocks else 0.0)
+
     def close():
         nonlocal cur, used, gt_used
         if cur:
-            blocks.append(_block(cur, gt_used, boot_min + used, setup_h, teardown_h, rate))
+            blocks.append(_block(cur, gt_used, boot_min + used, setup_h, teardown_h, rate,
+                                 suite_min if not blocks else 0.0))
         cur, used, gt_used = [], 0.0, 0.0
 
     for name in order:
         m = mins[name]
         if name != "ground_truth":
-            if m > room:
-                raise ValueError(f"{name} takes {m:.0f} min, more than a block's {room:.0f}")
-            if used + m > room:
+            if m > room0:
+                raise ValueError(f"{name} takes {m:.0f} min, more than a block's {room0:.0f}")
+            if used + m > room():
                 close()
             cur.append(name)
             used += m
             continue
         left = m
         while left > 1e-9:
-            free = room - used - gt_extra
+            free = room() - used - gt_extra
             if free <= 1e-9:
                 if "predict" in cur and cur[-1] == "predict":
                     raise ValueError("predict's block has no room for its ground truth")
@@ -147,6 +157,10 @@ def plan_blocks(steps, setup_h: float, teardown_h: float, *, boot=BOOT["P4"],
             if left > 1e-9:
                 close()
     close()
+    over = [n for n, b in enumerate(blocks, 1) if b.planned_h > max_hours + 1e-6]
+    if over:
+        raise ValueError(f"block(s) {over} exceed {max_hours} h (the suite record's "
+                         f"{suite_min:.0f} min with the first block's steps)")
     return blocks
 
 
@@ -191,7 +205,7 @@ def main(argv=None) -> int:
     args.max_hours = args.max_hours or BLOCK_HOURS[args.pairing]
     n = card_numbers(CARDS[args.pairing].read_text())
     blocks = plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=BOOT[args.pairing],
-                         rate=rate, max_hours=args.max_hours)
+                         rate=rate, max_hours=args.max_hours, suite_min=n["suite_min"])
     if args.blocks is not None and len(blocks) != args.blocks:
         print(f"REFUSING: {len(blocks)} blocks at {args.max_hours} h, not {args.blocks}",
               file=sys.stderr)

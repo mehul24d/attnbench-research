@@ -30,6 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import budget_interlock as BI  # noqa: E402
 import t64_blocks as B  # noqa: E402
 from t64_session import T64  # noqa: E402
 
@@ -54,28 +55,43 @@ def load_minutes(path=MINUTES) -> dict:
     return m
 
 
-def spot_blocks(steps, setup, tear):
+def spot_blocks(steps, setup, tear, suite=0.0):
     """The fallback's blocks at the ruled 2.3 h, refused unless they are the
     ruled four; with why the general 2.2 h length refuses, if it does."""
     blocks = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE,
-                           max_hours=SPOT_HOURS)
+                           max_hours=SPOT_HOURS, suite_min=suite)
     if len(blocks) != SPOT_BLOCKS:
         raise ValueError(f"{len(blocks)} blocks at {SPOT_HOURS} h, not the ruled "
                          f"{SPOT_BLOCKS}: the fallback needs a new ruling")
     try:
-        B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE)
+        B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE, suite_min=suite)
         refusal = None
     except ValueError as e:
         refusal = str(e)
     return blocks, refusal
 
 
-def build(minutes: dict, on: str) -> str:
+def costs(minutes: dict):
+    """(steps, setup h, teardown h, suite min, the Flex-start session, the Spot
+    blocks, why 2.2 h refuses)."""
     steps = [(s.name, float(sum(minutes["steps"][s.name]["minutes"]))) for s in T64.steps]
     setup, tear = minutes["setup_h"]["value"], minutes["teardown_h"]["value"]
+    suite = float(minutes["suite_record_min"]["value"])
     run_min = sum(m for _, m in steps)
-    flex = B._block([n for n, _ in steps], 0.0, run_min, setup, tear, FLEX_RATE)
-    blocks, refusal = spot_blocks(steps, setup, tear)
+    flex = B._block([n for n, _ in steps], 0.0, run_min, setup, tear, FLEX_RATE, suite)
+    blocks, refusal = spot_blocks(steps, setup, tear, suite)
+    return steps, setup, tear, suite, flex, blocks, refusal
+
+
+def caps(minutes: dict | None = None) -> dict:
+    """P4's cap on each provisioning, for the budget interlock."""
+    _, _, _, _, flex, blocks, _ = costs(minutes or load_minutes())
+    return {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks)}
+
+
+def build(minutes: dict, on: str) -> str:
+    steps, setup, tear, suite, flex, blocks, refusal = costs(minutes)
+    run_min = sum(m for _, m in steps)
     mins = dict(steps)
     boot_min = sum(mins[s] for s in B.BOOT["P4"])
     per_boot_h = setup + boot_min / 60 + tear
@@ -105,24 +121,29 @@ def build(minutes: dict, on: str) -> str:
         "",
         f"Cap = rate x planned hours x {B.CAP_FACTOR}; halt = {B.HALT_FACTOR} x planned hours "
         f"(rounded down); hard delete = the halt + {B.DELETE_AFTER_HALT_MIN} min. Rates are "
-        "the plan's all-in planning rates (Section 5.2). Every boot pays the setup, the boot "
+        "the plan's all-in planning rates (Section 5.2). The suite record "
+        f"(adviser's ruling 1h dated 10 Nov 2026; {suite:.0f} min) runs on the first boot "
+        "only, so on Spot in block b1. Every boot pays the setup, the boot "
         f"steps ({', '.join(f'`{x}`' for x in B.BOOT['P4'])}: {boot_min:.0f} min) and the "
         f"teardown, {per_boot_h:.2f} h; a Spot block with ground truth also measures the "
         f"anchor cell ({B.ANCHOR_MIN:g} min, an estimate) and runs `late_check` and "
         "`trace_checks` again.",
         "",
-        "**No suite record in the setup** (adviser's ruling of 10 Nov 2026, reversing the "
-        "ruling h that would have added it): the bootstrap is run without `--suite-record`, "
-        "and the 20 minutes it would have added are in neither the setup row nor any cap "
-        "below. T2.26's five GPU variants still run in every preflight. The whole suite on a "
-        "GPU host fails 27 tests that assume a CPU-only host "
-        "(`docs/gpu_suite_failures_20261110.md`), and `scripts/gpu_suite_record.sh` is not "
-        "run until it selects GPU-safe tests.",
+        "**The suite record is in the setup** (adviser's ruling 1h dated 10 Nov 2026, which "
+        "supersedes the earlier 10 Nov ruling that left it out): the first boot's bootstrap "
+        "passes `--suite-record` (on Spot, block b1 only), and its "
+        f"{suite:.0f} minutes are in the row below and in every cap. "
+        "`scripts/gpu_suite_record.sh` deselects the 27 tests that assume a CPU-only host "
+        "(`tests/gpu_host_deselect.txt`). **Risk:** the selection has not run on any GPU "
+        "host; a test that fails on the H100 for a reason the L4 did not show stops the "
+        "bootstrap before any step, at the cost of the setup.",
         "",
         "| | Hours | ₹ |",
         "|---|---|---|",
         f"| Setup: write gate, deploy, preflight, bootstrap with XAttention | {setup} | "
         f"{math.ceil(setup * FLEX_RATE)} |",
+        f"| Suite record: `--suite-record`, first boot only | {suite:.0f} min | "
+        f"{math.ceil(suite / 60 * FLEX_RATE)} |",
         f"| The steps ({run_min:.0f} minutes) | {run_min / 60:.2f} | "
         f"{math.ceil(run_min / 60 * FLEX_RATE)} |",
         f"| Teardown: logs and manifests pull, delete, cleanup check | {tear} | "
@@ -160,7 +181,7 @@ def build(minutes: dict, on: str) -> str:
         out.append(f"| b{n} | {', '.join(f'`{x}`' for x in b.steps)} | {b.planned_h:.2f} | "
                    f"{math.ceil(b.planned_h * SPOT_RATE)} | {b.cap_inr} | {b.halt_min} | "
                    f"{b.delete_min} |")
-    out += ["", END]
+    out += ["", *BI.section("P4"), END]
     return "\n".join(out)
 
 

@@ -162,7 +162,24 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 
 Headroom: ₹14,000 − ₹4,772 = **about ₹9,228** (after launch 3). The rehearsal has spent ₹233 (₹101 + ₹67 + ₹65) of the ₹422 the researcher allowed on 10 Nov 2026; launch 4 at launch 3's caps (₹254) would bring it to ₹487, so it needs a new cap decision as well as its own yes. This counts only the rows above (the total after T3.2b was misadded as ₹3,816; its rows sum to ₹3,819). Machine-image storage (the v7 image), egress and any launch not yet in this table are not in it. H100 Flex attempt 1 (31 Oct 2026, us-central1-a) was not granted and billed nothing; it has no row, and neither have the retry loop's 154 other per-zone requests before the grant (31 Oct to 6 Nov 2026, none granted, nothing billed: `logs/flex_attempts.tsv` on the Mac, summarised in `docs/launch_cards/h100_flex_attempts.md`). The two grants, both on Spot on 6 Nov, have their rows. The first FA3 build is ₹176 from its cost file; the ₹175 reported at the time was read before the teardown and is superseded. Nothing here is a go-ahead for a launch: caps are per session (rule 10).
 
-### Budget interlock (10 Nov 2026, adviser's ruling 3 of the 10 Nov 2026 paste)
+### Budget interlock (11 Nov 2026, adviser's ruling 1g dated 10 Nov 2026; supersedes the 10 Nov table below)
+
+Built by `scripts/budget_interlock.py`, which P2's and P4's card builders call, so each card carries the same table; `--launch PAIRING:PROVISIONING` exits 2 when the headroom is negative. The caps include the suite record's 20 minutes on the first boot (ruling 1h). Reprint it here after any new row above.
+
+Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all still-planned sessions is negative. Budget ₹14,000 (plan Section 5.2); spent ₹4,772 (the ledger's new-spend table, the rehearsal's ₹233 in it); the L4 rehearsal's launch 4 at ₹254, the larger of its card's cap (₹254, ₹487 in all) and what the ruling's rehearsal cap of ₹403 leaves (₹170); launch 4's own cap decision is still owed. P2 and P4 at their cards' caps: P2 Flex-start ₹1,844, Spot ₹3,271; P4 Flex-start ₹3,006, Spot ₹6,834. Not counted: reruns, a Spot block rerun after an interruption, image storage, egress.
+
+| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |
+|---|---|---|---|---|
+| Flex-start | Flex-start | 9,876 | 4,124 | yes |
+| Flex-start | Spot | 13,704 | 296 | yes |
+| Spot | Flex-start | 11,303 | 2,697 | yes |
+| Spot | Spot | 15,131 | -1,131 | no: both on Spot |
+
+- **P2 on Flex-start: may launch**, headroom ₹296 with the other pairing at the dearest provisioning the rule allows.
+- **P2 on Spot: may launch**, headroom ₹2,697 with the other pairing at the dearest provisioning the rule allows.
+
+
+### Budget interlock (10 Nov 2026, adviser's ruling 3 of the 10 Nov 2026 paste; superseded 11 Nov 2026)
 
 Every session still to run, at its card's cap. The caps are from `docs/launch_cards/t61_rehearsal_l4.md` (launch 4), `docs/launch_cards/t61_p2_a100.md` and `docs/launch_cards/t64_p4_h100.md`. A Spot interruption reruns the block it hit, so the worst single interruption adds that pairing's largest block cap (P2: b3, ₹1,002; P4: b3, ₹1,998).
 
