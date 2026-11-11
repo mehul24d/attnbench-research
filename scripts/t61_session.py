@@ -857,15 +857,20 @@ def fake_record(cfg: SessionConfig, written_at: datetime) -> dict:
 
 
 P1_TRAINING = ROOT / "results" / "p1_training" / "p1_training.json.gz"
+P2_TRAINING = ROOT / "results" / "p2_training" / "p2_training.json.gz"
 
 
-def training_rows(cfg: SessionConfig, path: Optional[Path] = None) -> list:
+def training_rows(cfg: SessionConfig, path: Optional[Path] = None,
+                  p2_path: Optional[Path] = None) -> list:
     """The banked pairings' ground-truth rows this pairing's committed fits
     train on. P1's are its training file (`attnbench.predict.p1_training`,
     researcher's decision, 8 Nov 2026: one row per cell, both repeats pooled);
-    no later pairing's rows are banked in a form a fit reads yet."""
+    P2's, for P4, are P2's training file (`attnbench.predict.p2_training`,
+    ruling 1h, 11 Nov 2026), whose sha256 is the pairing ledger's P2 entry
+    (`training_files`, checked against the ledger by `real_record`)."""
     from attnbench.predict import p1_training as PT
-    later = [p for p in cfg.banked if p != PT.PAIRING]
+    from attnbench.predict import p2_training as P2T
+    later = [p for p in cfg.banked if p not in (PT.PAIRING, P2T.PAIRING)]
     if later:
         raise NotBuilt("T6.1", f"{later}'s training rows, which {cfg.pairing} is also trained on")
     path = Path(path or P1_TRAINING)
@@ -875,24 +880,38 @@ def training_rows(cfg: SessionConfig, path: Optional[Path] = None) -> list:
         _, why = p1_training_check(path)
         if why:
             raise StepFailed(why)
+    # The rows carry the model shape the learned predictor's features
+    # need (attempt 2 of the L4 rehearsal stopped at `predict` without it).
+    from attnbench.predict.intensity import shape_for
     try:
-        # The rows carry the model shape the learned predictor's features
-        # need (attempt 2 of the L4 rehearsal stopped at `predict` without it).
-        from attnbench.predict.intensity import shape_for
-        return PT.rows_from_record(PT.load(path), model=shape_for("primary"))
-    except PT.TrainingRowsError as e:
+        rows = PT.rows_from_record(PT.load(path), model=shape_for("primary"))
+    except (PT.TrainingRowsError, OSError, ValueError, KeyError, TypeError) as e:
+        raise StepFailed(str(e)) from e
+    if P2T.PAIRING not in cfg.banked:
+        return rows
+    p2 = Path(p2_path or P2_TRAINING)
+    if not p2.exists():
+        raise StepFailed(f"no P2 training file at {p2}: build it with scripts/p2_training.py "
+                         f"and fetch it (its sha256 is the pairing ledger's P2 entry)")
+    try:
+        return rows + P2T.rows_from_record(P2T.load(p2), model=shape_for("primary"))
+    except (P2T.TrainingRowsError, OSError, ValueError, KeyError, TypeError) as e:
         raise StepFailed(str(e)) from e
 
 
 def training_files(cfg: SessionConfig) -> dict:
     """{pairing: sha256} of the training files `training_rows` reads."""
     import hashlib
-    if "P1" not in cfg.banked:
-        return {}
-    path = Path(P1_TRAINING)
-    if not path.exists():
-        raise StepFailed(f"no P1 training file at {path}: fetch it (its sha256 is the lock's)")
-    return {"P1": hashlib.sha256(path.read_bytes()).hexdigest()}
+    out = {}
+    for p, path, how in (("P1", P1_TRAINING, "its sha256 is the lock's"),
+                         ("P2", P2_TRAINING, "its sha256 is the pairing ledger's P2 entry")):
+        if p not in cfg.banked:
+            continue
+        path = Path(path)
+        if not path.exists():
+            raise StepFailed(f"no {p} training file at {path}: fetch it ({how})")
+        out[p] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return out
 
 
 def real_record(cfg: SessionConfig, args, written_at: datetime) -> dict:

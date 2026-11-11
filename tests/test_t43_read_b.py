@@ -319,6 +319,6 @@ def test_F9_a_block_resumed_after_a_fix_commit_still_records_its_first_commit(tm
 def test_F10_p4_predict_cannot_train_on_p2_and_step_one_does_not_say_so(tmp_path):
     import t64_session as P4
     T = P4.T64
-    with pytest.raises(S.NotBuilt):
+    with pytest.raises(S.StepFailed):
         S.training_rows(T, path=tmp_path / "unused")   # refuses before any file is read
     assert T.staged is not None, "P4 learns this at predict, after its component steps"

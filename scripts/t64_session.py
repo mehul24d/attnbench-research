@@ -21,14 +21,16 @@ on P4:
   - the null-kernel floor: preflight reports P4's floor beside the two
     published figures the plan names (Section 5.6). The multiple is fixed
     at lock and the gate is read before H3, not here;
-  - training: P4 is predicted from P1 and P2, so both banking times are
-    needed (`--banked-at P1=... --banked-at P2=...`).
+  - training: P4 is predicted from P1 and P2. Both banking times and
+    training-file sha256s are the pairing ledger's (ruling 1e, 11 Nov 2026;
+    a dry run gives `--banked-at P1=... --banked-at P2=...`); P2's rows are
+    its training file, `scripts/p2_training.py`'s (ruling 1h).
 
 The launch card is `docs/launch_cards/t64_p4_h100.md`.
 
 Usage, on the H100 from the repo root:
     python3 scripts/t64_session.py run --gate-only --fa3-sha256 HEX    # the FA3 gate alone
-    python3 scripts/t64_session.py run --fa3-sha256 HEX --banked-at P1=ISO --banked-at P2=ISO
+    python3 scripts/t64_session.py run --fa3-sha256 HEX
     python3 scripts/t64_session.py run --from STEP --session results/t64_p4_<UTC> ...
     python3 scripts/t64_session.py run --dry-run --fa3-sha256 HEX --session /tmp/t64_dry
 """
@@ -116,7 +118,8 @@ def real_masks(cfg, args, *, record=None, bound=None) -> dict:
 def p4_staged_inputs(cfg, args, runs: tuple) -> tuple:
     """P4's staged inputs, checked at step 1 as P2's are (`p2_staged_inputs`):
     the lock's mask-gate bound and P2's banked masks (`masks`); the P1
-    training file at the lock's sha256, P2's training rows and the learned
+    training file at the lock's sha256, P2's training file (its own sha256, and in a real
+    run the pairing ledger's P2 entry; ruling 1h, 11 Nov 2026) and the learned
     configuration (`predict`). Returns (findings, problems)."""
     from attnbench.predict import learned as LM
     found, bad = {}, []
@@ -136,7 +139,17 @@ def p4_staged_inputs(cfg, args, runs: tuple) -> tuple:
         if why:
             bad.append(why)
         try:
-            S.training_rows(cfg)
+            rows = S.training_rows(cfg)
+            found["p2_training_rows"] = sum(r.cell.pairing == "P2" for r in rows)
+            if not args.dry_run:
+                # Ruling 1h: P2's file is the one the pairing ledger banked.
+                got = S.training_files(cfg)["P2"]
+                entry = S.ledger_for(cfg, args, "P2").banked()
+                want = None if entry is None else entry[1]["training_file_sha256"]
+                found["p2_training_sha256"] = got
+                if want != got:
+                    bad.append(f"the P2 training file's sha256 is {got}; the pairing ledger's "
+                               f"P2 entry names {want}")
         except S.StepFailed as e:
             if not why or str(e) != why:
                 bad.append(str(e))
