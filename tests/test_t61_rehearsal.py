@@ -49,7 +49,7 @@ def test_the_rehearsal_runs_p2s_steps_in_p2s_order_on_the_l4():
     assert REH.pairing == "P2-R" and REH.banked == ("P1",)
     for step in REH.names:                       # every body but four is P2's own
         if step in ("predict", "late_check"):     # P2's, on the working learned config
-            assert REH.reals[step].wrapped is S.T61.reals[step], step
+            assert REH.reals[step].args == (S.T61.reals[step],), step
         elif step not in ("prereqs", "mask_gate"):
             assert REH.reals[step] is S.T61.reals[step] or \
                 REH.reals[step].func is S.T61.reals[step].func, step

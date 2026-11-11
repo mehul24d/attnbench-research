@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import json
 import re
 import sys
@@ -146,28 +147,25 @@ def working_learned_config():
     return d["winner"], LearnedConfig(target=won["target"], params=dict(won["params"]))
 
 
-def _working(body):
+def _on_working_config(body, cfg, args) -> dict:
     """`body` with the learned predictor on the working configuration for
     this process only."""
-    def run(cfg, args) -> dict:
-        from attnbench.predict import learned as LM
-        index, config = working_learned_config()
-        before = LM.LOCKED_CONFIG
-        LM.LOCKED_CONFIG = config
-        try:
-            found = body(cfg, args)
-        finally:
-            LM.LOCKED_CONFIG = before
-        return {**found, "learned_config": f"working: configuration {index} of "
-                                          f"{LEARNED_CV.name}, not a lock value"}
-    run.wrapped = body
-    return run
+    from attnbench.predict import learned as LM
+    index, config = working_learned_config()
+    before = LM.LOCKED_CONFIG
+    LM.LOCKED_CONFIG = config
+    try:
+        found = body(cfg, args)
+    finally:
+        LM.LOCKED_CONFIG = before
+    return {**found, "learned_config": f"working: configuration {index} of "
+                                      f"{LEARNED_CV.name}, not a lock value"}
 
 
 # P2's predict, and its late check, which refits the learned values under the
 # same configuration (ruling 1e, 11 Nov 2026).
-rehearsal_predict = _working(S.body_predict)
-rehearsal_late_check = _working(S.body_late_check)
+rehearsal_predict = functools.partial(_on_working_config, S.body_predict)
+rehearsal_late_check = functools.partial(_on_working_config, S.body_late_check)
 
 
 def _rehearsal() -> S.SessionConfig:

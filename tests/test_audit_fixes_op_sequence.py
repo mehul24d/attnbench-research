@@ -136,14 +136,16 @@ def _lock(**over):
     lock = LC.skeleton(PLAN)
     for e in lock["values"].values():
         e.update(value=0.1, source="Appendix A")
-    lock["scored_pairings"] = {"H0": ["P1", "P2"], "H2": ["P2", "P4"]}
+    # Every hypothesis states its pairings (ruling 1b, 11 Nov 2026).
+    lock["scored_pairings"] = {"H0": ["P1", "P2"], "H1": ["P2"], "H2": ["P2", "P4"],
+                               "H3": ["P4"], "H4": ["P1"], "H5": ["P4"], "H6": ["P2", "P4"]}
     lock.update(over)
     return lock
 
 
 def test_the_lock_table_prints_the_scored_pairings_per_hypothesis():
     c = LC.check(_lock(), PLAN)
-    assert c.complete
+    assert not c.scored_problems      # the mini plan's items are untyped since ruling 1b
     r = c.report()
     assert "scored pairings, H0: P1, P2" in r and "scored pairings, H2: P2, P4" in r
 
