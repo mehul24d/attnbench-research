@@ -396,7 +396,7 @@ def store_for(args):
     return GsutilStore(), results_bucket() + "/"
 
 
-def ledger_for(cfg: SessionConfig, args):
+def ledger_for(cfg: SessionConfig, args, pairing: Optional[str] = None):
     """The pairing's prediction ledger (`attnbench.predict.ledger`; ruling 1c,
     11 Nov 2026): in the bucket beside the predictions, or for a dry run in
     a store beside the session directory, shared by every dry session of the
@@ -405,9 +405,31 @@ def ledger_for(cfg: SessionConfig, args):
     if args.dry_run:
         session = Path(args.session)
         return Ledger(DirStore(session.parent / "dry_pairing_store",
-                               lambda: now(session, True)), DirStore.PREFIX, cfg.pairing)
+                               lambda: now(session, True)), DirStore.PREFIX,
+                      pairing or cfg.pairing)
     from attnbench.predict.commit import GsutilStore
-    return Ledger(GsutilStore(), results_bucket() + "/", cfg.pairing)
+    return Ledger(GsutilStore(), results_bucket() + "/", pairing or cfg.pairing)
+
+
+def banked_times(cfg: SessionConfig, args) -> tuple:
+    """({pairing: banked at}, {pairing: training file sha256}) for every
+    pairing this one is trained on. A real run reads both from each pairing's
+    ledger entry (ruling 1e, 11 Nov 2026: the store's creation time of
+    `banked.json`, written by `scripts/bank_pairing.py`) and refuses a typed
+    --banked-at; a dry run takes --banked-at as given."""
+    if args.dry_run:
+        return parse_banked_at(args.banked_at), {}
+    if args.banked_at:
+        raise StepFailed("a real run reads each banking time from the pairing ledger "
+                         "(ruling 1e, 11 Nov 2026); --banked-at is for a dry run only")
+    times, files = {}, {}
+    for p in cfg.banked:
+        got = ledger_for(cfg, args, p).banked()
+        if got is None:
+            raise StepFailed(f"{p} has no banked entry in the pairing ledger; bank it with "
+                             f"scripts/bank_pairing.py before {cfg.pairing} predicts")
+        times[p], files[p] = got[0], got[1]["training_file_sha256"]
+    return times, files
 
 
 def ground_truth_cells(session: Path, block: Optional[dict]) -> list:
@@ -862,6 +884,17 @@ def training_rows(cfg: SessionConfig, path: Optional[Path] = None) -> list:
         raise StepFailed(str(e)) from e
 
 
+def training_files(cfg: SessionConfig) -> dict:
+    """{pairing: sha256} of the training files `training_rows` reads."""
+    import hashlib
+    if "P1" not in cfg.banked:
+        return {}
+    path = Path(P1_TRAINING)
+    if not path.exists():
+        raise StepFailed(f"no P1 training file at {path}: fetch it (its sha256 is the lock's)")
+    return {"P1": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
 def real_record(cfg: SessionConfig, args, written_at: datetime) -> dict:
     """Every cell from the session's measured components (T3.1's assembly,
     `t31_steps.build_prediction`, on this pairing's components config), with
@@ -871,14 +904,22 @@ def real_record(cfg: SessionConfig, args, written_at: datetime) -> dict:
     from attnbench.predict import baselines as BL
     from attnbench.predict import learned as LM
     from attnbench.predict.training import committed_training_set
-    banked = parse_banked_at(args.banked_at)
+    from attnbench.predict import commit as C
+    banked, files = banked_times(cfg, args)
     missing = [p for p in cfg.banked if p not in banked]
     if missing:
         raise StepFailed(f"{cfg.pairing} is trained on {list(cfg.banked)}; give each one's "
                          f"banking time with --banked-at (missing: {missing})")
-    ts = committed_training_set(training_rows(cfg), cfg.pairing, cfg.banked)
+    rows = training_rows(cfg)
+    read = training_files(cfg)
+    if not args.dry_run and files != read:
+        raise StepFailed(f"the pairing ledger names training files {files}; this session "
+                         f"reads {read}")
+    ts = committed_training_set(rows, cfg.pairing, cfg.banked)
+    # Ruling 1e: the record names the files and the rows it was fitted on.
     fitted = {"banked": list(cfg.banked), "fitted_sum": BL.fit_fitted_sum(ts),
-              "fitted_sum_plus_s0": BL.fit_fitted_sum(ts, add_s0=True)}
+              "fitted_sum_plus_s0": BL.fit_fitted_sum(ts, add_s0=True),
+              "training_files": read, "rows_sha256": C.training_rows_sha256(ts.rows)}
     if LM.LOCKED_CONFIG is None:
         raise StepFailed("the learned predictor's configuration is a lock value (Gate B): "
                          "learned.LOCKED_CONFIG is not set, so no committed prediction can "
@@ -1237,7 +1278,10 @@ def body_late_check(cfg: SessionConfig, args) -> dict:
     if receipt is None or start is None:
         raise StepFailed("no receipt or no ground-truth start in this session")
     store, prefix = store_for(args)
-    banked = parse_banked_at(args.banked_at)
+    banked, files = banked_times(cfg, args)
+    # The learned values are refitted from the rows (ruling 1e); a dry
+    # record fits nothing.
+    rows = training_rows(cfg) if cfg.banked and not args.dry_run else None
     # The pairing's earliest ground-truth start over the prediction's cells
     # (ruling 1c), not only this session's.
     first = ledger_for(cfg, args).earliest_start(receipt.get("cells") or ())
@@ -1247,7 +1291,8 @@ def body_late_check(cfg: SessionConfig, args) -> dict:
         cp = C.load_committed(store, prefix + receipt["remote_path"],
                               ground_truth_started_at=datetime.fromtimestamp(start, tz=timezone.utc),
                               clock_skew=timedelta(seconds=CLOCK_SKEW_S),
-                              banked_at=banked, local=receipt["local"])
+                              banked_at=banked, local=receipt["local"],
+                              training_rows=rows, training_files=files or None)
     except C.PredictionCommitError as e:
         raise StepFailed(f"the analysis would refuse this prediction: {e}")
     if cp.sha256 != receipt["sha256"]:
@@ -2031,13 +2076,13 @@ def start_refusal(cfg: SessionConfig, args) -> Optional[str]:
                     f"was built, got {sha!r}")
     if not args.dry_run:
         try:
-            banked = parse_banked_at(args.banked_at)
+            banked, _ = banked_times(cfg, args)
         except (StepFailed, ValueError) as e:
             return str(e)
         missing = [p for p in cfg.banked if p not in banked]
         if missing:
-            return (f"{cfg.pairing} is trained on {list(cfg.banked)}: give each banking "
-                    f"time with --banked-at PAIRING=ISO (missing: {missing})")
+            return (f"{cfg.pairing} is trained on {list(cfg.banked)}: each is banked in the "
+                    f"pairing ledger first (missing: {missing})")
     return None
 
 

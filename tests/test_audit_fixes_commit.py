@@ -14,6 +14,7 @@ from attnbench.predict.commit import (LatePredictionError, PredictionCommitError
                                       load_committed, verify_bytes, write_prediction)
 from attnbench.predict.residuals import residuals
 
+from test_predict_commit import trained  # noqa: E402
 from test_predict_commit import (CP, MODEL, T0, Clock, MemoryStore, committed,
                                  locked, p1_record, p2_record)  # noqa: F401 (fixture)
 
@@ -102,7 +103,8 @@ def test_the_named_and_the_banked_sets_agreeing_is_accepted(tmp_path, locked):
     # P3 was banked after the write: neither named nor required.
     load_committed(store, r.remote, ground_truth_started_at=T0 + timedelta(seconds=2),
                    clock_skew=timedelta(0), sync_gap=timedelta(0),
-                   banked_at={"P1": T0 - timedelta(hours=1), "P3": T0 + timedelta(days=1)})
+                   banked_at={"P1": T0 - timedelta(hours=1), "P3": T0 + timedelta(days=1)},
+                   **trained())
 
 
 def test_a_pairing_banked_within_the_skew_of_the_write_is_refused(tmp_path):

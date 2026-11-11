@@ -31,6 +31,13 @@ its creation times are the store's clock:
     start over the prediction's cells (`earliest_start`), not only their own
     session's.
 
+**Banking** (ruling 1e): `banked.json` at the pairing's ledger root is
+written once, when the pairing's ground truth is banked
+(`scripts/bank_pairing.py`), naming its training file's sha256. Its store
+creation time is the pairing's banking time every later prediction's
+`--banked-at` was typed from before; an entry written after the banking only
+makes the order check stricter.
+
 **The cell** is (arm, token budget, batch): the budget is the smallest power
 of two at or above the realised length, as the grid doubles (lock table row
 27: the realised count is the key, the budget a label). Density is not in
@@ -51,6 +58,7 @@ from typing import Iterable, Mapping, Optional
 LEDGER_DIR = "ledger"
 PREDICTION = "prediction.json"
 GT_STARTED = "ground_truth_started.json"
+BANKED = "banked.json"
 
 
 class LedgerError(ValueError):
@@ -80,6 +88,10 @@ def predictions_digest(record: Mapping) -> str:
     body = {k: v for k, v in record.items() if k != "written_at"}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"))
                           .encode()).hexdigest()
+
+
+def _HEX64(v) -> bool:
+    return isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v)
 
 
 def ledger_root(prefix: str, pairing: str) -> str:
@@ -117,8 +129,11 @@ class Ledger:
 
     def _put(self, cell: str, what: str, obj: Mapping) -> bool:
         """Write `obj` unless an entry is there; True if this one is it."""
+        return self._put_uri(self._uri(cell, what), obj)
+
+    def _put_uri(self, uri: str, obj: Mapping) -> bool:
         data = json.dumps(obj, sort_keys=True, indent=1).encode()
-        uri = self._uri(cell, what)
+        what = uri.rsplit("/", 1)[-1]
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / what
             p.write_bytes(data)
@@ -165,6 +180,20 @@ class Ledger:
         """Before any of `cells` is clocked; the first entry per cell stays."""
         for c in sorted(set(cells)):
             self._put(c, GT_STARTED, entry)
+
+    def record_banked(self, entry: Mapping) -> None:
+        """Once, when the pairing's ground truth is banked."""
+        if not _HEX64(entry.get("training_file_sha256")):
+            raise LedgerError("a banked entry names its training file's sha256 (64 hex)")
+        if not self._put_uri(self.root + BANKED, {**entry, "pairing": self.pairing}):
+            raise LedgerError(f"{self.pairing} is already banked: {self.banked()[1]}")
+
+    def banked(self) -> Optional[tuple[datetime, dict]]:
+        """(the store's creation time, the entry), or None if not banked."""
+        uri = self.root + BANKED
+        if not _exists(self.store, uri):
+            return None
+        return self.store.created(uri), json.loads(self.store.get(uri))
 
     def earliest_start(self, cells: Iterable[str]) -> Optional[datetime]:
         """The store's creation time of the first ground-truth start of any

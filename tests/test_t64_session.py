@@ -76,15 +76,17 @@ def test_a_session_without_the_recorded_wheel_hash_is_refused_at_the_start(sha):
     assert "--fa3-sha256" in S.start_refusal(T64, a)
 
 
-def test_a_real_start_needs_both_banking_times(monkeypatch):
+def test_a_real_start_needs_both_banking_times(monkeypatch, tmp_path):
+    from test_t61_session import bank
     monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
     monkeypatch.setattr(S, "tree_clean", lambda: True)
     monkeypatch.setattr(S, "timed_path_refusal", lambda: None)
-    one = Namespace(dry_run=False, banked_at=["P1=2026-11-20T00:00:00+00:00"], fa3_sha256=SHA)
-    assert "missing: ['P2']" in S.start_refusal(T64, one)
-    both = Namespace(dry_run=False, fa3_sha256=SHA,
-                     banked_at=["P1=2026-11-20T00:00:00+00:00", "P2=2026-11-25T00:00:00+00:00"])
-    assert S.start_refusal(T64, both) is None
+    a = Namespace(dry_run=False, banked_at=[], fa3_sha256=SHA)
+    bank(monkeypatch, tmp_path / "one", P1=("2026-11-20T00:00:00+00:00", "e" * 64))
+    assert "P2 has no banked entry" in S.start_refusal(T64, a)
+    bank(monkeypatch, tmp_path / "both", P1=("2026-11-20T00:00:00+00:00", "e" * 64),
+         P2=("2026-11-25T00:00:00+00:00", "d" * 64))
+    assert S.start_refusal(T64, a) is None
 
 
 def _fake_tree(tmp_path, monkeypatch):
@@ -181,13 +183,15 @@ def test_the_masks_step_records_p4s_triton_masks_on_p2s_cells_and_compares(tmp_p
     assert r["verdict"] == "fail" and r["decision"] == MG.P6_RECORDS
 
 
-def test_the_real_record_needs_both_banking_times(tmp_path):
+def test_the_real_record_needs_both_banking_times(tmp_path, monkeypatch):
     from datetime import datetime, timezone
+    from test_t61_session import bank
     a = args_for(tmp_path)
-    a.banked_at = ["P1=2026-11-19T00:00:00+00:00"]
-    with pytest.raises(S.StepFailed, match=r"missing: \['P2'\]"):
+    bank(monkeypatch, tmp_path / "one", P1=("2026-11-19T00:00:00+00:00", "e" * 64))
+    with pytest.raises(S.StepFailed, match=r"P2 has no banked entry"):
         S.real_record(T64, a, datetime(2026, 12, 1, tzinfo=timezone.utc))
-    a.banked_at += ["P2=2026-11-25T00:00:00+00:00"]
+    bank(monkeypatch, tmp_path / "both", P1=("2026-11-19T00:00:00+00:00", "e" * 64),
+         P2=("2026-11-25T00:00:00+00:00", "d" * 64))
     with pytest.raises(S.NotBuilt, match=r"\['P2'\]'s training rows"):
         S.real_record(T64, a, datetime(2026, 12, 1, tzinfo=timezone.utc))
 

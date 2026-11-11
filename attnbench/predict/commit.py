@@ -81,8 +81,9 @@ from .learned import LIGHTGBM_VERSION, LearnedModel
 from . import learned as _learned
 from .naive import Nearest, nearest_pairing, with_constant_host_cost
 from .recursion import CostModelError, OpKind, PricedSequence, recurse
+from .intensity import ModelShape
 from .training import (COMMITTED, GROUND_TRUTH_STATISTIC, STATISTICS, Cell,
-                       CellKey, make_cell_key)
+                       CellKey, GroundTruthRow, HardwareFeatures, make_cell_key)
 
 # /2: the cell key gained its model and code path, and the file carries each
 # code path's definition. A /1 file has neither and is refused.
@@ -336,6 +337,45 @@ def _fitted_record(fs: FittedSum, label: str, pairing: str,
     }
 
 
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def training_rows_sha256(rows: Iterable[GroundTruthRow]) -> str:
+    """sha256 of the rows a committed fit was trained on (ruling 1e, 11 Nov
+    2026): every field a fit reads, in a canonical order, so the analysis can
+    tell the rows it refits on are the prediction's."""
+    body = []
+    for r in rows:
+        c = r.cell
+        body.append({
+            "pairing": c.pairing, "model_name": c.model_name, "code_path": c.code_path,
+            "arm": c.arm, "context_length": int(c.context_length),
+            "density": float(c.density), "batch": int(c.batch),
+            "components": _components(c.priced),
+            "hardware": dataclasses.asdict(c.hardware),
+            "model": None if c.model is None else dataclasses.asdict(c.model),
+            "measured": float(r.measured), "statistic": r.statistic})
+    body.sort(key=lambda d: json.dumps(d, sort_keys=True))
+    return sha256_hex(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _training_source(training_files: Optional[Mapping[str, str]], rows_sha256: Optional[str],
+                     banked: tuple[str, ...]) -> dict:
+    """The training files (by pairing) and the rows' hash every fit record
+    carries (ruling 1e)."""
+    files = dict(training_files or {})
+    if sorted(files) != list(banked):
+        raise PredictionCommitError(
+            f"the training files are named for {sorted(files)}; the fits are trained on "
+            f"{list(banked)}, and each one's file sha256 is recorded (ruling 1e)")
+    bad = [p for p, h in files.items() if not (isinstance(h, str) and _HEX64.fullmatch(h))]
+    if bad or not (isinstance(rows_sha256, str) and _HEX64.fullmatch(rows_sha256)):
+        raise PredictionCommitError(
+            f"the training files' and rows' sha256 are 64 hex digits (files {bad or 'ok'}, "
+            f"rows {rows_sha256!r})")
+    return {"training_files": dict(sorted(files.items())), "rows_sha256": rows_sha256}
+
+
 def _check_trained(kind, target, trained_on, statistic, label, pairing,
                    banked, want_statistic) -> None:
     if kind != COMMITTED:
@@ -356,6 +396,20 @@ def _check_trained(kind, target, trained_on, statistic, label, pairing,
         raise PredictionCommitError(
             f"the {label} was fitted to the {statistic}, and this file "
             f"predicts the {want_statistic}")
+
+
+def _learned_inputs(cells: Sequence[Cell]) -> dict:
+    """The pairing-level inputs the learned features read besides a cell's
+    own fields: the link figures and the model shape, one of each."""
+    hw = {c.hardware for c in cells}
+    shapes = {c.model for c in cells}
+    if len(hw) != 1 or len(shapes) != 1 or None in shapes:
+        raise PredictionCommitError(
+            f"the learned predictor's cells carry {len(hw)} link figures and "
+            f"{len(shapes)} model shapes; one of each is recorded, so the analysis "
+            f"can recompute its values (ruling 1e)")
+    return {"hardware": dataclasses.asdict(next(iter(hw))),
+            "model": dataclasses.asdict(next(iter(shapes)))}
 
 
 def _learned_record(lm: LearnedModel, pairing: str, banked: tuple[str, ...],
@@ -393,7 +447,9 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
                  intervals: Optional[Mapping[tuple, Mapping[str, Interval]]] = None,
                  dispatch: Optional[_dispatcher.DispatchSpec] = None,
                  statistic: str = GROUND_TRUTH_STATISTIC,
-                 not_priced: Optional[Mapping[str, Mapping]] = None) -> dict:
+                 not_priced: Optional[Mapping[str, Mapping]] = None,
+                 training_files: Optional[Mapping[str, str]] = None,
+                 rows_sha256: Optional[str] = None) -> dict:
     """Check everything and compute every prediction for one pairing.
 
     `code_paths` defines every code path the cells name, by label
@@ -423,6 +479,11 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
     each arm the gate refused, with its `label` (`NOT_PRICED_LABEL`) and the
     gate's reasons; such an arm has no cell here, so no hypothesis is scored
     on it, and the file records why (`not_priced`, present only when given).
+
+    Required with a banked pairing (ruling 1e, 11 Nov 2026):
+    `training_files`, each banked pairing's training file sha256, and
+    `rows_sha256`, `training_rows_sha256` of the rows the fits were trained
+    on; every fit record carries both, and the learned one its inputs.
     """
     if not isinstance(pairing, str) or not pairing:
         raise PredictionCommitError(f"pairing must be a name, got {pairing!r}")
@@ -478,15 +539,19 @@ def build_record(pairing: str, cells: Sequence[Cell], queue_depth: int, *,
                 f"the recursion (T2.11); missing: {missing}")
         training["fitted_sum"] = _fitted_record(
             fitted_sum, "fitted_sum", pairing, banked, statistic)
-        training["learned"] = _learned_record(learned, pairing, banked,
-                                              statistic)
+        training["learned"] = {**_learned_record(learned, pairing, banked, statistic),
+                               "inputs": _learned_inputs(cells)}
         if fitted_sum_plus_s0 is not None:
             training["fitted_sum_plus_s0"] = _fitted_record(
                 fitted_sum_plus_s0, "fitted_sum_plus_s0", pairing, banked,
                 statistic)
+        source = _training_source(training_files, rows_sha256, banked)
+        training = {n: {**r, **source} for n, r in training.items()}
     else:
         given = [n for n, m in (("fitted_sum", fitted_sum), ("learned", learned),
-                                ("fitted_sum_plus_s0", fitted_sum_plus_s0))
+                                ("fitted_sum_plus_s0", fitted_sum_plus_s0),
+                                ("training_files", training_files),
+                                ("rows_sha256", rows_sha256))
                  if m is not None]
         if given:
             raise PredictionCommitError(
@@ -981,11 +1046,26 @@ def verify_bytes(data: bytes, sidecar: str, filename: str) -> CommittedPredictio
         if missing:
             raise PredictionCommitError(
                 f"{filename} has pairings banked before it but no {missing}")
+        sources = set()
         for name, r in training.items():
             if tuple(r["trained_on"]) != banked or r["kind"] != COMMITTED:
                 raise PredictionCommitError(
                     f"{filename}: the {name} record does not name the "
                     f"committed training pairings {list(banked)}")
+            try:
+                src = _training_source(r.get("training_files"), r.get("rows_sha256"), banked)
+            except PredictionCommitError as e:
+                raise PredictionCommitError(f"{filename}: the {name} record: {e}") from e
+            sources.add(json.dumps(src, sort_keys=True))
+        if len(sources) != 1:
+            raise PredictionCommitError(
+                f"{filename}: the fit records name {len(sources)} different training sources")
+        inputs = training["learned"].get("inputs") or {}
+        try:
+            HardwareFeatures(**inputs["hardware"]), ModelShape(**inputs["model"])
+        except (KeyError, TypeError, ValueError, CostModelError) as e:
+            raise PredictionCommitError(
+                f"{filename}: the learned record's inputs are unusable ({e!r})") from e
     elif training:
         raise PredictionCommitError(
             f"{filename} has no pairing banked before it but carries "
@@ -1095,6 +1175,9 @@ def load_committed(store: Store, remote: str, *,
                    banked_at: Mapping[str, datetime],
                    local: Optional[Path | str] = None,
                    sync_gap: timedelta = timedelta(seconds=REQUIRED_SYNC_GAP_S),
+                   training_rows: Optional[Sequence[GroundTruthRow]] = None,
+                   training_files: Optional[Mapping[str, str]] = None,
+                   model_factory=None,
                    ) -> CommittedPrediction:
     """The committed prediction the analysis may score, or a refusal.
 
@@ -1110,6 +1193,14 @@ def load_committed(store: Store, remote: str, *,
     prediction was written: none left out, none banked later (Section 5.4,
     "Fitting the baselines"; audit C2, finding 2).
     `local`, if given, must hold the same bytes as the store.
+
+    A file with trained baselines (ruling 1e, 11 Nov 2026) needs
+    `training_rows`, every banked pairing's rows: their hash must be the
+    file's, its learned configuration `learned.LOCKED_CONFIG`, and the learned
+    predictor refitted on them under that configuration (`model_factory`,
+    LightGBM unless a test names its own) must give the committed values.
+    `training_files`, if given, must be the training files the file names
+    (the caller's, checked against the lock).
     """
     start = _check_aware(ground_truth_started_at, "ground_truth_started_at")
     if not isinstance(clock_skew, timedelta) or clock_skew < timedelta(0):
@@ -1180,4 +1271,51 @@ def load_committed(store: Store, remote: str, *,
                 f"{p}'s ground truth was banked at {_iso(b)}, within the {clock_skew} "
                 f"of skew allowed of {filename}'s write ({_iso(cp.written_at)}): the "
                 f"two cannot be ordered, so the training set cannot be checked")
+    if cp.training:
+        _recompute_learned(cp, filename, training_rows, training_files, model_factory)
     return dataclasses.replace(cp, synced_at=synced_at)
+
+
+def _recompute_learned(cp: CommittedPrediction, filename: str,
+                       rows: Optional[Sequence[GroundTruthRow]],
+                       files: Optional[Mapping[str, str]], model_factory) -> None:
+    """Ruling 1e: the learned values follow from the locked configuration
+    fitted on the named rows, or the file is refused."""
+    from .training import committed_training_set
+    rec = cp.training["learned"]
+    if files is not None and dict(files) != dict(rec["training_files"]):
+        raise PredictionCommitError(
+            f"{filename} names training files {rec['training_files']}, the lock "
+            f"{dict(files)}")
+    locked = _learned.LOCKED_CONFIG
+    if locked is None:
+        raise PredictionCommitError(
+            f"{filename} carries a learned baseline and learned.LOCKED_CONFIG is None")
+    if rec["config"] != {"target": locked.target, "params": dict(locked.params)}:
+        raise PredictionCommitError(
+            f"{filename}'s learned configuration {rec['config']} is not the locked "
+            f"one {locked!r}")
+    if rows is None:
+        raise PredictionCommitError(
+            f"{filename}'s learned values are recomputed from its training rows before "
+            f"they are scored (ruling 1e, 11 Nov 2026); none were given")
+    try:
+        ts = committed_training_set(rows, cp.pairing, cp.banked_before)
+    except CostModelError as e:
+        raise PredictionCommitError(f"{filename}: {e}") from e
+    got = training_rows_sha256(ts.rows)
+    if got != rec["rows_sha256"]:
+        raise PredictionCommitError(
+            f"{filename} was fitted on rows {rec['rows_sha256'][:12]}, these are "
+            f"{got[:12]}")
+    lm = _learned.fit_learned(ts, locked, model_factory)
+    hw = HardwareFeatures(**rec["inputs"]["hardware"])
+    shape = ModelShape(**rec["inputs"]["model"])
+    cells = [Cell(pairing=cp.pairing, model_name=c.model, code_path=c.code_path, arm=c.arm,
+                  context_length=c.context_length, density=c.density, batch=c.batch,
+                  priced=c.priced, hardware=hw, model=shape) for c in cp.cells]
+    for c, v in zip(cp.cells, lm.predict(cells)):
+        if not math.isclose(c.predictions["learned"], v, rel_tol=1e-9, abs_tol=0.0):
+            raise PredictionCommitError(
+                f"{filename} cell {c.key}: the committed learned value "
+                f"{c.predictions['learned']!r} is not the locked fit's {v!r}")

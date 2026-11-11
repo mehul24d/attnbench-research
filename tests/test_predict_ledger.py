@@ -97,3 +97,37 @@ def test_the_earliest_start_is_the_first_entry_over_the_cells(tmp_path):
     assert led.get("dense_L8192_b1", LG.GT_STARTED)["session"] == "b1"   # the first stays
     assert led.earliest_start(["oracle_L16384_b1"]) == T0 + timedelta(hours=1)
     assert led.earliest_start(["dense_L8192_b1", "oracle_L16384_b1"]) == T0
+
+
+def test_a_pairing_is_banked_once_at_the_store_s_time(tmp_path):
+    st, clock = store(tmp_path)
+    led = LG.Ledger(st, S.DirStore.PREFIX, "P1")
+    assert led.banked() is None
+    with pytest.raises(LG.LedgerError, match="64 hex"):
+        led.record_banked({"training_file_sha256": "TBD"})
+    led.record_banked({"training_file_sha256": "a" * 64})
+    clock[0] = T0 + timedelta(days=1)
+    with pytest.raises(LG.LedgerError, match="already banked"):
+        led.record_banked({"training_file_sha256": "b" * 64})
+    when, got = led.banked()
+    assert when == T0 and got == {"training_file_sha256": "a" * 64, "pairing": "P1"}
+    assert LG.Ledger(st, S.DirStore.PREFIX, "P2").banked() is None
+
+
+def test_bank_pairing_refuses_a_p1_file_that_is_not_the_lock_s(tmp_path):
+    import hashlib
+    import bank_pairing as BP
+    st, _ = store(tmp_path)
+    f = tmp_path / "p1_training.json.gz"
+    f.write_bytes(b"rows")
+    sha = hashlib.sha256(b"rows").hexdigest()
+    with pytest.raises(LG.LedgerError, match="the lock's P1 training file"):
+        BP.bank(st, S.DirStore.PREFIX, "P1", f, "banked/x.json.gz",
+                {"p1_training": {"file_sha256": "0" * 64}})
+    with pytest.raises(LG.LedgerError, match="the lock's P1 training file"):
+        BP.bank(st, S.DirStore.PREFIX, "P1", f, "banked/x.json.gz", {})
+    entry = BP.bank(st, S.DirStore.PREFIX, "P1", f, "banked/x.json.gz",
+                    {"p1_training": {"file_sha256": sha}})
+    assert entry["training_file_sha256"] == sha
+    assert LG.Ledger(st, S.DirStore.PREFIX, "P1").banked()[1]["training_file_bucket_path"] \
+        == "banked/x.json.gz"
