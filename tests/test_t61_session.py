@@ -355,6 +355,7 @@ def test_a_dry_session_is_not_resumed_as_a_real_one(tmp_path, capsys):
 
 def test_a_real_start_needs_the_exit_wrapper(monkeypatch):
     monkeypatch.setattr(S, "tree_clean", lambda: True)
+    monkeypatch.setattr(S, "timed_path_refusal", lambda: None)   # its own test, below
     a = Namespace(dry_run=False, banked_at=["P1=2026-11-20T10:00:00+00:00"])
     monkeypatch.delenv(S.EXIT_WRAPPER_ENV, raising=False)
     assert "scripts/session_exit.sh" in S.start_refusal(T61, a)
@@ -372,6 +373,7 @@ def test_a_real_start_needs_a_clean_tree_and_the_banking_times(monkeypatch):
     a = Namespace(dry_run=False, banked_at=["P1=2026-11-20T10:00:00+00:00"])
     assert "dirty" in S.start_refusal(T61, a)
     monkeypatch.setattr(S, "tree_clean", lambda: True)
+    monkeypatch.setattr(S, "timed_path_refusal", lambda: None)
     assert S.start_refusal(T61, a) is None
     assert "missing: ['P1']" in S.start_refusal(T61, Namespace(dry_run=False, banked_at=[]))
     assert "UTC offset" in S.start_refusal(
@@ -995,10 +997,23 @@ def _p1_training_file(tmp_path):
     return path
 
 
+def _lock_training(tmp_path, monkeypatch, path):
+    """A lock naming `path`'s sha256, which a real session's training rows are
+    read against (`p1_training_check`)."""
+    import hashlib
+    import t31_steps as st
+    lock = tmp_path / "lock_values.json"
+    lock.write_text(json.dumps({"p1_training": {
+        "file_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}}))
+    monkeypatch.setattr(st, "LOCK_FILE", lock)
+    return path
+
+
 def test_the_real_record_fits_the_sums_on_p1s_pooled_rows_and_waits_for_the_learned_config(
         tmp_path, monkeypatch):
     from attnbench.predict import baselines as BL
-    monkeypatch.setattr(S, "P1_TRAINING", _p1_training_file(tmp_path))
+    monkeypatch.setattr(S, "P1_TRAINING", _lock_training(tmp_path, monkeypatch,
+                                                         _p1_training_file(tmp_path)))
     rows = S.training_rows(T61)
     assert sorted(r.measured for r in rows) == [pytest.approx(0.007), pytest.approx(0.040)]
     fits = []
@@ -1018,8 +1033,10 @@ def test_a_damaged_training_file_is_refused(tmp_path, monkeypatch):
     raw = gzip.decompress(path.read_bytes()).replace(b'"target_s":0.04', b'"target_s":0.05')
     path.write_bytes(gzip.compress(raw))
     monkeypatch.setattr(S, "P1_TRAINING", path)
-    with pytest.raises(S.StepFailed, match="sha256"):
+    _lock_training(tmp_path, monkeypatch, path)      # the lock's check passes; the record's own refuses
+    with pytest.raises(S.StepFailed, match="sha256") as e:
         S.training_rows(T61)
+    assert "the lock's" not in str(e.value)
 
 
 GOOD_ROW = {"cloud_provider": "gcp", "instance_type": "a2-ultragpu-1g",
@@ -1150,7 +1167,8 @@ def test_a_skipped_step_fails_a_real_session(tmp_path):
 
 # --- the learned predictor's features need the model shape (attempt 2, 10 Nov) ----------
 
-def test_the_training_rows_carry_the_primary_models_shape_so_the_learned_features_compute(tmp_path):
+def test_the_training_rows_carry_the_primary_models_shape_so_the_learned_features_compute(
+        tmp_path, monkeypatch):
     """Attempt 2 of the L4 rehearsal stopped at `predict`: `training_rows` built
     rows with no model shape, and `learned.features` refused the first one."""
     import test_p1_training as TP
@@ -1162,7 +1180,7 @@ def test_the_training_rows_carry_the_primary_models_shape_so_the_learned_feature
     rec = PT.to_record(PT.training_rows(a, b), TP.HW)
     path = tmp_path / "p1_training.json"
     PT.dump(rec, path)
-    rows = S.training_rows(T61, path)
+    rows = S.training_rows(T61, _lock_training(tmp_path, monkeypatch, path))
     assert rows and all(r.cell.model == primary_shape() for r in rows)
     assert all(len(LM.features(r.cell)) == len(LM.FEATURES) for r in rows)
 
@@ -1184,3 +1202,69 @@ def test_the_real_record_is_named_for_the_session_not_its_components_config(tmp_
     S.real_record(R.REHEARSAL, a, datetime(2026, 11, 20, tzinfo=timezone.utc))
     assert seen["comp"] == "P1" and seen["pairing"] == "P2-R"
     assert seen["baselines"]["learned"] == ("learned", "P2-R")
+
+
+def test_a_real_p2_or_p4_start_refuses_a_timed_path_the_lock_does_not_pin(tmp_path, monkeypatch):
+    """T4.1 item 37 (adviser's ruling 2 of the 11 Nov 2026 paste): at session
+    start, and so on every boot of a block, the timed path's hash at HEAD must
+    be the lock's pinned value. P2 and P4 are pinned; the rehearsal and the
+    FA3 gate (which time nothing the lock covers) are not; a dry run skips."""
+    import t31_steps as st
+    import t64_session as P4
+    import t61_rehearsal as R
+    import timed_path
+    lock = tmp_path / "lock_values.json"
+    monkeypatch.setattr(st, "LOCK_FILE", lock)
+    monkeypatch.setattr(timed_path, "path_hash", lambda commit: {"sha256": "a" * 64})
+    assert "no lock file" in S.timed_path_refusal()
+
+    def pin(v):
+        lock.write_text(json.dumps({"values": {S.TIMED_PATH_ITEM: {"value": v}}}))
+    for bad in (None, "8716d7db…", "A" * 64, 64):
+        pin(bad)
+        assert "not a 64-hex sha256" in S.timed_path_refusal()
+    pin("a" * 64)
+    assert S.timed_path_refusal() is None
+    pin("b" * 64)
+    why = S.timed_path_refusal()
+    assert why and "a" * 64 in why and "b" * 64 in why
+    # wired into the start of P2, P4 and the block runner (every boot is a start)
+    monkeypatch.setenv(S.EXIT_WRAPPER_ENV, "armed")
+    monkeypatch.setattr(S, "tree_clean", lambda: True)
+    a = Namespace(dry_run=False, fa3_sha256="ab" * 32,
+                  banked_at=["P1=2026-11-20T00:00:00+00:00", "P2=2026-11-25T00:00:00+00:00"])
+    assert T61.pin_timed_path and P4.T64.pin_timed_path
+    assert not R.REHEARSAL.pin_timed_path and not P4.T64_GATE.pin_timed_path
+    for cfg in (T61, P4.T64):
+        assert S.start_refusal(cfg, a) == why
+    assert S.start_refusal(T61, Namespace(dry_run=True, banked_at=[])) is None
+    pin("a" * 64)
+    assert S.start_refusal(T61, a) is None
+
+
+def test_the_deployed_timed_path_is_the_one_decided_for_the_lock():
+    """The value T4.1 item 37 was decided at (Appendix A, 10 Nov 2026): a change
+    to the timed path before the lock fails here, before it fails a launch."""
+    import timed_path
+    draft = json.loads((ROOT / "docs" / "lock_package_draft.json").read_text())
+    decided = draft["values"][S.TIMED_PATH_ITEM]["proposed"].split(":")[0]
+    assert timed_path.path_hash("HEAD")["sha256"] == decided
+
+
+def test_a_real_session_reads_its_training_file_against_the_lock_at_the_step_too(
+        tmp_path, monkeypatch):
+    """The training file is checked at step 1 and again where it is read, so a
+    file swapped in between is refused; a rehearsal reads it under its own lock."""
+    import t61_rehearsal as R
+    path = _p1_training_file(tmp_path)
+    _lock_training(tmp_path, monkeypatch, path)
+    assert S.training_rows(T61, path)
+    raw = path.read_bytes()
+    path.write_bytes(raw + b"\0")
+    with pytest.raises(S.StepFailed, match="the lock's"):
+        S.training_rows(T61, path)
+    path.write_bytes(raw)
+    (tmp_path / "lock_values.json").unlink()
+    with pytest.raises(S.StepFailed, match="names no P1 training file sha256"):
+        S.training_rows(T61, path)
+    assert S.training_rows(R.REHEARSAL, path)

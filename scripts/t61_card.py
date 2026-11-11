@@ -38,6 +38,21 @@ SPOT_RATE = B.SPOT_RATES["P2"]
 ZONE = "asia-southeast1-c"  # the only zone offering a2-ultragpu-1g (plan Section 5.2)
 
 
+
+def prelaunch_pass(config: str) -> str:
+    """The card's pre-launch CPU pass paragraph (adviser's ruling 4 of the
+    11 Nov 2026 paste); the P4 card prints it too."""
+    return (f"**Pre-launch CPU pass, before the yes is asked** (adviser's ruling 4 of the 11 Nov "
+            f"2026 paste). On this card's commit, from a clean tree: `scripts/prelaunch_cpu_pass.sh "
+            f"{config} results/p1_training/p1_training.json.gz`. It runs the session's real config "
+            "and name through the real start checks (the exit wrapper, a clean tree, the "
+            "timed-path pin, the banking times) and every step a CPU can run with its real body, "
+            "prereqs and the staged inputs first; only the GPU steps, the device and the bucket "
+            "are mocked (`tests/test_prelaunch_cpu_pass.py`). The yes is asked only after it "
+            "prints PASSED at the commit the yes names, and the request cites its record "
+            "(`prelaunch_cpu_pass.json`). Until the lock commit it refuses at the start: no "
+            "`docs/lock_values.json`, so the timed path has no pinned value.")
+
 def load_minutes(path=MINUTES) -> dict:
     """The minutes file, refused unless it names exactly T61's steps."""
     m = json.loads(Path(path).read_text())
@@ -131,6 +146,8 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         "nowhere in the runner. On Spot, a block checks only what its own steps read. "
         "Then `preflight` (3 min) checks the instance, the GPU variants and lightgbm; the "
         "first long step is `probe`.",
+        "",
+        prelaunch_pass("p2"),
         "",
         "## Not exercised before P2 (documented risks)",
         "",

@@ -200,6 +200,7 @@ class SessionConfig:
     components_config: str = ""   # the T3.1 steps' config for this pairing, from the repo root
     exploratory: str = ""         # why no row of the session is evidence (a rehearsal), or ""
     staged: Optional[Callable] = None   # (cfg, args, steps) -> (findings, problems), at step 1 (P2)
+    pin_timed_path: bool = False  # refuse to start unless the timed path is the lock's (P2, P4)
 
     @property
     def names(self) -> tuple:
@@ -810,6 +811,10 @@ def training_rows(cfg: SessionConfig, path: Optional[Path] = None) -> list:
     path = Path(path or P1_TRAINING)
     if not path.exists():
         raise StepFailed(f"no P1 training file at {path}: fetch it (its sha256 is the lock's)")
+    if not cfg.exploratory:            # a rehearsal reads the file under its own lock
+        _, why = p1_training_check(path)
+        if why:
+            raise StepFailed(why)
     try:
         # The rows carry the model shape the learned predictor's features
         # need (attempt 2 of the L4 rehearsal stopped at `predict` without it).
@@ -1243,6 +1248,25 @@ def mask_gate_bound(path=None, plan_text=None) -> dict:
 DENSITY_FLAG_ITEM = "compiled_versus_eager_density_flag_tolerance"
 
 
+def p1_training_check(path: Optional[Path] = None) -> tuple:
+    """(sha256 or None, problem or None): the P1 training file against the
+    lock's `p1_training.file_sha256`. Read at step 1 and again by the step
+    that trains on it (`training_rows`), so a file swapped between the two is
+    refused too."""
+    import hashlib
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    path = Path(path or P1_TRAINING)
+    want = ((read_json(st.LOCK_FILE, {}) or {}).get("p1_training") or {}).get("file_sha256")
+    if not path.exists():
+        return None, f"no P1 training file at {path}"
+    if want is None:
+        return None, (f"{Path(st.LOCK_FILE).name} names no P1 training file sha256 "
+                      f"(p1_training.file_sha256)")
+    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    return got, (None if got == want else f"the P1 training file's sha256 is {got}, the lock's {want}")
+
+
 def p2_staged_inputs(cfg: SessionConfig, args, runs: tuple) -> tuple:
     """What the session's later steps read from the staging, checked at step
     1 so that a missing input costs a minute, not the hours before the step
@@ -1251,9 +1275,6 @@ def p2_staged_inputs(cfg: SessionConfig, args, runs: tuple) -> tuple:
     training file at the lock's sha256 and the learned configuration (step
     11, `predict`). A block checks only what its own steps read. Returns
     (findings, problems)."""
-    import hashlib
-    sys.path.insert(0, str(ROOT / "scripts"))
-    import t31_steps as st
     from attnbench.predict import learned as LM
     found, bad = {}, []
     if "mask_gate" in runs:
@@ -1266,18 +1287,11 @@ def p2_staged_inputs(cfg: SessionConfig, args, runs: tuple) -> tuple:
         except Exception as e:   # noqa: BLE001  (a bank that does not read back is refused too)
             bad.append(f"P1's masks: {e}")
     if "predict" in runs:
-        lock = read_json(st.LOCK_FILE, {}) or {}
-        want = (lock.get("p1_training") or {}).get("file_sha256")
-        if not P1_TRAINING.exists():
-            bad.append(f"no P1 training file at {P1_TRAINING}")
-        elif want is None:
-            bad.append(f"{Path(st.LOCK_FILE).name} names no P1 training file sha256 "
-                       f"(p1_training.file_sha256)")
-        else:
-            got = hashlib.sha256(P1_TRAINING.read_bytes()).hexdigest()
+        got, why = p1_training_check()
+        if got:
             found["p1_training_sha256"] = got
-            if got != want:
-                bad.append(f"the P1 training file's sha256 is {got}, the lock's {want}")
+        if why:
+            bad.append(why)
         if LM.LOCKED_CONFIG is None:
             bad.append("the learned predictor's configuration is a lock value (Gate B): "
                        "learned.LOCKED_CONFIG is not set")
@@ -1466,7 +1480,8 @@ def _t61() -> SessionConfig:
                                        "masks recorded untimed if it fails"),
         ) + COMMON_STEPS_COMPONENTS + COMMON_STEPS_TAIL,
         requirements=PHASE2 + (Requirement("T2.23", "the mask gate on P2", gate=True),) + GATES,
-        files=BUILT_FILES, fakes=fakes, reals=reals, staged=p2_staged_inputs)
+        files=BUILT_FILES, fakes=fakes, reals=reals, staged=p2_staged_inputs,
+        pin_timed_path=True)
     validate(cfg)
     return cfg
 
@@ -1873,6 +1888,10 @@ def start_refusal(cfg: SessionConfig, args) -> Optional[str]:
                 "any exit is the sync of its logs and manifests and then the halt")
     if not args.dry_run and not tree_clean():
         return "the tree is dirty, so no row could be banked with git_dirty = False"
+    if cfg.pin_timed_path and not args.dry_run:
+        why = timed_path_refusal()
+        if why:
+            return why
     if "fa3_import" in cfg.names:
         sha = getattr(args, "fa3_sha256", None)
         if not (sha and re.match(r"^[0-9a-f]{64}$", sha)):
@@ -1887,6 +1906,32 @@ def start_refusal(cfg: SessionConfig, args) -> Optional[str]:
         if missing:
             return (f"{cfg.pairing} is trained on {list(cfg.banked)}: give each banking "
                     f"time with --banked-at PAIRING=ISO (missing: {missing})")
+    return None
+
+
+TIMED_PATH_ITEM = "timed_path_identity_for_p2_and_p4"
+
+
+def timed_path_refusal(lock_path=None, commit: str = "HEAD") -> Optional[str]:
+    """Why the deployed timed path is not the lock's, or None (T4.1 item 37;
+    adviser's ruling 2 of the 11 Nov 2026 paste). Checked at session start,
+    so on every boot of a block: `scripts/timed_path.py`'s hash at `commit`
+    (the tree is clean, so it is the deployed code) against the lock's
+    pinned value."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    import timed_path
+    p = Path(lock_path or st.LOCK_FILE)
+    if not p.exists():
+        return f"no lock file at {p}: the timed-path identity is a lock value (T4.1)"
+    lock = read_json(p, {}) or {}
+    want = ((lock.get("values") or {}).get(TIMED_PATH_ITEM) or {}).get("value")
+    if not (isinstance(want, str) and re.fullmatch(r"[0-9a-f]{64}", want)):
+        return f"{p.name}'s timed-path identity is {want!r}, not a 64-hex sha256"
+    got = timed_path.path_hash(commit)["sha256"]
+    if got != want:
+        return (f"the timed path at {commit} hashes to {got}, the lock pins {want}: "
+                f"`python3 scripts/timed_path.py <locked commit> {commit}` names what changed")
     return None
 
 

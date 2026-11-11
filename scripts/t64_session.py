@@ -113,6 +113,39 @@ def real_masks(cfg, args, *, record=None, bound=None) -> dict:
     return {"recorded": True, "cells": len(cells), "verdict": verdict, "decision": res.decision}
 
 
+def p4_staged_inputs(cfg, args, runs: tuple) -> tuple:
+    """P4's staged inputs, checked at step 1 as P2's are (`p2_staged_inputs`):
+    the lock's mask-gate bound and P2's banked masks (`masks`); the P1
+    training file at the lock's sha256, P2's training rows and the learned
+    configuration (`predict`). Returns (findings, problems)."""
+    from attnbench.predict import learned as LM
+    found, bad = {}, []
+    if "masks" in runs:
+        try:
+            found["mask_gate_bound"] = S.mask_gate_bound()["max_density_difference"]
+        except S.StepFailed as e:
+            bad.append(str(e))
+        try:
+            found["p2_mask_cells"] = len(S.banked_masks(Path(args.session) / S.P2_MASKS))
+        except Exception as e:   # noqa: BLE001  (a bank that does not read back is refused too)
+            bad.append(f"P2's masks: {e}")
+    if "predict" in runs:
+        got, why = S.p1_training_check()
+        if got:
+            found["p1_training_sha256"] = got
+        if why:
+            bad.append(why)
+        try:
+            S.training_rows(cfg)
+        except S.StepFailed as e:
+            if not why or str(e) != why:
+                bad.append(str(e))
+        if LM.LOCKED_CONFIG is None:
+            bad.append("the learned predictor's configuration is a lock value (Gate B): "
+                       "learned.LOCKED_CONFIG is not set")
+    return found, bad
+
+
 def _t64() -> S.SessionConfig:
     reals, fakes = S.common_bodies()
     reals["masks"] = real_masks
@@ -146,7 +179,8 @@ def _t64() -> S.SessionConfig:
             ("attnbench/backends/fa3.py", None),
             ("attnbench/fa3_wheel.py", None),
         ),
-        fakes=fakes, reals=reals, preflight_findings=floor_findings)
+        fakes=fakes, reals=reals, preflight_findings=floor_findings,
+        staged=p4_staged_inputs, pin_timed_path=True)
     S.validate(cfg)
     return cfg
 
