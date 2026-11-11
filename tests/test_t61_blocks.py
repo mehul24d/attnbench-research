@@ -256,3 +256,29 @@ def test_the_lock_table_states_the_working_bound_and_the_rule():
     row = next(l for l in table.splitlines() if l.startswith("| 36 |"))
     assert "Block drift bound" in row and "Working: 6.77%" in row
     assert BD.DRIFT_LABEL in row and "never widened to pass" in row
+
+
+def test_a_redone_block_reuses_its_discarded_prediction_and_a_differing_one_stops(tmp_path,
+                                                                                  monkeypatch):
+    """Ruling 1c (11 Nov 2026): the pairing's ledger holds one prediction per
+    cell; a redone block re-predicts bit for bit and uses the original file,
+    synced before any ground truth; a re-prediction that differs stops."""
+    lock = write_lock(tmp_path)
+    _, d1 = run_block(T64, tmp_path, lock, "b1")
+    rc, d2 = run_block(T64, tmp_path, lock, "b2", [d1])
+    assert rc == 0
+    first = json.loads((d2 / S.RECEIPT).read_text())
+    redo = tmp_path / "b2_redo"
+    br = block(T64, lock, "b2", [d1])
+    assert S.run_session(T64, redo, start="prereqs", extra=EXTRA, dry_run=True, sync=False,
+                         runner=inproc(T64), block=br) == 0
+    again = json.loads((redo / S.RECEIPT).read_text())
+    assert again["re_predicted"] and again["sha256"] == first["sha256"]
+    assert again["synced_at"] == first["synced_at"]
+    fake = S.fake_record
+    monkeypatch.setattr(S, "fake_record",
+                        lambda *a, **k: {**fake(*a, **k), "note": "a different prediction"})
+    assert S.run_session(T64, tmp_path / "b2_redo2", start="prereqs", extra=EXTRA, dry_run=True,
+                         sync=False, runner=inproc(T64), block=br) == 1
+    m = json.loads((tmp_path / "b2_redo2" / "manifest.json").read_text())
+    assert S.last_status(m)["predict"] == "failed" and "ground_truth" not in S.last_status(m)

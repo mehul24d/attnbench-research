@@ -770,6 +770,22 @@ class GsutilStore:
         self._check_uri(remote)
         return self._run(["cat", remote]).stdout
 
+    def exists(self, remote: str) -> bool:
+        """Whether an object is at `remote`; any answer but "found" or "no
+        such object" is an error, never read as absent."""
+        self._check_uri(remote)
+        try:
+            p = subprocess.run([self.gsutil, "-q", "stat", remote], capture_output=True,
+                               timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise PredictionCommitError(f"gsutil stat failed: {e}") from e
+        if p.returncode == 0:
+            return True
+        err = p.stderr.decode(errors="replace")
+        if p.returncode == 1 and ("No URLs matched" in err or not err.strip()):
+            return False
+        raise PredictionCommitError(f"gsutil stat {remote} exited {p.returncode}: {err.strip()}")
+
     def created(self, remote: str) -> datetime:
         """`gsutil stat`'s creation time plus one second: it prints whole
         seconds, so the object was created before the returned time."""

@@ -149,14 +149,15 @@ def test_F3_a_second_session_predicts_after_the_first_sessions_ground_truth(tmp_
     off = json.loads((a / S.DRY_CLOCK).read_text())["offset_s"]
     b.mkdir()
     (b / S.DRY_CLOCK).write_text(json.dumps({"offset_s": off + 600}))   # ten minutes later
+    # Edit on import: ruling 1c (11 Nov 2026) refuses the second prediction at
+    # predict, so session b stops there and writes no receipt.
     assert S.run_session(T, b, start="prereqs", extra=[], dry_run=True, sync=False,
-                         runner=inproc(T)) == 0
-    a_start = S.session_start(a)
-    b_written = S.epoch(json.loads((b / S.RECEIPT).read_text())["written_at"])
-    assert b_written > a_start + 500                 # P2's ground truth existed when b predicted
+                         runner=inproc(T)) != 0
     mb = json.loads((b / "manifest.json").read_text())
+    assert S.last_status(mb)["predict"] == "failed"
+    assert not (b / S.RECEIPT).exists()
     # What K9 asks: a prediction written after the pairing's ground truth began is refused.
-    assert S.last_status(mb)["late_check"] != "passed", \
+    assert S.last_status(mb).get("late_check") != "passed", \
         "the second prediction passes its late check; nothing knows session a exists"
 
 

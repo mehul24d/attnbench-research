@@ -346,6 +346,9 @@ class DirStore:
     def get(self, remote: str) -> bytes:
         return self._path(remote).read_bytes()
 
+    def exists(self, remote: str) -> bool:
+        return self._path(remote).exists()
+
     def created(self, remote: str) -> datetime:
         return datetime.fromtimestamp(read_json(self.index, {})[remote], tz=timezone.utc)
 
@@ -376,6 +379,11 @@ def store_for(args):
     """(store, prefix) where prefix + receipt path is the remote URI."""
     if args.dry_run:
         session = Path(args.session)
+        # a receipt names the dry store its prediction is in (a redone block's
+        # is its discarded attempt's)
+        held = (read_json(session / RECEIPT) or {}).get("dry_store")
+        if held:
+            return DirStore(Path(held), lambda: now(session, True)), DirStore.PREFIX
         # a block reads the prediction from the dry store of the block that committed it,
         # as every real block reads the one bucket
         b = load_manifest(session).get("block") or {}
@@ -383,6 +391,29 @@ def store_for(args):
         return DirStore(home / "dry_store", lambda: now(session, True)), DirStore.PREFIX
     from attnbench.predict.commit import GsutilStore
     return GsutilStore(), results_bucket() + "/"
+
+
+def ledger_for(cfg: SessionConfig, args):
+    """The pairing's prediction ledger (`attnbench.predict.ledger`; ruling 1c,
+    11 Nov 2026): in the bucket beside the predictions, or for a dry run in
+    a store beside the session directory, shared by every dry session of the
+    pairing run side by side."""
+    from attnbench.predict.ledger import Ledger
+    if args.dry_run:
+        session = Path(args.session)
+        return Ledger(DirStore(session.parent / "dry_pairing_store",
+                               lambda: now(session, True)), DirStore.PREFIX, cfg.pairing)
+    from attnbench.predict.commit import GsutilStore
+    return Ledger(GsutilStore(), results_bucket() + "/", cfg.pairing)
+
+
+def ground_truth_cells(session: Path, block: Optional[dict]) -> list:
+    """The ledger cells this ground-truth process clocks: a block's own and
+    its anchor, else every cell the session's prediction covers."""
+    from attnbench.predict.ledger import cell_name
+    if block:
+        return sorted({cell_name(c[0], c[2], c[3]) for c in block["run_cells"]})
+    return list((read_json(session / RECEIPT) or {}).get("cells") or ())
 
 
 # --- plan statuses ------------------------------------------------------------------------
@@ -869,6 +900,30 @@ def body_predict(cfg: SessionConfig, args, *, record_fn=None) -> dict:
         record_fn = (lambda: fake_record(cfg, written_at)) if args.dry_run else \
             (lambda: real_record(cfg, args, written_at))
     record = record_fn()
+    # The pairing's ledger first (ruling 1c, 11 Nov 2026): one prediction per
+    # cell, none after any ground truth of the cell has started, and a redone
+    # block's re-prediction bit for bit its discarded attempt's.
+    from attnbench.predict import ledger as LG
+    ledger = ledger_for(cfg, args)
+    cells = LG.record_cells(record)
+    digest = LG.predictions_digest(record)
+    bid = (load_manifest(session).get("block") or {}).get("id")
+    try:
+        original = ledger.check_prediction(cells, digest, block=bid)
+    except LG.LedgerError as e:
+        raise StepFailed(str(e))
+    if original is not None:
+        # Nothing new is committed: the session uses the original file, synced
+        # before any ground truth; the re-prediction is kept beside it.
+        write_json(Path(args.out) / "re_prediction.json", record)
+        local = Path(args.out) / Path(original["remote_path"]).name
+        out = {**original["receipt"], "local": str(local), "re_predicted": True}
+        write_json(session / RECEIPT, out)
+        store, prefix = store_for(args)          # the original's store, from the receipt
+        local.write_bytes(store.get(prefix + original["remote_path"]))
+        write_json(Path(args.out) / RECEIPT, out)
+        write_json(Path(args.out) / T31_RECEIPT, {**original["t31_receipt"], "local": local.name})
+        return {k: out[k] for k in ("sha256", "remote_path", "synced_at", "written_at")}
     committed = C.write_prediction(record, Path(args.out))
     store, prefix = store_for(args)
     rel = f"predictions/{cfg.pairing}/{session.name}"
@@ -877,12 +932,22 @@ def body_predict(cfg: SessionConfig, args, *, record_fn=None) -> dict:
            "local": str(committed.path), "remote_path": f"{rel}/{committed.path.name}",
            "synced_at": receipt.synced_at.isoformat(timespec="microseconds"),
            "written_at": record["written_at"], "store": "dir" if args.dry_run else "gcs",
-           "dry_run": args.dry_run}
+           "dry_run": args.dry_run, "cells": cells}
+    if args.dry_run:
+        out["dry_store"] = str(store.root)
+    t31 = {**receipt.to_dict(), "local": committed.path.name}
+    try:
+        ledger.record_prediction(cells, {
+            "session": session.name, "block": bid, "sha256": committed.sha256,
+            "predictions_digest": digest, "remote_path": out["remote_path"],
+            "receipt": out, "t31_receipt": t31})
+    except LG.LedgerError as e:
+        raise StepFailed(str(e))
     write_json(session / RECEIPT, out)
     write_json(Path(args.out) / RECEIPT, out)
     # T3.1's steps read the receipt at <predict>/receipt.json, in its own form
     # (`session_order.receipt_from_dict`, with the file's name in `local`).
-    write_json(Path(args.out) / T31_RECEIPT, {**receipt.to_dict(), "local": committed.path.name})
+    write_json(Path(args.out) / T31_RECEIPT, t31)
     return {k: out[k] for k in ("sha256", "remote_path", "synced_at", "written_at")}
 
 
@@ -1098,6 +1163,13 @@ def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
     if harness is None:
         harness = FakeHarness(session) if args.dry_run else real_harness
     block = block_plan(session)
+    # The pairing's ledger records the start before anything is clocked (ruling 1c).
+    gt_cells = ground_truth_cells(session, block)
+    if not gt_cells:
+        raise StepFailed("no ledger cells for this ground truth: the receipt names none")
+    ledger_for(cfg, args).record_ground_truth_start(
+        gt_cells, {"session": session.name, "block": (block or {}).get("id"),
+                   "opened_at": iso(opened_at)})
     result = harness(cfg, args, block) if block else harness(cfg, args)
     ended = now(session, args.dry_run)
     if block:
@@ -1159,6 +1231,11 @@ def body_late_check(cfg: SessionConfig, args) -> dict:
         raise StepFailed("no receipt or no ground-truth start in this session")
     store, prefix = store_for(args)
     banked = parse_banked_at(args.banked_at)
+    # The pairing's earliest ground-truth start over the prediction's cells
+    # (ruling 1c), not only this session's.
+    first = ledger_for(cfg, args).earliest_start(receipt.get("cells") or ())
+    if first is not None:
+        start = min(start, first.timestamp())
     try:
         cp = C.load_committed(store, prefix + receipt["remote_path"],
                               ground_truth_started_at=datetime.fromtimestamp(start, tz=timezone.utc),
@@ -1627,6 +1704,17 @@ def run_session(cfg: SessionConfig, session: Path, *, start: str, extra: list, d
         if now is not None and manifest.get("boot_id") is None:
             manifest["boot_id"] = now
             write_json(session / "manifest.json", manifest)
+    # One commit per session or block (ruling 1c, 11 Nov 2026): `--from` at
+    # another commit refuses.
+    head = code_commit(dry_run)
+    if manifest["attempts"] and manifest.get("code_commit") not in (None, head):
+        print(f"REFUSING --from {start}: this session began at commit "
+              f"{manifest['code_commit']} and HEAD is {head}; a session (or block) runs one "
+              f"commit: start a new one", file=sys.stderr)
+        return 2
+    if manifest.get("code_commit") is None:
+        manifest["code_commit"] = head
+        write_json(session / "manifest.json", manifest)
     done = last_status(manifest)
     total = len(cfg.steps)
     for step in steps[steps.index(start):]:
