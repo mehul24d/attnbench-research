@@ -4,8 +4,11 @@ check (researcher's rulings, 7 Nov 2026; `attnbench.lock.blocks`).
 A session run in blocks has a session directory per block, each with its own
 boot. `collect` reads them: a block whose instance restarted carries
 `INTERRUPTED_DISCARD.md` and is discarded alone (its rows are listed as
-discarded, never read); the others must be blocks of one spec, run on one
-commit, each once. Every ground-truth row carries its block's id and whether
+discarded, never read); a block whose steps did not all pass, or whose
+ground truth's late check did not pass, is pooled from nothing and listed
+as unpassed (ruling 1d, 11 Nov 2026: the runner's refusal of a ground truth
+is final, so its rows are never evidence); the others must be blocks of one
+spec, run on one commit, each once. Every ground-truth row carries its block's id and whether
 it is the anchor cell, which every block with ground truth measures.
 
 `drift` compares the anchor between blocks: each block's anchor statistic
@@ -47,11 +50,25 @@ def _read(path: Path):
         return None
 
 
+def _unpassed(m: Mapping, b: Mapping) -> list:
+    """The block's steps whose last attempt did not pass (a dry run skips
+    its prerequisites), and the late check if it ran ground truth without one."""
+    last = {}
+    for a in m.get("attempts") or ():
+        last[a["step"]] = a.get("status")
+    ok = ("passed", "skipped") if m.get("dry_run") else ("passed",)
+    steps = list(b.get("steps") or ())
+    out = [s for s in steps if last.get(s) not in ok]
+    if "ground_truth" in steps and "late_check" not in steps:
+        out.append("late_check (not run)")
+    return out
+
+
 def collect(dirs: Sequence, *, ground_truth_dir: str) -> dict:
-    """{"rows", "blocks", "discarded", "spec_sha256", "code_commit"} from the
-    blocks' session directories. `ground_truth_dir` is the ground-truth
-    step's directory name within each (`t61_session.step_dir`)."""
-    rows, blocks, discarded, specs, commits = [], [], [], set(), set()
+    """{"rows", "blocks", "discarded", "unpassed", "spec_sha256", "code_commit"}
+    from the blocks' session directories. `ground_truth_dir` is the
+    ground-truth step's directory name within each (`t61_session.step_dir`)."""
+    rows, blocks, discarded, unpassed, specs, commits = [], [], [], [], set(), set()
     for d in map(Path, dirs):
         m = _read(d / "manifest.json")
         b = (m or {}).get("block")
@@ -60,8 +77,12 @@ def collect(dirs: Sequence, *, ground_truth_dir: str) -> dict:
         if (d / DISCARD).exists():
             discarded.append({"block": b["id"], "dir": str(d), "why": DISCARD})
             continue
-        if b["id"] in blocks:
+        if b["id"] in blocks or b["id"] in [u["block"] for u in unpassed]:
             raise BlockDriftError(f"block {b['id']} is given twice")
+        bad = _unpassed(m, b)
+        if bad:
+            unpassed.append({"block": b["id"], "dir": str(d), "steps": bad})
+            continue
         specs.add(b["spec_sha256"])
         commits.add(m.get("code_commit"))
         blocks.append(b["id"])
@@ -76,7 +97,7 @@ def collect(dirs: Sequence, *, ground_truth_dir: str) -> dict:
         raise BlockDriftError(f"the blocks are of {len(specs)} specs")
     if len(commits) > 1:
         raise BlockDriftError(f"the blocks ran {len(commits)} commits: {sorted(map(str, commits))}")
-    return {"rows": rows, "blocks": blocks, "discarded": discarded,
+    return {"rows": rows, "blocks": blocks, "discarded": discarded, "unpassed": unpassed,
             "spec_sha256": next(iter(specs), None), "code_commit": next(iter(commits), None)}
 
 

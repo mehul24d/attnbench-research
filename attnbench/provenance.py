@@ -251,7 +251,7 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
     """
     out = {"cloud_provider": None, "instance_type": None,
            "instance_generation": None, "provisioning_model": None,
-           "provisioning_model_problem": None, "boot_image": None}
+           "provisioning_model_problem": None, "boot_image": None, "zone": None}
     vendor = _read_dmi(dmi_dir, "sys_vendor") or ""
     product = _read_dmi(dmi_dir, "product_name") or ""
     if product == "Google Compute Engine" or vendor == "Google":
@@ -261,6 +261,7 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
         fetch = fetch or _aws_metadata
         instance_type = fetch("instance-type")
         out["boot_image"] = fetch("ami-id")
+        out["zone"] = fetch("placement/availability-zone")
         if instance_type:
             out["instance_type"] = instance_type
             m = _AWS_TYPE_RE.match(instance_type)
@@ -286,6 +287,9 @@ def _cloud_identity(dmi_dir: str = "/sys/class/dmi/id",
     # project reaches a row.
     image = fetch("image")
     out["boot_image"] = image.rsplit("/", 1)[-1] if image else None
+    # `projects/<number>/zones/<zone>`: only the zone is kept, as for the image.
+    zone = fetch("zone")
+    out["zone"] = zone.rsplit("/", 1)[-1] if zone else None
     machine_type = fetch("machine-type")
     if machine_type:
         out["instance_type"] = machine_type.rsplit("/", 1)[-1]
@@ -363,6 +367,8 @@ class Provenance:
     # the session's environment. Earlier rows lack them.
     boot_image: Optional[str]
     bootstrap_sha256: Optional[str]
+    # From 2026-11-11 (T4.3 ruling 1d): the zone, part of a block's identity.
+    zone: Optional[str]
     python_optimize: int
 
     torch: Optional[str]
@@ -542,7 +548,7 @@ RECORDED_FIELDS = frozenset({
     "timestamp", "python", "platform", "cpu_model", "cpu_count",
     "cpu_microcode", "cloud_provider", "instance_type", "instance_generation",
     "provisioning_model", "provisioning_model_problem", "python_optimize",
-    "boot_image", "bootstrap_sha256",
+    "boot_image", "bootstrap_sha256", "zone",
     "torch", "torch_cuda", "cudnn", "triton",
     "flash_attn", "flashinfer", "xformers", "fla", "transformers",
     "block_sparse_attn", "bsa_interface_sha256", "bsa_row_mask_fix",

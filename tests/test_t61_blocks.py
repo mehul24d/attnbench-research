@@ -282,3 +282,57 @@ def test_a_redone_block_reuses_its_discarded_prediction_and_a_differing_one_stop
                          sync=False, runner=inproc(T64), block=br) == 1
     m = json.loads((tmp_path / "b2_redo2" / "manifest.json").read_text())
     assert S.last_status(m)["predict"] == "failed" and "ground_truth" not in S.last_status(m)
+
+
+def test_a_real_block_runs_only_from_the_complete_lock_every_step_reads(tmp_path):
+    """Ruling 1d (11 Nov 2026): `checklist.check` on the --lock file, and its
+    block spec equal to `docs/lock_values.json`'s."""
+    import lock_fixture as LF
+    from attnbench.lock import blocks as LB
+    from attnbench.lock import checklist as CL
+    plan = CL.PLAN.read_text(encoding="utf-8")
+    spec_json = json.loads(write_lock(tmp_path).read_text())["blocks"]
+    lock = LF.complete_lock(plan, blocks=spec_json)
+    held = tmp_path / "lock_values.json"
+    held.write_text(json.dumps(lock))
+    spec = LB.parse(lock, "P4")
+    assert S.real_block_lock_problem(T64, lock, spec, held) is None
+    other = json.loads(json.dumps(spec_json))
+    other["P4"]["max_hours"] = 2.0
+    held.write_text(json.dumps({**lock, "blocks": other}))
+    assert "differs" in S.real_block_lock_problem(T64, lock, spec, held)
+    unset = json.loads(json.dumps(lock))
+    unset["values"]["mask_gate_bound"]["value"] = "TBD"
+    assert "complete lock" in S.real_block_lock_problem(T64, unset, spec, held)
+    assert "complete lock" in S.real_block_lock_problem(T64, {"blocks": spec_json}, spec, held)
+
+
+def test_block_identity_refuses_a_field_missing_on_either_side(tmp_path):
+    def pre(d, **f):
+        out = S.step_dir(d, "preflight", T64)
+        out.mkdir(parents=True)
+        (out / "result.json").write_text(json.dumps({"findings": f}))
+    full = {k: "x" for k in S.BLOCK_IDENTITY}
+    a, b, c = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    pre(a, **full)
+    pre(b, **full)
+    pre(c, **{**full, "zone": None})
+    from types import SimpleNamespace
+    assert S.block_identity_problems(T64, b, SimpleNamespace(imports=(("b1", a),))) == []
+    assert S.block_identity_problems(T64, c, SimpleNamespace(imports=(("b1", a),))) \
+        == ["zone is not recorded here"]
+    assert S.block_identity_problems(T64, a, SimpleNamespace(imports=(("b1", c),))) \
+        == ["zone is not recorded in block b1"]
+    assert {"zone", "boot_image", "driver", "bootstrap_sha256"} <= set(S.BLOCK_IDENTITY)
+
+
+def test_collect_pools_no_row_of_a_block_whose_late_check_did_not_pass(tmp_path):
+    lock = write_lock(tmp_path)
+    _, d1 = run_block(T64, tmp_path, lock, "b1")
+    _, d2 = run_block(T64, tmp_path, lock, "b2", [d1])
+    m = json.loads((d2 / "manifest.json").read_text())
+    m["attempts"].append({"step": "late_check", "status": "failed"})
+    (d2 / "manifest.json").write_text(json.dumps(m))
+    got = BD.collect([d1, d2], ground_truth_dir=S.step_dir(Path(), "ground_truth", T64).name)
+    assert got["rows"] == [] and got["blocks"] == ["b1"]
+    assert got["unpassed"] == [{"block": "b2", "dir": str(d2), "steps": ["late_check"]}]

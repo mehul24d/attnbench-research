@@ -135,8 +135,10 @@ EXPLORATORY = "EXPLORATORY.md"
 # Set by scripts/session_exit.sh, whose exit path syncs and halts; a real
 # session refuses to start without it (researcher's item 4, 8 Nov 2026).
 EXIT_WRAPPER_ENV = "ATTNBENCH_SESSION_EXIT"
-# What a later block's preflight must share with every block it imports.
-BLOCK_IDENTITY = ("instance_type", "gpu_name", "cpu_model")
+# What a later block's preflight must share with every block it imports;
+# a field missing on either side refuses (ruling 1d, 11 Nov 2026).
+BLOCK_IDENTITY = ("instance_type", "gpu_name", "cpu_model", "zone", "boot_image", "driver",
+                  "bootstrap_sha256")
 
 
 class Skip(Exception):
@@ -634,7 +636,9 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
     problems += vproblems
     findings = {"provisioning_model": row.get("provisioning_model"),
                 "instance_type": row.get("instance_type"), "gpu_name": row.get("gpu_name"),
-                "cpu_model": row.get("cpu_model"),
+                "cpu_model": row.get("cpu_model"), "zone": row.get("zone"),
+                "boot_image": row.get("boot_image"), "driver": row.get("driver"),
+                "bootstrap_sha256": row.get("bootstrap_sha256"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
                 "triton": tri.stdout.strip() or None, "gpu_variants": variants,
                 "imports_checked": sorted(found["required"]),
@@ -667,7 +671,9 @@ def fake_preflight(cfg: SessionConfig, args) -> dict:
     write_json(Path(args.out) / "host_speed_start.json", row)
     findings = {"provisioning_model": row["provisioning_model"], "fake": True,
                 "instance_type": row["instance_type"], "gpu_name": row["gpu_name"],
-                "cpu_model": os.environ.get("ATTNBENCH_FAKE_CPU_MODEL", "fake cpu")}
+                "cpu_model": os.environ.get("ATTNBENCH_FAKE_CPU_MODEL", "fake cpu"),
+                "zone": "dry-zone", "boot_image": "dry-image", "driver": "dry",
+                "bootstrap_sha256": "0" * 64}
     if cfg.preflight_findings is not None:
         findings.update(cfg.preflight_findings(row))
     return findings
@@ -1853,16 +1859,49 @@ def start_block(cfg: SessionConfig, session: Path, manifest: dict, block: BlockR
 
 def block_identity_problems(cfg: SessionConfig, session: Path, block: BlockRun) -> list:
     """This block's preflight against every block it imported: the same
-    instance type, GPU and CPU model, or the blocks are not one pairing."""
+    instance type, GPU, CPU model, zone, boot image, driver and bootstrap
+    script, each recorded on both sides, or the blocks are not one pairing."""
     mine = (read_json(step_dir(session, "preflight", cfg) / "result.json") or {}).get("findings", {})
-    out = []
+    out = [f"{k} is not recorded here" for k in BLOCK_IDENTITY if mine.get(k) is None]
     for bid, d in block.imports:
         theirs = (read_json(step_dir(Path(d), "preflight", cfg) / "result.json") or {}) \
             .get("findings", {})
         for k in BLOCK_IDENTITY:
-            if mine.get(k) != theirs.get(k):
+            if theirs.get(k) is None:
+                out.append(f"{k} is not recorded in block {bid}")
+            elif mine.get(k) is not None and mine.get(k) != theirs.get(k):
                 out.append(f"{k} is {mine.get(k)!r} here and {theirs.get(k)!r} in block {bid}")
     return out
+
+
+def real_block_lock_problem(cfg: SessionConfig, lock: dict, spec,
+                            lock_file: Optional[Path] = None) -> Optional[str]:
+    """Why a real block may not run from `lock`, or None (ruling 1d, 11 Nov
+    2026): it must be a complete lock (`checklist.check`) and its block spec
+    the one in `docs/lock_values.json`, the lock every other step reads."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import t31_steps as st
+    from attnbench.lock import blocks as B
+    from attnbench.lock import checklist
+    try:
+        res = checklist.check(lock, checklist.PLAN.read_text(encoding="utf-8"))
+    except checklist.LockListError as e:
+        return f"a real block runs from a complete lock (T4.1): {e}"
+    if not res.complete:
+        return (f"a real block runs from a complete lock (T4.1); this file is not one "
+                f"({len(res.missing)} missing, {len(res.unset)} unset, "
+                f"{len(res.mistyped)} mistyped, plan matches: {res.plan_matches})")
+    p = Path(lock_file or st.LOCK_FILE)
+    held = read_json(p)
+    if held is None:
+        return f"no lock at {p} to check the block spec against"
+    try:
+        theirs = B.parse(held, cfg.pairing)
+    except (ValueError, B.BlockSpecError) as e:
+        return f"{p.name}: {e}"
+    if theirs != spec:
+        return f"the block spec differs from {p.name}'s, the lock every step reads"
+    return None
 
 
 def block_run(cfg: SessionConfig, args) -> tuple:
@@ -1876,6 +1915,10 @@ def block_run(cfg: SessionConfig, args) -> tuple:
         spec = B.parse(json.loads(raw), cfg.pairing)
     except (ValueError, B.BlockSpecError) as e:
         return None, str(e)
+    if not args.dry_run:
+        why = real_block_lock_problem(cfg, json.loads(raw), spec)
+        if why:
+            return None, why
     problems = B.check(spec, cfg.names, cfg.boot_steps, complete=not args.dry_run)
     if problems:
         return None, f"the block spec in {args.lock}: " + "; ".join(problems)

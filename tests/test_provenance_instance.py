@@ -171,6 +171,14 @@ def test_the_boot_image_is_named_without_its_project(tmp_path):
     assert not any("secret-project" in str(v) for v in got.values())
 
 
+def test_the_zone_is_named_without_its_project(tmp_path):
+    md = _md("STANDARD", "FALSE")
+    md.values["zone"] = "projects/123456789012/zones/us-central1-a"
+    got = provenance._cloud_identity(_gce(tmp_path), md)
+    assert got["zone"] == "us-central1-a"
+    assert not any("123456789012" in str(v) for v in got.values())
+
+
 def test_the_aws_boot_image_is_the_ami(tmp_path):
     md = _aws("STANDARD")
     md.values["ami-id"] = "ami-0123456789abcdef0"
@@ -264,7 +272,7 @@ def test_the_aws_fetcher_asks_for_a_token_then_the_value(monkeypatch):
 T220_FIELDS = ("cpu_microcode", "cloud_provider", "instance_type",
                "instance_generation", "provisioning_model",
                "provisioning_model_problem", "python_optimize",
-               "boot_image", "bootstrap_sha256")
+               "boot_image", "bootstrap_sha256", "zone")
 
 
 def test_capture_carries_every_t220_field():
@@ -277,7 +285,8 @@ def test_capture_carries_every_t220_field():
 def test_capture_takes_the_cloud_fields_from_the_reader(monkeypatch):
     fake = {"cloud_provider": "gcp", "instance_type": "g2-standard-8",
             "instance_generation": "g2", "provisioning_model": "on-demand",
-            "provisioning_model_problem": None, "boot_image": "attnbench-env-v6-20260917"}
+            "provisioning_model_problem": None, "boot_image": "attnbench-env-v6-20260917",
+            "zone": "us-central1-a"}
     monkeypatch.setattr(provenance, "_cloud_identity_cached", lambda: fake)
     d = provenance.capture().to_dict()
     assert {k: d[k] for k in fake} == fake
