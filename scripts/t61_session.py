@@ -2105,10 +2105,10 @@ def timed_path_refusal(lock_path=None, commit: str = "HEAD") -> Optional[str]:
     want = ((lock.get("values") or {}).get(TIMED_PATH_ITEM) or {}).get("value")
     if not (isinstance(want, str) and re.fullmatch(r"[0-9a-f]{64}", want)):
         return f"{p.name}'s timed-path identity is {want!r}, not a 64-hex sha256"
-    got = timed_path.path_hash(commit)["sha256"]
+    got = timed_path.pin_hash(commit)["sha256"]       # ruling 1f: whole files + configs
     if got != want:
         return (f"the timed path at {commit} hashes to {got}, the lock pins {want}: "
-                f"`python3 scripts/timed_path.py <locked commit> {commit}` names what changed")
+                f"`python3 scripts/timed_path.py <locked commit> {commit} --pin` names what changed")
     return None
 
 

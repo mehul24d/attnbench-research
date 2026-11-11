@@ -1248,7 +1248,7 @@ def test_a_real_p2_or_p4_start_refuses_a_timed_path_the_lock_does_not_pin(tmp_pa
     import timed_path
     lock = tmp_path / "lock_values.json"
     monkeypatch.setattr(st, "LOCK_FILE", lock)
-    monkeypatch.setattr(timed_path, "path_hash", lambda commit: {"sha256": "a" * 64})
+    monkeypatch.setattr(timed_path, "pin_hash", lambda commit: {"sha256": "a" * 64})
     assert "no lock file" in S.timed_path_refusal()
 
     def pin(v):
@@ -1282,7 +1282,7 @@ def test_the_deployed_timed_path_is_the_one_decided_for_the_lock():
     import timed_path
     draft = json.loads((ROOT / "docs" / "lock_package_draft.json").read_text())
     decided = draft["values"][S.TIMED_PATH_ITEM]["proposed"].split(":")[0]
-    assert timed_path.path_hash("HEAD")["sha256"] == decided
+    assert timed_path.pin_hash("HEAD")["sha256"] == decided
 
 
 def test_a_real_session_reads_its_training_file_against_the_lock_at_the_step_too(
