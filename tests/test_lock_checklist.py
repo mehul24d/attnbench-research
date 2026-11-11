@@ -26,7 +26,7 @@ def _filled(plan_text=PLAN_TEXT) -> dict:
 
 def test_the_list_is_read_from_the_plans_t41_row():
     items = L.lock_items(PLAN_TEXT)
-    assert len(items) == 39
+    assert len(items) == 40
     keys = list(items)
     assert keys[0] == "h0_to_h3_tolerances"
     # three of the researcher's rulings of 31 Oct 2026, the chain check of
@@ -34,13 +34,15 @@ def test_the_list_is_read_from_the_plans_t41_row():
     # spread after Shakedown 6, the pricing gate of 6 Nov 2026 and the block
     # drift bound of 7 Nov 2026, and the timed-path identity of 10 Nov 2026
     # close the list
-    # and T4.3's bootstrap settings and analysis commit (11 Nov 2026)
-    assert keys[-12:] == ["budget_cut_order", "compiled_versus_eager_density_flag_tolerance",
+    # and T4.3's bootstrap settings, analysis commit and the marginal label's
+    # sensitivity floors (11 Nov 2026)
+    assert keys[-13:] == ["budget_cut_order", "compiled_versus_eager_density_flag_tolerance",
                          "probe_length_rule", "flagged_memset_sensitivity_bound",
                          "chain_check_tolerance", "recompile_gate",
                          "residual_spread_tolerance", "pricing_mismatch_share",
                          "block_drift_bound", "timed_path_identity_for_p2_and_p4",
-                         "bootstrap_settings", "analysis_commit"]
+                         "bootstrap_settings", "analysis_commit",
+                         "marginal_label_s_sensitivity_floors"]
     # Parentheticals are part of the item's text but not of its key, and a
     # comma inside one does not split the item.
     assert items["replay_versus_trace_bound_for_gate_a"].startswith(
@@ -53,7 +55,7 @@ def test_the_list_is_read_from_the_plans_t41_row():
 def test_a_complete_lock_file_passes_and_its_report_says_so():
     result = L.check(_filled(), PLAN_TEXT)
     assert result.complete
-    assert result.report().startswith("39 values listed by T4.1; complete")
+    assert result.report().startswith("40 values listed by T4.1; complete")
 
 
 def test_missing_unset_unsourced_and_unknown_entries_are_each_named():

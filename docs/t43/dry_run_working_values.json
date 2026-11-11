@@ -1,0 +1,12 @@
+{
+ "what": "working values for scripts/hypotheses.py's dry run on P1, in the lock's shapes: the draft's proposals (docs/lock_package_draft.json), never the lock",
+ "tolerances": {"H0": 0.10, "H1": 0.10, "H2": 0.10},
+ "resolution_floor_ms": {"2048x1": 1.39, "4096x1": 7.69, "8192x1": 17.76,
+                         "16384x1": 13.77, "16384x4": 27.59, "32768x1": 101.16},
+ "sensitivity_floor_ms": {"16384x1": 111.05, "16384x4": 441.54},
+ "bootstrap_settings": {"level": 0.95, "n_boot": 10000, "seed": 0},
+ "h4_bound_pts": 10.0,
+ "h4_tests": [],
+ "h4_alpha": 0.025,
+ "h4_n": 1
+}

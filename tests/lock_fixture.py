@@ -64,6 +64,7 @@ VALUES = {
     "timed_path_identity_for_p2_and_p4": SHA,
     "bootstrap_settings": {"level": 0.95, "n_boot": 2000, "seed": 0},
     "analysis_commit": COMMIT,
+    "marginal_label_s_sensitivity_floors": {"16384x1": 111.05, "16384x4": 441.54},
 }
 
 SCORED = {"H0": ["P1", "P2"], "H1": ["P2", "P4"], "H2": ["P2"], "H3": ["P4"],

@@ -323,6 +323,7 @@ SCHEMA: dict = {
     "bootstrap_settings": record({"level": FRACTION, "n_boot": num(1000, integer=True),
                                   "seed": num(0, integer=True)}),
     "analysis_commit": GIT_COMMIT,
+    "marginal_label_s_sensitivity_floors": table(CELL, NONNEG),
 }
 
 

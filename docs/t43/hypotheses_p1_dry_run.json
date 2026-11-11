@@ -1,0 +1,205 @@
+{
+ "label": "dry run on P1, the development pairing: not a test (T4.3 wave 2a)",
+ "prediction_sha256": "280a34238a0930bca0192fe7ba5db66da34e760672428023d7ba61e4d1fb9cd9",
+ "pairing": "P1",
+ "working_values": "docs/t43/dry_run_working_values.json",
+ "excluded_groups": [],
+ "unmeasured": [],
+ "within_session_spread_ms": {
+  "2048x1": 1.0984623254444157,
+  "4096x1": 7.673812924349472,
+  "8192x1": 18.415262724874992,
+  "16384x1": 13.769087700620723,
+  "16384x4": 27.59239480028552,
+  "32768x1": 32.110125074405
+ },
+ "h1": {
+  "hypothesis": "H1",
+  "pairing": "P1",
+  "label": "development pairing, dry run: not a test",
+  "tolerance": 0.1,
+  "n_cells": 35,
+  "unmeasured": [],
+  "recursion_median_abs_relative": 0.05052814922583789,
+  "rivals_median_abs_relative": {
+   "sum": 0.5121459556409912,
+   "step_form": 0.019591892131336348
+  },
+  "rivals_not_in_file": [
+   "fitted_sum",
+   "learned"
+  ],
+  "recursion_below": {
+   "sum": true,
+   "step_form": false
+  },
+  "primary_comparison": "fitted_sum",
+  "sign": {
+   "agree": 26,
+   "disagree": [],
+   "inside_floor": 3,
+   "marginal": [
+    [
+     "primary",
+     "NVIDIA L4|eager|O0|c3b3ddc3bc31",
+     "meanpool",
+     0.5,
+     16370,
+     1
+    ]
+   ],
+   "verdict": "holds"
+  },
+  "xattention_pair": {
+   "rows": [
+    {
+     "cell": [
+      "primary",
+      1951,
+      1
+     ],
+     "predicted_s": 0.003893398844181939,
+     "measured_s": 0.0024965274997157394,
+     "agrees": false
+    },
+    {
+     "cell": [
+      "primary",
+      4068,
+      1
+     ],
+     "predicted_s": -0.0036451310565144834,
+     "measured_s": 0.004084193999915442,
+     "why": "the measured difference is inside the floor"
+    },
+    {
+     "cell": [
+      "primary",
+      8075,
+      1
+     ],
+     "predicted_s": -0.0010530206558535538,
+     "measured_s": 0.004037359499307058,
+     "why": "the measured difference is inside the floor"
+    },
+    {
+     "cell": [
+      "primary",
+      16370,
+      1
+     ],
+     "predicted_s": -0.008492204031251838,
+     "measured_s": 0.007195415999376564,
+     "why": "the measured difference is inside the floor"
+    },
+    {
+     "cell": [
+      "primary",
+      32700,
+      1
+     ],
+     "predicted_s": 0.048711384884083664,
+     "measured_s": 0.026413514498926816,
+     "why": "the measured difference is inside the floor"
+    }
+   ],
+   "agree": 0,
+   "disagree": 1,
+   "verdict": "fails"
+  },
+  "by_arm_class": {
+   "dense": {
+    "recursion": 0.025706655890769398,
+    "sum": 0.11914457255864488,
+    "step_form": 0.02194055039552879
+   },
+   "synchronising": {
+    "recursion": 0.05416355452838346,
+    "sum": 0.5497325951619009,
+    "step_form": 0.0181138947805556
+   }
+  },
+  "parts": {
+   "tolerance": "holds",
+   "beats_every_rival": "fails",
+   "sign": "holds",
+   "xattention_pair": "fails"
+  },
+  "verdict": "fails"
+ },
+ "h3": {
+  "hypothesis": "H3",
+  "pairing": "P1",
+  "estimators": {
+   "meanpool@0.25": {
+    "status": "compared",
+    "verdict": "holds",
+    "brackets": [
+     [
+      4068,
+      16370,
+      4068,
+      16370
+     ]
+    ]
+   },
+   "meanpool@0.5": {
+    "status": "compared",
+    "verdict": "holds",
+    "brackets": [
+     [
+      8075,
+      16370,
+      4068,
+      16370
+     ]
+    ]
+   },
+   "oracle@0.25": {
+    "status": "compared",
+    "verdict": "fails",
+    "brackets": [
+     [
+      1951,
+      8075,
+      4068,
+      8075
+     ]
+    ]
+   },
+   "oracle@0.5": {
+    "status": "compared",
+    "verdict": "holds",
+    "brackets": [
+     [
+      4068,
+      16370,
+      4068,
+      16370
+     ]
+    ]
+   },
+   "xattention@calibrated": {
+    "status": "both none in range",
+    "verdict": "not scored",
+    "why": "no crossover in range, predicted or measured (reported as such)"
+   },
+   "xattention_noassert@calibrated": {
+    "status": "both none in range",
+    "verdict": "not scored",
+    "why": "no crossover in range, predicted or measured (reported as such)"
+   }
+  },
+  "verdict": "fails"
+ },
+ "plumbing": {
+  "h0_self": {
+   "operations_scored": 112,
+   "operations_unscorable": 120565,
+   "verdict": "holds"
+  },
+  "h0_self_median": 0.0,
+  "h2_self_equals_recursion": true,
+  "h2_self_left_out": []
+ }
+}
