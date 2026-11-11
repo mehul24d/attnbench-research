@@ -90,7 +90,8 @@ def test_F3_dispatcher_cannot_apply_a_per_length_floor():
     p16 = {DENSE: 1.000, S: 0.950}
     p32 = {DENSE: 4.000, S: 3.950}
     pts = build_points({**grid([(16384, 1)], p16), **grid([(32768, 1)], p32)}, dense_arms={"dense"})
-    for floor in (0.01377, 0.10116):
+    from attnbench.lock.floors import FloorTable     # import edit: the lock's table (ruling 1a)
+    for floor in (FloorTable({(16384, 1): 0.01377, (32768, 1): 0.10116}),):
         ch = D.choices_of("dispatcher", pts, frozenset({S}), floor)
         got = (ch[Point(M, 16384, 1)] == S, ch[Point(M, 32768, 1)] == S)
         if got == (True, False):
