@@ -277,22 +277,25 @@ def test_the_suite_counts_match_the_collected_suite():
     total = _collected_test_count()
     text = DEV.read_text()
 
-    block = re.search(r"pytest tests/ -q\s*#\s*(\d+) passed, (\d+) skipped", text)
+    block = re.search(r"pytest tests/ -q\s*#\s*(\d+) passed, (\d+) skipped(?:, (\d+) xfailed)?",
+                      text)
     assert block, "the quick-start block no longer reports passed/skipped"
     # The `**` opens on the line above ("**With `results/` present the suite
     # reads"), so anchor on the closing pair only.
-    prose = re.search(r"(\d+) passed, (\d+) skipped\*\*", text)
+    prose = re.search(r"(\d+) passed, (\d+) skipped(?:, (\d+) xfailed)?\*\*", text)
     assert prose, "the with-results paragraph no longer reports passed/skipped"
 
     for label, m in (("the quick-start block (fresh clone)", block),
                      ("the with-results paragraph", prose)):
-        passed, skipped = int(m.group(1)), int(m.group(2))
-        assert passed + skipped == total, (
-            f"{label} says {passed} passed + {skipped} skipped = "
-            f"{passed + skipped}, but pytest collects {total} tests from "
+        # A strict xfail is a known defect awaiting its fix (T4.3's readers'
+        # tests until wave 2); it fails the suite once it passes.
+        passed, skipped, xfailed = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+        assert passed + skipped + xfailed == total, (
+            f"{label} says {passed} passed + {skipped} skipped + {xfailed} xfailed = "
+            f"{passed + skipped + xfailed}, but pytest collects {total} tests from "
             f"tests/. Every collected test either passes, skips or fails, and "
             f"docs/development.md documents a green run, so these must be equal. "
-            f"Difference: {total - passed - skipped:+d}.")
+            f"Difference: {total - passed - skipped - xfailed:+d}.")
 
 
 _ONES = ("zero", "one", "two", "three", "four", "five", "six", "seven",
