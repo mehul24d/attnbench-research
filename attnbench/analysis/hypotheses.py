@@ -146,6 +146,14 @@ class Locked:
                    analysis_commit=str(commit))
 
 
+def check_analysis_commit(locked: Locked, commit: str) -> None:
+    """The analysis scores P2 and P4 only at the commit the lock pins
+    (T4.1's `analysis_commit`; adviser's ruling 2a of 11 Nov 2026)."""
+    if commit != locked.analysis_commit:
+        raise HypothesisError(f"the analysis runs at {commit}; the lock pins "
+                              f"{locked.analysis_commit}")
+
+
 def _cell(label) -> tuple:
     """'16384x1' -> (16384, 1)."""
     L, _, b = str(label).partition("x")

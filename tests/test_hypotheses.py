@@ -312,3 +312,10 @@ def test_h5b_fails_when_the_gpu_only_shift_is_not_smaller():
     out = HY.h5({"host": 1, "gpu": 1}, first, second, floors=GF, gpu_only="gpu")
     assert out["a"]["gpu"]["shift_grid_steps"] > out["a"]["host"]["shift_grid_steps"]
     assert out["b"] == HY.FAILS
+
+
+def test_the_analysis_runs_only_at_the_commit_the_lock_pins():
+    L = lk()
+    HY.check_analysis_commit(L, "c" * 40)
+    with pytest.raises(HY.HypothesisError, match="the lock pins"):
+        HY.check_analysis_commit(L, "d" * 40)
