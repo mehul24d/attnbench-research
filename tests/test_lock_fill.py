@@ -21,8 +21,7 @@ import lock_fixture as LF  # noqa: E402
 
 P2_CONFIG = ROOT / "configs" / "t61" / "p2_session.json"
 # `pairing_values` holds only what T4.1 does not list (ruling 1b, 11 Nov 2026).
-P2_VALUES = {"gt_groups": {"eager": ["dense", "oracle"], "compiled_default": [],
-                           "compiled_capture": []},
+P2_VALUES = {"gt_groups": {"eager": ["dense", "oracle"]},
              "reps": 12, "dense_rounds": 5, "sampler_interval_s": 0.1}
 
 
@@ -118,3 +117,18 @@ def test_the_lock_fills_only_what_the_pairings_config_leaves_null(tmp_path, monk
     monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
     cfg = st.load_config(str(p), dry_run=False)
     assert cfg["reps"] == 20 and "reps" not in cfg["lock_values"]["filled"]
+
+
+@pytest.mark.parametrize("group", st.DROPPED_GROUPS)
+def test_a_compiled_group_is_refused_for_p2_and_p4(tmp_path, monkeypatch, group):
+    # Dropped (adviser's ruling 4, third set of 12 Nov 2026): eager only.
+    for cfg_path in (P2_CONFIG, ROOT / "configs" / "t64" / "p4_session.json"):
+        assert set(json.loads(cfg_path.read_text())["gt_groups"]) == {"eager"}
+    pv = dict(P2_VALUES, gt_groups={**P2_VALUES["gt_groups"], group: []})
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock(values=pv)))
+    with pytest.raises(st.StepFailed, match="dropped from P2 and P4"):
+        st.load_config(str(P2_CONFIG), dry_run=False)
+    cfg = dict(json.loads(P2_CONFIG.read_text()), gt_groups={"eager": None, group: None})
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
+    with pytest.raises(st.StepFailed, match="dropped from P2 and P4"):
+        st.fill_lock_values(cfg)

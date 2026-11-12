@@ -1,5 +1,5 @@
 {
- "_comment": "T6.4 (P4) component and ground-truth values for the T3.1 steps the session runner calls (scripts/t61_session.py). null = not decided; a real run fills them from the working values (docs/lock_value_table.md) and refuses any left null. Every T4.1 item the session reads (the grid, the density set, the throttle set, the rerun budget, the floors and the T2 tolerances) is null here and comes from the lock's typed values only (t31_steps.LOCK_SOURCED; ruling 1b, 11 Nov 2026); oracle_d0.5_L32768 is not measured on any pairing.",
+ "_comment": "T6.4 (P4) component and ground-truth values for the T3.1 steps the session runner calls (scripts/t61_session.py). null = not decided; a real run fills them from the working values (docs/lock_value_table.md) and refuses any left null. Every T4.1 item the session reads (the grid, the density set, the throttle set, the rerun budget, the floors and the T2 tolerances) is null here and comes from the lock's typed values only (t31_steps.LOCK_SOURCED; ruling 1b, 11 Nov 2026); oracle_d0.5_L32768 is not measured on any pairing. The compiled groups are dropped (adviser's ruling 4, third set of 12 Nov 2026): eager only.",
  "pairing": "P4",
  "card": "H100",
  "model": "primary",
@@ -14,9 +14,7 @@
  ],
  "densities": null,
  "gt_groups": {
-  "eager": null,
-  "compiled_default": null,
-  "compiled_capture": null
+  "eager": null
  },
  "reps": null,
  "warmup": 3,

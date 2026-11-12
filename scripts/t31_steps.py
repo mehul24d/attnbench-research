@@ -138,6 +138,9 @@ LOCK_SOURCED = {
     "pricing_mismatch_share": ("pricing_mismatch_share", lambda v: v),
 }
 PAIRING_KEYS = ("gt_groups", "reps", "dense_rounds", "sampler_interval_s")
+# Dropped from P2 and P4 (adviser's ruling 4, third set of 12 Nov 2026): four
+# rehearsal launches never reached the compiled stage on a GPU.
+DROPPED_GROUPS = ("compiled_default", "compiled_capture")
 LOCK_KEYS = PAIRING_KEYS + tuple(LOCK_SOURCED)
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
@@ -302,9 +305,13 @@ def fill_working_values(cfg: dict, path=None) -> dict:
     filled = []
     for k in WORKING_KEYS:
         if k == "gt_groups":
-            groups = dict(cfg.get(k) or {})
+            # A config that names its groups gets only those (P2 and P4 name
+            # eager alone: ruling 4, third set of 12 Nov 2026); one naming
+            # none gets the table's.
+            named = cfg.get(k)
+            groups = dict(named or {})
             for g, arms in vals[k].items():
-                if groups.get(g) is None:
+                if (named is None or g in named) and groups.get(g) is None:
                     groups[g] = list(arms)
                     filled.append(f"gt_groups.{g}")
             cfg[k] = groups
@@ -343,6 +350,11 @@ def fill_lock_values(cfg: dict, path=None, plan_text=None) -> dict:
         raise StepFailed(f"{p.name} is not a complete lock, so no pairing's values come from "
                          f"it:\n{res.report()}")
     vals = (lock.get("pairing_values") or {}).get(cfg.get("pairing")) or {}
+    dropped = sorted(set(DROPPED_GROUPS) & (set(vals.get("gt_groups") or {})
+                                            | set(cfg.get("gt_groups") or {})))
+    if dropped:
+        raise StepFailed(f"{dropped} are dropped from P2 and P4 (adviser's ruling 4, third set "
+                         f"of 12 Nov 2026): no later pairing runs a compiled group")
     cfg = dict(cfg)
     filled = []
     twice = [k for k in LOCK_SOURCED if cfg.get(k) is not None]

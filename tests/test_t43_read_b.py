@@ -185,8 +185,8 @@ def _p2_load(tmp_path, monkeypatch, pairing_values):
 
 
 def test_F4_runner_reads_values_the_complete_lock_does_not_hold(tmp_path, monkeypatch):
-    pv = {"densities": {"oracle": [0.25, 0.5]}, "gt_groups": {"eager": ["dense", "oracle"],
-          "compiled_default": [], "compiled_capture": []}, "reps": 10, "dense_rounds": 3,
+    pv = {"densities": {"oracle": [0.25, 0.5]}, "gt_groups": {"eager": ["dense", "oracle"]},
+          "reps": 10, "dense_rounds": 3,
           "sampler_interval_s": 0.01, "chain_check_tolerance": 0.1,
           "residual_spread_tolerance": 0.1, "pricing_mismatch_share": 0.05}   # no max_rerun_rounds
     lock, cfg = _p2_load(tmp_path, monkeypatch, pv)
