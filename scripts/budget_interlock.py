@@ -7,7 +7,7 @@ caps of all still-planned sessions; no launch if it is negative.
 
 `spent` is the ledger's new-spend table (`docs/spend_ledger.md`, its rows
 summed and checked against its own total). The still-planned sessions are the
-L4 rehearsal's launch 4 (its card's cap), P2 and P4 (each card's cap, built
+L4 rehearsal's launch 4 (its card's cap) until the rehearsal closes, P2 and P4 (each card's cap, built
 from its minutes file). A launch of one pairing on one provisioning counts the
 other pairing at the dearest provisioning the one-Spot rule still allows it,
 so P2 on Flex-start is counted with P4 on Spot, and P2 on Spot with P4 on
@@ -71,6 +71,18 @@ def rehearsal_cap(text: str) -> tuple[int, int]:
     return int(m.group(1).replace(",", "")), int(n.group(1).replace(",", ""))
 
 
+def rehearsal_closed(text: str):
+    """The rehearsal's spend in all if its card says it closed, else None. A
+    closed rehearsal reserves nothing: its spend is in the ledger (adviser's
+    ruling 6, fourth set of 12 Nov 2026, after it closed at launch 4 A)."""
+    if "The rehearsal closed on" not in text:
+        return None
+    m = re.search(r"launch 4 A used ₹([\d,]+)", text)
+    if not m:
+        raise ValueError("the rehearsal card says it closed but not what launch 4 A used")
+    return rehearsal_cap(text)[1] + int(m.group(1).replace(",", ""))
+
+
 def pairing_caps() -> dict:
     """{'P2': {'FLEX_START': cap, 'SPOT': caps summed}, 'P4': ...} from the cards' builders."""
     import t61_card
@@ -119,9 +131,10 @@ def current() -> tuple[int, tuple, dict, list]:
     pairings' caps and the cases. Launch 4 is counted at the larger of its
     card's cap and what ruling 1g's ₹403 leaves, so neither reading is undercounted."""
     s = spent(LEDGER.read_text(encoding="utf-8"))
-    card, done = rehearsal_cap(REHEARSAL_CARD.read_text(encoding="utf-8"))
+    text = REHEARSAL_CARD.read_text(encoding="utf-8")
+    card, done = rehearsal_cap(text)
     caps = pairing_caps()
-    r = max(card, REHEARSAL_CAP_RULED - done)
+    r = 0 if rehearsal_closed(text) is not None else max(card, REHEARSAL_CAP_RULED - done)
     return s, (card, done), caps, cases(s, r, caps)
 
 
@@ -133,18 +146,24 @@ def section(pairing: str) -> list:
     """The card's interlock section, as Markdown lines."""
     s, (card, done), caps, cs = current()
     left = REHEARSAL_CAP_RULED - done
+    closed = rehearsal_closed(REHEARSAL_CARD.read_text(encoding="utf-8"))
+    rehearsal = (f"spent ₹{s:,} (the ledger's new-spend table, the L4 rehearsal's ₹{closed} in "
+                 f"it); the rehearsal closed, so nothing more is reserved for it"
+                 if closed is not None else
+                 f"spent ₹{s:,} (the ledger's new-spend table, the rehearsal's ₹{done} in it); "
+                 f"the L4 rehearsal's launch 4 at ₹{max(card, left)}, the larger of its card's "
+                 f"cap (₹{card}, ₹{card + done} in all) and what the ruling's rehearsal cap of "
+                 f"₹{REHEARSAL_CAP_RULED} leaves (₹{left}); launch 4's own cap decision is "
+                 f"still owed")
     out = ["## Budget interlock", "",
            "Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one "
            "of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all "
            f"still-planned sessions is negative. Budget ₹{BUDGET_INR:,} (plan Section 5.2); "
-           f"spent ₹{s:,} (the ledger's new-spend table, the rehearsal's ₹{done} in it); the L4 "
-           f"rehearsal's launch 4 at ₹{max(card, left)}, the larger of its card's cap (₹{card}, "
-           f"₹{card + done} in all) and what the ruling's rehearsal cap of ₹{REHEARSAL_CAP_RULED} "
-           f"leaves (₹{left}); launch 4's own cap decision is still owed. P2 and P4 at their "
-           "cards' caps: P2 Flex-start "
+           f"{rehearsal}. P2 and P4 at their cards' caps, the ground truth's worst case of 5 "
+           "reruns at every cell in each: P2 Flex-start "
            f"₹{caps['P2']['FLEX_START']:,}, Spot ₹{caps['P2']['SPOT']:,}; P4 Flex-start "
-           f"₹{caps['P4']['FLEX_START']:,}, Spot ₹{caps['P4']['SPOT']:,}. Not counted: reruns, "
-           "a Spot block rerun after an interruption, image storage, egress.", "",
+           f"₹{caps['P4']['FLEX_START']:,}, Spot ₹{caps['P4']['SPOT']:,}. Not counted: a Spot "
+           "block rerun after an interruption, image storage, egress.", "",
            "| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |",
            "|---|---|---|---|---|"]
     for c in cs:

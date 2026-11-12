@@ -78,6 +78,7 @@ def test_the_cli_exits_2_on_a_refused_launch(monkeypatch, capsys):
 def test_launch_4_is_counted_at_the_larger_reading(monkeypatch):
     monkeypatch.setattr(BI, "pairing_caps", lambda: CAPS)
     monkeypatch.setattr(BI, "rehearsal_cap", lambda text: (100, 233))   # 403 - 233 = 170 > 100
+    monkeypatch.setattr(BI, "rehearsal_closed", lambda text: None)
     s, _, _, cs = BI.current()
     assert cs[0].committed == s + 170 + 1000 + 2000
 
@@ -86,3 +87,16 @@ def test_both_cards_carry_the_current_interlock():
     for card, pairing in ((ROOT / "docs/launch_cards/t61_p2_a100.md", "P2"),
                           (ROOT / "docs/launch_cards/t64_p4_h100.md", "P4")):
         assert "\n".join(BI.section(pairing)) in card.read_text()
+
+
+def test_a_closed_rehearsal_reserves_nothing_and_its_spend_is_the_ledgers(monkeypatch):
+    # The adviser's ruling 6, fourth set of 12 Nov 2026: launch 4 A's Rs 71, Rs 304 in all.
+    text = BI.REHEARSAL_CARD.read_text()
+    assert BI.rehearsal_closed(text) == 304
+    assert BI.rehearsal_closed(text.replace("The rehearsal closed on", "It may close on")) is None
+    with pytest.raises(ValueError, match="not what launch 4 A used"):
+        BI.rehearsal_closed(text.replace("launch 4 A used", "A used"))
+    monkeypatch.setattr(BI, "pairing_caps", lambda: CAPS)
+    s, _, _, cs = BI.current()
+    assert BI.rehearsal_closed(text) <= s
+    assert cs[0].committed == s + 1000 + 2000                   # nothing reserved
