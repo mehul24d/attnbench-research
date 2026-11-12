@@ -61,7 +61,8 @@ def rep(below=(True, True), bound=None, provisional=False, failing=None, slopes=
     if bound is not None:
         fam["failing_cells"] = failing or {}
     return {"prediction_sha256": "f" * 64,
-            "predictors": {"all": {"recursion_below": dict(zip(GR.LEG1_RIVALS, below))}},
+            "predictors": {"all": {"recursion_below": dict(zip(GR.LEG1_RIVALS, below)),
+                                   "by_predictor": {"recursion": {"n": 35}}}},
             "families": fam, "slopes": slopes or {"status": NOT_MEASURED}}
 
 
@@ -154,3 +155,32 @@ def test_a_group_short_of_clean_rounds_leaves_both_floors():
     kept, excluded = GR.drop_short_groups({"a": full, "b": b}, min_clean_rounds=10)
     assert excluded == [] and GR.cell_floors(kept, quantile=1.0, pairing="P1")["2048x1"][
         "between_ms"] == pytest.approx(10.0)
+
+
+def test_v2_leg3_reads_the_range_and_refuses_an_empty_one():
+    """Adviser's ruling 2d of 11 Nov 2026 (T4.3 read A, finding 7a, 7f): a
+    mechanism outside the range or with no slope fails; an empty v2 leg is
+    refused, never vacuously held."""
+    def v2(within, missing=()):
+        return {"status": "measured", "range": [0.707, 1.414], "within_range": within,
+                "missing": list(missing), "slopes": {}}
+    both = lambda x, y: {"a": rep(slopes=x), "b": rep(slopes=y)}
+    assert GR.as_written(both(v2({"m": True}), v2({"m": True})))["legs"]["leg3"]["verdict"] == GR.HOLDS
+    assert GR.as_written(both(v2({"m": True}), v2({"m": False}, ["m"])))["legs"]["leg3"]["verdict"] \
+        == GR.FAILS
+    assert GR.as_written(both(v2({"m": True}), v2({"m": True}, ["m"])))["legs"]["leg3"]["verdict"] \
+        == GR.FAILS
+    with pytest.raises(GateAError, match="vacuously"):
+        GR.as_written(both(v2({"m": True}), v2({})))
+    with pytest.raises(GateAError, match="slope range"):
+        GR.as_written(both(v2({"m": True}), measured(True)))
+
+
+def test_leg1_carries_its_cell_counts_and_is_not_applied_without_them():
+    r = {"a": rep(), "b": rep()}
+    l1 = GR.as_written(r)["legs"]["leg1"]
+    assert l1["verdict"] == GR.HOLDS and l1["n_cells"] == {"a": 35, "b": 35}
+    r["b"]["predictors"]["all"]["by_predictor"]["recursion"]["n"] = 0
+    assert GR.as_written(r)["legs"]["leg1"]["verdict"] == GR.NOT_APPLIED
+    del r["b"]["predictors"]["all"]["by_predictor"]
+    assert GR.as_written(r)["legs"]["leg1"]["verdict"] == GR.NOT_APPLIED

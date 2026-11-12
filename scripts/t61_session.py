@@ -876,7 +876,7 @@ def training_rows(cfg: SessionConfig, path: Optional[Path] = None,
     path = Path(path or P1_TRAINING)
     if not path.exists():
         raise StepFailed(f"no P1 training file at {path}: fetch it (its sha256 is the lock's)")
-    if not cfg.exploratory:            # a rehearsal reads the file under its own lock
+    if not skips_lock(cfg):            # a rehearsal reads the file under its own lock
         _, why = p1_training_check(path)
         if why:
             raise StepFailed(why)
@@ -1939,6 +1939,22 @@ def block_identity_problems(cfg: SessionConfig, session: Path, block: BlockRun) 
     return out
 
 
+REAL_PAIRINGS = ("P2", "P4")
+
+
+def skips_lock(cfg: SessionConfig) -> bool:
+    """True for a rehearsal, which runs under its own lock and spec; False for
+    any other session. A P2 or P4 config marked exploratory is refused by
+    name: a real pairing never skips its lock checks (adviser's ruling 3
+    dated 12 Nov 2026)."""
+    if not cfg.exploratory:
+        return False
+    if cfg.pairing in REAL_PAIRINGS:
+        raise StepFailed(f"{cfg.pairing} is a real pairing: it runs from the complete lock, "
+                         f"and a config marked exploratory may not skip its lock checks")
+    return True
+
+
 def real_block_lock_problem(cfg: SessionConfig, lock: dict, spec,
                             lock_file: Optional[Path] = None) -> Optional[str]:
     """Why a real block may not run from `lock`, or None (ruling 1d, 11 Nov
@@ -1975,12 +1991,16 @@ def block_run(cfg: SessionConfig, args) -> tuple:
     from attnbench.lock import blocks as B
     if not (args.lock and args.block):
         return None, "--lock and --block go together"
+    try:
+        own_spec = skips_lock(cfg)                    # a rehearsal runs its own spec
+    except StepFailed as e:
+        return None, str(e)
     raw = Path(args.lock).read_bytes()
     try:
         spec = B.parse(json.loads(raw), cfg.pairing)
     except (ValueError, B.BlockSpecError) as e:
         return None, str(e)
-    if not args.dry_run and not cfg.exploratory:     # a rehearsal runs its own spec
+    if not args.dry_run and not own_spec:
         why = real_block_lock_problem(cfg, json.loads(raw), spec)
         if why:
             return None, why
@@ -2052,6 +2072,11 @@ def parser(cfg: SessionConfig) -> argparse.ArgumentParser:
     r.add_argument("--import-block", action="append", default=[], metavar="DIR",
                    help="an earlier block's session directory (every earlier block, once)")
     add_step_options(r, cfg)
+    d = sub.add_parser("drift", help="the post-session step: the anchor's drift between blocks")
+    d.add_argument("--lock", required=True, help="the lock file (block spec and drift bound)")
+    d.add_argument("--block-dir", action="append", required=True, metavar="DIR",
+                   help="a block's session directory (every block, once, discarded ones too)")
+    d.add_argument("--out", required=True, help="where block_drift.json is written")
     s = sub.add_parser("step", help="one step (the runner calls this)")
     s.add_argument("name", choices=cfg.names)
     s.add_argument("--session", required=True)
@@ -2131,11 +2156,45 @@ def timed_path_refusal(lock_path=None, commit: str = "HEAD") -> Optional[str]:
     return None
 
 
+def drift_step(cfg: SessionConfig, args) -> int:
+    """The post-session step (adviser's ruling 2c of 11 Nov 2026): after the
+    last block, the anchor compared between the blocks that ran ground truth
+    (`block_drift.pairing_drift`), against the lock's `block_drift_bound`,
+    from a complete lock whose spec is `docs/lock_values.json`'s. Writes
+    `block_drift.json`, which the analysis reads; a flagged block is a flag
+    (0), a refusal is 2."""
+    import hashlib
+    from attnbench.analysis import block_drift as BD
+    from attnbench.lock import blocks as B
+    try:
+        if skips_lock(cfg):
+            raise StepFailed("the rehearsal's drift is read by t61_rehearsal_b.sh at the "
+                             "working bound; this step is a real pairing's")
+        lock = json.loads(Path(args.lock).read_bytes())
+        spec = B.parse(lock, cfg.pairing)
+        why = real_block_lock_problem(cfg, lock, spec)
+        if why:
+            raise StepFailed(why)
+        out = BD.pairing_drift(args.block_dir, spec, bound=BD.lock_bound(lock),
+                               ground_truth_dir=step_dir(Path(), "ground_truth", cfg).name)
+    except (StepFailed, OSError, ValueError, B.BlockSpecError, BD.BlockDriftError) as e:
+        print(f"REFUSING: {e}", file=sys.stderr)
+        return 2
+    write_json(Path(args.out), {**out, "pairing": cfg.pairing, "lock_sha256":
+                                hashlib.sha256(Path(args.lock).read_bytes()).hexdigest()})
+    d = out["drift"]
+    print(f"{cfg.pairing} block drift: {d.get('passed')}; above the bound "
+          f"{d.get('bound')}: {d.get('above') or 'none'}")
+    return 0
+
+
 def main(argv=None, cfg: Optional[SessionConfig] = None) -> int:
     cfg = cfg or T61
     args = parser(cfg).parse_args(argv)
     if args.cmd == "step":
         return run_step(cfg, args.name, args)
+    if args.cmd == "drift":
+        return drift_step(cfg, args)
     if args.list:
         for i, s in enumerate(cfg.steps, 1):
             print(f"{i:2d} {s.name:18s} {s.task:12s} {s.what}")

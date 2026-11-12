@@ -87,7 +87,8 @@ def bank(monkeypatch, cfg, home: Path) -> dict:
         out[p] = given.get(p, BANKED[p])
         clock["t"] = datetime.fromisoformat(out[p]).timestamp()
         Ledger(store, S.DirStore.PREFIX, p).record_banked(
-            {"training_file_sha256": hashlib.sha256(Path(files[p]).read_bytes()).hexdigest()})
+            {"training_file_sha256": hashlib.sha256(Path(files[p]).read_bytes()).hexdigest(),
+             "banked_at": out[p]})
     clock["t"] = 0.0
     monkeypatch.setattr(S, "ledger_for", lambda c, args, pairing=None: Ledger(
         store, S.DirStore.PREFIX, pairing or c.pairing))

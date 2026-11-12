@@ -102,11 +102,61 @@ def test_the_drift_check_reads_every_block_and_names_one_that_moved(tmp_path, mo
     got = BD.collect([d1, d2, d3], ground_truth_dir=S.step_dir(Path(), "ground_truth", T64).name)
     assert got["blocks"] == ["b1", "b2", "b3"] and got["discarded"] == []
     assert len(got["rows"]) == 4 and got["code_commit"] == "dry"
-    dr = BD.drift(got["rows"], order=["b1", "b2", "b3"], bound=0.05)
-    assert dr["reference_block"] == "b2" and dr["anchor"] == ("dense", 1.0, 8192, 1)
+    with pytest.raises(BD.BlockDriftError, match=r"\['b1'\] have no anchor row"):
+        BD.drift(got["rows"], order=["b1", "b2", "b3"], bound=0.05)
+    dr = BD.drift(got["rows"], order=["b2", "b3"], bound=0.05)       # b1 runs no ground truth
+    assert dr["anchor"] == ("dense", 1.0, 8192, 1)
     assert dr["per_block"]["b3"]["relative_difference"] == pytest.approx(0.08)
-    assert not dr["passed"] and dr["above"] == ["b3"]
-    assert BD.drift(got["rows"], order=["b1", "b2", "b3"], bound=0.1)["passed"]
+    assert dr["per_block"]["b2"]["relative_difference"] == pytest.approx(-0.08 / 1.08)
+    assert not dr["passed"] and dr["above"] == ["b2", "b3"]     # two blocks: either moved
+    assert BD.drift(got["rows"], order=["b2", "b3"], bound=0.1)["passed"]
+    from attnbench.lock import blocks as LB
+    spec = LB.parse(json.loads(Path(lock).read_text()), "P4")
+    post = BD.pairing_drift([d1, d2, d3], spec, bound=0.05,
+                            ground_truth_dir=S.step_dir(Path(), "ground_truth", T64).name)
+    assert post["drift"] == dr and post["sensitivity_without"] == ["b2", "b3"]
+
+
+def test_p4s_post_session_step_reads_the_drift_from_the_lock(tmp_path, monkeypatch, capsys):
+    """Adviser's ruling 2c of 11 Nov 2026: the drift check is P4's
+    post-session step, with the lock's bound and spec; it flags, refuses a
+    lock that is not the complete one, and never runs for the rehearsal."""
+    import t31_steps as st
+    import t61_rehearsal as R
+    import lock_fixture as LF
+    from attnbench.lock import checklist as CL
+    lock_path = write_lock(tmp_path)
+    _, d1 = run_block(T64, tmp_path, lock_path, "b1")
+    _, d2 = run_block(T64, tmp_path, lock_path, "b2", [d1])
+    monkeypatch.setenv("ATTNBENCH_FAKE_DRIFT", "0.08")
+    _, d3 = run_block(T64, tmp_path, lock_path, "b3", [d1, d2])
+    spec_json = json.loads(lock_path.read_text())["blocks"]
+    lock = LF.complete_lock(CL.PLAN.read_text(encoding="utf-8"), blocks=spec_json)
+    full = tmp_path / "lock_values.json"
+    full.write_text(json.dumps(lock))
+    monkeypatch.setattr(st, "LOCK_FILE", full)
+    out = tmp_path / "block_drift.json"
+    argv = ["drift", "--lock", str(full), "--out", str(out)] + sum(
+        (["--block-dir", str(d)] for d in (d1, d2, d3)), [])
+    bound = lock["values"]["block_drift_bound"]["value"]
+    assert bound < 0.074
+    assert P4.main(argv) == 0
+    got = json.loads(out.read_text())
+    assert got["pairing"] == "P4" and got["drift"]["bound"] == bound
+    assert got["drift"]["above"] == ["b2", "b3"] and got["sensitivity_without"] == ["b2", "b3"]
+    assert "above the bound" in capsys.readouterr().out
+    assert P4.main(["drift", "--lock", str(lock_path), "--out", str(out),
+                    "--block-dir", str(d2), "--block-dir", str(d3)]) == 2
+    assert "complete lock" in capsys.readouterr().err
+    unset = json.loads(json.dumps(lock))
+    unset["values"]["block_drift_bound"]["value"] = None
+    bad = tmp_path / "unset.json"
+    bad.write_text(json.dumps(unset))
+    assert P4.main(["drift", "--lock", str(bad), "--out", str(out),
+                    "--block-dir", str(d2), "--block-dir", str(d3)]) == 2
+    assert S.main(["drift", "--lock", str(full), "--out", str(out), "--block-dir", str(d2)],
+                  cfg=R.REHEARSAL) == 2
+    assert "rehearsal" in capsys.readouterr().err
 
 
 def test_a_block_refuses_an_earlier_block_it_cannot_trust(tmp_path):
@@ -223,17 +273,56 @@ def _anchor_rows(medians):
     return rows
 
 
-def test_the_drift_bound_is_the_working_6_77_percent_by_default():
+def test_the_drift_bound_is_required_and_read_from_the_lock():
+    """Adviser's ruling 2c of 11 Nov 2026: no default bound; the caller reads
+    T4.1's block_drift_bound from the lock (working 6.77% until then)."""
     assert BD.WORKING_BOUND == 0.0677
     rows = _anchor_rows({"b1": 100.0, "b2": 106.7, "b3": 93.2})
-    dr = BD.drift(rows, order=["b1", "b2", "b3"])
-    assert dr["bound"] == 0.0677 and dr["above"] == ["b3"] and not dr["passed"]
-    assert BD.drift(_anchor_rows({"b1": 100.0, "b2": 106.7}), order=["b1", "b2"])["passed"]
+    with pytest.raises(TypeError):
+        BD.drift(rows, order=["b1", "b2", "b3"])
+    for bad in (None, True, 0.0, -0.1, float("nan")):
+        with pytest.raises(BD.BlockDriftError, match="positive relative difference"):
+            BD.drift(rows, order=["b1", "b2", "b3"], bound=bad)
+    dr = BD.drift(rows, order=["b1", "b2", "b3"], bound=BD.WORKING_BOUND)
+    # each against the median of the other two: b2 +10.5%, b3 -9.8%, b1 +0.05%
+    assert dr["bound"] == 0.0677 and dr["above"] == ["b2", "b3"] and not dr["passed"]
+    assert BD.drift(_anchor_rows({"b1": 100.0, "b2": 106.7}), order=["b1", "b2"],
+                    bound=BD.WORKING_BOUND)["passed"]
+    assert not BD.drift(_anchor_rows({"b1": 100.0, "b2": 106.8}), order=["b1", "b2"],
+                        bound=BD.WORKING_BOUND)["passed"]          # strictly above 6.77%
+    # "a block above it": a difference equal to the bound is not above it (binary-exact)
+    assert BD.drift(_anchor_rows({"b1": 100.0, "b2": 106.25}), order=["b1", "b2"],
+                    bound=0.0625)["above"] == []
+    assert BD.lock_bound({"values": {"block_drift_bound": {"value": 0.0677}}}) == 0.0677
+    for v in (None, "TBD", True, 0, 1.5):
+        with pytest.raises(BD.BlockDriftError, match="block_drift_bound"):
+            BD.lock_bound({"values": {"block_drift_bound": {"value": v}}})
+    with pytest.raises(BD.BlockDriftError, match="block_drift_bound"):
+        BD.lock_bound({"values": {}})
+
+
+def test_the_reference_is_the_median_of_the_other_blocks():
+    """A's F5c (T4.3 read A, finding 6c): the odd block is flagged, not the
+    two that agree; and a block's own anchor never moves its reference."""
+    dr = BD.drift(_anchor_rows({"b1": 100.0, "b2": 108.0, "b3": 108.0}),
+                  order=["b1", "b2", "b3"], bound=BD.WORKING_BOUND)
+    assert dr["above"] == ["b1"]
+    assert dr["per_block"]["b1"]["reference"] == 108.0
+    assert dr["per_block"]["b2"]["reference"] == 104.0
+
+
+def test_a_block_without_an_anchor_or_with_nan_is_refused():
+    with pytest.raises(BD.BlockDriftError, match="no anchor row"):
+        BD.drift(_anchor_rows({"b1": 100.0}), order=["b1", "b2"], bound=BD.WORKING_BOUND)
+    for bad in (float("nan"), float("inf"), 0.0, -1.0):
+        with pytest.raises(BD.BlockDriftError, match="finite positive"):
+            BD.drift(_anchor_rows({"b1": 100.0, "b2": bad}), order=["b1", "b2"],
+                     bound=BD.WORKING_BOUND)
 
 
 def test_a_block_above_the_bound_is_flagged_kept_in_scoring_and_given_a_sensitivity_run():
-    rows = _anchor_rows({"b1": 100.0, "b2": 107.0, "b3": 101.0})
-    dr = BD.drift(rows, order=["b1", "b2", "b3"])
+    rows = _anchor_rows({"b1": 100.0, "b2": 108.0, "b3": 101.0})
+    dr = BD.drift(rows, order=["b1", "b2", "b3"], bound=BD.WORKING_BOUND)
     labelled = BD.labelled(rows, dr)
     assert {r["block"] for r in labelled if r.get("drift_label") == BD.DRIFT_LABEL} == {"b2"}
     assert all("drift_label" not in r for r in labelled if r["block"] != "b2")
@@ -245,7 +334,7 @@ def test_a_block_above_the_bound_is_flagged_kept_in_scoring_and_given_a_sensitiv
 
 def test_with_one_block_of_the_anchor_nothing_is_compared_and_nothing_is_dropped():
     rows = _anchor_rows({"b1": 100.0})
-    dr = BD.drift(rows, order=["b1", "b2"])
+    dr = BD.drift(rows, order=["b1"], bound=BD.WORKING_BOUND)
     assert dr["passed"] is None
     assert BD.claimable(rows, dr) == rows and BD.labelled(rows, dr) == rows
     assert BD.sensitivity_sets(rows, dr) == {}
@@ -350,3 +439,24 @@ def test_a_rehearsal_block_runs_from_its_own_spec_and_p4s_does_not(tmp_path):
     _, why = S.block_run(T64, Namespace(lock=str(spec_only), block="b1", dry_run=False,
                                         import_block=[]))
     assert "complete lock" in why
+
+
+@pytest.mark.parametrize("pairing", ["P2", "P4"])
+def test_a_real_pairing_marked_exploratory_cannot_skip_the_lock(tmp_path, pairing):
+    """Adviser's ruling 3 dated 12 Nov 2026: the skip is keyed on the
+    exploratory flag and refused for P2 and P4 by name, at the block spec and
+    at the training file's lock check."""
+    import dataclasses
+    import t61_rehearsal as R
+    base = {"P2": S.T61, "P4": T64}[pairing]
+    cfg = dataclasses.replace(base, exploratory="marked exploratory by mistake")
+    assert S.skips_lock(R.REHEARSAL) and not S.skips_lock(base)
+    for lock in (S.ROOT / R.LOCK, write_lock(tmp_path)):
+        for dry in (False, True):
+            br, why = S.block_run(cfg, Namespace(lock=str(lock), block="b1", dry_run=dry,
+                                                 import_block=[]))
+            assert br is None and f"{pairing} is a real pairing" in why
+    f = tmp_path / "p1_training.json.gz"
+    f.write_bytes(b"not read: refused first")
+    with pytest.raises(S.StepFailed, match=f"{pairing} is a real pairing"):
+        S.training_rows(cfg, path=f)

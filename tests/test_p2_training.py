@@ -6,6 +6,7 @@ named, only P2's own prediction, and P4 trained on P1's rows and these."""
 from __future__ import annotations
 
 import gzip
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import t61_session as S  # noqa: E402
 
 REMOTE = "gs://bucket/predictions/P2/t61_p2_b1/prediction_P2_x.json"
+P1_BANKED = "2026-11-09T11:12:31+00:00"
 
 
 def loaded_p2(tmp_path):
@@ -251,20 +253,17 @@ def test_the_builder_reads_only_passed_blocks_against_the_ledgers_p1(tmp_path, m
             str(link), "--block", str(b1), "--block", str(b2), "--out", str(out)]
     assert B.main(argv, store=store, prefix=S.DirStore.PREFIX) == 2
     assert "P1 has no banked entry" in capsys.readouterr().err
-    Ledger(store, S.DirStore.PREFIX, "P1").record_banked({"training_file_sha256": "e" * 64})
+    Ledger(store, S.DirStore.PREFIX, "P1").record_banked({"training_file_sha256": "e" * 64,
+                                                         "banked_at": P1_BANKED})
     assert B.main(argv, store=store, prefix=S.DirStore.PREFIX) == 2
     assert "the ledger banked P1's file " + "e" * 64 in capsys.readouterr().err
     store2 = S.DirStore(tmp_path / "store2", lambda: 1.8e9)
-    Ledger(store2, S.DirStore.PREFIX, "P1").record_banked({"training_file_sha256": _sha(p1)})
+    Ledger(store2, S.DirStore.PREFIX, "P1").record_banked({"training_file_sha256": _sha(p1),
+                                                          "banked_at": P1_BANKED})
     assert B.main(argv, store=store2, prefix=S.DirStore.PREFIX) == 0
     rec = P2T.load(out)
     assert rec["blocks"] == ["b1"] and [u["block"] for u in rec["unpassed"]] == ["b2"]
     dense = next(r for r in rec["rows"] if r["cell"]["arm"] == "dense")
     assert dense["target_s"] == pytest.approx(0.006)                     # b2's 100, 200 unread
-    assert seen["banked_at"] == {"P1": datetime_of(1.8e9)}
+    assert seen["banked_at"] == {"P1": datetime.fromisoformat(P1_BANKED)}   # the records', not the store's
     assert seen["training_files"] == {"P1": _sha(p1)} and len(seen["training_rows"]) == 2
-
-
-def datetime_of(t):
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(t, tz=timezone.utc)

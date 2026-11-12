@@ -98,3 +98,14 @@ def test_unpaired_or_mixed_input_refuses():
     unknown = short.assign(score_source=None)
     with pytest.raises(ValueError, match="arm is unknown"):
         ni.run_exact_ni(dense, unknown, bands=(16384,), margin_pts=10)
+
+
+def test_a_lower_bound_equal_to_minus_the_margin_is_not_non_inferior():
+    """Section 5.7 (A's E2, pinned by T4.3 wave 2e): admissible when the
+    lower bound is above -margin; equal is not above."""
+    dense = np.array([True] * 180 + [False] * 20)
+    sparse = dense.copy()
+    sparse[:6] = False                                  # 6 dense-only, 0 sparse-only
+    lower = 100 * ni.paired_lower_bound(0, 6, 200, 0.025)
+    assert ni.paired_exact_ni(dense, sparse, margin_pts=-lower).non_inferior is False
+    assert ni.paired_exact_ni(dense, sparse, margin_pts=-lower + 1e-9).non_inferior is True

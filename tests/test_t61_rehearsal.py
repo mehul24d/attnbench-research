@@ -105,7 +105,7 @@ def test_an_interrupted_b2_is_discarded_alone_and_its_rerun_stands(tmp_path, mon
     _, d2 = run_block(tmp_path, "b2", [d1])
     got = BD.collect([d1, x, d2], ground_truth_dir=S.step_dir(Path(), "ground_truth", REH).name)
     assert got["blocks"] == ["b1", "b2"] and [r["block"] for r in got["discarded"]] == ["b2"]
-    res = BD.drift(got["rows"], order=["b1", "b2"])
+    res = BD.drift(got["rows"], order=["b1", "b2"], bound=BD.WORKING_BOUND)   # the rehearsal's working bound
     assert res["anchor"] == ("dense", 1.0, 8192, 1) and set(res["per_block"]) == {"b1", "b2"}
 
 

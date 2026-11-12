@@ -210,6 +210,31 @@ def test_a_cells_report_compares_its_priced_device_times_with_the_trace():
         G.replay_report(seq, trace_s, priced[:-1])
 
 
+def test_a_cells_report_feeds_the_structure_and_no_replay_guards():
+    """Adviser's ruling 2d of 11 Nov 2026: on step 6's path a position step 6
+    left unpriced, or a cell it priced nothing in, has no replay and fails
+    the family check; dropped nodes are carried, not failed."""
+    from attnbench.components import replay
+    seq, trace_s = _seq_and_trace()
+    priced = [{"device": trace_s.get(i, 0.0)} for i in range(len(seq.ops))]
+    i = sorted(trace_s)[0]
+    ok = G.replay_report(seq, trace_s, priced,
+                         {"unpriced": [], replay.EXTRA_NODE_DROPPED: {"graph": {"nodes": 2, "s": 1e-6}}})
+    km = ok["kernel_name_mismatch"]
+    assert km["unmatched_positions"] == 0 and km["extra_nodes_dropped"]["graph"]["nodes"] == 2
+    assert replay.check_passes(ok, 0.25) == (True, [])
+    bad = G.replay_report(seq, trace_s, priced, {"unpriced": [i]})
+    assert bad["positions_without_replay"] == [i]
+    assert bad["kernel_name_mismatch"]["unmatched_positions"] == 1
+    assert not replay.check_passes(bad, 0.25)[0]
+    none = G.replay_report(seq, trace_s, None, {"unpriced": [i]})
+    assert none["positions_without_replay"] == sorted(trace_s)
+    assert not replay.check_passes(none, 0.25)[0]
+    gap = [dict(p) for p in priced]
+    gap[i] = {"device": None}
+    assert G.replay_report(seq, trace_s, gap)["positions_without_replay"] == [i]
+
+
 def _reports():
     seq, trace_s = _seq_and_trace()
     good = G.replay_report(seq, trace_s, [{"device": trace_s.get(i, 0.0)}

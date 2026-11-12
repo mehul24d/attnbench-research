@@ -83,6 +83,7 @@ The graph is behind `GraphBackend` so the bookkeeping is tested on CPU with
 
 from __future__ import annotations
 
+import math
 import bisect
 import difflib
 import json
@@ -1094,18 +1095,26 @@ def replay_vs_trace(seq: OpSequence, trace_s: Mapping[int, float],
 
 
 def check_passes(report: Mapping, bound: float) -> tuple[bool, list[str]]:
-    """Gate A's family check at an explicit bound (a lock value)."""
+    """Gate A's family check at an explicit bound (a lock value). Fails on
+    a report whose structure evidence was not fed (`kernel_name_mismatch`
+    None: no `Match` behind it), a position with no replay, a family whose
+    relative difference is missing or not finite, or nothing compared
+    (adviser's ruling 2d of 11 Nov 2026; T4.3 read A, finding 7b-c)."""
     if not bound > 0:
         raise ValueError("the bound is a positive relative difference, fixed at lock")
     why = []
     km = report.get("kernel_name_mismatch")
-    if km and (km["unmatched_positions"] or km["extra_nodes"]):
+    if km is None:
+        why.append("no structure evidence: the replay's match was not fed to the report")
+    elif km["unmatched_positions"] or km["extra_nodes"]:
         why.append(f"the replay does not match the sequence by structure: {km}")
     if report["positions_without_replay"]:
         why.append(f"{len(report['positions_without_replay'])} positions have no replay")
+    if not report["families"]:
+        why.append("no operation family was compared")
     for f, r in report["families"].items():
         d = r["relative_difference"]
-        if d is None or abs(d) > bound:
+        if d is None or not math.isfinite(d) or abs(d) > bound:
             why.append(f"{f}: relative difference {d}")
     return not why, why
 

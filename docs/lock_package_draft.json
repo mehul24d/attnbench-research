@@ -44,7 +44,7 @@
    "value": null,
    "source": null,
    "status": "decided (10 Nov 2026), final (11 Nov 2026, adviser's ruling 1f dated 10 Nov 2026: T1.7 not built before the lock), stated before any P2 data",
-   "proposed": "m = 30 under the ruling's default (no primary estimator is declared; the control at each block size): 18 pair tests + 12 control tests at k = 4; m = 18 if the window arm (T1.7) is not built by the lock",
+   "proposed": "m = 18: three estimators (oracle, mean-pool, XAttention), 3 pairs at each of block sizes 32, 64 and 128 (9 tests) and the random control against each estimator at each block size (9 more); the window arm (T1.7) is not built before the lock (Appendix A, 10 and 11 Nov 2026)",
    "basis": "docs/lock_decisions_20261109.md (H4 for the adviser's next relay, eleventh paste)",
    "decided": "m = 18: the window arm is not built (T1.7 Not started), so k = 3 (oracle, mean-pool, XAttention); 3 pairs x 3 block sizes (32, 64, 128) + the random control against each estimator at each block size (9), Holm-corrected together; power-rule n about 2,150 x p. A window arm built later is exploratory for H4."
   },
@@ -293,7 +293,7 @@
    "basis": "lock table row 35"
   },
   "block_drift_bound": {
-   "item": "the block drift bound (T6.1 and T6.4: a pairing run in blocks compares the anchor cell's untraced median in each block with the first block's that has it, as a relative difference; working 6.77% since 8 Nov 2026 and 3% before; it is a flag, not an exclusion: a block above it is named and its rows are labelled \"drift above bound\", every non-interrupted block stays in primary scoring and each flagged block gets a sensitivity run without it; never widened to pass; Appendix A, 7 and 8 Nov 2026)",
+   "item": "the block drift bound (T6.1 and T6.4: a pairing run in blocks compares the anchor cell's untraced median in each block with the median of the other blocks' anchors, as a relative difference, by the adviser's ruling 2c of 11 Nov 2026; working 6.77% since 8 Nov 2026 and 3% before; it is a flag, not an exclusion: a block above it is named and its rows are labelled \"drift above bound\", every non-interrupted block stays in primary scoring and each flagged block gets a sensitivity run without it; never widened to pass; Appendix A, 7 and 8 Nov 2026)",
    "value": null,
    "source": null,
    "status": "evidence in hand",
@@ -301,11 +301,11 @@
    "basis": "Appendix A, 8 Nov 2026; attnbench/analysis/block_drift.py"
   },
   "timed_path_identity_for_p2_and_p4": {
-   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
+   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1 and `049e30f7…` after wave 2; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
    "value": null,
    "source": null,
    "status": "decided (10 Nov 2026, adviser's ruling 2 of the 10 Nov paste); the method is whole files since ruling 1f of 11 Nov 2026 (Appendix A), so the value is re-pinned at each T4.3 wave's last code commit and fixed by the lock commit",
-   "proposed": "0cc328c9346920b55505ace9ce14cdc96cd2f1dcca73c8736228ccc993c13cd8: scripts/timed_path.py --pin (whole files, ruling 1f of 11 Nov 2026) at c45b526, T4.3 wave 1's last code commit; re-pinned after wave 2. Before: 8716d7db4449d528... by the 8 Nov method (main ac3f563, unchanged since 050a96d)",
+   "proposed": "049e30f7296d0191906882997bbf21f027c8ab84e604ee4a46029db106a6f2b2: scripts/timed_path.py --pin (whole files, ruling 1f of 11 Nov 2026) at 7ea86be, T4.3 wave 2's last code commit, 109 items; after wave 1 it was 0cc328c9346920b55505ace9ce14cdc96cd2f1dcca73c8736228ccc993c13cd8 at c45b526. Before: 8716d7db4449d528... by the 8 Nov method (main ac3f563, unchanged since 050a96d)",
    "basis": "Appendix A, 10 Nov 2026; scripts/timed_path.py 02cfc1d 050a96d (the only change from T3.2d's 4e78a962...: ground_truth.py appended tracer_layout/tracer_entries, t31_steps._real_cells and trace_labels), all outside the timed region",
    "decided": "P2's and P4's timed ground-truth path is 8716d7db... Pooling needs identical timed paths only across P1 sessions (T3.2c and T3.2d, 4e78a962...); P2 is never pooled with P1; across P1 and P2 or P4 only protocol identity inside the timed region is claimed, not byte identity"
   },
@@ -324,6 +324,14 @@
    "status": "owed: the lock commit's wave-2 merge",
    "proposed": "the merge commit of T4.3's wave 2 (the H0 to H6 analysis), named at the lock",
    "basis": "adviser's ruling 2a of 11 Nov 2026"
+  },
+  "marginal_label_s_sensitivity_floors": {
+   "item": "the marginal label's sensitivity floors (at 16384, the floors with T3.2a and T3.2b included, 111.05 ms at batch 1 and 441.54 ms at batch 4: a sparse-minus-dense comparison above P1's floor and inside it is reported as marginal; Appendix A, 9 Nov 2026; adviser's ruling 2a of 11 Nov 2026)",
+   "value": null,
+   "source": null,
+   "status": "evidence in hand (adviser's ruling 2a of 11 Nov 2026 makes it a T4.1 item)",
+   "proposed": "16384x1: 111.05 ms, 16384x4: 441.54 ms (the floors over T3.2a to T3.2d at q = 0.95, Appendix A, 9 Nov 2026)",
+   "basis": "Appendix A, 9 Nov 2026 (the floors); T4.3 read A, finding 5"
   }
  },
  "scored_pairings": {

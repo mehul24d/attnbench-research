@@ -359,3 +359,25 @@ def test_score_cells_reads_each_cells_own_floor_and_refuses_a_scalar():
     assert got.inside_floor == (k32,) and got.n_scored == 1
     with pytest.raises(CostModelError, match="table"):
         score_cells([(k16, 1.0, 2.0, 1.95, 2.0, True)], floors=0.05)
+
+
+def test_a_sign_needs_its_interval_clear_of_zero_on_either_side():
+    """Section 5.4 (A's X2, pinned by T4.3 wave 2e): a length's sign is
+    determined only when the point is outside the floor and the interval
+    excludes zero; a point above the floor with an interval reaching zero is
+    undetermined, on the positive side as on the negative."""
+    assert sign_at(GridDifference(1, 0.6, -0.1, 0.9), 0.5) == 0
+    assert sign_at(GridDifference(1, 0.6, 0.1, 0.9), 0.5) == 1
+    assert sign_at(GridDifference(1, -0.6, -0.9, 0.1), 0.5) == 0
+    assert sign_at(GridDifference(1, -0.6, -0.9, -0.1), 0.5) == -1
+
+
+def test_a_measured_bracket_sharing_the_predicted_endpoints_is_inside_it():
+    """H3 (A's X5, pinned by T4.3 wave 2e): the crossover "falls inside the
+    grid interval predicted"; an interval includes its endpoints."""
+    # predicted 0..3, measured 0..2: the same lower endpoint
+    (c,) = crossover_error(res(1, 0, 0, -1, -1), res(1, 0, -1, -1, -1)).comparisons
+    assert c.contains
+    # predicted 0..3, measured 1..3: the same upper endpoint
+    (c,) = crossover_error(res(1, 0, 0, -1, -1), res(1, 1, 0, -1, -1)).comparisons
+    assert c.contains

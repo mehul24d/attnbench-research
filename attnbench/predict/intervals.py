@@ -20,6 +20,13 @@ for each replicate, the measurement keys in sorted order, and for each key
 the percentile interval: numpy's linear quantiles at (1 - level) / 2 and
 (1 + level) / 2 of the replicates. The point is the outputs at the
 full-sample statistics, not the replicates' mean.
+
+**Refusals** (adviser's ruling 2e of 11 Nov 2026; T4.3 read A, finding 8):
+a measurement with fewer than two repeats, whose every replicate is the
+sample itself, and fewer than two replicates, either of which gives a
+zero-width interval that would decide a sign; and, once the lock's
+`bootstrap_settings` are set (`LOCKED`, T4.1), fewer replicates than its
+`n_boot`.
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -35,6 +42,32 @@ from .recursion import CostModelError
 
 Evaluate = Callable[[Mapping[str, float]], Mapping[str, float]]
 METHOD = "percentile"
+
+
+@dataclass(frozen=True)
+class Settings:
+    """T4.1's `bootstrap_settings`: the level, size and seed of every
+    bootstrap the analysis draws."""
+    level: float
+    n_boot: int
+    seed: int
+
+
+LOCKED: Optional[Settings] = None      # set from the lock (`settings_from_lock`)
+
+
+def settings_from_lock(lock: Mapping) -> Settings:
+    """The lock's `bootstrap_settings`, refused unless all three are fixed."""
+    v = ((lock.get("values") or {}).get("bootstrap_settings") or {}).get("value")
+    if not isinstance(v, Mapping):
+        raise CostModelError(f"the lock's bootstrap_settings are {v!r}, not fixed (T4.1)")
+    level, n_boot, seed = v.get("level"), v.get("n_boot"), v.get("seed")
+    for name, x in (("n_boot", n_boot), ("seed", seed)):
+        if isinstance(x, bool) or not isinstance(x, int):
+            raise CostModelError(f"the lock's bootstrap {name} is {x!r}, not an integer")
+    if n_boot < 2 or seed < 0:
+        raise CostModelError(f"the lock's bootstrap n_boot {n_boot} or seed {seed} is out of range")
+    return Settings(_check_level(level), n_boot, seed)
 
 
 @dataclass(frozen=True)
@@ -117,17 +150,20 @@ def bootstrap(samples: Mapping[str, Sequence[float]], evaluate: Evaluate, *,
     {key: statistic} to {output name: seconds}. The statistic is the median
     unless stated, as for ground truth (training.GROUND_TRUTH_STATISTIC).
     """
-    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 1:
-        raise CostModelError(f"n_boot must be an int >= 1, got {n_boot!r}")
+    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 2:
+        raise CostModelError(f"n_boot must be an int >= 2, got {n_boot!r}")
+    if LOCKED is not None and n_boot < LOCKED.n_boot:
+        raise CostModelError(f"n_boot {n_boot} is below the lock's {LOCKED.n_boot} (T4.1)")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise CostModelError(f"seed must be an int >= 0, got {seed!r}")
     keys = tuple(sorted(samples))
     data = {}
     for k in keys:
         x = np.asarray(samples[k], dtype=float)
-        if x.ndim != 1 or x.size == 0 or not np.all(np.isfinite(x)):
+        if x.ndim != 1 or x.size < 2 or not np.all(np.isfinite(x)):
             raise CostModelError(
-                f"measurement {k!r} needs at least one finite repeat")
+                f"measurement {k!r} needs at least two finite repeats; one gives every "
+                f"replicate the sample itself")
         data[k] = x
     point = _evaluate(evaluate, {k: float(statistic(data[k])) for k in keys},
                       None)

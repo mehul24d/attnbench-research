@@ -138,3 +138,13 @@ def test_the_family_must_be_the_set_declared_at_lock():
 def test_impossible_counts_are_refused(args):
     with pytest.raises(HolmError):
         Counts(*args)
+
+
+def test_a_bound_equal_to_minus_the_margin_does_not_clear():
+    """Section 5.7 (A's E3, pinned by T4.3 wave 2e): the same strict rule in
+    Holm's family; equal is not above."""
+    cnt = Counts(b=2, c=10, n=200)
+    edge = -100 * paired_lower_bound(cnt.b, cnt.c, cnt.n, 0.025)
+    k = Config("meanpool", 0.1)
+    assert k not in holm_admissible({k: cnt}, declared=[k], margin_pts=edge).uncorrected
+    assert k in holm_admissible({k: cnt}, declared=[k], margin_pts=edge + 1e-9).uncorrected

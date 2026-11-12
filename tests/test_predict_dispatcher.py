@@ -576,3 +576,16 @@ def test_the_spec_round_trips_through_json():
         D.spec_from_json({"predictor": "recursion"})
     with pytest.raises(DispatchError, match="at least one admissible set"):
         D.make_choices(spec(admissible={}), predicted())
+
+
+def test_dense_chosen_with_sparse_faster_by_exactly_the_floor_is_not_a_missed_choice():
+    """Section 4 H6 and 5.9 (A's D5, pinned by T4.3 wave 2e): a point whose
+    measured difference is inside the resolution floor is not scored, so a
+    gap equal to the floor is not a missed profitable choice."""
+    from attnbench.predict.dispatcher import choice_outcome
+    from attnbench.predict.scoring import NOT_INTERPRETED
+    p = by_point(points(), 16384)
+    meas = {DENSE: 100.0, A: 95.0, B: 110.0}          # a is faster by exactly 5.0
+    assert choice_outcome(p, DENSE, meas, BOTH, FLOOR) == NOT_INTERPRETED
+    meas[A] = 94.0
+    assert choice_outcome(p, DENSE, meas, BOTH, FLOOR) == MISSED_PROFITABLE

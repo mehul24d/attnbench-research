@@ -58,7 +58,7 @@ from pathlib import Path
 from attnbench.analysis import block_drift as BD
 dirs = sys.argv[1:]
 got = BD.collect(dirs, ground_truth_dir=S.step_dir(Path(), "ground_truth", R.REHEARSAL).name)
-res = BD.drift(got["rows"], order=["b1", "b2"])
+res = BD.drift(got["rows"], order=["b1", "b2"], bound=BD.WORKING_BOUND)
 out = {"blocks": got["blocks"], "discarded": got["discarded"], "drift": res,
        "bound": BD.WORKING_BOUND, "exploratory": R.EXPLORATORY_NOTE}
 S.write_json(Path(dirs[-1]) / "block_drift.json", out)
