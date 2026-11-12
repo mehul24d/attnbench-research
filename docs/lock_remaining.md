@@ -29,9 +29,10 @@ The researcher's items: 31 = 0; 18 = 0.8867 (re-run on this lock with
 `scripts/hdbi_threshold.py`: unchanged); 28 = P7, then the chunked extension. Scored pairings:
 H0 [P2], H1 [P2, P4], H2 [P2], H3 [P4], H6 [P4], H4 and H5 not scored.
 
-The timed-path pin is `2e07d371…` at `341860c`, and the analysis commit is `341860c`. They moved
+The timed-path pin is `fa28e01b…` at `9ddb9ee`, and the analysis commit is `9ddb9ee`. They moved
 from `fb6dca8` to `78349e0` when H6's rule changed, then to `341860c` when `learned.LOCKED_CONFIG`
-was set to config 4 for Gate B (Appendix A, 12 Nov 2026, the second and third lock-wave rulings).
+was set to config 4 for Gate B, then to `9ddb9ee` when the lock fill's chain-check shape was
+fixed (Appendix A, 12 Nov 2026, the second and third lock-wave rulings).
 T4.4 is written Done in this commit, the one to be tagged `lock-2026-11-14`.
 
 ## Still to do
