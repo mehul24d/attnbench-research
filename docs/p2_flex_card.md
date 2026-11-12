@@ -2,7 +2,8 @@
 
 **Not launched.** P2's launch needs its own yes. The pre-launch CPU pass passed at the lock
 commit `0301fb6` (`results/prelaunch/p2_0301fb6_20261112T1420Z/prelaunch_cpu_pass.json`), with
-T3.2d's step 5 XAttention masks staged as P1's. The step list, minutes and Spot blocks are in
+T3.2d's step 5 XAttention masks staged as P1's, and again at the tag target `3aa0449`
+(`results/prelaunch/p2_3aa0449_20261112T1607Z/prelaunch_cpu_pass.json`, sha256 `8f40ef5f83b7…`). The step list, minutes and Spot blocks are in
 `docs/launch_cards/t61_p2_a100.md`. This card adds the Flex-start rate from the second
 lock-wave rulings of 12 Nov 2026 (item 4).
 
