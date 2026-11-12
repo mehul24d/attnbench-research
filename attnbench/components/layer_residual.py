@@ -80,7 +80,7 @@ from torch.autograd.profiler import record_function
 from torch.utils._python_dispatch import TorchDispatchMode
 
 from .host_profile import (ISOLATED_REPLAY, HostProfile, NullEntry, aten_name, device_call,
-                           launching_names)
+                           install, launching_names)
 from .op_sequence import HOST_COMPUTE, OpSequence, SeqKind
 from .sync_tape import SyncTape, TapeReplayer, classify
 
@@ -184,15 +184,14 @@ def _entries(entries: Sequence[NullEntry], timer: _Timer):
     saved = []
     try:
         for e in entries:
-            original = getattr(e.module, e.attr)
-            saved.append((e, original))
-
-            def timed(*args, _orig=original, **kwargs):
-                if timer.inside:
-                    return _orig(*args, **kwargs)
-                with timer.call():
-                    return _orig(*args, **kwargs)
-            setattr(e.module, e.attr, timed)
+            def wrap(_orig, _label):
+                def timed(*args, **kwargs):
+                    if timer.inside:
+                        return _orig(*args, **kwargs)
+                    with timer.call():
+                        return _orig(*args, **kwargs)
+                return timed
+            saved.append((e, install(e, wrap)))
         yield
     finally:
         for e, original in saved:

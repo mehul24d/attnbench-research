@@ -668,7 +668,8 @@ def import_check(cfg: SessionConfig) -> tuple[list, dict]:
 def real_preflight(cfg: SessionConfig, args) -> dict:
     """T2.20 provenance and the T2.1 host-speed probe at the start, read from
     the probe's own row; Triton imports (the XAttention code path here); the
-    GPU variants of T2.26 pass on this GPU."""
+    GPU variants of T2.26 pass on this GPU; on a Triton pairing, the Triton
+    smoke check (`run_triton_smoke`)."""
     from attnbench import provenance
     out = Path(args.out)
     if run(py("host_cpu_probe.py", "snapshot", "--out", str(out), "--tag", "start")):
@@ -686,6 +687,8 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
         problems.append(lgbm)
     variants, vproblems = run_gpu_variants(out)
     problems += vproblems
+    smoke, sproblems = run_triton_smoke(cfg, args, out)
+    problems += sproblems
     findings = {"provisioning_model": row.get("provisioning_model"),
                 "instance_type": row.get("instance_type"), "gpu_name": row.get("gpu_name"),
                 "cpu_model": row.get("cpu_model"), "zone": row.get("zone"),
@@ -693,6 +696,7 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
                 "bootstrap_sha256": row.get("bootstrap_sha256"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
                 "triton": tri.stdout.strip() or None, "gpu_variants": variants,
+                "triton_smoke": smoke,
                 "imports_checked": sorted(found["required"]),
                 "kernel_modules_absent": found["kernel_problems"],
                 "problems": problems}
@@ -701,6 +705,31 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
     if problems:
         raise StepFailed(f"{len(problems)} preflight problem(s): {problems[:3]}", findings)
     return findings
+
+
+def triton_pairing(cfg: SessionConfig) -> bool:
+    """Whether the pairing's XAttention arms take the Triton path (an A100 or
+    H100) and it runs T3.1's component steps."""
+    return bool(cfg.components_config) and \
+        str(cfg.code_path.get("implementation", "")).endswith(":triton")
+
+
+def run_triton_smoke(cfg: SessionConfig, args, out: Path) -> tuple:
+    """T3.1's Triton smoke check (`t31_steps.triton_smoke`) in its own process,
+    before anything long (adviser's rulings of 13 Nov 2026, item 3): step 5's
+    cell and step 6's refusing check on one XAttention cell at 2048.
+    (findings, problems); none for a pairing off the Triton path."""
+    if not triton_pairing(cfg):
+        return None, []
+    d = Path(out) / "triton_smoke"
+    d.mkdir(parents=True, exist_ok=True)
+    rc = run(py("t31_steps.py", "triton-smoke", "--out", str(d), "--session",
+                str(args.session), "--config", str(ROOT / cfg.components_config)))
+    found = read_json(d / "triton_smoke.json") or {}
+    if rc != 0 or not found or "error" in found:
+        return found, [f"the Triton smoke check failed (rc {rc}): "
+                       f"{found.get('error', 'no triton_smoke.json')}"]
+    return found, []
 
 
 def _us(s):

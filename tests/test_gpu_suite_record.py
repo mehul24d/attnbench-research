@@ -22,9 +22,9 @@ def entries() -> list[str]:
             if l.strip() and not l.startswith("#")]
 
 
-def test_the_list_holds_the_27_classified_failures_and_not_the_timed_region_file():
+def test_the_list_holds_the_33_classified_failures_and_not_the_timed_region_file():
     ids = entries()
-    assert len(ids) == len(set(ids)) == 27
+    assert len(ids) == len(set(ids)) == 33
     assert not any(i.startswith("tests/test_timed_region_setup.py") for i in ids)
 
 

@@ -178,6 +178,9 @@ CELL_INDEX = "cell_index.json"            # the child's entry for the step's ind
 CELL_EXIT = "cell_exit.json"              # the child's own high-water mark, error, findings
 PRICE_CACHE = "bare_price_cache.pkl"      # the bare prices, shared by step 5's cells
 MEMSET_ZOO = "memset_zoo.json"            # the memset zoo, measured once for step 6
+XATTN_TRITON = "xattn:triton"             # XAttention's Triton path (`Harness.code_path`)
+TRITON_SMOKE = "triton-smoke"             # the preflight's Triton smoke check (`triton_smoke`)
+TRITON_SMOKE_CELL = ("xattention", None, 2048, 1)
 
 # A dry run's own values: small, and labelled so nothing it writes can pass
 # for P1's.
@@ -1420,6 +1423,21 @@ def soak(cap, *, seconds: float = SOAK_S, min_replays: int = SOAK_MIN_REPLAYS,
     return {"replays": n, "seconds": round(clock() - t0, 3)}
 
 
+def null_entries(arm: str, code_path) -> tuple:
+    """The entry points step 5's passes null for a cell (`host_profile.
+    NullEntry`): none for dense; the block-sparse kernel's extension call for
+    a sparse arm; on XAttention's Triton path its Triton kernels as well
+    (P2's step 7, 12 Nov 2026: unnulled, they ran for real and the structure
+    check refused the cell)."""
+    from attnbench.components import host_profile as hp
+    if arm == "dense":
+        return ()
+    entries = (hp.block_sparse_entry(),)
+    if code_path.implementation == XATTN_TRITON:
+        entries += hp.xattention_triton_entries()
+    return entries
+
+
 def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
     """One cell of step 5, in this process: its `cells_index.json` entry."""
     from attnbench.components import bare_timer as bt
@@ -1431,7 +1449,7 @@ def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
     cd = cell_dir(out, arm, d, L, b)
     a = ready_cell(h, arm, d, L, b)
     seconds, t0 = {}, time.time()
-    entries = () if arm == "dense" else (hp.block_sparse_entry(),)
+    entries = null_entries(arm, a.code_path)
     with pricing_clocks.PricingClocks(cd, enabled=pricing_sampled()) as pc:
         with pc.phase("record"):
             rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording",
@@ -1791,6 +1809,70 @@ def _device_cell_entry(args, cfg, cell) -> dict:
     entry = device_cell(h, Path(args.out), Path(args.session), cell)
     h.unwrap()
     return entry
+
+
+def triton_smoke(args, cfg) -> dict:
+    """The preflight's Triton smoke check (adviser's rulings of 13 Nov 2026,
+    item 3), untimed and before anything long: step 5's whole cell
+    (`host_cell`: the recording, the isolated replay, the null pass and its
+    structure check against the recording, the bare pass, the residual) on
+    one XAttention cell at 2048 on its Triton path, then step 6's one
+    refusing check on that recording (the CUDA graph's live masks against
+    the bank), with whether step 6 would need the isolated original
+    reported. P1 ran on the L4, which has no Triton path, so P2's step 5
+    met it first (12 Nov 2026). Refuses a cell that took another path;
+    behind the CPU boundary, where there is none, the path is recorded."""
+    from attnbench.components import recorder
+    from attnbench.components import replay
+    _need_gpu("the Triton smoke check")
+    out = Path(args.out)
+    h = _harness(args)
+    a = ready_cell(h, *TRITON_SMOKE_CELL)
+    impl = a.code_path.implementation
+    if impl != XATTN_TRITON and not _boundary():
+        raise StepFailed(f"the smoke cell took {impl}, not {XATTN_TRITON}")
+    entry = host_cell(h, cfg, out, TRITON_SMOKE_CELL, bare_pricer())
+    rec = recorder.load_recording(out / entry["dir"] / "recording")
+    a = ready_cell(h, *TRITON_SMOKE_CELL)          # as step 6 readies its cell
+    cap = replay.capture(a.run_prefill, rec.tape, device=_device(), masks=rec.masks,
+                         backend=_graph_backend())
+    try:
+        agreement = replay.mask_agreement(cap)
+    except replay.ReplayError as e:
+        raise StepFailed(f"the smoke cell's replay: {e}") from e
+    if agreement is not None and not agreement.get("identical"):
+        raise StepFailed("the smoke cell's replay: its live masks differ from the bank")
+    trace = replay.profile_replay(cap, out / entry["dir"] / "replay_trace.json")
+    m = replay.match(rec.sequence, replay.replay_nodes(trace))
+    h.unwrap()
+    found = {"cell": entry["dir"], "implementation": impl,
+             "host_cost_sources": entry["host_cost_sources"],
+             "entry_points": sum(1 for op in rec.sequence.ops if _entry_point(op)),
+             "replay_needs_original": replay.needs_original(rec.sequence, m),
+             "replay_unmatched_positions": len(m.unmatched_positions)}
+    _write_json(out / "triton_smoke.json", found)
+    return found
+
+
+def _entry_point(op) -> bool:
+    """A recorded launch that no aten operator issued (a Triton kernel, an
+    extension call)."""
+    from attnbench.components import host_profile as hp
+    return hp._is_issue(op) and op.aten_op is None
+
+
+def cmd_triton_smoke(args) -> int:
+    cfg = load_config(args.config, dry_run=False, cpu_boundary=args.cpu_boundary)
+    try:
+        found = triton_smoke(args, cfg)
+    except Exception as e:
+        traceback.print_exc()
+        _write_json(Path(args.out) / "triton_smoke.json",
+                    {"error": f"{type(e).__name__}: {e}"})
+        print(f"[{TRITON_SMOKE}] FAILED: {type(e).__name__}: {e}", flush=True)
+        return 1
+    print(f"[{TRITON_SMOKE}] passed: {found}", flush=True)
+    return 0
 
 
 def cmd_cell_one(args) -> int:
@@ -2488,7 +2570,7 @@ def run_step(name: str, args) -> int:
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("step", choices=STEPS + ("ground-truth-one",) + CELL_CHILDREN)
+    ap.add_argument("step", choices=STEPS + ("ground-truth-one", TRITON_SMOKE) + CELL_CHILDREN)
     ap.add_argument("--out", required=True)
     ap.add_argument("--session", required=True)
     ap.add_argument("--dry-run", action="store_true")
@@ -2513,7 +2595,8 @@ def main(argv=None) -> int:
             print("REFUSING: --cpu-boundary runs the real steps; it is not --dry-run",
                   file=sys.stderr)
             return 2
-        if args.step not in STEPS[:STEPS.index("hold") + 1] + ("delay_injection",) + CELL_CHILDREN:
+        if args.step not in STEPS[:STEPS.index("hold") + 1] + ("delay_injection", TRITON_SMOKE) \
+                + CELL_CHILDREN:
             print(f"REFUSING: the CPU boundary runs steps 1 to 8 and 12, not {args.step}",
                   file=sys.stderr)
             return 2
@@ -2521,9 +2604,13 @@ def main(argv=None) -> int:
         with cpu_boundary.installed():
             if args.step in CELL_CHILDREN:
                 return cmd_cell_one(args)
+            if args.step == TRITON_SMOKE:
+                return cmd_triton_smoke(args)
             return run_step(args.step, args)
     if args.step in CELL_CHILDREN:
         return cmd_cell_one(args)
+    if args.step == TRITON_SMOKE:
+        return cmd_triton_smoke(args)
     if args.step == "ground-truth-one":
         try:
             return cmd_ground_truth_one(args)
