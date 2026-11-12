@@ -141,11 +141,14 @@ def test_held_out_pairings_flag_drift_relatively_and_take_the_locks_clean_minimu
     cfg = st.load_config(str(P2_CONFIG), dry_run=False)
     assert cfg["min_clean_rounds"] == LF.VALUES["rerun_budget"]["min_clean_rounds"]
     assert st.drift_controls(cfg) == {"drift_limit_relative": st.RELATIVE_DRIFT_LIMIT,
+                                      "drift_reference_min_rounds": 5,
                                       "min_clean_rounds": cfg["min_clean_rounds"]}
+    assert st.DRIFT_REFERENCE_MIN_ROUNDS == 5   # declared in docs/drift_reference_correction.md
     assert st.RELATIVE_DRIFT_LIMIT == pytest.approx(0.0631, abs=5e-5)
     with pytest.raises(st.StepFailed, match="min_clean_rounds is missing"):
         st.drift_controls(dict(cfg, min_clean_rounds=None))
     assert st.drift_controls({"pairing": "P1"}) == {"drift_limit_relative": None,
+                                                    "drift_reference_min_rounds": None,
                                                     "min_clean_rounds": None}
 
 
@@ -178,6 +181,7 @@ def test_the_ground_truth_step_hands_a_held_out_pairing_the_relative_controls(tm
                            session=str(tmp_path / "s"), group="eager")
     assert st.cmd_ground_truth_one(args) == 0
     assert seen["drift_limit_relative"] == st.RELATIVE_DRIFT_LIMIT
+    assert seen["drift_reference_min_rounds"] == st.DRIFT_REFERENCE_MIN_ROUNDS
     assert seen["min_clean_rounds"] == cfg["min_clean_rounds"]
     assert seen["max_rerun_rounds"] == cfg["max_rerun_rounds"]
 

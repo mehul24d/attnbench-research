@@ -11,6 +11,10 @@ touching the timed path:
   - `RECORDED`: the flags as the session wrote them;
   - `RELATIVE`: a round is drift-flagged when |drift| / warm-up time exceeds
     `limit` (`relative_limit` derives it from other sessions' rounds);
+  - `RUNNING`: P2's and P4's rule, `ground_truth.running_judgments` with
+    `limit` and `min_rounds` (ruling 2 of the lock wave, 12 Nov 2026): each
+    round against the median of the cell's earlier usable rounds; a round
+    still pending at the end is flagged;
   - `NONE`: no drift filter.
 
 A throttle flag (any reason that is not the dense drift) is kept under every
@@ -24,10 +28,10 @@ import copy
 import statistics
 from typing import Iterable, Mapping, Optional
 
-from attnbench.ground_truth import quantile
+from attnbench.ground_truth import quantile, running_judgments
 
-RECORDED, RELATIVE, NONE = "recorded", "relative", "none"
-FILTERS = (RECORDED, RELATIVE, NONE)
+RECORDED, RELATIVE, RUNNING, NONE = "recorded", "relative", "running", "none"
+FILTERS = (RECORDED, RELATIVE, RUNNING, NONE)
 DRIFT_PREFIX = "dense_drift_"
 
 
@@ -83,31 +87,51 @@ def round_samples(row: Mapping, rounds: list) -> dict[int, float]:
     return out
 
 
-def _reasons(rnd: Mapping, mode: str, ref_ms: float, limit: Optional[float]) -> list[str]:
-    kept = [x for x in rnd["flag_reasons"] if not x.startswith(DRIFT_PREFIX)]
-    drift = float(rnd["dense_drift_ms"])
+def _throttle(rnd: Mapping) -> list[str]:
+    return [x for x in rnd["flag_reasons"] if not x.startswith(DRIFT_PREFIX)]
+
+
+def _reasons(rnd: Mapping, mode: str, ref_ms: float, limit: Optional[float],
+             judged=None) -> list[str]:
+    kept = _throttle(rnd)
     if mode == RECORDED:
         return list(rnd["flag_reasons"])
-    if mode == RELATIVE and abs(drift) / ref_ms > limit:
-        kept.append(f"{DRIFT_PREFIX}{drift / ref_ms:+.4f}_vs_relative_{limit}")
+    if mode == RELATIVE:
+        drift = float(rnd["dense_drift_ms"])
+        if abs(drift) / ref_ms > limit:
+            kept.append(f"{DRIFT_PREFIX}{drift / ref_ms:+.4f}_vs_relative_{limit}")
+    if mode == RUNNING:
+        if judged is None:
+            kept.append(f"{DRIFT_PREFIX}pending")
+        elif judged[1]:
+            ref = judged[0]
+            kept.append(f"{DRIFT_PREFIX}{(float(rnd['dense_ms']) - ref) / ref:+.4f}"
+                        f"_vs_relative_{limit}")
     return kept
 
 
 def refilter(result: Mapping, *, mode: str, limit: Optional[float] = None,
-             min_clean: Optional[int] = None) -> dict:
+             min_clean: Optional[int] = None, min_rounds: Optional[int] = None) -> dict:
     """A copy of one ground-truth result with its rounds flagged by `mode`,
     each row's samples and statistics recomputed over the unflagged rounds,
     and `complete` set against `min_clean` (default: the reps)."""
     if mode not in FILTERS:
         raise DriftFilterError(f"unknown filter {mode!r}; one of {FILTERS}")
-    if (mode == RELATIVE) != (limit is not None):
-        raise DriftFilterError("a relative limit is given with the relative filter only")
+    if (mode in (RELATIVE, RUNNING)) != (limit is not None):
+        raise DriftFilterError("a relative limit is given with the relative and running "
+                               "filters only")
+    if (mode == RUNNING) != (min_rounds is not None):
+        raise DriftFilterError("min_rounds is given with the running filter only")
     out = copy.deepcopy(dict(result))
     rounds = out["rounds"]
     per_row = [round_samples(row, result["rounds"]) for row in result["rows"]]
     ref = float(out["dense_control"]["reference_ms"])
-    for rnd in rounds:
-        rnd["flag_reasons"] = _reasons(rnd, mode, ref, limit)
+    judged = (running_judgments([float(r["dense_ms"]) for r in rounds],
+                                [bool(_throttle(r)) for r in rounds],
+                                limit=limit, min_rounds=min_rounds)
+              if mode == RUNNING else [None] * len(rounds))
+    for rnd, j in zip(rounds, judged):
+        rnd["flag_reasons"] = _reasons(rnd, mode, ref, limit, j)
         rnd["flagged"] = bool(rnd["flag_reasons"])
     flagged = {r["round"] for r in rounds if r["flagged"]}
     clean = len(rounds) - len(flagged)
@@ -121,5 +145,6 @@ def refilter(result: Mapping, *, mode: str, limit: Optional[float] = None,
     need = int(min_clean if min_clean is not None else out["rows"][0]["reps"])
     out.update(clean_rounds=clean, complete=clean >= need,
                drift_filter={"mode": mode, "relative_limit": limit, "min_clean": need,
+                             "min_rounds": min_rounds,
                              "recorded_clean_rounds": result["clean_rounds"]})
     return out
