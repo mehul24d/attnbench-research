@@ -455,6 +455,110 @@ def test_h6_line_compares_with_the_primary_comparator():
     assert none.lower_mean_regret is None and none.lower_worst_regret is None
 
 
+
+# --- H6 as ruled on 12 Nov 2026 (lock wave, item 3): regret no greater than each comparator's ---
+#
+# On the grid, both admissible: regrets at 16384 and 32768 are dispatcher 0 and 0;
+# kernel-speedup rule 0.375 (b) and 0.025 (a); always dense 0.25 and 0; best kernel
+# config b at both, 0.375 and 0.075. Both points are beyond the 5 s floor (|80 - 100|
+# = 20 and |410 - 400| = 10).
+
+ZERO = {"mean": 0.0, "worst": 0.0}
+
+
+def _scores():
+    return evaluate(points(), measured(), {"u": BOTH}, FLOOR)["u"]
+
+
+def _line(rule, name):
+    (x,) = [x for x in rule.lines if x.comparator == name]
+    return x
+
+
+def test_h6_passes_when_the_dispatcher_is_no_worse_than_every_comparator():
+    rule = D.h6_rule(_scores(), points(), measured(), BOTH, FLOOR, bound=ZERO)
+    assert rule.verdict == "passed" and rule.inside_floor == ()
+    assert [x.comparator for x in rule.lines] == ["always_dense", "best_kernel_config",
+                                                  "kernel_speedup_rule"]
+    k = _line(rule, "kernel_speedup_rule")
+    assert k.n_points == 2 and k.passed
+    assert k.mean_excess == pytest.approx(-0.2) and k.worst_excess == pytest.approx(-0.375)
+    d = _line(rule, "always_dense")
+    assert d.mean_excess == pytest.approx(-0.125) and d.worst_excess == pytest.approx(-0.25)
+    assert _line(rule, "best_kernel_config").mean_excess == pytest.approx(-0.225)
+
+
+def test_h6_fails_on_any_comparator_and_the_bound_is_inclusive():
+    out = _scores()
+    # always dense as the dispatcher, against the dispatcher's own score as the rule:
+    # excess 0.125 (mean) and 0.25 (worst), beyond 0, exactly at the second bound.
+    swapped = {"dispatcher": out["always_dense"], "kernel_speedup_rule": out["dispatcher"]}
+    rule = D.h6_rule(swapped, points(), measured(), BOTH, FLOOR, bound=ZERO)
+    assert rule.verdict == "failed" and not _line(rule, "kernel_speedup_rule").passed
+    at = D.h6_rule(swapped, points(), measured(), BOTH, FLOOR,
+                   bound={"mean": 0.125, "worst": 0.25})
+    assert at.verdict == "passed"
+    assert D.h6_rule(swapped, points(), measured(), BOTH, FLOOR,
+                     bound={"mean": 0.125, "worst": 0.24}).verdict == "failed"
+    assert D.h6_rule(swapped, points(), measured(), BOTH, FLOOR,
+                     bound={"mean": 0.12, "worst": 0.25}).verdict == "failed"
+    # the primary comparator passes, another fails: H6 fails
+    other = {"dispatcher": out["always_dense"], "kernel_speedup_rule": out["kernel_speedup_rule"],
+             "best_kernel_config": out["dispatcher"]}
+    rule = D.h6_rule(other, points(), measured(), BOTH, FLOOR, bound=ZERO)
+    assert _line(rule, "kernel_speedup_rule").passed and rule.verdict == "failed"
+
+
+def test_h6_reads_only_points_beyond_the_floor_and_shared_by_the_pair():
+    out = _scores()
+    # 25 s: 16384's largest spread (20, a) is inside, 32768's (30, b) is not, so
+    # each pair keeps 32768 only; always dense ties the dispatcher there (0 <= 0).
+    rule = D.h6_rule(out, points(), measured(), BOTH, ft(25.0), bound=ZERO)
+    assert rule.inside_floor == (P(16384),) and rule.verdict == "passed"
+    k = _line(rule, "kernel_speedup_rule")
+    assert k.n_points == 1 and k.mean_excess == pytest.approx(-0.025)
+    d = _line(rule, "always_dense")
+    assert d.mean_excess == 0 and d.worst_excess == 0 and d.passed
+    # 35 s: neither point is beyond the floor, so nothing is scored.
+    none = D.h6_rule(out, points(), measured(), BOTH, ft(35.0), bound=ZERO)
+    assert none.verdict == D.NOT_SCORED and all(x.passed is None for x in none.lines)
+    assert none.inside_floor == (P(16384), P(32768))
+    # only the admissible sparse configurations decide it: with a alone at 15 s,
+    # 32768's spread is |410 - 400| = 10, inside
+    only_a = D.h6_rule(out, points(), measured(), {A}, ft(15.0), bound=ZERO)
+    assert only_a.inside_floor == (P(32768),)
+    # a comparator scored at one point is compared there only
+    one = score_policy(points(), {P(16384): B}, measured(), BOTH, FLOOR)
+    rule = D.h6_rule({**out, "best_kernel_config": one}, points(), measured(), BOTH, FLOOR,
+                     bound=ZERO)
+    b = _line(rule, "best_kernel_config")
+    assert b.n_points == 1 and b.mean_excess == pytest.approx(-0.375)
+    assert _line(rule, "kernel_speedup_rule").n_points == 2
+    # a comparator with no shared point has no line verdict and does not decide H6
+    empty = score_policy(points(), {}, measured(), BOTH, FLOOR)
+    rule = D.h6_rule({**out, "best_kernel_config": empty}, points(), measured(), BOTH, FLOOR,
+                     bound=ZERO)
+    assert _line(rule, "best_kernel_config").passed is None and rule.verdict == "passed"
+    # the primary comparator with no shared point: not scored, whatever the others say
+    rule = D.h6_rule({**out, "kernel_speedup_rule": empty}, points(), measured(), BOTH,
+                     FLOOR, bound=ZERO)
+    assert rule.verdict == D.NOT_SCORED
+
+
+@pytest.mark.parametrize("bound", [{"mean": 0.0}, {"mean": -0.1, "worst": 0.0},
+                                   {"mean": 0.0, "worst": float("nan")}])
+def test_h6_refuses_a_bound_that_is_not_mean_and_worst_at_or_above_zero(bound):
+    with pytest.raises(DispatchError, match="the H6 bound"):
+        D.h6_rule(_scores(), points(), measured(), BOTH, FLOOR, bound=bound)
+
+
+def test_h6_needs_the_dispatcher_and_the_primary_comparator():
+    out = _scores()
+    for drop in ("dispatcher", "kernel_speedup_rule"):
+        with pytest.raises(DispatchError, match="kernel-speedup rule at least"):
+            D.h6_rule({k: v for k, v in out.items() if k != drop}, points(), measured(),
+                      BOTH, FLOOR, bound=ZERO)
+
 def test_batch_4_is_not_scored_and_realised_lengths_read_their_budget():
     """Section 4 H6 (batch 4 not scored); lock table row 27 (realised keys)."""
     pred = {CellKey(M, "cp", c.arm, c.density, L, b): v

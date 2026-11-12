@@ -550,6 +550,84 @@ def h6_line(disp: PolicyScore, rule: PolicyScore) -> H6Line:
         dense_best_everywhere=disp.dense_best_everywhere, n_scored=disp.n_scored)
 
 
+PRIMARY_COMPARATOR = "kernel_speedup_rule"
+
+
+@dataclass(frozen=True)
+class H6RuleLine:
+    """The dispatcher against one comparator over the points both are scored
+    at, beyond the point's floor. Excess is the dispatcher's regret minus the
+    comparator's; None where no point is shared."""
+
+    comparator: str
+    n_points: int
+    mean_excess: Optional[float]
+    worst_excess: Optional[float]
+    passed: Optional[bool]
+
+
+@dataclass(frozen=True)
+class H6Rule:
+    bound: Mapping[str, float]
+    lines: tuple[H6RuleLine, ...]
+    inside_floor: tuple[Point, ...]   # shared points left out: no choice matters there
+    verdict: str                      # "passed", "failed" or NOT_SCORED
+
+
+def beyond_floor(p: PointInputs, measured: Mapping[Config, float], admissible,
+                 floors: FloorTable) -> bool:
+    """Whether some measured admissible sparse configuration differs from
+    measured dense by more than the point's floor: where it does not, every
+    choice is dense to within the floor and regret there is noise."""
+    floor_s = _floor_at(_floors(floors), p.point)
+    td = measured[p.dense.config]
+    return any(abs(measured[c.config] - td) > floor_s
+               for c in _admissible(p, admissible) if c.config in measured)
+
+
+def h6_rule(scores: Mapping[str, PolicyScore], points: Sequence[PointInputs],
+            measured: Mapping[Point, Mapping[Config, float]], admissible,
+            floors: FloorTable, *, bound: Mapping[str, float]) -> H6Rule:
+    """H6 as ruled on 12 Nov 2026 (the lock wave, item 3; T4.1 row 1): the
+    dispatcher's regret is no greater than each comparator's, to within
+    `bound` ({"mean", "worst"}, 0 at the lock), each pair on the points both
+    are scored at (`scores` from one admissible set of `evaluate`, so batch
+    4 is already out) and beyond the point's floor (`beyond_floor`). Passed
+    when every comparator with a shared point is; not scored when the
+    primary comparator, the kernel-speedup rule, shares none."""
+    if set(bound) != {"mean", "worst"} or any(not (v >= 0) for v in bound.values()):
+        raise DispatchError(f"the H6 bound is {{'mean', 'worst'}}, each >= 0: {bound!r}")
+    if "dispatcher" not in scores or PRIMARY_COMPARATOR not in scores:
+        raise DispatchError("H6 compares the dispatcher with the kernel-speedup rule at least")
+    by_point = {p.point: p for p in points}
+    adm = frozenset(admissible)
+
+    def regrets(s):
+        return {x.point: x.regret for x in s.points if x.regret is not None}
+    disp = regrets(scores["dispatcher"])
+    lines, inside = [], set()
+    for name in sorted(n for n in scores if n != "dispatcher"):
+        comp = regrets(scores[name])
+        shared = sorted(set(disp) & set(comp))
+        kept = [pt for pt in shared
+                if beyond_floor(by_point[pt], measured[pt], adm, floors)]
+        inside |= set(shared) - set(kept)
+        if not kept:
+            lines.append(H6RuleLine(name, 0, None, None, None))
+            continue
+        mean_x = (statistics.fmean(disp[pt] for pt in kept)
+                  - statistics.fmean(comp[pt] for pt in kept))
+        worst_x = max(disp[pt] for pt in kept) - max(comp[pt] for pt in kept)
+        lines.append(H6RuleLine(name, len(kept), mean_x, worst_x,
+                                mean_x <= bound["mean"] and worst_x <= bound["worst"]))
+    primary = next(x for x in lines if x.comparator == PRIMARY_COMPARATOR)
+    if primary.passed is None:
+        verdict = NOT_SCORED
+    else:
+        verdict = "passed" if all(x.passed for x in lines if x.passed is not None) else "failed"
+    return H6Rule(dict(bound), tuple(lines), tuple(sorted(inside)), verdict)
+
+
 # --------------------------------------------------------------------------
 # Margin against speedup (Section 5.7)
 # --------------------------------------------------------------------------
