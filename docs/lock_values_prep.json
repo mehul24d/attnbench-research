@@ -1,6 +1,6 @@
 {
  "what": "lock preparation (adviser's ruling 5, second set of 12 Nov 2026): every T4.1 value with evidence in hand, the rest null; NOT the lock. At T4.4 it is completed, re-checked against the plan at the lock commit and committed as docs/lock_values.json; what remains is docs/lock_remaining.md",
- "plan_sha256": "2837290c7b4a4d568d4b0e27c08ae6e7a94bcc89e85e241af15f0915272dfdce",
+ "plan_sha256": "b8fd7d2814808adbe4917254ed419663a5d64b7d0e23d4bba42bcb0cec5c37c6",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -314,7 +314,7 @@
   "compiled_versus_eager_density_flag_tolerance": {
    "item": "the compiled-versus-eager density flag tolerance (working ±0.01 absolute)",
    "value": 0.01,
-   "source": "Appendix A, 11 Nov 2026 (adviser's ruling 1c dated 10 Nov 2026)",
+   "source": "Appendix A, 11 Nov 2026 (adviser's ruling 1c dated 10 Nov 2026). Moot: the compiled groups are dropped (the adviser's ruling 4, third set of 12 Nov 2026)",
    "status": "decided"
   },
   "probe_length_rule": {
@@ -342,7 +342,7 @@
   "recompile_gate": {
    "item": "the recompile gate (T2.21: compile events allowed after a compiled arm's warm-up; working 0)",
    "value": 0,
-   "source": "default confirmed 9 Nov 2026; compiled.RECOMPILE_GATE (moot if the compiled group is dropped on 14 Nov 2026)",
+   "source": "default confirmed 9 Nov 2026; compiled.RECOMPILE_GATE. Moot: the compiled groups are dropped from P2 and P4 (the adviser's ruling 4, third set of 12 Nov 2026)",
    "status": "decided"
   },
   "residual_spread_tolerance": {
@@ -368,9 +368,9 @@
    "status": "decided"
   },
   "timed_path_identity_for_p2_and_p4": {
-   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2 and `84edb24d…` after the second set of 12 Nov 2026 rulings; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
-   "value": "84edb24d939633c24375061c734f8ebf83a1e902a5f8e061ac7373057d6b4df2",
-   "source": "scripts/timed_path.py --pin at 56e21eb, 109 items (ruling 1f of 11 Nov 2026); re-checked on the lock commit",
+   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2 and `84edb24d…` after the second set and `3aea782a…` after the third set of 12 Nov 2026 rulings; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
+   "value": "3aea782a999b3fc358a4cb7e419ea1da92fc87f595a82651bfc7e9978262a275",
+   "source": "scripts/timed_path.py --pin at d124c6d, 110 items (ruling 1f of 11 Nov 2026; the third set of 12 Nov 2026 rulings); re-checked on the lock commit",
    "status": "evidence"
   },
   "bootstrap_settings": {

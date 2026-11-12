@@ -2,7 +2,7 @@
 
 Prepared 10 Nov 2026 from the adviser's ruling of 10 Nov 2026. **Launchable
 only on the researcher's yes, in their own words, naming the instances, the
-zone, the commit and the cap. Nothing here runs on its own. The first yes (commit `2053377`, ₹403) is spent: attempt 1 used it. The second (commit `10e1fe1`, ₹296) is spent: attempt 2 used it. The third (commit `59cc607`, ₹254, ₹422 in all) is spent: launch 3 used it.**
+zone, the commit and the cap. Nothing here runs on its own. The first yes (commit `2053377`, ₹403) is spent: attempt 1 used it. The second (commit `10e1fe1`, ₹296) is spent: attempt 2 used it. The third (commit `59cc607`, ₹254, ₹422 in all) is spent: launch 3 used it. The fourth (commit `40b6df5`, ₹254, ₹487 in all) is closed: launch 4 A used ₹71, and B was not run. The rehearsal closed on 12 Nov 2026 (the adviser's ruling 3, third set of 12 Nov 2026; `docs/rehearsal_l4_launch4_gt.md`).**
 
 **Exploratory. No row of this rehearsal enters training, the floors, Gate A,
 the lock or any claim.** Every session it writes says so in `manifest.json`

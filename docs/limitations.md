@@ -3157,3 +3157,22 @@ be: no fix was tested, and leg 2's bound and families are unchanged. Leg 3
 passed (slopes 1.005 to 1.127), so the synchronisation costing is not where
 the gap lies. A pairing's replay-versus-trace check reruns on the first card
 of each new code path before H1 is read there (Section 7).
+
+## P2 and P4 time eager attention only: the compiled groups were dropped (2026-11-12)
+
+The study's later pairings measure no `torch.compile` variant. The compiled groups
+(`compiled_default` and `compiled_capture`, mean-pool and XAttention under each setting) are
+dropped from P2 and P4 by the adviser's ruling 4, third set of 12 Nov 2026. Four L4 rehearsal
+launches (10 to 12 Nov 2026) were meant to exercise them. None reached the compiled stage on a
+GPU: attempts 1 and 2 and launch 3 stopped at step 11, and launch 4 stopped at the eager ground
+truth (`docs/rehearsal_l4_launch4_gt.md`). The compiled path's checks (the recompile gate, the
+twin pass, the mask-dependence check and the density-versus-eager flag) are built and tested on
+a CPU, but were never run on a GPU in the P2 runner. Running them first inside a scored session
+was not accepted.
+
+**What it costs.** H0 to H3 are read on eager arms only. No claim on any pairing covers a
+compiled sparse arm: neither whether compilation changes a prediction's error, nor whether it
+moves the crossover. The banked compiled records of the exploratory session and Shakedowns 4 to 6
+are pre-lock evidence from another runner, and they are not a substitute. T4.1 items 29 (the
+compiled-versus-eager density tolerance) and 33 (the recompile gate) keep their values, and
+nothing reads them.
