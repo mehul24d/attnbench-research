@@ -1,4 +1,4 @@
-# The lock (12 Nov 2026, after the third lock-wave rulings)
+# The lock (12 Nov 2026, after the third lock-wave rulings; re-cut 13 Nov 2026)
 
 The lock (T4.4) is Sat 14 Nov 2026. `docs/lock_values.json` holds all 40 of T4.1's values,
 typed as `attnbench/lock/checklist.SCHEMA` requires, with the scored pairings and P2's and P4's
@@ -29,17 +29,21 @@ The researcher's items: 31 = 0; 18 = 0.8867 (re-run on this lock with
 `scripts/hdbi_threshold.py`: unchanged); 28 = P7, then the chunked extension. Scored pairings:
 H0 [P2], H1 [P2, P4], H2 [P2], H3 [P4], H6 [P4], H4 and H5 not scored.
 
-The timed-path pin is `fa28e01b…` at `9ddb9ee`, and the analysis commit is `9ddb9ee`. They moved
+The timed-path pin is `14e04450…` at `aa02da2`, and the analysis commit is `aa02da2`. They moved
 from `fb6dca8` to `78349e0` when H6's rule changed, then to `341860c` when `learned.LOCKED_CONFIG`
 was set to config 4 for Gate B, then to `9ddb9ee` when the lock fill's chain-check shape was
-fixed (Appendix A, 12 Nov 2026, the second and third lock-wave rulings).
-T4.4 is written Done at `0301fb6`. The tag `lock-2026-11-14` goes on its child, which carries
-the suite counts, the mask-read rows and P2's Flex card. Neither the plan nor the pin changes.
+fixed (Appendix A, 12 Nov 2026, the second and third lock-wave rulings), then to `aa02da2` when
+XAttention's Triton kernels became null entries, after P2's step 7 met them on the A100 (Appendix
+A, 13 Nov 2026; the adviser's rulings dated 13 Nov 2026).
+T4.4 was written Done at `0301fb6`, and the tag `lock-2026-11-14` is on its child `3aa0449`. The
+re-cut's lock commit holds this file, the plan's Appendix A line and the new pin; the tag
+`lock-2026-11-13` goes on its child, which carries the suite counts and P2's relaunch card.
+Neither the plan nor the pin changes there. `lock-2026-11-14` is not moved.
 
 ## Still to do
 
-1. Tag the lock commit (`scripts/tag_lock.py --lock-file docs/lock_values.json --tag
-   lock-2026-11-14`). Pushing the tag needs its own yes.
+1. Tag the re-cut's lock commit (`scripts/tag_lock.py --lock-file docs/lock_values.json --tag
+   lock-2026-11-13`). Pushing the tag needs its own yes.
 2. P4's Flex-start request needs its own yes.
 3. P2's Flex card is built from the lock commit, with the headroom table (`docs/p2_flex_card.md`).
    Its launch needs its own yes.

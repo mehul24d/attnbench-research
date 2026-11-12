@@ -1,6 +1,6 @@
 {
- "what": "the lock (T4.4; the second and third lock-wave rulings of 12 Nov 2026): every T4.1 value, typed as attnbench/lock/checklist.SCHEMA requires, checked against the plan at this commit (plan_sha256); the scored pairings and P2's and P4's pairing values. Built from docs/lock_package_draft.json and the dated rulings each value's source names",
- "plan_sha256": "37708d96fb797a7dbba380b9de799f4e9ca943d01ff6908c0488a143017294c9",
+ "what": "the lock (T4.4; the second and third lock-wave rulings of 12 Nov 2026; re-cut by the adviser's rulings dated 13 Nov 2026): every T4.1 value, typed as attnbench/lock/checklist.SCHEMA requires, checked against the plan at this commit (plan_sha256); the scored pairings and P2's and P4's pairing values. Built from docs/lock_package_draft.json and the dated rulings each value's source names",
+ "plan_sha256": "19a645f5548ef475c50ba0ea50a11f3b7cdf8ef8aed9aadd5e392f21334de234",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -392,9 +392,9 @@
    "status": "decided"
   },
   "timed_path_identity_for_p2_and_p4": {
-   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2, `84edb24d…` after the second set, `3aea782a…` after the third set, `a7ce881e…` after the fourth set, `b5043080…` after the lock-wave rulings of 12 Nov 2026, `b9480848…` after the second lock-wave rulings, `2e07d371…` after the third, for Gate B's learned configuration, and `fa28e01b…` after the lock fill's chain-check fix; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
-   "value": "fa28e01b3b65e2cf679dc889db1bb5fc4b3e170dc60f227dd5f773e8c4e2b4bd",
-   "source": "scripts/timed_path.py --pin at 9ddb9ee, 110 items (ruling 1f of 11 Nov 2026; the third lock-wave rulings of 12 Nov 2026: t31_steps.py's chain-check fill since 2e07d371... at 341860c, where learned.py set LOCKED_CONFIG since b9480848... at 78349e0, where dispatcher.py and checklist.py changed since b5043080... at fb6dca8); re-checked on the lock commit",
+   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2, `84edb24d…` after the second set, `3aea782a…` after the third set, `a7ce881e…` after the fourth set, `b5043080…` after the lock-wave rulings of 12 Nov 2026, `b9480848…` after the second lock-wave rulings, `2e07d371…` after the third, for Gate B's learned configuration, `fa28e01b…` after the lock fill's chain-check fix, and `14e04450…` after XAttention's Triton entries on 13 Nov 2026; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
+   "value": "14e04450fcba0129f94e7c83bf155791c7b9fd095d1afb9d1afba93798572ac9",
+   "source": "scripts/timed_path.py --pin at aa02da2, 110 items (the adviser's rulings dated 13 Nov 2026, item 4: bare_timer.py, host_profile.py, layer_residual.py, t31_steps.py and t61_session.py changed since fa28e01b... at 9ddb9ee, for XAttention's Triton kernels as null entries and the preflight's Triton smoke check; before that, ruling 1f of 11 Nov 2026; the third lock-wave rulings of 12 Nov 2026: t31_steps.py's chain-check fill since 2e07d371... at 341860c, where learned.py set LOCKED_CONFIG since b9480848... at 78349e0, where dispatcher.py and checklist.py changed since b5043080... at fb6dca8); re-checked on the lock commit",
    "status": "evidence"
   },
   "bootstrap_settings": {
@@ -409,8 +409,8 @@
   },
   "analysis_commit": {
    "item": "the analysis commit (the commit whose analysis code scores P2 and P4, pinned by the lock; Appendix A, 11 Nov 2026)",
-   "value": "9ddb9ee71661e4c0a9cc9e2210f31a70e862f475",
-   "source": "the last code commit at the lock, 9ddb9ee (the lock fill's chain-check shape, found by P2's pre-launch pass), after 341860c (learned.LOCKED_CONFIG, Gate B; the third lock-wave rulings of 12 Nov 2026, items 1 and 4), after 78349e0 (H6 on decision errors, the residual spread script), after fb6dca8 (the HDBI fit, the probe flags), which the second lock-wave rulings of 12 Nov 2026 accepted (item 5) before item 3 changed H6's rule; moved from 14e4419 (ruling 2a of 11 Nov 2026; Appendix A, 12 Nov 2026)",
+   "value": "aa02da2e3f9cc1dbe0736c79ba74991c08b2e8c1",
+   "source": "the last code commit at the re-cut, aa02da2 (XAttention's Triton entries; the adviser's rulings dated 13 Nov 2026, item 4), after 9ddb9ee (the lock fill's chain-check shape, found by P2's pre-launch pass), after 341860c (learned.LOCKED_CONFIG, Gate B; the third lock-wave rulings of 12 Nov 2026, items 1 and 4), after 78349e0 (H6 on decision errors, the residual spread script), after fb6dca8 (the HDBI fit, the probe flags), which the second lock-wave rulings of 12 Nov 2026 accepted (item 5) before item 3 changed H6's rule; moved from 14e4419 (ruling 2a of 11 Nov 2026; Appendix A, 12 Nov 2026)",
    "status": "decided"
   },
   "marginal_label_s_sensitivity_floors": {
