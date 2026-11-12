@@ -2,6 +2,9 @@
 # (adviser's ruling 1h dated 10 Nov 2026: P2's and P4's cards pass --suite-record).
 # The 27 failures of the L4 rehearsal's suite record (attempt 1, 2053377), each classified as
 # a CPU-only assumption in docs/gpu_suite_failures_20261110.md; none is a GPU-path defect.
+# Six more from P2's launch 1 on the A100 (12 Nov 2026, 3aa0449): four that take a config too
+# large for 24 GB as infeasible (it fits in 80 GB), two that assume a CPU-only host; for
+# future runs only (the researcher's ruling 1 of 12 Nov 2026; P2 relaunches at the tag).
 # tests/test_timed_region_setup.py is not here: the script runs it on its own (S8, not a gate).
 # One node ID per line; tests/test_gpu_suite_record.py checks that each still exists.
 tests/test_bsa_contract.py::test_a_test_stand_in_for_the_library_is_left_alone
@@ -16,6 +19,10 @@ tests/test_session_exit.py::test_a_passing_dry_run_is_synced_then_halted
 tests/test_session_exit.py::test_a_refused_p1_repeat_is_synced_and_halted
 tests/test_session_exit.py::test_a_refused_session_is_synced_and_halted_with_its_exit_code
 tests/test_session_exit.py::test_with_no_bucket_it_retries_and_still_halts
+tests/test_stage1_memory_lifetime.py::test_a_declined_check_allocates_nothing
+tests/test_stage1_memory_lifetime.py::test_a_declined_check_says_what_could_not_be_verified_and_why
+tests/test_stage1_memory_lifetime.py::test_feasibility_is_not_enforced_on_cpu
+tests/test_stage1_memory_lifetime.py::test_the_largest_configs_are_genuinely_infeasible
 tests/test_t227_shakedown.py::test_the_cpu_steps_pass_a_dry_run[t21_t220]
 tests/test_t227_shakedown.py::test_the_dense_graph_break_report_runs_on_cpu
 tests/test_t228_shakedown.py::test_a_sampler_cost_is_the_run_with_it_minus_the_runs_without
@@ -29,5 +36,7 @@ tests/test_t31_step6_cells.py::test_each_device_cell_has_a_manifest_with_its_inp
 tests/test_t31_step6_cells.py::test_passed_device_cells_resume_and_a_changed_host_cell_reruns
 tests/test_t31_step6_cells.py::test_the_memset_zoo_is_measured_once_for_the_step
 tests/test_t31_wiring.py::test_a_cell_the_replay_cannot_price_stops_the_step
+tests/test_t31_wiring.py::test_a_trained_prediction_with_the_learned_baseline_builds_from_the_session_cells
 tests/test_t31_wiring.py::test_an_arm_the_pricing_gate_refuses_is_labelled_and_left_out_of_the_prediction
 tests/test_t31_wiring.py::test_host_then_device_components_give_the_cells_the_prediction_reads
+tests/test_t61_session.py::test_the_real_preflight_refuses_a_cpu_host

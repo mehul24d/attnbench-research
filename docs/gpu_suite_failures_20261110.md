@@ -35,3 +35,13 @@ The test is built to flag exactly this ("work that depends only on cfg is being 
 ## Consequence
 
 `scripts/gpu_suite_record.sh` as written cannot pass on a GPU host. P2's and P4's cards do not run it (the adviser's ruling of 10 Nov). No CPU-assumption test is fixed now. When the record is wanted, the work is a GPU-safe selection (skip these 27, or mark them `cpu_only`) and the soak guard keyed on the capture, not the device.
+
+## Six more on the A100 (12 Nov 2026)
+
+P2's launch 1 (`attnbench-a100-p2-20261112-2157`, `3aa0449`) ran the record with the 27 deselected: 6 failed, 6404 passed, 221 skipped. None is a GPU-path defect, so all six are in `tests/gpu_host_deselect.txt` for future runs (the researcher's ruling 1 of 12 Nov 2026; P2 relaunches at the tag without the record).
+
+| Test | Cause |
+|---|---|
+| `test_stage1_memory_lifetime.py`, four tests | They take (32768, batch 16) as infeasible, which it is on the L4's 24 GB; on 80 GB it fits |
+| `test_t31_wiring.py::test_a_trained_prediction_with_the_learned_baseline_builds_from_the_session_cells` | Runs the real device path against the test's string stand-ins on a GPU host (`'str' object has no attribute 'replay'`); its sibling is already in the list |
+| `test_t61_session.py::test_the_real_preflight_refuses_a_cpu_host` | Expects the preflight to refuse a CPU-only host; on a GPU host it does not |
