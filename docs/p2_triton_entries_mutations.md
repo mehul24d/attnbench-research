@@ -31,3 +31,18 @@ Driver: `pytest -x`; killed means at least one test failed. 19 of 19 killed.
 M18 was first killed only by `test_the_deployed_timed_path_is_the_one_decided_for_the_lock`,
 which failed for the pin, not the mutation (vacuous); the preflight test was added and M18
 rerun against it alone.
+
+## The budget interlock's ruled-out provisioning (item 6)
+
+P4 on Spot is ruled out (`budget_interlock.RULED_OUT`): neither launched nor counted against
+another pairing's launch. Run against `tests/test_budget_interlock.py`; 7 of 7 killed.
+
+| # | Mutation | Killed |
+|---|---|---|
+| B1 | `cases` ignores the ruled-out set | yes |
+| B2 | `Case.possible` ignores it | yes |
+| B3 | `launch_headroom` counts ruled-out cases | yes |
+| B4 | `may_launch` ignores `possible` | yes |
+| B5 | `current` drops `RULED_OUT` | yes |
+| B6 | `RULED_OUT` names no real pairing | yes |
+| B7 | the CLI ignores a ruled-out launch | yes |

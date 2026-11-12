@@ -11,7 +11,10 @@ L4 rehearsal's launch 4 (its card's cap) until the rehearsal closes, P2 and P4 (
 from its minutes file). A launch of one pairing on one provisioning counts the
 other pairing at the dearest provisioning the one-Spot rule still allows it,
 so P2 on Flex-start is counted with P4 on Spot, and P2 on Spot with P4 on
-Flex-start only (P4 then cannot fall back to Spot).
+Flex-start only (P4 then cannot fall back to Spot). A provisioning ruled out
+(`RULED_OUT`) is neither launched nor counted: P4 on Spot since the adviser's
+rulings dated 13 Nov 2026 (item 6), so P2 on Flex-start is counted with P4
+on Flex-start.
 
     python3 scripts/budget_interlock.py                  # the table
     python3 scripts/budget_interlock.py --launch P2:FLEX_START   # exit 2 if refused
@@ -35,6 +38,9 @@ BUDGET_INR = 14_000            # plan Section 5.2, new spend through 30 Nov 2026
 REHEARSAL_CAP_RULED = 403      # the rehearsal's cap as ruling 1g names it (in all)
 PROVISIONING = ("FLEX_START", "SPOT")
 PAIRINGS = ("P2", "P4")
+# (pairing, provisioning) -> the ruling that took it off the table
+RULED_OUT = {("P4", "SPOT"): "the adviser's rulings dated 13 Nov 2026, item 6: Spot no longer "
+                             "fits the budget"}
 _HEAD = "### New-spend headroom against the ₹14,000 budget"
 _ROW = re.compile(r"^\|\s*(?!\*\*Total)(.+?)\s*\|\s*~?([\d,]+)\s*\|\s*$")
 _TOTAL = re.compile(r"^\|\s*\*\*Total\*\*\s*\|\s*\*\*~?([\d,]+)\*\*\s*\|\s*$")
@@ -96,18 +102,25 @@ class Case:
     p4: str
     committed: int          # spent + every still-planned cap
     headroom: int
+    ruled_out: bool = False  # a provisioning in it is ruled out (`RULED_OUT`)
+
+    @property
+    def possible(self) -> bool:
+        """The one-Spot rule and no provisioning ruled out."""
+        return not (self.p2 == self.p4 == "SPOT") and not self.ruled_out
 
     @property
     def allowed(self) -> bool:
-        """The one-Spot rule and a headroom of at least zero."""
-        return not (self.p2 == self.p4 == "SPOT") and self.headroom >= 0
+        """Possible, and a headroom of at least zero."""
+        return self.possible and self.headroom >= 0
 
 
-def cases(spent_inr: int, rehearsal_inr: int, caps: dict) -> list:
+def cases(spent_inr: int, rehearsal_inr: int, caps: dict, ruled_out=()) -> list:
     out = []
     for p2, p4 in product(PROVISIONING, PROVISIONING):
         c = spent_inr + rehearsal_inr + caps["P2"][p2] + caps["P4"][p4]
-        out.append(Case(p2, p4, c, BUDGET_INR - c))
+        out.append(Case(p2, p4, c, BUDGET_INR - c,
+                        ruled_out=("P2", p2) in ruled_out or ("P4", p4) in ruled_out))
     return out
 
 
@@ -115,15 +128,21 @@ def launch_headroom(pairing: str, provisioning: str, all_cases) -> int:
     """The headroom a launch of `pairing` on `provisioning` leaves, the other
     pairing at the dearest provisioning the one-Spot rule allows with it."""
     i = PAIRINGS.index(pairing)
-    mine = [c for c in all_cases if (c.p2, c.p4)[i] == provisioning
-            and not (c.p2 == c.p4 == "SPOT")]
+    mine = [c for c in all_cases if (c.p2, c.p4)[i] == provisioning and c.possible]
     if not mine:
         raise ValueError(f"{pairing} on {provisioning} is allowed with nothing")
     return min(c.headroom for c in mine)
 
 
+def possible(pairing: str, provisioning: str, all_cases) -> bool:
+    """Whether any case the rules allow has `pairing` on `provisioning`."""
+    i = PAIRINGS.index(pairing)
+    return any((c.p2, c.p4)[i] == provisioning and c.possible for c in all_cases)
+
+
 def may_launch(pairing: str, provisioning: str, all_cases) -> bool:
-    return launch_headroom(pairing, provisioning, all_cases) >= 0
+    return possible(pairing, provisioning, all_cases) and \
+        launch_headroom(pairing, provisioning, all_cases) >= 0
 
 
 def current() -> tuple[int, tuple, dict, list]:
@@ -135,7 +154,7 @@ def current() -> tuple[int, tuple, dict, list]:
     card, done = rehearsal_cap(text)
     caps = pairing_caps()
     r = 0 if rehearsal_closed(text) is not None else max(card, REHEARSAL_CAP_RULED - done)
-    return s, (card, done), caps, cases(s, r, caps)
+    return s, (card, done), caps, cases(s, r, caps, RULED_OUT)
 
 
 def _p(prov: str) -> str:
@@ -168,14 +187,19 @@ def section(pairing: str) -> list:
            "|---|---|---|---|---|"]
     for c in cs:
         why = ("no: both on Spot" if c.p2 == c.p4 == "SPOT" else
+               "no: ruled out" if c.ruled_out else
                "no: negative" if c.headroom < 0 else "yes")
         out.append(f"| {_p(c.p2)} | {_p(c.p4)} | {c.committed:,} | {c.headroom:,} | {why} |")
     out.append("")
+    for (pp, prov), why in RULED_OUT.items():
+        out.append(f"- **{pp} on {_p(prov)}: ruled out** ({why}).")
     for prov in PROVISIONING:
+        if not possible(pairing, prov, cs):
+            continue
         h = launch_headroom(pairing, prov, cs)
         out.append(f"- **{pairing} on {_p(prov)}: "
                    f"{'may launch' if h >= 0 else 'REFUSED'}**, headroom ₹{h:,} with the "
-                   "other pairing at the dearest provisioning the rule allows.")
+                   "other pairing at the dearest provisioning the rules allow.")
     return out + [""]
 
 
@@ -186,6 +210,9 @@ def main(argv=None) -> int:
     if args.launch:
         pairing, prov = args.launch.split(":")
         _, _, _, cs = current()
+        if not possible(pairing, prov, cs):
+            print(f"{pairing} on {prov}: REFUSED: ruled out ({RULED_OUT.get((pairing, prov))})")
+            return 2
         h = launch_headroom(pairing, prov, cs)
         print(f"{pairing} on {prov}: headroom Rs {h}; "
               f"{'may launch' if h >= 0 else 'REFUSED: negative headroom'}")

@@ -100,3 +100,29 @@ def test_a_closed_rehearsal_reserves_nothing_and_its_spend_is_the_ledgers(monkey
     s, _, _, cs = BI.current()
     assert BI.rehearsal_closed(text) <= s
     assert cs[0].committed == s + 1000 + 2000                   # nothing reserved
+
+
+# --- a ruled-out provisioning (the adviser's rulings dated 13 Nov 2026, item 6) ---------------
+
+def test_a_ruled_out_provisioning_is_neither_launched_nor_counted():
+    cs = BI.cases(4000, 250, CAPS, {("P4", "SPOT"): "x"})
+    # P2 on Flex-start: P4 may no longer go Spot, so P4 is counted at Flex-start
+    assert BI.launch_headroom("P2", "FLEX_START", cs) == 14000 - 4250 - 1000 - 2000
+    assert not BI.possible("P4", "SPOT", cs) and not BI.may_launch("P4", "SPOT", cs)
+    flex_spot = [c for c in cs if c.p2 == "FLEX_START" and c.p4 == "SPOT"][0]
+    assert flex_spot.ruled_out and not flex_spot.allowed and flex_spot.headroom > 0
+    assert BI.may_launch("P2", "FLEX_START", cs) and BI.may_launch("P4", "FLEX_START", cs)
+
+
+def test_the_real_interlock_rules_out_p4_on_spot():
+    assert set(BI.RULED_OUT) == {("P4", "SPOT")}
+    _, _, _, cs = BI.current()
+    assert not BI.possible("P4", "SPOT", cs) and BI.possible("P4", "FLEX_START", cs)
+
+
+def test_the_cli_refuses_a_ruled_out_launch(monkeypatch, capsys):
+    cs = BI.cases(4000, 0, CAPS, BI.RULED_OUT)
+    monkeypatch.setattr(BI, "current", lambda: (4000, (250, 233), CAPS, cs))
+    assert BI.main(["--launch", "P4:SPOT"]) == 2
+    assert "ruled out" in capsys.readouterr().out
+    assert BI.main(["--launch", "P2:FLEX_START"]) == 0
