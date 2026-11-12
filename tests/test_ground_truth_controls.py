@@ -186,6 +186,48 @@ def test_every_round_is_checked_for_its_timed_region_including_reruns(monkeypatc
     assert seen and all(s == list(range(REPS + 1)) for s in seen)
 
 
+# P2 and P4's protocol (adviser's rulings 1 and 2, fourth set of 12 Nov 2026)
+
+def _held_out(rig, **kw):
+    import dataclasses
+    rig.controls = dataclasses.replace(rig.controls, **kw)
+    return rig
+
+
+@pytest.mark.parametrize("drift,limit,flagged", [
+    (6.0, 0.25, False),     # beyond the 5 ms floor, inside 25% of 30 ms: the floor is not read
+    (2.0, 0.05, True),      # inside the floor, beyond 5%
+    (6.0, 0.10, True), (-9.0, 0.25, True), (-7.0, 0.25, False)])
+def test_a_relative_limit_replaces_the_floor(drift, limit, flagged):
+    rig = _held_out(Rig({"dense": lambda i: 30.0 + (drift if i == WARMUP else 0.0)},
+                        max_rerun=0), drift_limit_relative=limit)
+    out = rig.run(reps=1)
+    assert out["rounds"][0]["flagged"] is flagged
+    assert out["controls"]["drift_limit_relative"] == limit
+    if flagged:
+        assert out["rounds"][0]["flag_reasons"][0] == \
+            f"dense_drift_{drift / 30.0:+.4f}_vs_relative_{limit}"
+
+
+def test_complete_at_the_minimum_clean_rounds_not_the_reps():
+    def drifts(i):
+        return 30.0 + (15.0 if i == WARMUP + 1 else 0.0)        # round 1 flagged
+    out = _held_out(Rig({"dense": drifts}, max_rerun=0), min_clean_rounds=2).run()
+    assert out["clean_rounds"] == 2 and out["rounds_run"] == REPS and out["complete"] is True
+    assert out["controls"]["min_clean_rounds"] == 2
+    out = _held_out(Rig({"dense": drifts}, max_rerun=0), min_clean_rounds=3).run()
+    assert out["complete"] is False
+    out = Rig({"dense": drifts}, max_rerun=0).run()               # P1: reps clean rounds
+    assert out["complete"] is False and out["controls"]["min_clean_rounds"] == REPS
+    with pytest.raises(ValueError, match="above reps"):
+        _held_out(Rig(), min_clean_rounds=REPS + 1).run()
+    for bad in ({"min_clean_rounds": 0}, {"drift_limit_relative": 0.0},
+                {"drift_limit_relative": 1.0}, {"drift_limit_relative": float("nan")}):
+        with pytest.raises(ValueError):
+            gt.Controls(resolution_floor_ms=FLOOR, max_rerun_rounds=0, sampler=Rig().sampler,
+                        **bad)
+
+
 # --- clock and throttle sampling ----------------------------------------------
 
 def _first_block_window(rig_clock_free=True):

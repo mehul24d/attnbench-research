@@ -16,7 +16,7 @@
   "dense_select": {"minutes": [15], "basis": "estimate (FA3 among the candidates)"},
   "host_speed_mid": {"minutes": [2], "basis": "estimate"},
   "predict": {"minutes": [3], "basis": "estimate"},
-  "ground_truth": {"minutes": [2, 28, 5], "basis": "the hold, then measured: T3.2d step 9 (eager group, traced pass included), L4, then estimate: the Kineto export"},
+  "ground_truth": {"minutes": [2, 28, 5, 14], "basis": "the hold, then measured: T3.2d step 9 (eager group, traced pass included), L4, then estimate: the Kineto export, then the worst case of 5 reruns at every cell (the adviser's ruling 2, fourth set of 12 Nov 2026): 5 extra rounds on 10, half of the 28 measured minutes, warm-ups and the traced pass included, so an upper bound"},
   "late_check": {"minutes": [1], "basis": "estimate"},
   "trace_checks": {"minutes": [5], "basis": "estimate"},
   "host_speed_end": {"minutes": [2], "basis": "estimate"}

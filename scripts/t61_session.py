@@ -165,10 +165,13 @@ class NotBuilt(StepFailed):
 class Requirement:
     """A plan task whose Section 8 status must start with "Done", or, for P2
     and a task that is not a gate, "Waived for P2" with a dated Appendix A
-    citation (`unmet`)."""
+    citation (`unmet`). `read`: a P2 or P4 runner reads the task's output, so
+    it cannot be "Waived for P2/P4" (adviser's ruling 5, fourth set of 12 Nov
+    2026)."""
     task: str
     why: str
     gate: bool = False
+    read: bool = True
 
 
 @dataclass(frozen=True)
@@ -457,24 +460,50 @@ def plan_statuses(text: str) -> dict:
 
 
 WAIVER = "Waived for P2"
+WAIVER_BOTH = "Waived for P2/P4"     # ruling 5, fourth set of 12 Nov 2026
+WAIVER_PAIRINGS = ("P2", "P4")
 _CITATION = re.compile(r"Appendix A, (\d{1,2} [A-Z][a-z]{2} \d{4})")
 _A_LINE = re.compile(r"^- \*\*(\d{1,2} [A-Z][a-z]{2} \d{4})\.\*\*", re.M)
 
 
-def appendix_a_dates(text: str) -> frozenset:
+class AppendixDates(frozenset):
+    """The dates Appendix A has a line for, each with its lines (`lines`)."""
+
+    def __new__(cls, lines: dict):
+        obj = super().__new__(cls, lines)
+        obj.lines = lines
+        return obj
+
+
+def appendix_a_dates(text: str) -> AppendixDates:
     """The dates Appendix A has a line for ("- **10 Nov 2026.** ...")."""
     a = text.find("## Appendix A")
     b = text.find("## Appendix B", a)
-    return frozenset(_A_LINE.findall(text[a:b if b > a else None])) if a >= 0 else frozenset()
+    lines: dict = {}
+    if a >= 0:
+        for line in text[a:b if b > a else None].splitlines():
+            m = _A_LINE.match(line)
+            if m:
+                lines.setdefault(m.group(1), []).append(line)
+    return AppendixDates(lines)
 
 
 def waived(r: Requirement, status: str, appendix: frozenset, pairing: str | None) -> bool:
     """A waiver meets a requirement only for P2, never for a gate, and only
     when the status cites an Appendix A line that exists (adviser's ruling 1b
-    dated 10 Nov 2026)."""
-    if pairing != "P2" or r.gate or not status.startswith(WAIVER):
+    dated 10 Nov 2026). "Waived for P2/P4" meets it for either pairing, for a
+    task no runner reads, when a line of the cited date names the task and
+    states what is lost (adviser's ruling 5, fourth set of 12 Nov 2026)."""
+    if r.gate:
         return False
     m = _CITATION.search(status)
+    if status.startswith(WAIVER_BOTH):
+        if pairing not in WAIVER_PAIRINGS or r.read or m is None:
+            return False
+        lines = getattr(appendix, "lines", {}).get(m.group(1), ())
+        return any(r.task in x and "lost" in x for x in lines)
+    if pairing != "P2" or not status.startswith(WAIVER):
+        return False
     return m is not None and m.group(1) in appendix
 
 
@@ -1157,7 +1186,8 @@ def t31_ground_truth_result(d: Path) -> dict:
     block drift check reads), the earliest stamp T3.1's session start reads
     (each group's pre-forward stamp and first clocked blocks), complete only
     if every result is."""
-    rows, stamps, complete = [], [], True
+    from attnbench.analysis.drift_filter import flag_counts
+    rows, stamps, complete, short = [], [], True, []
     for st_path in sorted(Path(d).glob("*/stamps.json")):
         s = json.loads(st_path.read_text())
         stamps += [s["clock_not_before"], *s["first_clocked_block_started_at"]]
@@ -1166,12 +1196,36 @@ def t31_ground_truth_result(d: Path) -> dict:
             if r.get("traced"):
                 raise StepFailed(f"{g} is traced: ground truth is untraced")
             complete = complete and r.get("complete") is True
+            if r.get("complete") is not True:
+                short.append({"group": st_path.parent.name, "cell": g.stem[len("gt_"):],
+                              "clean_rounds": r.get("clean_rounds"),
+                              "rounds_run": r.get("rounds_run"),
+                              "reps": ((r.get("controls") or {}).get("min_clean_rounds")
+                                       or (r.get("rows") or [{}])[0].get("reps")),
+                              "max_rerun_rounds": (r.get("controls") or {}).get("max_rerun_rounds"),
+                              "flags": flag_counts(r) if "rounds" in r else {}})
             rows += [dict(row, group=st_path.parent.name, cell=t31_row_cell(row),
                           median_ms=row["prefill_ms_median"])
                      for row in r["rows"]]
     if not rows:
         raise StepFailed(f"no ground-truth rows under {d}")
-    return {STRICT_KEY: min(stamps), "complete": complete, "untraced": {"rows": rows}}
+    return {STRICT_KEY: min(stamps), "complete": complete, "incomplete": short,
+            "untraced": {"rows": rows}}
+
+
+def incomplete_message(result: dict) -> str:
+    """Why a ground truth is incomplete, by cell and flag type (the adviser's
+    ruling 2, third set of 12 Nov 2026: launch 4 A's named neither)."""
+    short = result.get("incomplete")
+    if not short:
+        return "the ground truth is incomplete, and the harness named no short cell"
+    parts = []
+    for c in short:
+        flags = ", ".join(f"{k} {n}" for k, n in c["flags"].items()) or "no flagged round"
+        parts.append(f"{c['group']} {c['cell']}: {c['clean_rounds']} clean of {c['reps']} in "
+                     f"{c['rounds_run']} rounds, rerun budget {c['max_rerun_rounds']} "
+                     f"(flagged rounds: {flags})")
+    return "the ground truth is incomplete: " + "; ".join(parts)
 
 
 def real_harness(cfg, args, block=None, *, step_fn=None) -> dict:
@@ -1248,8 +1302,7 @@ def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
     findings = check_stamp(result, synced_at=synced, opened_at=opened_at, ended_at=ended,
                            earlier_start=earlier)
     if result.get("complete") is not True:
-        raise StepFailed("the ground truth is incomplete: flagged rounds exceeded the reruns",
-                         findings)
+        raise StepFailed(incomplete_message(result), findings)
     write_json(Path(args.out) / "traces.json", result.get("traces", []))
     return findings
 
@@ -1547,7 +1600,7 @@ PHASE2 = (
     Requirement("T2.18", "the structural probe for a new code path"),
     Requirement("T2.19", "naive baselines and intervals in the committed file"),
     Requirement("T2.20", "provenance fields on every row"),
-    Requirement("T2.21", "compiled variants"),
+    Requirement("T2.21", "compiled variants", read=False),     # dropped from P2 and P4
     Requirement("T2.22", "the dispatcher's choice in the committed file (H6)"),
     Requirement("T2.26", "the GPU suite record run by the launch scripts"),
 )

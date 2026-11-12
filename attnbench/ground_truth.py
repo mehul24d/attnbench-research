@@ -55,7 +55,9 @@ as throttled. A flagged round is excluded from every statistic and rerun, up
 to `Controls.max_rerun_rounds` extra rounds; if fewer than `reps` clean rounds
 result, the result says `complete: False` and nothing hides it. The floor is
 fixed at lock from the measured run-to-run spread (Appendix A, 25 Oct 2026),
-so it has no default here.
+so it has no default here. P2 and P4 flag drift relative to the warm-up time
+instead (`Controls.drift_limit_relative`), and are complete at the lock's
+`min_clean_rounds` (adviser's rulings 1 and 2, fourth set of 12 Nov 2026).
 
 **The first clocked block's timestamp** (Appendix A, 25 and 27 Oct 2026) is
 the wall clock read immediately before the opening synchronise of the first
@@ -417,15 +419,24 @@ def quantile(samples: list, q: float) -> float:
 class Controls:
     """What the session decided before timing anything. No defaults: each is
     a lock-time decision (plan Section 5.6) and is recorded on the result."""
-    resolution_floor_ms: float   # dense drift beyond this flags a round
+    resolution_floor_ms: float   # dense drift beyond this flags a round (P1's protocol)
     max_rerun_rounds: int        # extra rounds allowed to replace flagged ones
     sampler: "BlockSampler | ProcessSampler"   # clocks and throttle reasons, every block
+    # P2 and P4 (adviser's rulings 1 and 2, fourth set of 12 Nov 2026): None
+    # keeps P1's protocol, the absolute floor above and `reps` clean rounds.
+    drift_limit_relative: Optional[float] = None   # |drift| / warm-up time beyond this flags
+    min_clean_rounds: Optional[int] = None         # clean rounds for `complete`
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.resolution_floor_ms) and self.resolution_floor_ms > 0):
             raise ValueError("resolution_floor_ms must be a positive number")
         if self.max_rerun_rounds < 0:
             raise ValueError("max_rerun_rounds must be >= 0")
+        r = self.drift_limit_relative
+        if r is not None and not (math.isfinite(r) and 0 < r < 1):
+            raise ValueError("drift_limit_relative must be a fraction in (0, 1)")
+        if self.min_clean_rounds is not None and self.min_clean_rounds < 1:
+            raise ValueError("min_clean_rounds must be >= 1")
         s = self.sampler
         # Audit C3, finding 1: a counters-only sampler reads the bits only at
         # the block's edges, where the GPU is idle, and no counter can show
@@ -578,6 +589,9 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
     """
     if reps < 1:
         raise ValueError("reps must be >= 1")
+    need = reps if controls.min_clean_rounds is None else controls.min_clean_rounds
+    if need > reps:
+        raise ValueError(f"min_clean_rounds {need} is above reps {reps}: no session reaches it")
     if warmup < 2:
         raise ValueError("warmup must be >= 2: the first clocked forward is the "
                          "cold call and is dropped from the dense control's "
@@ -647,8 +661,12 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
             block_clock[a.name][r] = got[0]
         drift = round_ms[control.name] - reference_ms
         reasons = []
-        if abs(drift) > floor:
-            reasons.append(f"dense_drift_{drift:+.3f}ms_vs_{floor}ms_floor")
+        limit = controls.drift_limit_relative
+        if limit is None:
+            if abs(drift) > floor:
+                reasons.append(f"dense_drift_{drift:+.3f}ms_vs_{floor}ms_floor")
+        elif abs(drift) / reference_ms > limit:
+            reasons.append(f"dense_drift_{drift / reference_ms:+.4f}_vs_relative_{limit}")
         for a in arms:
             if clocks[a.name].flagged:
                 reasons.append(f"{a.name}:throttled:" + "+".join(clocks[a.name].flag_reasons))
@@ -719,12 +737,14 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
         check_row(rows[-1], f"time_arms' row for {a.name}")
     return {
         "first_clocked_block_started_at": first_started,
-        "complete": clean == reps, "clean_rounds": clean, "rounds_run": r,
+        "complete": clean >= need, "clean_rounds": clean, "rounds_run": r,
         "traced": tracer is not None,
         "dense_control": {"arm": control.name, "warmup_ms": dense_warmup_ms,
                           "reference_ms": reference_ms,
                           "resolution_floor_ms": floor},
         "controls": {"max_rerun_rounds": controls.max_rerun_rounds,
+                     "min_clean_rounds": need,
+                     "drift_limit_relative": controls.drift_limit_relative,
                      "flag_bits": reason_names(sampler.flag_bits),
                      "sampler_interval_s": sampler.interval_s,
                      "sampler_kind": type(sampler).__name__},

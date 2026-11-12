@@ -1,6 +1,6 @@
 {
  "what": "lock preparation (adviser's ruling 5, second set of 12 Nov 2026): every T4.1 value with evidence in hand, the rest null; NOT the lock. At T4.4 it is completed, re-checked against the plan at the lock commit and committed as docs/lock_values.json; what remains is docs/lock_remaining.md",
- "plan_sha256": "2837290c7b4a4d568d4b0e27c08ae6e7a94bcc89e85e241af15f0915272dfdce",
+ "plan_sha256": "fa55d74224172e06c434e2b6a806baf1815b891a5e2e3b8cfd2250232c4f0a35",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -262,11 +262,12 @@
   },
   "rerun_budget": {
    "item": "rerun budget (flagged rounds, and the minimum clean rounds)",
-   "value": null,
-   "source": null,
-   "status": "owed: data",
-   "proposed": "One extra round, 3 clean rounds; the dense-control drift filter relative since 9 Nov 2026 (6.31%, the 0.95 quantile of |drift| / warm-up time over T3.2a's and T3.2b's 120 rounds; Appendix A), applied after the session from the per-round record",
-   "basis": "lock table row 23"
+   "value": {
+    "max_rerun_rounds": 5,
+    "min_clean_rounds": 10
+   },
+   "source": "the adviser's ruling 2, fourth set of 12 Nov 2026 (the runner honours min_clean_rounds; every card's cap carries 5 reruns at every cell)",
+   "status": "decided"
   },
   "throttle_set": {
    "item": "throttle set",
@@ -291,11 +292,12 @@
   },
   "prompt_set_hash_and_tokenizer_version": {
    "item": "prompt-set hash and tokenizer version",
-   "value": null,
-   "source": null,
-   "status": "owed: data",
-   "proposed": "Record from T3.2's prompts and the image's transformers 4.46.0",
-   "basis": "lock table row 26"
+   "value": {
+    "prompt_set_sha256": "cee769a20c10f7e226eec99582583b399cacae5083b9134c1437d2ec6c2c9c0c",
+    "tokenizer_version": "transformers 4.46.0 (the GPU image's), the primary model's pinned tokenizer"
+   },
+   "source": "scripts/prompt_set_hash.py --lengths 2048 4096 8192 16384 32768 (qa_1, seed 0, the cell and second prompts); rebuilt on the Mac under transformers 5.16.1, every length's token count equal to T3.2a to T3.2d's ground-truth rows",
+   "status": "evidence"
   },
   "realised_length_key_rule": {
    "item": "realised-length key rule",
@@ -314,7 +316,7 @@
   "compiled_versus_eager_density_flag_tolerance": {
    "item": "the compiled-versus-eager density flag tolerance (working ±0.01 absolute)",
    "value": 0.01,
-   "source": "Appendix A, 11 Nov 2026 (adviser's ruling 1c dated 10 Nov 2026)",
+   "source": "Appendix A, 11 Nov 2026 (adviser's ruling 1c dated 10 Nov 2026). Moot: the compiled groups are dropped (the adviser's ruling 4, third set of 12 Nov 2026)",
    "status": "decided"
   },
   "probe_length_rule": {
@@ -342,7 +344,7 @@
   "recompile_gate": {
    "item": "the recompile gate (T2.21: compile events allowed after a compiled arm's warm-up; working 0)",
    "value": 0,
-   "source": "default confirmed 9 Nov 2026; compiled.RECOMPILE_GATE (moot if the compiled group is dropped on 14 Nov 2026)",
+   "source": "default confirmed 9 Nov 2026; compiled.RECOMPILE_GATE. Moot: the compiled groups are dropped from P2 and P4 (the adviser's ruling 4, third set of 12 Nov 2026)",
    "status": "decided"
   },
   "residual_spread_tolerance": {
@@ -368,9 +370,9 @@
    "status": "decided"
   },
   "timed_path_identity_for_p2_and_p4": {
-   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2 and `84edb24d…` after the second set of 12 Nov 2026 rulings; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
-   "value": "84edb24d939633c24375061c734f8ebf83a1e902a5f8e061ac7373057d6b4df2",
-   "source": "scripts/timed_path.py --pin at 56e21eb, 109 items (ruling 1f of 11 Nov 2026); re-checked on the lock commit",
+   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2, `84edb24d…` after the second set, `3aea782a…` after the third set and `a7ce881e…` after the fourth set of 12 Nov 2026 rulings; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
+   "value": "a7ce881ed9a345cd5601df6742135c5c9a562d4c091e9f430e520b3303af56e0",
+   "source": "scripts/timed_path.py --pin at 43b5963, 110 items (ruling 1f of 11 Nov 2026; the fourth set of 12 Nov 2026 rulings); re-checked on the lock commit",
    "status": "evidence"
   },
   "bootstrap_settings": {
