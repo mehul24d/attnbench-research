@@ -60,3 +60,29 @@ plan's text says the drift flag "reads the session floor `dense_select` derives"
 8 Nov 2026). That is P1's case only. No ruling covers P2's, so this conflicts with the plan's
 text. The resolution floor is a spread of repetitions about their series median. Nothing tested
 it as a limit on the dense control's offset from its warm-up reference.
+
+## Ruled: P2 and P4 flag drift relative to the warm-up time (fourth set of 12 Nov 2026)
+
+The adviser's ruling 1: during the session, P2 and P4 flag a round when |dense − warm-up| /
+warm-up exceeds 6.31% (`t31_steps.RELATIVE_DRIFT_LIMIT`, the 9 Nov 2026 limit from T3.2a and
+T3.2b). This replaces the absolute floor. P1's sessions keep the protocol they ran under. The
+warm-up is not changed. Its offset is a known effect: every timed round runs faster than the
+warm-up reference, by about 6% at 2048.
+
+**Applied retroactively** to the local round records of the P1 repeats
+(`drift_filter.refilter`, relative, limit `0.06311947327826187`; clean rounds of 10; no
+throttle flag in any session):
+
+| Session (session floor) | 2048 × 1 | 4096 × 1 | 8192 × 1 | 16384 × 1 | 16384 × 4 | 32768 × 1 |
+|---|---|---|---|---|---|---|
+| T3.2a (114.48 ms): as recorded / relative | 10 / 6 | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 |
+| T3.2b (51.29 ms) | 10 / 8 | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 |
+| T3.2c (52.83 ms) | 10 / 8 | 10 / 10 | 10 / 10 | 8 / 10 | 2 / 10 | 10 / 10 |
+| T3.2d (89.47 ms) | 10 / 8 | 10 / 10 | 10 / **1** | 10 / 10 | 10 / 10 | 10 / 10 |
+
+Under the relative limit, the 2048 cell loses 2 to 4 rounds in every session. T3.2c's two
+16384 groups become complete. **T3.2d's 8192 × 1 keeps 1 of 10 rounds.** Its median drift is
+−8.5%, so the warm-up offset is not confined to 2048. With the ruled budget (5 extra rounds, 10
+clean required), the 2048 cells would need 2 to 4 of the 5 reruns clean. T3.2d's 8192 cell
+would need 9 clean rounds from 5, so it would have been incomplete. That is the sensitivity:
+P2's in-session rule, applied to P1's own sessions, refuses one of P1's 24 cells.
