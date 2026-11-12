@@ -134,7 +134,9 @@ LOCK_SOURCED = {
     "max_rerun_rounds": ("rerun_budget", lambda v: v["max_rerun_rounds"]),
     "min_clean_rounds": ("rerun_budget", lambda v: v["min_clean_rounds"]),
     "resolution_floor_ms": ("resolution_and_noise_floors", lambda v: v["resolution_floor_ms"]),
-    "chain_check_tolerance": ("chain_check_tolerance", lambda v: v),
+    # the lock types it one fraction (T4.1 row 32); the steps read {"aggregate"},
+    # as the working table holds it (found by P2's pre-launch pass, 12 Nov 2026)
+    "chain_check_tolerance": ("chain_check_tolerance", lambda v: {"aggregate": v}),
     "residual_spread_tolerance": ("residual_spread_tolerance", lambda v: v),
     "pricing_mismatch_share": ("pricing_mismatch_share", lambda v: v),
 }

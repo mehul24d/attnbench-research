@@ -54,11 +54,26 @@ def test_a_complete_lock_fills_p2s_values_and_says_so(tmp_path, monkeypatch):
     assert cfg["flag_reasons"] == v["throttle_set"]
     assert cfg["lengths"] == v[st.GRID_ITEM]["lengths"]
     assert cfg["resolution_floor_ms"] == v["resolution_and_noise_floors"]["resolution_floor_ms"]
-    assert cfg["chain_check_tolerance"] == v["chain_check_tolerance"]
+    assert cfg["chain_check_tolerance"] == {"aggregate": v["chain_check_tolerance"]}
     assert "working_values" not in cfg
     assert cfg["lock_values"]["source"] == "lock_values.json"
     assert set(cfg["lock_values"]["filled"]) >= {"densities", "reps", "dense_rounds",
                                                  "gt_groups.eager", "max_rerun_rounds"}
+
+
+def test_each_filled_value_has_the_working_value_s_shape(tmp_path, monkeypatch):
+    """The steps read a lock-filled value as they read P1's working one: a
+    lock fraction the steps take as {"aggregate"} broke P2's pre-launch pass
+    at host_components (12 Nov 2026)."""
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
+    cfg = st.load_config(str(P2_CONFIG), dry_run=False)
+    work, _ = st.working_values()
+    shared = set(st.LOCK_SOURCED) & set(work)
+    assert "chain_check_tolerance" in shared
+    for k in shared:
+        assert type(cfg[k]) is type(work[k]), k
+        if isinstance(work[k], dict):
+            assert set(cfg[k]) == set(work[k]), k
 
 
 def test_t41_items_come_from_the_lock_values_never_from_pairing_values(tmp_path, monkeypatch):
