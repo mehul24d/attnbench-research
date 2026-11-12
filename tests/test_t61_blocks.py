@@ -157,6 +157,11 @@ def test_p4s_post_session_step_reads_the_drift_from_the_lock(tmp_path, monkeypat
     assert S.main(["drift", "--lock", str(full), "--out", str(out), "--block-dir", str(d2)],
                   cfg=R.REHEARSAL) == 2
     assert "rehearsal" in capsys.readouterr().err
+    # one session (a single Flex grant): "not applicable", never "passed"
+    assert P4.main(["drift", "--lock", str(full), "--out", str(out), "--block-dir", str(d1)]) == 0
+    printed = capsys.readouterr().out
+    assert "block drift: not applicable" in printed and "passed" not in printed
+    assert json.loads(out.read_text())["drift"]["status"] == "not applicable"
 
 
 def test_a_block_refuses_an_earlier_block_it_cannot_trust(tmp_path):
@@ -323,6 +328,7 @@ def test_a_block_without_an_anchor_or_with_nan_is_refused():
 def test_a_block_above_the_bound_is_flagged_kept_in_scoring_and_given_a_sensitivity_run():
     rows = _anchor_rows({"b1": 100.0, "b2": 108.0, "b3": 101.0})
     dr = BD.drift(rows, order=["b1", "b2", "b3"], bound=BD.WORKING_BOUND)
+    assert dr["status"] == "above the bound" and dr["passed"] is False
     labelled = BD.labelled(rows, dr)
     assert {r["block"] for r in labelled if r.get("drift_label") == BD.DRIFT_LABEL} == {"b2"}
     assert all("drift_label" not in r for r in labelled if r["block"] != "b2")
@@ -335,7 +341,7 @@ def test_a_block_above_the_bound_is_flagged_kept_in_scoring_and_given_a_sensitiv
 def test_with_one_block_of_the_anchor_nothing_is_compared_and_nothing_is_dropped():
     rows = _anchor_rows({"b1": 100.0})
     dr = BD.drift(rows, order=["b1"], bound=BD.WORKING_BOUND)
-    assert dr["passed"] is None
+    assert dr["passed"] is None and dr["status"] == "not applicable"   # never "passed"
     assert BD.claimable(rows, dr) == rows and BD.labelled(rows, dr) == rows
     assert BD.sensitivity_sets(rows, dr) == {}
 

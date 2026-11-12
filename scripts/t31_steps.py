@@ -1522,8 +1522,11 @@ def pricing_gate(out: Path, cfg, entries, *, fake: bool) -> dict:
 
 
 def gate_brief(gate: dict) -> dict:
-    """Each arm's share and whether it is priced, for the step's result."""
+    """Each arm's share, whether it is priced, and the stand-in nodes step 6
+    dropped (counted, deciding nothing: the adviser's ruling 3, second set of
+    12 Nov 2026), for the step's result."""
     return {arm: {"share": g["share"], "validated": g["validated"],
+                  "dropped_nodes": g["dropped_nodes"], "dropped_s": g["dropped_s"],
                   **({"label": g["label"], "why": g["why"]} if not g["validated"] else {})}
             for arm, g in gate.items()}
 
@@ -1549,6 +1552,7 @@ def device_components_real(args, cfg) -> dict:
     entries = run["index"]
     gate = pricing_gate(out, cfg, entries, fake=False)
     return {"cells": len(entries), "pricing_gate": gate_brief(gate),
+            "dropped_nodes": sum(g["dropped_nodes"] for g in gate.values()),
             "cost_sources": {cell_dir(Path(), *device_cell_key(e)).name: e["cost_sources"]
                              for e in entries},
             "isolated_segments": segment_findings(entries),

@@ -10,7 +10,7 @@ rewritten for a public reader.
 ## Running the tests
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]" "torch<2.14"
+python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
 .venv/bin/python -m pytest tests/ -q     # 6417 passed, 166 skipped, no GPU
 ```
 
@@ -21,13 +21,14 @@ architecture-gated, and the harness must import on a machine where a kernel is
 unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
 learned baseline (T2.10); without it one more test skips.
 
-torch must be below 2.14 for the CPU suite. Three compiled-variant tests
+torch must be below 2.14 for the CPU suite, and the `[dev]` extra pins it so
+(`torch<2.14`, the adviser's ruling 4, second set of 12 Nov 2026). Three compiled-variant tests
 (`test_compiled_variants.py`'s XAttention report and both settings of
 `test_shakedown6_rulings.py`'s declared kernel exclusion) read the declared
 graph break by Dynamo's message, and torch 2.14 rewords it at the same place
 (`block_sparse.py` in `kernel_interface`): "Call to `torch.compiler.disable()`"
-for "Attempted to call function marked as skipped". `torch>=2.6` alone resolves
-to 2.14.1 today, and those three fail. They pass on 2.13.0 and on the GPU
+for "Attempted to call function marked as skipped". Without the pin, `torch>=2.6`
+resolves to 2.14.1 today, and those three fail. They pass on 2.13.0 and on the GPU
 images' 2.9.1+cu129, where the declared wording was read on the L4. On a newer
 torch the check refuses the variant, so it fails closed (Appendix A, 12 Nov
 2026). The counts below were measured with torch 2.13.0 and the `[eval]`

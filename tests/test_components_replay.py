@@ -599,6 +599,12 @@ def test_the_summary_is_what_the_gate_reads():
     assert sm["isolated_substitutions"] == 1          # nonzero is a tape substitution
     assert sm["isolated_families"] == {"kernel:aten::nonzero": {"n": 1, "s": 1.0}}
     assert sm[RP.EXTRA_NODE_DROPPED]["graph"]["nodes"] == 3
+    # the gate counts them for step 6's report and passes on (ruling 3, second set of
+    # 12 Nov 2026)
+    g = RP.pricing_gate([{"arm": "a", "pricing": sm}, {"arm": "a", "pricing": sm}], 0.5)["a"]
+    dropped = sm[RP.EXTRA_NODE_DROPPED].values()            # both replays' dropped nodes
+    assert g["dropped_nodes"] == 2 * sum(d["nodes"] for d in dropped) == 8 and g["validated"]
+    assert g["dropped_s"] == pytest.approx(2 * sum(d["s"] for d in dropped))
 
 
 def test_the_record_carries_each_position_and_its_cost_source():
