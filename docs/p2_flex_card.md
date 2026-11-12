@@ -1,8 +1,8 @@
 # P2 on Flex-start: cap and headroom (12 Nov 2026)
 
-**Not launched. It cannot launch yet:** the pre-launch CPU pass at the lock commit `3fc2302`
-failed (`results/prelaunch/p2_3fc2302_20261112T1231Z/prelaunch_cpu_pass.json`), and P2's
-launch needs its own yes. The step list, minutes and Spot blocks are in
+**Not launched.** P2's launch needs its own yes. The pre-launch CPU pass passed at the lock
+commit `0301fb6` (`results/prelaunch/p2_0301fb6_20261112T1420Z/prelaunch_cpu_pass.json`), with
+T3.2d's step 5 XAttention masks staged as P1's. The step list, minutes and Spot blocks are in
 `docs/launch_cards/t61_p2_a100.md`. This card adds the Flex-start rate from the second
 lock-wave rulings of 12 Nov 2026 (item 4).
 
@@ -50,11 +50,19 @@ Flex-start ₹3,146 and Spot ₹7,037. At most one pairing may run on Spot.
 At either rate, P2 on Flex-start may launch. With P4 on Spot, the headroom is ₹186 at the
 cap rate and ₹622 at $2.40.
 
-## What stops the launch (pre-launch pass, `3fc2302`)
+## What the pre-launch pass found (12 Nov 2026)
 
-1. **T4.4 is not Done.** It has to read Done in the plan at the tagged commit. Editing the
-   plan afterwards changes `plan_sha256`, and the lock then has to be re-cut.
-2. **No P1 XAttention masks are staged.** At launch they come from T3.2d's step 5 bucket
-   files. The pass has no copy of them.
-3. **`learned.LOCKED_CONFIG` is not set** (Gate B). `attnbench/predict/learned.py` is on the
-   timed path, so setting it moves the pin and the analysis commit.
+The three refusals at `3fc2302` are cleared (the third lock-wave rulings of 12 Nov 2026):
+
+1. T4.4 is written Done in the plan at the lock commit.
+2. T3.2d's step 5 XAttention masks are staged (`ATTNBENCH_PRELAUNCH_MASKS`; 20 files, read
+   under the yes logged in `docs/permission_log.md`).
+3. `learned.LOCKED_CONFIG` is config 4 (P1 cell-grouped CV).
+
+The first re-cut's pass (`fbbbb57`) then failed at host_components: the lock fill gave the
+chain-check tolerance as one fraction, and the steps read `{"aggregate"}`. The fix (`9ddb9ee`)
+moved the pin to `fa28e01b…`, and the lock was cut a second time (`0301fb6`). The pass there
+passed. The cap rate is ₹297.47/h, host included (ruling 4), so the cap stays ₹1,934.
+
+P4's pass at `0301fb6` refuses only on T6.1, as ruled
+(`results/prelaunch/p4_0301fb6_20261112T1422Z/`).

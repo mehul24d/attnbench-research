@@ -552,15 +552,14 @@ def test_prereqs_refuses_a_real_session_and_skips_a_dry_one(tmp_path, monkeypatc
         S.body_prereqs(bad, args_for(tmp_path, tmp_path, dry_run=False))
 
 
-def test_this_branchs_plan_is_not_ready_for_p2():
+def test_this_branchs_plan_is_ready_for_p2():
     text = (ROOT / "docs" / "RESEARCH_PLAN.md").read_text()
     rows = S.unmet(T61.requirements, S.plan_statuses(text), S.appendix_a_dates(text), "P2")
-    tasks = {r["task"] for r in rows}
     # 11 Nov 2026 (Appendix A): T2.17, T2.23 and T2.26 Done on the rehearsal's evidence,
-    # T2.21 waived for P2 with a dated citation; only the lock is left
-    assert tasks == {"T4.4"}
-    # without the waiver path T2.21 would refuse too
-    assert {r["task"] for r in S.unmet(T61.requirements, S.plan_statuses(text))} == {"T2.21", "T4.4"}
+    # T2.21 waived for P2 with a dated citation; 12 Nov 2026: T4.4 written Done at the lock
+    assert rows == []
+    # without the waiver path T2.21 would refuse
+    assert {r["task"] for r in S.unmet(T61.requirements, S.plan_statuses(text))} == {"T2.21"}
 
 
 def test_the_strict_stamp_is_a_file_check():

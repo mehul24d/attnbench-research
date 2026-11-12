@@ -33,7 +33,8 @@ The timed-path pin is `fa28e01b…` at `9ddb9ee`, and the analysis commit is `9d
 from `fb6dca8` to `78349e0` when H6's rule changed, then to `341860c` when `learned.LOCKED_CONFIG`
 was set to config 4 for Gate B, then to `9ddb9ee` when the lock fill's chain-check shape was
 fixed (Appendix A, 12 Nov 2026, the second and third lock-wave rulings).
-T4.4 is written Done in this commit, the one to be tagged `lock-2026-11-14`.
+T4.4 is written Done at `0301fb6`. The tag `lock-2026-11-14` goes on its child, which carries
+the suite counts, the mask-read rows and P2's Flex card. Neither the plan nor the pin changes.
 
 ## Still to do
 
