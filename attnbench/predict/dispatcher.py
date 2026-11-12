@@ -556,11 +556,16 @@ PRIMARY_COMPARATOR = "kernel_speedup_rule"
 @dataclass(frozen=True)
 class H6RuleLine:
     """The dispatcher against one comparator over the points both are scored
-    at, beyond the point's floor. Excess is the dispatcher's regret minus the
-    comparator's; None where no point is shared."""
+    at, beyond the point's floor. `excess_errors` is the dispatcher's
+    decision errors minus the comparator's, the scored quantity; the regret
+    excesses (the dispatcher's mean or worst regret minus the comparator's)
+    are the secondary report. None where no point is shared."""
 
     comparator: str
     n_points: int
+    dispatcher_errors: Optional[int]
+    comparator_errors: Optional[int]
+    excess_errors: Optional[int]
     mean_excess: Optional[float]
     worst_excess: Optional[float]
     passed: Optional[bool]
@@ -585,41 +590,48 @@ def beyond_floor(p: PointInputs, measured: Mapping[Config, float], admissible,
                for c in _admissible(p, admissible) if c.config in measured)
 
 
+ERRORS = (FALSE_PROFITABLE, MISSED_PROFITABLE)
+
+
 def h6_rule(scores: Mapping[str, PolicyScore], points: Sequence[PointInputs],
             measured: Mapping[Point, Mapping[Config, float]], admissible,
             floors: FloorTable, *, bound: Mapping[str, float]) -> H6Rule:
-    """H6 as ruled on 12 Nov 2026 (the lock wave, item 3; T4.1 row 1): the
-    dispatcher's regret is no greater than each comparator's, to within
-    `bound` ({"mean", "worst"}, 0 at the lock), each pair on the points both
-    are scored at (`scores` from one admissible set of `evaluate`, so batch
-    4 is already out) and beyond the point's floor (`beyond_floor`). Passed
-    when every comparator with a shared point is; not scored when the
-    primary comparator, the kernel-speedup rule, shares none."""
-    if set(bound) != {"mean", "worst"} or any(not (v >= 0) for v in bound.values()):
-        raise DispatchError(f"the H6 bound is {{'mean', 'worst'}}, each >= 0: {bound!r}")
+    """H6 as the plan words it (Section 4; the lock-wave rulings of 12 Nov
+    2026, the second H6 ruling; T4.1 row 1): the dispatcher makes no more
+    decision errors than each comparator, to within `bound`
+    ({"decision_errors"}, 0 at the lock), each pair on the points both are
+    scored at (`scores` from one admissible set of `evaluate`, so batch 4 is
+    already out) and beyond the point's floor (`beyond_floor`). Regret, mean
+    and worst case, is reported beside it and decides nothing. Passed when
+    every comparator with a shared point is; not scored when the primary
+    comparator, the kernel-speedup rule, shares none."""
+    if set(bound) != {"decision_errors"} or any(not (v >= 0) for v in bound.values()):
+        raise DispatchError(f"the H6 bound is {{'decision_errors'}}, >= 0: {bound!r}")
     if "dispatcher" not in scores or PRIMARY_COMPARATOR not in scores:
         raise DispatchError("H6 compares the dispatcher with the kernel-speedup rule at least")
     by_point = {p.point: p for p in points}
     adm = frozenset(admissible)
 
-    def regrets(s):
-        return {x.point: x.regret for x in s.points if x.regret is not None}
-    disp = regrets(scores["dispatcher"])
+    def scored(s):
+        return {x.point: x for x in s.points if x.regret is not None}
+    disp = scored(scores["dispatcher"])
     lines, inside = [], set()
     for name in sorted(n for n in scores if n != "dispatcher"):
-        comp = regrets(scores[name])
+        comp = scored(scores[name])
         shared = sorted(set(disp) & set(comp))
         kept = [pt for pt in shared
                 if beyond_floor(by_point[pt], measured[pt], adm, floors)]
         inside |= set(shared) - set(kept)
         if not kept:
-            lines.append(H6RuleLine(name, 0, None, None, None))
+            lines.append(H6RuleLine(name, 0, None, None, None, None, None, None))
             continue
-        mean_x = (statistics.fmean(disp[pt] for pt in kept)
-                  - statistics.fmean(comp[pt] for pt in kept))
-        worst_x = max(disp[pt] for pt in kept) - max(comp[pt] for pt in kept)
-        lines.append(H6RuleLine(name, len(kept), mean_x, worst_x,
-                                mean_x <= bound["mean"] and worst_x <= bound["worst"]))
+        d_err = sum(disp[pt].outcome in ERRORS for pt in kept)
+        c_err = sum(comp[pt].outcome in ERRORS for pt in kept)
+        mean_x = (statistics.fmean(disp[pt].regret for pt in kept)
+                  - statistics.fmean(comp[pt].regret for pt in kept))
+        worst_x = max(disp[pt].regret for pt in kept) - max(comp[pt].regret for pt in kept)
+        lines.append(H6RuleLine(name, len(kept), d_err, c_err, d_err - c_err, mean_x, worst_x,
+                                d_err - c_err <= bound["decision_errors"]))
     primary = next(x for x in lines if x.comparator == PRIMARY_COMPARATOR)
     if primary.passed is None:
         verdict = NOT_SCORED

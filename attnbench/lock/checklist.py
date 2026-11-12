@@ -2,7 +2,7 @@
 
 Gate B: "All **[lock]** values fixed, two adversarial reads done, lock commit
 tagged." T4.1 names the values: "Fix every **[lock]** value: H0 to H3
-tolerances, H6 regret bound, ...". This module reads that list from the plan
+tolerances, H6 decision-error bound, ...". This module reads that list from the plan
 itself, so the checklist cannot drift from the plan, and checks a lock file
 against it.
 
@@ -297,7 +297,7 @@ CELL = r"\d+x\d+"
 SCHEMA: dict = {
     "h0_to_h3_tolerances": record({"H0": FRACTION, "H1": FRACTION, "H2": FRACTION,
                                    "H3": text()}),
-    "h6_regret_bound": record({"mean": NONNEG, "worst": NONNEG}),
+    "h6_decision_error_bound": record({"decision_errors": NONNEG}),
     "ground_truth_density_set": table(LABEL, seq(DENSITY, distinct=True)),
     "h4_equivalence_bound_with_its_justification_from_the_tasks": POSITIVE,
     "h4_confirmatory_family": _family_matches_m(record(

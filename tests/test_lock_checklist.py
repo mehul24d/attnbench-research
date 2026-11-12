@@ -60,19 +60,19 @@ def test_a_complete_lock_file_passes_and_its_report_says_so():
 
 def test_missing_unset_unsourced_and_unknown_entries_are_each_named():
     lock = _filled()
-    del lock["values"]["h6_regret_bound"]
+    del lock["values"]["h6_decision_error_bound"]
     lock["values"]["mask_gate_bound"]["value"] = None
     lock["values"]["probe_bounds"]["value"] = []
     lock["values"]["budget_cut_order"]["source"] = ""
     lock["values"]["a_value_t41_does_not_list"] = {"value": 1, "source": "x"}
     r = L.check(lock, PLAN_TEXT)
     assert not r.complete
-    assert r.missing == ("h6_regret_bound",)
+    assert r.missing == ("h6_decision_error_bound",)
     assert set(r.unset) == {"mask_gate_bound", "probe_bounds"}
     assert r.unsourced == ("budget_cut_order",)
     assert r.unknown == ("a_value_t41_does_not_list",)
     text = r.report()
-    for k in ("h6_regret_bound", "mask_gate_bound", "budget_cut_order"):
+    for k in ("h6_decision_error_bound", "mask_gate_bound", "budget_cut_order"):
         assert k in text
 
 
@@ -155,8 +155,8 @@ def test_a_lock_file_without_values_or_with_a_malformed_entry_is_refused():
     with pytest.raises(L.LockListError, match="values"):
         L.check({}, PLAN_TEXT)
     lock = _filled()
-    lock["values"]["h6_regret_bound"] = 3.0
-    with pytest.raises(L.LockListError, match="h6_regret_bound"):
+    lock["values"]["h6_decision_error_bound"] = 3.0
+    with pytest.raises(L.LockListError, match="h6_decision_error_bound"):
         L.check(lock, PLAN_TEXT)
 
 
@@ -198,7 +198,7 @@ AT_LOCK = [
      ("h4_equivalence_bound_with_its_justification_from_the_tasks",)),
     ("h4 bound justified at lock",
      ("h4_equivalence_bound_with_its_justification_from_the_tasks",)),
-    ("mean and worst case per pairing against **[lock]**", ("h6_regret_bound",)),
+    ("the dispatcher's count minus each comparator's, at most **[lock]**", ("h6_decision_error_bound",)),
     ("density (a set fixed at lock", ("ground_truth_density_set",)),
     ("each cell is checked at lock against the model's position limit",
      ("context_grid_checked_against_each_model_s_position_limit",)),
@@ -320,7 +320,7 @@ def test_a_value_that_does_not_apply_with_its_form_written_completes_the_lock():
                                 "head_type_criterion"}
 
 
-@pytest.mark.parametrize("key", ["h6_regret_bound", "rerun_budget", "throttle_set",
+@pytest.mark.parametrize("key", ["h6_decision_error_bound", "rerun_budget", "throttle_set",
                                  "probe_bounds"])
 def test_a_value_a_pairing_reads_or_a_scored_hypothesis_needs_always_applies(key):
     r = L.check(_na_lock(key), PLAN_TEXT)

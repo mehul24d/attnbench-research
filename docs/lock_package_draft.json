@@ -12,8 +12,8 @@
    "authority": "the researcher's confirmation, 9 Nov 2026, IST: \"I agree with the adviser's rulings on lock items 1, 2 and 5\"",
    "authority_h0": "the researcher's confirmation, 10 Nov 2026, IST: \"I agree with the adviser's H0 interpretation (median over scored operations above the resolution floor, with the maximum reported beside it)\"; the host-side share by host time accepted by the adviser (ruling 1 of the 10 Nov 2026 paste)"
   },
-  "h6_regret_bound": {
-   "item": "H6 regret bound",
+  "h6_decision_error_bound": {
+   "item": "H6 decision-error bound",
    "value": null,
    "source": null,
    "status": "owed: data",
