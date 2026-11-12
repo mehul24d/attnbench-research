@@ -17,8 +17,8 @@ N = B.card_numbers(B.CARD.read_text())
 def test_the_numbers_are_read_from_the_cards_tables():
     assert [n for n, _ in N["steps"]][:3] == ["prereqs", "preflight", "link"]
     assert len(N["steps"]) == 16 and N["setup_h"] == 0.6 and N["teardown_h"] == 0.15
-    assert dict(N["steps"])["ground_truth"] == 35          # "2 + 28 + 5"
-    assert sum(m for _, m in N["steps"]) == 235            # the card's "235 minutes"
+    assert dict(N["steps"])["ground_truth"] == 49          # "2 + 28 + 5 + 14" (5 reruns)
+    assert sum(m for _, m in N["steps"]) == 249            # the card's "249 minutes"
 
 
 def test_a_card_without_its_tables_is_refused():
@@ -67,7 +67,7 @@ def test_p4_refuses_2_2_hour_blocks_and_is_four_blocks_at_2_3():
         plan(2.2)
     blocks = plan(2.3)
     assert len(blocks) == 4 and all(b.planned_h <= 2.3 + 1e-9 for b in blocks)
-    assert [b.planned_h for b in blocks] == [1.85, 2.217, 2.3, 1.5]   # b1 + the 20 min suite record
+    assert [b.planned_h for b in blocks] == [1.85, 2.217, 2.3, 1.733]   # b1 + the 20 min suite record
     assert blocks[1].steps == ("host_components",)
     assert sum(b.ground_truth_min for b in blocks) == dict(N["steps"])["ground_truth"]
     gt = [b for b in blocks if "ground_truth" in b.steps]

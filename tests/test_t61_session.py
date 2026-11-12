@@ -1361,3 +1361,35 @@ def test_the_failed_ground_truth_step_records_the_cells_and_flag_counts(tmp_path
     assert got["status"] == "failed"
     assert got["reason"] == ("the ground truth is incomplete: eager L2048_b1: 1 clean of 10 "
                              "in 10 rounds, rerun budget 0 (flagged rounds: dense drift 9)")
+
+
+# --- "Waived for P2/P4" (adviser's ruling 5, fourth set of 12 Nov 2026) ----------------
+
+BOTH_PLAN = """\
+| T2.21 | compiled | Code | | Runs | Waived for P2/P4 (Appendix A, 12 Nov 2026): dropped |
+| T2.17 | asserts | Code | | Runs | Waived for P2/P4 (Appendix A, 12 Nov 2026): read |
+| T2.26 | suite | Code | | Runs | Waived for P2/P4 (Appendix A, 11 Nov 2026): nothing lost said |
+| T2.22 | dispatcher | Code | | Runs | Waived for P2/P4: no citation |
+| T3.3 | Gate A | Code | | Runs | Waived for P2/P4 (Appendix A, 12 Nov 2026): a gate |
+
+## Appendix A. Decision record
+
+- **11 Nov 2026.** **T2.26 waived.** For P2 and P4.
+- **12 Nov 2026.** **T2.21 and T2.17 and T3.3 waived.** What is lost: the compiled rows.
+"""
+
+
+def test_a_p2_p4_waiver_needs_an_unread_non_gate_task_and_a_line_saying_what_is_lost():
+    st, app = S.plan_statuses(BOTH_PLAN), S.appendix_a_dates(BOTH_PLAN)
+    assert app == {"11 Nov 2026", "12 Nov 2026"}
+    reqs = [S.Requirement("T2.21", "w", read=False), S.Requirement("T2.17", "w"),
+            S.Requirement("T2.26", "w", read=False), S.Requirement("T2.22", "w", read=False),
+            S.Requirement("T3.3", "w", gate=True, read=False)]
+    for pairing in ("P2", "P4"):
+        assert [r["task"] for r in S.unmet(reqs, st, app, pairing)] == \
+            ["T2.17", "T2.26", "T2.22", "T3.3"]
+    assert [r["task"] for r in S.unmet(reqs, st, app, "P1")] == \
+        ["T2.21", "T2.17", "T2.26", "T2.22", "T3.3"]
+    # Without the lines (a bare set of dates) it fails closed.
+    assert "T2.21" in [r["task"] for r in S.unmet(reqs, st, frozenset(app), "P2")]
+    assert not next(r for r in S.T61.requirements if r.task == "T2.21").read
