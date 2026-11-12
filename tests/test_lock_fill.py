@@ -186,18 +186,22 @@ def test_the_ground_truth_step_hands_a_held_out_pairing_the_relative_controls(tm
     assert seen["max_rerun_rounds"] == cfg["max_rerun_rounds"]
 
 
-def test_p2_runs_on_a_staged_lock_and_p4_waits_for_the_second(tmp_path, monkeypatch):
-    # The adviser's ruling 4, fourth set of 12 Nov 2026.
+def test_both_pairings_run_on_a_lock_whose_unscored_values_do_not_apply(tmp_path, monkeypatch):
+    # The lock-wave rulings of 12 Nov 2026, items 1 and 2: no staged lock; rows 2
+    # to 6 are typed "not applicable", H4 and H5 "not scored".
     rec = lock()
-    rec["values"]["h6_regret_bound"].update(value=None, deferred={
-        "rule": "the 0.95 quantile of the regret over P2's banked cells",
-        "input": "predictions/P2/ledger/banked.json", "fixed_by": "the second lock"})
+    why = {"reason": "not scored in this study", "appendix_a": "Appendix A, 12 Nov 2026"}
+    for h in ("H4", "H5"):
+        rec["scored_pairings"][h] = {"not_scored": dict(why)}
+    rec["values"]["power_target_and_n"].update(value=None, not_applicable={
+        **why, "limitation": "H4 is not tested", "hypotheses": ["H4", "H5"]})
     rec["pairing_values"]["P4"] = P2_VALUES
     monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, rec))
     assert st.load_config(str(P2_CONFIG), dry_run=False)["reps"] == 12
-    with pytest.raises(st.StepFailed, match="not a complete lock"):
-        st.load_config(str(ROOT / "configs" / "t64" / "p4_session.json"), dry_run=False)
-    rec["values"]["h6_regret_bound"].update(value={"mean": 0.1, "worst": 0.2}, deferred=None)
-    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, rec))
     assert st.load_config(str(ROOT / "configs" / "t64" / "p4_session.json"),
                           dry_run=False)["reps"] == 12
+    rec["values"]["rerun_budget"].update(value=None, not_applicable={
+        **why, "limitation": "none"})
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, rec))
+    with pytest.raises(st.StepFailed, match="not applicable is refused"):
+        st.load_config(str(P2_CONFIG), dry_run=False)
