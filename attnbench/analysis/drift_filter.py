@@ -49,6 +49,25 @@ def relative_limit(results: Iterable[Mapping], *, q: float) -> float:
     return quantile(xs, q)
 
 
+def flag_counts(result: Mapping) -> dict[str, int]:
+    """Flagged rounds of one ground-truth result by flag type: "dense drift",
+    or "throttled: <reason>" for each throttle reason any arm's block saw. A
+    round counts once under each type it carries."""
+    out: dict[str, int] = {}
+    for rnd in result["rounds"]:
+        kinds = set()
+        for x in rnd["flag_reasons"]:
+            if x.startswith(DRIFT_PREFIX):
+                kinds.add("dense drift")
+            elif ":throttled:" in x:
+                kinds.update(f"throttled: {b}" for b in x.split(":throttled:", 1)[1].split("+"))
+            else:
+                kinds.add(x)
+        for k in kinds:
+            out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items()))
+
+
 def round_samples(row: Mapping, rounds: list) -> dict[int, float]:
     """{round: ms} for one row, from its clean and flagged samples in round order."""
     clean = list(row["prefill_ms_samples"])

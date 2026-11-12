@@ -1303,3 +1303,59 @@ def test_a_real_session_reads_its_training_file_against_the_lock_at_the_step_too
     with pytest.raises(S.StepFailed, match="names no P1 training file sha256"):
         S.training_rows(T61, path)
     assert S.training_rows(R.REHEARSAL, path)
+
+
+# --- the incomplete message names its cells and flag types (ruling 2, third set of 12 Nov 2026)
+
+def gt_rounds(reasons):
+    return [{"round": i, "flagged": bool(r), "flag_reasons": list(r), "dense_drift_ms": 0.0}
+            for i, r in enumerate(reasons)]
+
+
+def write_short_gt(d, cell, reasons, *, clean, max_rerun=0, reps=10):
+    g = d / "eager"
+    g.mkdir(parents=True, exist_ok=True)
+    S.write_json(g / "stamps.json", {"group": "eager", "clock_not_before": T,
+                                     "first_clocked_block_started_at": [T + 1]})
+    row = dict(t31_row("dense", "dense", None, 2048, 1, 1951), reps=reps)
+    S.write_json(g / f"gt_{cell}.json", {
+        "rows": [row], "traced": False, "complete": clean == reps, "clean_rounds": clean,
+        "rounds_run": len(reasons), "controls": {"max_rerun_rounds": max_rerun},
+        "rounds": gt_rounds(reasons)})
+
+
+def test_flag_counts_count_each_round_once_per_type():
+    from attnbench.analysis.drift_filter import flag_counts
+    drift = "dense_drift_-8.544ms_vs_5.61ms_floor"
+    r = {"rounds": gt_rounds([[], [drift], [drift, "oracle@0.25:throttled:hw_slowdown"],
+                              ["dense:throttled:hw_slowdown+sw_thermal_slowdown",
+                               "oracle@0.25:throttled:hw_slowdown"]])}
+    assert flag_counts(r) == {"dense drift": 2, "throttled: hw_slowdown": 2,
+                              "throttled: sw_thermal_slowdown": 1}
+
+
+def test_an_incomplete_ground_truth_names_each_short_cell_and_its_flag_counts(tmp_path):
+    drift = "dense_drift_-8.0ms_vs_5.61ms_floor"
+    write_short_gt(tmp_path, "L2048_b1", [[]] + [[drift]] * 9, clean=1)
+    write_short_gt(tmp_path, "L8192_b1",
+                   [[], [drift], [], [], ["dense:throttled:hw_slowdown"]] + [[]] * 6, clean=9,
+                   max_rerun=1)
+    write_short_gt(tmp_path, "L4096_b1", [[]] * 10, clean=10)
+    msg = S.incomplete_message(S.t31_ground_truth_result(tmp_path))
+    assert msg == ("the ground truth is incomplete: "
+                   "eager L2048_b1: 1 clean of 10 in 10 rounds, rerun budget 0 "
+                   "(flagged rounds: dense drift 9); "
+                   "eager L8192_b1: 9 clean of 10 in 11 rounds, rerun budget 1 "
+                   "(flagged rounds: dense drift 1, throttled: hw_slowdown 1)")
+    assert "no short cell" in S.incomplete_message({"complete": False})
+
+
+def test_the_failed_ground_truth_step_records_the_cells_and_flag_counts(tmp_path):
+    session = tmp_path / "s"
+    short = [{"group": "eager", "cell": "L2048_b1", "clean_rounds": 1, "rounds_run": 10,
+              "reps": 10, "max_rerun_rounds": 0, "flags": {"dense drift": 9}}]
+    assert dry(with_harness(T61, Spy({"complete": False, "incomplete": short})), session) == 1
+    got = json.loads((session / "12_ground_truth" / "result.json").read_text())
+    assert got["status"] == "failed"
+    assert got["reason"] == ("the ground truth is incomplete: eager L2048_b1: 1 clean of 10 "
+                             "in 10 rounds, rerun budget 0 (flagged rounds: dense drift 9)")

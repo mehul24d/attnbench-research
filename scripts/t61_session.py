@@ -1157,7 +1157,8 @@ def t31_ground_truth_result(d: Path) -> dict:
     block drift check reads), the earliest stamp T3.1's session start reads
     (each group's pre-forward stamp and first clocked blocks), complete only
     if every result is."""
-    rows, stamps, complete = [], [], True
+    from attnbench.analysis.drift_filter import flag_counts
+    rows, stamps, complete, short = [], [], True, []
     for st_path in sorted(Path(d).glob("*/stamps.json")):
         s = json.loads(st_path.read_text())
         stamps += [s["clock_not_before"], *s["first_clocked_block_started_at"]]
@@ -1166,12 +1167,35 @@ def t31_ground_truth_result(d: Path) -> dict:
             if r.get("traced"):
                 raise StepFailed(f"{g} is traced: ground truth is untraced")
             complete = complete and r.get("complete") is True
+            if r.get("complete") is not True:
+                short.append({"group": st_path.parent.name, "cell": g.stem[len("gt_"):],
+                              "clean_rounds": r.get("clean_rounds"),
+                              "rounds_run": r.get("rounds_run"),
+                              "reps": (r.get("rows") or [{}])[0].get("reps"),
+                              "max_rerun_rounds": (r.get("controls") or {}).get("max_rerun_rounds"),
+                              "flags": flag_counts(r) if "rounds" in r else {}})
             rows += [dict(row, group=st_path.parent.name, cell=t31_row_cell(row),
                           median_ms=row["prefill_ms_median"])
                      for row in r["rows"]]
     if not rows:
         raise StepFailed(f"no ground-truth rows under {d}")
-    return {STRICT_KEY: min(stamps), "complete": complete, "untraced": {"rows": rows}}
+    return {STRICT_KEY: min(stamps), "complete": complete, "incomplete": short,
+            "untraced": {"rows": rows}}
+
+
+def incomplete_message(result: dict) -> str:
+    """Why a ground truth is incomplete, by cell and flag type (the adviser's
+    ruling 2, third set of 12 Nov 2026: launch 4 A's named neither)."""
+    short = result.get("incomplete")
+    if not short:
+        return "the ground truth is incomplete, and the harness named no short cell"
+    parts = []
+    for c in short:
+        flags = ", ".join(f"{k} {n}" for k, n in c["flags"].items()) or "no flagged round"
+        parts.append(f"{c['group']} {c['cell']}: {c['clean_rounds']} clean of {c['reps']} in "
+                     f"{c['rounds_run']} rounds, rerun budget {c['max_rerun_rounds']} "
+                     f"(flagged rounds: {flags})")
+    return "the ground truth is incomplete: " + "; ".join(parts)
 
 
 def real_harness(cfg, args, block=None, *, step_fn=None) -> dict:
@@ -1248,8 +1272,7 @@ def body_ground_truth(cfg: SessionConfig, args, *, harness=None) -> dict:
     findings = check_stamp(result, synced_at=synced, opened_at=opened_at, ended_at=ended,
                            earlier_start=earlier)
     if result.get("complete") is not True:
-        raise StepFailed("the ground truth is incomplete: flagged rounds exceeded the reruns",
-                         findings)
+        raise StepFailed(incomplete_message(result), findings)
     write_json(Path(args.out) / "traces.json", result.get("traces", []))
     return findings
 
