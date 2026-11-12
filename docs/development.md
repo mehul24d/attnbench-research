@@ -10,8 +10,8 @@ rewritten for a public reader.
 ## Running the tests
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6364 passed, 167 skipped, 14 xfailed, no GPU
+python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]" "torch<2.14"
+.venv/bin/python -m pytest tests/ -q     # 6417 passed, 166 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -21,25 +21,38 @@ architecture-gated, and the harness must import on a machine where a kernel is
 unavailable. The `learned` extra installs LightGBM, pinned at 4.6.0, for the
 learned baseline (T2.10); without it one more test skips.
 
-The 167 skips are the honest part, and they split eight ways: **39** need CUDA
+torch must be below 2.14 for the CPU suite. Three compiled-variant tests
+(`test_compiled_variants.py`'s XAttention report and both settings of
+`test_shakedown6_rulings.py`'s declared kernel exclusion) read the declared
+graph break by Dynamo's message, and torch 2.14 rewords it at the same place
+(`block_sparse.py` in `kernel_interface`): "Call to `torch.compiler.disable()`"
+for "Attempted to call function marked as skipped". `torch>=2.6` alone resolves
+to 2.14.1 today, and those three fail. They pass on 2.13.0 and on the GPU
+images' 2.9.1+cu129, where the declared wording was read on the L4. On a newer
+torch the check refuses the variant, so it fails closed (Appendix A, 12 Nov
+2026). The counts below were measured with torch 2.13.0 and the `[eval]`
+extra's `wonderwords`, which one RULER test needs.
+
+The 166 skips are the honest part, and they split eight ways: **39** need CUDA
 or the GPU image's x-attention and block-sparse-attn, **86** read banked result
 files that `results/` keeps out of git, **17** are scripts
 `test_script_call_sites.py` has nothing to check because they import nothing
 from `attnbench`, **17** are the same scripts skipped again by
-`test_import_resolution.py`, **4** need the pinned RULER data directory
+`test_import_resolution.py`, **3** need the pinned RULER data directory
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
-`~/.cache/attnbench/ruler_data`; one of them wants a pinned build), **2** need the pinned Llama tokenizer in the local Hugging
+`~/.cache/attnbench/ruler_data`; one of them wants a pinned build; a fourth
+skips without `wonderwords`, which the `[eval]` extra installs), **2** need the pinned Llama tokenizer in the local Hugging
 Face cache, **1** needs the primary model's pinned `config.json` there, and **1** is the pre-launch CPU pass (`tests/test_prelaunch_cpu_pass.py`), which runs only from `scripts/prelaunch_cpu_pass.sh`. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer.
-**With `results/` present the suite reads 6454 passed, 77 skipped, 14 xfailed**, because
+**With `results/` present the suite reads 6507 passed, 76 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6449 passed, 82 skipped). All three
-totals are 6545, which is
+present and those two hidden it reads 6502 passed, 81 skipped). All three
+totals are 6583, which is
 what `pytest --collect-only` reports, and
-`test_the_suite_counts_match_the_collected_suite` asserts it. The 14 xfailed are T4.3 reader A's reproductions that wave 2 fixes. Each is a strict `xfail` (`docs/t43/import_edits.md`), so it fails the suite once it passes.
+`test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).
 
 To measure the fresh-clone count on a machine that has the RULER data and the
 tokenizer, point `ATTNBENCH_RULER_DATA` and `HF_HOME` at empty directories. An empty string is not the same
