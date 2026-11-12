@@ -32,6 +32,13 @@ import t64_blocks as B  # noqa: E402
 
 MINUTES = ROOT / "configs" / "t61" / "p2_card_minutes.json"
 CARD = B.CARDS["P2"]
+
+
+def deselected_tests() -> int:
+    """The tests `scripts/gpu_suite_record.sh` deselects on a GPU host
+    (`tests/gpu_host_deselect.txt`, one per line, comments aside)."""
+    lines = (ROOT / "tests" / "gpu_host_deselect.txt").read_text().splitlines()
+    return sum(1 for x in lines if x.strip() and not x.lstrip().startswith("#"))
 PLAN = ROOT / "docs" / "RESEARCH_PLAN.md"
 FLEX_RATE = 297.47          # plan Section 5.2, A100 Flex-start, all-in planning rate
 SPOT_RATE = B.SPOT_RATES["P2"]
@@ -106,7 +113,7 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         "",
         "## What runs",
         "",
-        "`python3 scripts/t61_session.py run --banked-at P1=<when P1 was banked>` on the "
+        "`python3 scripts/t61_session.py run --session results/t61_p2_<UTC>` on the "
         "instance from the repo root, after deploy, preflight, the GCS write gate and "
         "`scripts/gcp_bootstrap_instance.sh`. Each step runs in its own process through "
         "`scripts/run_phase.sh`, and the first failure stops the session. On Spot it runs "
@@ -137,7 +144,9 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         "the lock's.",
         "- `docs/lock_values.json`, the tagged lock (T4.4). Without it the session's values "
         "and the mask-gate bound are unset, and the steps refuse.",
-        "- `--banked-at P1=<ISO time>`, the time P1 was banked.",
+        "- Nothing for P1's banking time: a real run reads it, and the training file's "
+        "sha256, from the pairing ledger (`predictions/P1/ledger/banked.json`) and refuses "
+        "`--banked-at` (ruling 1e of 11 Nov 2026).",
         "",
         "**Cheap checks first** (adviser's ruling 2 of the 10 Nov 2026 paste: a failure costs "
         "minutes). `prereqs`, step 1, checks every staged input a later step reads "
@@ -187,11 +196,13 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         "supersedes the earlier 10 Nov ruling that left it out): the bootstrap runs "
         "`gcp_bootstrap_instance.sh \"$NAME\" \"$ZONE\" --suite-record` on the first boot "
         f"(on Spot, block b1 only), and its {suite:.0f} minutes are in the row below and in "
-        "every cap. `scripts/gpu_suite_record.sh` deselects the 27 tests that assume a "
+        f"every cap. `scripts/gpu_suite_record.sh` deselects the {deselected_tests()} tests that assume a "
         "CPU-only host (`tests/gpu_host_deselect.txt`, from "
         "`docs/gpu_suite_failures_20261110.md`). **Risk:** the selection has not run on any "
         "GPU host; a test that fails on the A100 for a reason the L4 did not show stops the "
-        "bootstrap, before any step, at the cost of the setup.",
+        "bootstrap, before any step, at the cost of the setup. P2's relaunches run "
+        "without it (the researcher's ruling of 12 Nov 2026, after launch 1 stopped in it); "
+        "its minutes stay in every cap as margin.",
         "",
         "| | Hours | ₹ |",
         "|---|---|---|",

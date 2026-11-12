@@ -22,7 +22,7 @@ from t64_session import T64  # noqa: E402
 
 
 def _built():
-    return C.build(C.load_minutes(), "2026-11-12")
+    return C.build(C.load_minutes(), "2026-11-13")
 
 
 def test_the_card_on_disk_is_this_build():

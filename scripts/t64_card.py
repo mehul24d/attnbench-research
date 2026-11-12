@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import budget_interlock as BI  # noqa: E402
 import t64_blocks as B  # noqa: E402
 from t64_session import T64  # noqa: E402
-from t61_card import prelaunch_pass  # noqa: E402
+from t61_card import deselected_tests, prelaunch_pass  # noqa: E402
 
 MINUTES = ROOT / "configs" / "t64" / "p4_card_minutes.json"
 CARD = B.CARDS["P4"]
@@ -136,7 +136,7 @@ def build(minutes: dict, on: str) -> str:
         "supersedes the earlier 10 Nov ruling that left it out): the first boot's bootstrap "
         "passes `--suite-record` (on Spot, block b1 only), and its "
         f"{suite:.0f} minutes are in the row below and in every cap. "
-        "`scripts/gpu_suite_record.sh` deselects the 27 tests that assume a CPU-only host "
+        f"`scripts/gpu_suite_record.sh` deselects the {deselected_tests()} tests that assume a CPU-only host "
         "(`tests/gpu_host_deselect.txt`). **Risk:** the selection has not run on any GPU "
         "host; a test that fails on the H100 for a reason the L4 did not show stops the "
         "bootstrap before any step, at the cost of the setup.",
