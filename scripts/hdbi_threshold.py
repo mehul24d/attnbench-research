@@ -11,7 +11,7 @@ and its measured difference is its median minus its dense partner's
 lock's table (`FloorTable.from_lock`).
 
     python3 scripts/hdbi_threshold.py --training results/p1_training/p1_training.json.gz \\
-        --lock docs/lock_values_prep.json
+        --lock docs/lock_values.json
 """
 
 from __future__ import annotations

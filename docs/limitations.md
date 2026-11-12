@@ -3194,3 +3194,17 @@ the direction a faster GPU or host moves the crossover (H5), and none by head ty
 calibrated XAttention results are reported descriptively. H6 rests on one held-out pairing, P4,
 and its admissible set is fixed before P4's prediction rather than at the lock. The H4
 equivalence bound and family keep their lock values, and nothing reads them.
+
+## The residual spread tolerance is 0.2349, not the working 0.10 (2026-11-12)
+
+**What happened.** T4.1's residual spread tolerance was set from P1 before any P2 data, from
+T3.2d alone (the second lock-wave rulings of 12 Nov 2026, item 2): 0.10 if every layer's spread
+was inside it, else 1.5 times the largest. Two of T3.2d's 35 cells hold layers above 0.10, both
+dense: `dense_d1_L16384_b4` (layers 0, 26 and 27; largest 0.1566) and `dense_d1_L32768_b1`
+(layers 6 to 10; largest 0.1318). Every sparse cell is inside 0.075. The tolerance is
+1.5 × 0.1566 = 0.2349, with no layer excluded. T3.2c, on the superseded residual method, peaks
+at 0.1608 in the same batch-4 cell, inside the value.
+
+**What it costs.** The tolerance labels a cell's residual as unstable and refuses nothing, so a
+wider one labels fewer cells. On P1 at 0.10, two dense cells would have carried the label. At
+0.2349, a P2 or P4 layer whose spread is up to 2.3 times the working value goes unlabelled.

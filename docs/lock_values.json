@@ -1,6 +1,6 @@
 {
- "what": "lock preparation (adviser's ruling 5, second set of 12 Nov 2026): every T4.1 value with evidence in hand, the rest null; NOT the lock (39 of 40 after the lock-wave rulings of 12 Nov 2026: row 10, the residual-spread tolerance, waits on T3.2c's and T3.2d's spreads). At T4.4 it is completed, re-checked against the plan at the lock commit and committed as docs/lock_values.json; what remains is docs/lock_remaining.md",
- "plan_sha256": "3058efb1139a3f9e02d679f62375d24762ef6036b2468f9c3d1e93f5d5d4b81b",
+ "what": "the lock (T4.4; the second lock-wave rulings of 12 Nov 2026): every T4.1 value, typed as attnbench/lock/checklist.SCHEMA requires, checked against the plan at this commit (plan_sha256); the scored pairings and P2's and P4's pairing values. Built from docs/lock_package_draft.json and the dated rulings each value's source names",
+ "plan_sha256": "2bd3f59893e13e07be19b87ac79cb69607aed5f2ac7cf6abae409f6c6943f2dd",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -13,13 +13,12 @@
    "source": "docs/lock_decisions_20261109.md; Appendix A, 9 Nov 2026 (H1 to H3) and 10 Nov 2026 (H0)",
    "status": "decided"
   },
-  "h6_regret_bound": {
-   "item": "H6 regret bound",
+  "h6_decision_error_bound": {
+   "item": "H6 decision-error bound",
    "value": {
-    "mean": 0.0,
-    "worst": 0.0
+    "decision_errors": 0
    },
-   "source": "the lock-wave rulings of 12 Nov 2026, item 3: the dispatcher's regret minus each comparator rule's, mean and worst, at most 0, beyond the cell's floor, batch 4 out, each pair on shared points (dispatcher.h6_rule; Appendix A, 12 Nov 2026)",
+   "source": "the second lock-wave rulings of 12 Nov 2026, item 3 (the plan's wording, replacing the lock-wave rulings of 12 Nov 2026, item 3's regret rule): the dispatcher's decision errors minus each comparator rule's at most 0, beyond the cell's floor, batch 4 out, each pair on shared points; regret reported, deciding nothing (dispatcher.h6_rule; Appendix A, 12 Nov 2026)",
    "status": "decided"
   },
   "ground_truth_density_set": {
@@ -376,11 +375,9 @@
   },
   "residual_spread_tolerance": {
    "item": "the residual spread tolerance (T2.2: the per-layer residual, the arm's own Python between calls that the bare prices leave out, measured as the layer's host gaps between calls with the device idle, each gap opened after a synchronise and the timer's overhead taken off, since 8 Nov 2026 per Appendix A; until then a layer's uninstrumented span under the tape less its bare prices, which held the host's waits for the device; its spread over repetitions, the interquartile range over the median, at most this share; working 10%; a layer above it keeps its residual and labels the cell, not refused; Appendix A, 1 Nov 2026)",
-   "value": null,
-   "source": null,
-   "status": "owed: data",
-   "proposed": "Working 10%; set from T3.2c's spreads under the idle-device residual (T3.2a/b spreads came from the superseded method and do not apply)",
-   "basis": "lock table row 34; Appendix A, 8 Nov 2026 (revised identity)"
+   "value": 0.2349229324572272,
+   "source": "the second lock-wave rulings of 12 Nov 2026, item 2: 1.5 times T3.2d's largest layer spread, 0.156615 (dense_d1_L16384_b4, layer 0; 35 cells, schema 3, files sha256 4e22e15c...), since it is above 0.10; no layer excluded; scripts/residual_spread_tolerance.py; derived from P1 before any P2 data. T3.2c (schema 2, superseded) as a sensitivity: largest 0.160835, inside (Appendix A, 12 Nov 2026)",
+   "status": "decided"
   },
   "pricing_mismatch_share": {
    "item": "the pricing mismatch share (T2.4: per arm over its cells, the share of priced device time priced from the isolated replay of the original operators because the CUDA graph does not hold that structure as the eager sequence has it, positions matched by structure only; working 5%; an arm above it, or with a position neither replay matches, is not priced, is labelled \"pricing not validated\" and is kept out of the hypothesis claims; never widened to pass; Appendix A, 7 Nov 2026)",
@@ -395,9 +392,9 @@
    "status": "decided"
   },
   "timed_path_identity_for_p2_and_p4": {
-   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2, `84edb24d…` after the second set, `3aea782a…` after the third set, `a7ce881e…` after the fourth set and `b5043080…` after the lock-wave rulings of 12 Nov 2026; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
-   "value": "b50430804e330cd27e19308b61726afdd3904244074ab914eda15d889bf3c29a",
-   "source": "scripts/timed_path.py --pin at fb6dca8, 110 items (ruling 1f of 11 Nov 2026; the lock-wave rulings of 12 Nov 2026); re-checked on the lock commit",
+   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2, `84edb24d…` after the second set, `3aea782a…` after the third set, `a7ce881e…` after the fourth set, `b5043080…` after the lock-wave rulings of 12 Nov 2026 and `b9480848…` after the second lock-wave rulings; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
+   "value": "b9480848710d17f43ec2d2e5732171e64e1b3f37d6c4049266d5001d54da47c2",
+   "source": "scripts/timed_path.py --pin at 78349e0, 110 items (ruling 1f of 11 Nov 2026; the second lock-wave rulings of 12 Nov 2026: dispatcher.py and checklist.py changed since b5043080... at fb6dca8); re-checked on the lock commit",
    "status": "evidence"
   },
   "bootstrap_settings": {
@@ -412,8 +409,8 @@
   },
   "analysis_commit": {
    "item": "the analysis commit (the commit whose analysis code scores P2 and P4, pinned by the lock; Appendix A, 11 Nov 2026)",
-   "value": "fb6dca834d1706d31860dcb4148c95e0d007126e",
-   "source": "the lock wave's last analysis-code commit, fb6dca8 (H6's rule, the HDBI fit, the probe flags), moved from 14e4419 (ruling 2a of 11 Nov 2026; Appendix A, 12 Nov 2026, the pin line); the lock commit if analysis code changes again",
+   "value": "78349e0252f1f9b849c4cacc0309a85a19d27ed5",
+   "source": "the last analysis-code commit, 78349e0 (H6 on decision errors, the residual spread script), after fb6dca8 (the HDBI fit, the probe flags), which the second lock-wave rulings of 12 Nov 2026 accepted (item 5) before item 3 changed H6's rule; moved from 14e4419 (ruling 2a of 11 Nov 2026; Appendix A, 12 Nov 2026)",
    "status": "decided"
   },
   "marginal_label_s_sensitivity_floors": {
