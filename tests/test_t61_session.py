@@ -1043,6 +1043,8 @@ def _lock_training(tmp_path, monkeypatch, path):
 def test_the_real_record_fits_the_sums_on_p1s_pooled_rows_and_waits_for_the_learned_config(
         tmp_path, monkeypatch):
     from attnbench.predict import baselines as BL
+    from attnbench.predict import learned as LM
+    monkeypatch.setattr(LM, "LOCKED_CONFIG", None)      # the refusal before Gate B
     monkeypatch.setattr(S, "P1_TRAINING", _lock_training(tmp_path, monkeypatch,
                                                          _p1_training_file(tmp_path)))
     rows = S.training_rows(T61)

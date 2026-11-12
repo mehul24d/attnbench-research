@@ -13,6 +13,7 @@
 # ATTNBENCH_PRELAUNCH_BANKED ("P1=ISO P2=ISO") the banking times, banked in a
 # directory-store pairing ledger; P4 reads ATTNBENCH_PRELAUNCH_P2_TRAINING, or
 # synthetic P2 rows (P1's cells relabelled P2) until P2 is banked (ruling 1h).
+# ATTNBENCH_PRELAUNCH_MASKS names the staged XAttention masks (T3.2d's step 5).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 case "${1:-}" in rehearsal|p2|p4) ;; *) echo "usage: $0 <rehearsal|p2|p4> [training] [out]" >&2; exit 2;; esac

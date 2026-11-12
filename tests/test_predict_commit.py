@@ -401,8 +401,8 @@ def test_a_fit_to_another_statistic_is_refused(locked):
         p2_record(fitted_sum=fs, learned=lm, fitted_sum_plus_s0=None)
 
 
-def test_no_learned_prediction_is_committed_before_lock():
-    assert L.LOCKED_CONFIG is None
+def test_no_learned_prediction_is_committed_before_lock(monkeypatch):
+    monkeypatch.setattr(L, "LOCKED_CONFIG", None)
     with pytest.raises(PredictionCommitError, match="fixed at lock"):
         p2_record()
 

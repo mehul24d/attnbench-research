@@ -149,8 +149,15 @@ def test_feature_refusals():
 ROWS = [row("P1", 1.0), row("P1", 4.0), row("P2", 2.0), row("P4", 3.0)]
 
 
-def test_lock_has_not_happened():
-    assert LOCKED_CONFIG is None
+def test_the_locked_config_is_the_lock_s_value():
+    """Gate B: `LOCKED_CONFIG` is docs/lock_values.json's learned-predictor
+    hyperparameters, target and params alike."""
+    import json
+    from pathlib import Path
+    lock = json.loads((Path(__file__).resolve().parent.parent / "docs" / "lock_values.json")
+                      .read_text())
+    v = lock["values"]["learned_predictor_hyperparameters"]["value"]
+    assert LOCKED_CONFIG == LearnedConfig(target=v["target"], params=v["params"])
 
 
 @pytest.mark.parametrize("target,expected", [

@@ -18,8 +18,8 @@ rate. Arithmetic intensities are analytic, from the model's shape and the
 cell (`intensity.py`). Estimator scoring is not one of the six classes,
 so `PENDING_FEATURES` is empty.
 
-Hyperparameters and the regression target are fixed at lock (Gate B), so
-`LOCKED_CONFIG` is None until then and every fit takes its `LearnedConfig`
+Hyperparameters and the regression target are fixed at lock (Gate B), in
+`LOCKED_CONFIG` (12 Nov 2026); every fit still takes its `LearnedConfig`
 explicitly. LightGBM is the optional `learned` extra, pinned to
 `LIGHTGBM_VERSION`; it is imported only when a model is built, and always
 runs on one thread (see `lightgbm_factory`).
@@ -98,7 +98,13 @@ class LearnedConfig:
     params: Mapping[str, Any] = field(default_factory=dict)
 
 
-LOCKED_CONFIG: Optional[LearnedConfig] = None   # set at lock (Gate B)
+# Set at the lock (Gate B): `docs/lock_values.json`, learned_predictor_hyperparameters
+# (config 4 of `docs/learned_cv_p1_20261109.json`, P1 cell-grouped CV; Appendix A, 12 Nov 2026).
+LOCKED_CONFIG: Optional[LearnedConfig] = LearnedConfig(
+    target="log_seconds",
+    params={"random_state": 0, "deterministic": True, "force_row_wise": True, "verbose": -1,
+            "n_estimators": 500, "learning_rate": 0.02, "num_leaves": 4,
+            "min_child_samples": 2, "reg_lambda": 1.0})
 
 ModelFactory = Callable[[Mapping[str, Any]], Any]
 
