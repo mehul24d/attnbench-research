@@ -15,7 +15,7 @@ COMMIT = "b" * 40
 
 VALUES = {
     "h0_to_h3_tolerances": {"H0": 0.1, "H1": 0.1, "H2": 0.1, "H3": "bootstrap widening only"},
-    "h6_regret_bound": {"mean": 0.05, "worst": 0.25},
+    "h6_decision_error_bound": {"decision_errors": 0},
     "ground_truth_density_set": {"dense": [1.0], "oracle": [0.25, 0.5], "meanpool": [0.25, 0.5],
                                  "xattention": ["calibrated"],
                                  "xattention_noassert": ["calibrated"]},

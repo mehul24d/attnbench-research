@@ -552,15 +552,14 @@ def test_prereqs_refuses_a_real_session_and_skips_a_dry_one(tmp_path, monkeypatc
         S.body_prereqs(bad, args_for(tmp_path, tmp_path, dry_run=False))
 
 
-def test_this_branchs_plan_is_not_ready_for_p2():
+def test_this_branchs_plan_is_ready_for_p2():
     text = (ROOT / "docs" / "RESEARCH_PLAN.md").read_text()
     rows = S.unmet(T61.requirements, S.plan_statuses(text), S.appendix_a_dates(text), "P2")
-    tasks = {r["task"] for r in rows}
     # 11 Nov 2026 (Appendix A): T2.17, T2.23 and T2.26 Done on the rehearsal's evidence,
-    # T2.21 waived for P2 with a dated citation; only the lock is left
-    assert tasks == {"T4.4"}
-    # without the waiver path T2.21 would refuse too
-    assert {r["task"] for r in S.unmet(T61.requirements, S.plan_statuses(text))} == {"T2.21", "T4.4"}
+    # T2.21 waived for P2 with a dated citation; 12 Nov 2026: T4.4 written Done at the lock
+    assert rows == []
+    # without the waiver path T2.21 would refuse
+    assert {r["task"] for r in S.unmet(T61.requirements, S.plan_statuses(text))} == {"T2.21"}
 
 
 def test_the_strict_stamp_is_a_file_check():
@@ -745,9 +744,12 @@ def test_the_mask_gate_bound_is_read_from_a_complete_lock_only(tmp_path, monkeyp
 
 @pytest.mark.parametrize("step", ["probe", "host_components", "device_components",
                                   "dense_select", "link"])
-def test_the_component_steps_are_t31s_and_refuse_p1s_working_values(tmp_path, step):
+def test_the_component_steps_are_t31s_and_refuse_p1s_working_values(tmp_path, monkeypatch,
+                                                                     step):
     """T3.1's own steps on P2's config: its values are fixed at lock (T4.1),
-    and until then T3.1's guard refuses to fill them with P1's."""
+    and without a lock file T3.1's guard refuses to fill them with P1's."""
+    import t31_steps as st
+    monkeypatch.setattr(st, "LOCK_FILE", tmp_path / "no_lock_values.json")
     body = T61.reals[step]
     assert body is S.real_link or (body.func is S._t31_step and body.args == (step,))
     with pytest.raises(S.StepFailed, match="the working values are P1's only; this session is 'P2'"):
@@ -1040,6 +1042,8 @@ def _lock_training(tmp_path, monkeypatch, path):
 def test_the_real_record_fits_the_sums_on_p1s_pooled_rows_and_waits_for_the_learned_config(
         tmp_path, monkeypatch):
     from attnbench.predict import baselines as BL
+    from attnbench.predict import learned as LM
+    monkeypatch.setattr(LM, "LOCKED_CONFIG", None)      # the refusal before Gate B
     monkeypatch.setattr(S, "P1_TRAINING", _lock_training(tmp_path, monkeypatch,
                                                          _p1_training_file(tmp_path)))
     rows = S.training_rows(T61)
@@ -1278,11 +1282,12 @@ def test_a_real_p2_or_p4_start_refuses_a_timed_path_the_lock_does_not_pin(tmp_pa
 
 
 def test_the_deployed_timed_path_is_the_one_decided_for_the_lock():
-    """The value T4.1 item 37 was decided at (Appendix A, 10 Nov 2026): a change
-    to the timed path before the lock fails here, before it fails a launch."""
+    """The value T4.1 item 37 was locked at (`docs/lock_values.json`; Appendix A,
+    10 and 12 Nov 2026): a change to the timed path after the lock fails here,
+    before it fails a launch."""
     import timed_path
-    draft = json.loads((ROOT / "docs" / "lock_package_draft.json").read_text())
-    decided = draft["values"][S.TIMED_PATH_ITEM]["proposed"].split(":")[0]
+    lock = json.loads((ROOT / "docs" / "lock_values.json").read_text())
+    decided = lock["values"][S.TIMED_PATH_ITEM]["value"]
     assert timed_path.pin_hash("HEAD")["sha256"] == decided
 
 

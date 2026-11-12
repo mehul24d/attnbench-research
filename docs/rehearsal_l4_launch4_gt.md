@@ -86,3 +86,10 @@ Under the relative limit, the 2048 cell loses 2 to 4 rounds in every session. T3
 clean required), the 2048 cells would need 2 to 4 of the 5 reruns clean. T3.2d's 8192 cell
 would need 9 clean rounds from 5, so it would have been incomplete. That is the sensitivity:
 P2's in-session rule, applied to P1's own sessions, refuses one of P1's 24 cells.
+
+## Corrected: the running reference (lock wave, 12 Nov 2026)
+
+The adviser's ruling 2 of the lock wave corrects the section above: a constant warm-up offset
+is not drift. P2 and P4 judge each round against the median of the cell's own earlier usable
+timed rounds, from 5 of them (`docs/drift_reference_correction.md`). On these records every P1
+cell keeps at least 9 of 10, T3.2d's 8192 × 1 included, and launch 4 A's 2048 × 1 keeps 9.

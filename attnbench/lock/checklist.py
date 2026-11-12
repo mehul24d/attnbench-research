@@ -2,7 +2,7 @@
 
 Gate B: "All **[lock]** values fixed, two adversarial reads done, lock commit
 tagged." T4.1 names the values: "Fix every **[lock]** value: H0 to H3
-tolerances, H6 regret bound, ...". This module reads that list from the plan
+tolerances, H6 decision-error bound, ...". This module reads that list from the plan
 itself, so the checklist cannot drift from the plan, and checks a lock file
 against it.
 
@@ -39,17 +39,21 @@ without them for every hypothesis of Section 4 (read from the plan's table)
 is not complete (audit C4, finding 3; ruling 1b, 11 Nov 2026). P1 is the
 development pairing and is never counted as a test (H1), so P1 in H1's list
 is refused; **plan default, flagged:** also in H3's and H6's, which Section
-4 scores on held-out pairings only.
+4 scores on held-out pairings only. A hypothesis this study does not score
+states it, typed: `{"H4": {"not_scored": {"reason": ..., "appendix_a":
+"Appendix A, 12 Nov 2026"}}}`. An empty list, or the form with a field
+unwritten or a placeholder, is refused (adviser's rulings of the lock wave,
+12 Nov 2026, item 2).
 
-**A staged lock** (adviser's ruling 4, fourth set of 12 Nov 2026). An item in
-`DEFERRABLE` may be locked with its rule and inputs only, `{"value": null,
-"deferred": {"rule": ..., "input": ..., "fixed_by": "the second lock ..."},
-"source": ...}`: the rule is fixed at the first lock, and only the number it
-gives is deferred, computed mechanically from its input and fixed by a second
-lock commit before P4's prediction. `check(..., allow_deferred=False)` (the
-second lock, and P4) reads a deferred item as unset. An item outside
-`DEFERRABLE` (anything a P2 or P4 runner reads, and a criterion that is
-itself the rule) is refused deferral.
+**A value that does not apply** (same rulings, items 1 and 2). An item in
+`NOT_APPLICABLE` may be locked as `{"value": null, "not_applicable":
+{"reason", "appendix_a", "limitation"[, "hypotheses"]}, "source": ...}`:
+each field written, `appendix_a` naming a dated Appendix A line the plan
+holds, and each hypothesis named in `hypotheses` stated "not scored". Any
+other item (anything a P2 or P4 runner reads, or a hypothesis this study
+scores) is refused the form, and so is an entry with both a value and the
+form. The staged lock of the fourth set of 12 Nov 2026 (a deferred value,
+fixed at a second lock) is withdrawn: no item is deferred.
 """
 
 from __future__ import annotations
@@ -76,14 +80,15 @@ ROW_PREFIX = "| T4.1 |"
 LEAD = "Fix every **[lock]** value:"
 
 
-# Rows 1 to 5 of the 14-value table (docs/lock_remaining.md): read by neither
-# pairing, each a number or record a written rule computes. Row 6 (the
-# head-type criterion) is the rule itself, so nothing of it can be deferred.
-DEFERRABLE = frozenset({"h6_regret_bound", "power_target_and_n",
-                        "primary_cell_n_and_admissibility_n", "admissibility_holm_family",
-                        "cross_card_dense_task_score_bound"})
-DEFERRED_FIELDS = ("rule", "input", "fixed_by")
-_SECOND_LOCK = re.compile(r"\bsecond lock\b", re.I)
+# Rows 2 to 6 of the 14-value table (docs/lock_remaining.md): read by neither
+# pairing; rows 2 to 5 serve H4 and H5, which are not scored, and row 6 is
+# T1.3's criterion, not pursued (lock-wave rulings of 12 Nov 2026, items 1-2).
+NOT_APPLICABLE = frozenset({"power_target_and_n", "primary_cell_n_and_admissibility_n",
+                            "admissibility_holm_family", "cross_card_dense_task_score_bound",
+                            "head_type_criterion"})
+NOT_APPLICABLE_FIELDS = ("reason", "appendix_a", "limitation")
+NOT_SCORED_FIELDS = ("reason", "appendix_a")
+_APPENDIX_A = re.compile(r"Appendix A, (\d{1,2} [A-Z][a-z]+ \d{4})")
 
 
 class LockListError(ValueError):
@@ -292,7 +297,7 @@ CELL = r"\d+x\d+"
 SCHEMA: dict = {
     "h0_to_h3_tolerances": record({"H0": FRACTION, "H1": FRACTION, "H2": FRACTION,
                                    "H3": text()}),
-    "h6_regret_bound": record({"mean": NONNEG, "worst": NONNEG}),
+    "h6_decision_error_bound": record({"decision_errors": NONNEG}),
     "ground_truth_density_set": table(LABEL, seq(DENSITY, distinct=True)),
     "h4_equivalence_bound_with_its_justification_from_the_tasks": POSITIVE,
     "h4_confirmatory_family": _family_matches_m(record(
@@ -370,14 +375,15 @@ class LockCheck:
     mistyped: tuple = ()           # (key, problem): set, but not of the item's type
     scored_pairings: tuple = ()    # (hypothesis, (pairing, ...)), as stated
     scored_problems: tuple = ()    # why the statement is unusable
-    deferred: tuple = ()           # keys locked by rule, their number fixed at a second lock
-    deferral_problems: tuple = ()  # (key, problem): a deferral the checker refuses
+    not_scored: tuple = ()         # hypotheses stated "not scored", with the form
+    not_applicable: tuple = ()     # keys locked as "not applicable", with the form
+    not_applicable_problems: tuple = ()   # (key, problem): a form the checker refuses
 
     @property
     def complete(self) -> bool:
         return not (self.missing or self.unset or self.unsourced or self.unknown
                     or self.scored_problems or self.mistyped
-                    or self.deferral_problems) and self.plan_matches
+                    or self.not_applicable_problems) and self.plan_matches
 
     def report(self) -> str:
         lines = [f"{len(self.items)} values listed by T4.1; "
@@ -387,30 +393,58 @@ class LockCheck:
                 lines.append(f"  {name}: {k} ({self.items.get(k, 'not in T4.1')})")
         for k, why in self.mistyped:
             lines.append(f"  mistyped: {why}")
-        for k in self.deferred:
-            lines.append(f"  deferred to the second lock: {k}")
-        for k, why in self.deferral_problems:
-            lines.append(f"  deferral refused: {k}: {why}")
+        for k in self.not_applicable:
+            lines.append(f"  not applicable: {k}")
+        for k, why in self.not_applicable_problems:
+            lines.append(f"  not applicable, refused: {k}: {why}")
         if not self.plan_matches:
             lines.append("  the lock file was written against another version of the plan")
         for h, ps in self.scored_pairings:
             lines.append(f"  scored pairings, {h}: {', '.join(ps)}")
+        for h in self.not_scored:
+            lines.append(f"  scored pairings, {h}: not scored")
         for p in self.scored_problems:
             lines.append(f"  scored pairings: {p}")
         return "\n".join(lines)
 
 
-def _scored(stated, required=SCORED_REQUIRED) -> tuple[tuple, tuple]:
-    """(the statement as sorted pairs, its problems)."""
+def _written(d, fields, plan_text: str) -> list[str]:
+    """Why the typed form `d` is not written ([] when it is): each field a
+    string that is not a placeholder, and `appendix_a` a dated Appendix A line
+    the plan holds."""
+    if not isinstance(d, Mapping) or set(d) - set(fields) - {"hypotheses"}:
+        return [f"not {{{', '.join(fields)}}}"]
+    bad = [f for f in fields
+           if not isinstance(d.get(f), str) or _unset(d[f].strip()) or _is_placeholder(d[f])]
+    out = [f"its {f} is not written" for f in bad]
+    if "appendix_a" not in bad:
+        m = _APPENDIX_A.search(d["appendix_a"])
+        if not m:
+            out.append("its appendix_a names no dated Appendix A line ('Appendix A, 12 Nov 2026')")
+        elif f"- **{m.group(1)}.**" not in plan_text:
+            out.append(f"Appendix A has no line dated {m.group(1)}")
+    return out
+
+
+def _scored(stated, required=SCORED_REQUIRED, plan_text: str = "") -> tuple[tuple, tuple, tuple]:
+    """(the statement as sorted pairs, the hypotheses stated not scored, its
+    problems)."""
     if not isinstance(stated, Mapping) or not stated:
-        return (), (f"none stated; {list(required)} at least",)
-    problems, pairs = [], []
+        return (), (), (f"none stated; {list(required)} at least",)
+    problems, pairs, unscored = [], [], []
     for h in required:
         if h not in stated:
             problems.append(f"{h} is not stated")
     for h, ps in sorted(stated.items()):
         if not (isinstance(h, str) and _HYPOTHESIS.fullmatch(h)):
             problems.append(f"{h!r} is not a hypothesis (H0, H1, ...)")
+            continue
+        if isinstance(ps, Mapping) and set(ps) == {"not_scored"}:
+            why = _written(ps["not_scored"], NOT_SCORED_FIELDS, plan_text)
+            if why:
+                problems += [f"{h} not scored: {w}" for w in why]
+            else:
+                unscored.append(h)
             continue
         if not isinstance(ps, list) or not ps:
             problems.append(f"{h} names no pairing")
@@ -424,40 +458,42 @@ def _scored(stated, required=SCORED_REQUIRED) -> tuple[tuple, tuple]:
                             f"as a test of {h}")
             continue
         pairs.append((h, tuple(ps)))
-    return tuple(pairs), tuple(problems)
+    return tuple(pairs), tuple(unscored), tuple(problems)
 
 
 def plan_sha256(plan_text: str) -> str:
     return hashlib.sha256(plan_text.encode("utf-8")).hexdigest()
 
 
-def deferral_problems(key: str, entry: Mapping) -> list[str]:
-    """Why `entry`'s deferral is refused ([] when it is a valid one)."""
-    d = entry.get("deferred")
-    if key not in DEFERRABLE:
-        return ["not deferrable: a value a pairing reads, or a rule, is fixed at the first lock"]
+def not_applicable_problems(key: str, entry: Mapping, plan_text: str,
+                            not_scored: tuple) -> list[str]:
+    """Why `entry`'s "not applicable" form is refused ([] when it is valid)."""
+    d = entry.get("not_applicable")
+    if key not in NOT_APPLICABLE:
+        return ["not applicable is refused: a value a pairing reads, or one a scored "
+                "hypothesis needs, is fixed at the lock"]
     if not _unset(entry.get("value")):
-        return ["both a value and a deferral: one or the other"]
-    if not isinstance(d, Mapping):
-        return ["`deferred` is not {rule, input, fixed_by}"]
-    out = []
-    for f in DEFERRED_FIELDS:
-        v = d.get(f)
-        if not isinstance(v, str) or _unset(v.strip()) or _is_placeholder(v):
-            out.append(f"its {f} is not written")
-    if not out and not _SECOND_LOCK.search(d["fixed_by"]):
-        out.append("fixed_by names no second lock")
+        return ["both a value and not applicable: one or the other"]
+    out = _written(d, NOT_APPLICABLE_FIELDS, plan_text)
+    if not out and "hypotheses" in d:
+        hs = d["hypotheses"]
+        if not (isinstance(hs, list) and hs and all(isinstance(h, str) for h in hs)):
+            out.append("its hypotheses is not a list of hypotheses")
+        else:
+            out += [f"names {h}, which is not stated not scored" for h in hs
+                    if h not in not_scored]
     return out
 
 
-def check(lock: Mapping, plan_text: str, *, allow_deferred: bool = True) -> LockCheck:
-    """`lock` is the parsed lock file (module docstring). With
-    `allow_deferred` False, a deferred item is unset."""
+def check(lock: Mapping, plan_text: str) -> LockCheck:
+    """`lock` is the parsed lock file (module docstring)."""
     items = lock_items(plan_text)
     values = lock.get("values")
     if not isinstance(values, Mapping):
         raise LockListError("the lock file has no `values` mapping")
-    missing, unset, unsourced, mistyped, deferred, refused = [], [], [], [], [], []
+    scored, not_scored, scored_problems = _scored(
+        lock.get("scored_pairings"), hypotheses(plan_text) or SCORED_REQUIRED, plan_text)
+    missing, unset, unsourced, mistyped, na, refused = [], [], [], [], [], []
     for k in items:
         e = values.get(k)
         if e is None:
@@ -465,13 +501,11 @@ def check(lock: Mapping, plan_text: str, *, allow_deferred: bool = True) -> Lock
             continue
         if not isinstance(e, Mapping) or "value" not in e:
             raise LockListError(f"entry {k!r} is not {{'value': ..., 'source': ...}}")
-        if e.get("deferred") is not None:
-            why = deferral_problems(k, e)
+        if e.get("not_applicable") is not None:
+            why = not_applicable_problems(k, e, plan_text, not_scored)
             refused += [(k, w) for w in why]
-            if not why and allow_deferred:
-                deferred.append(k)
-            elif not why:
-                unset.append(k)
+            if not why:
+                na.append(k)
         elif _unset(e["value"]):
             unset.append(k)
         else:
@@ -480,14 +514,12 @@ def check(lock: Mapping, plan_text: str, *, allow_deferred: bool = True) -> Lock
         if _unset(src) or not isinstance(src, str) or _is_placeholder(src):
             unsourced.append(k)
     unknown = sorted(set(values) - set(items))
-    scored, scored_problems = _scored(lock.get("scored_pairings"),
-                                      hypotheses(plan_text) or SCORED_REQUIRED)
     return LockCheck(items=items, missing=tuple(missing), unset=tuple(unset),
                      unsourced=tuple(unsourced), unknown=tuple(unknown),
                      plan_matches=lock.get("plan_sha256") == plan_sha256(plan_text),
                      scored_pairings=scored, scored_problems=scored_problems,
-                     mistyped=tuple(mistyped), deferred=tuple(deferred),
-                     deferral_problems=tuple(refused))
+                     mistyped=tuple(mistyped), not_scored=not_scored,
+                     not_applicable=tuple(na), not_applicable_problems=tuple(refused))
 
 
 def skeleton(plan_text: str) -> dict:

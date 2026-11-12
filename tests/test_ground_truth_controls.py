@@ -194,19 +194,93 @@ def _held_out(rig, **kw):
     return rig
 
 
-@pytest.mark.parametrize("drift,limit,flagged", [
-    (6.0, 0.25, False),     # beyond the 5 ms floor, inside 25% of 30 ms: the floor is not read
+# The running reference (ruling 2 of the lock wave, 12 Nov 2026;
+# docs/drift_reference_correction.md).
+
+def test_a_constant_warm_up_offset_is_not_drift():
+    # Every timed round 10% above the warm-up: the fourth set's rule flagged
+    # all of them; the running reference flags none.
+    rig = _held_out(Rig({"dense": lambda i: 30.0 + (3.0 if i >= WARMUP else 0.0)}, max_rerun=0),
+                    drift_limit_relative=0.05, drift_reference_min_rounds=2)
+    out = rig.run()
+    assert not any(r["flagged"] for r in out["rounds"]) and out["complete"]
+    assert out["dense_control"]["drift_reference"] == "running"
+    assert out["controls"]["drift_reference_min_rounds"] == 2
+    assert [r["reference_ms"] for r in out["rounds"]] == [pytest.approx(33.0)] * REPS
+
+
+@pytest.mark.parametrize("bump,limit,flagged", [
+    (6.0, 0.25, False),     # beyond the 5 ms floor, inside 25%: the floor is not read
     (2.0, 0.05, True),      # inside the floor, beyond 5%
     (6.0, 0.10, True), (-9.0, 0.25, True), (-7.0, 0.25, False)])
-def test_a_relative_limit_replaces_the_floor(drift, limit, flagged):
-    rig = _held_out(Rig({"dense": lambda i: 30.0 + (drift if i == WARMUP else 0.0)},
-                        max_rerun=0), drift_limit_relative=limit)
-    out = rig.run(reps=1)
-    assert out["rounds"][0]["flagged"] is flagged
-    assert out["controls"]["drift_limit_relative"] == limit
+def test_a_round_off_the_running_median_is_flagged_and_rerun(bump, limit, flagged):
+    # Rounds 0 and 1 at 30 ms set the reference; round 2 moves by `bump`.
+    rig = _held_out(Rig({"dense": lambda i: 30.0 + (bump if i == WARMUP + 2 else 0.0)},
+                        max_rerun=1), drift_limit_relative=limit, drift_reference_min_rounds=2)
+    out = rig.run()
+    assert out["rounds"][2]["flagged"] is flagged
+    assert out["rounds"][2]["reference_ms"] == pytest.approx(30.0)
+    assert out["rounds_run"] == REPS + flagged and out["complete"]
     if flagged:
-        assert out["rounds"][0]["flag_reasons"][0] == \
-            f"dense_drift_{drift / 30.0:+.4f}_vs_relative_{limit}"
+        assert out["rounds"][2]["flag_reasons"][0] == \
+            f"dense_drift_{bump / 30.0:+.4f}_vs_relative_{limit}"
+
+
+def test_the_earliest_rounds_are_judged_together_once_the_minimum_exists():
+    # Round 0 is pending until round 2 brings 3 usable rounds; then the
+    # median of the three (30 ms) judges it, and it is rerun.
+    rig = _held_out(Rig({"dense": lambda i: 30.0 + (12.0 if i == WARMUP else 0.0)},
+                        max_rerun=1), drift_limit_relative=0.10, drift_reference_min_rounds=3)
+    out = rig.run()
+    assert [r["flagged"] for r in out["rounds"]] == [True, False, False, False]
+    assert out["rounds"][0]["reference_ms"] == pytest.approx(30.0)
+    assert out["clean_rounds"] == REPS and out["complete"]
+
+
+def test_running_judgments_use_only_earlier_usable_rounds():
+    J = gt.running_judgments
+    # The reference is the rounds before, not the round itself: with it, the
+    # median of 30 and 34 is 32 and 34 would pass a 10% limit.
+    assert J([30.0, 34.0], [False, False], limit=0.10, min_rounds=1) == \
+        [(30.0, False), (30.0, True)]
+    # A throttled round stays out of the reference and does not count to the
+    # minimum: with it, the first reference would be median(30, 60) = 45.
+    assert J([30.0, 60.0, 33.0], [False, True, False], limit=0.10, min_rounds=2) == \
+        [(31.5, False), (31.5, True), (31.5, False)]
+    # Drift-flagged rounds stay in the reference.
+    assert J([30.0, 30.0, 40.0, 40.0, 40.0], [False] * 5, limit=0.10, min_rounds=2)[4] == \
+        (35.0, True)
+    assert J([30.0], [False], limit=0.10, min_rounds=2) == [None]
+    # A judgment, once made, never changes as rounds are added.
+    xs = [30.0, 33.5, 29.0, 31.0, 36.0, 30.5, 27.0, 30.0]
+    full = J(xs, [False] * len(xs), limit=0.06, min_rounds=3)
+    assert full[0] is not None and any(f for _, f in full)
+    for n in range(len(xs)):
+        part = J(xs[:n], [False] * n, limit=0.06, min_rounds=3)
+        assert all(p is None or p == q for p, q in zip(part, full))
+        assert all(p is not None for p in part) if n >= 3 else all(p is None for p in part)
+
+
+def test_a_round_still_pending_at_the_end_is_flagged_not_clean():
+    c = gt.Controls(resolution_floor_ms=FLOOR, max_rerun_rounds=0, sampler=Rig().sampler,
+                    drift_limit_relative=0.10, drift_reference_min_rounds=3)
+    rounds = [{"dense_ms": 30.0, "throttle_reasons": []},
+              {"dense_ms": 30.0, "throttle_reasons": ["dense:throttled:hw_slowdown"]}]
+    assert gt._judge_rounds(rounds, c, 30.0, FLOOR, final=False) == 0
+    assert not rounds[0]["flagged"] and rounds[0]["reference_ms"] is None
+    assert gt._judge_rounds(rounds, c, 30.0, FLOOR, final=True) == 0
+    assert rounds[0]["flag_reasons"] == ["dense_drift_pending_fewer_than_3_usable_rounds"]
+    assert rounds[1]["flagged"] and len(rounds[1]["flag_reasons"]) == 2
+
+
+def test_the_running_reference_needs_its_limit_and_its_minimum_below_the_reps():
+    for bad in ({"drift_limit_relative": 0.1}, {"drift_reference_min_rounds": 3},
+                {"drift_limit_relative": 0.1, "drift_reference_min_rounds": 0}):
+        with pytest.raises(ValueError):
+            gt.Controls(resolution_floor_ms=FLOOR, max_rerun_rounds=0, sampler=Rig().sampler,
+                        **bad)
+    with pytest.raises(ValueError, match="never be used"):
+        _held_out(Rig(), drift_limit_relative=0.1, drift_reference_min_rounds=REPS + 1).run()
 
 
 def test_complete_at_the_minimum_clean_rounds_not_the_reps():
@@ -223,6 +297,8 @@ def test_complete_at_the_minimum_clean_rounds_not_the_reps():
         _held_out(Rig(), min_clean_rounds=REPS + 1).run()
     for bad in ({"min_clean_rounds": 0}, {"drift_limit_relative": 0.0},
                 {"drift_limit_relative": 1.0}, {"drift_limit_relative": float("nan")}):
+        bad = dict(bad, **({"drift_reference_min_rounds": 1} if "drift_limit_relative" in bad
+                           else {}))
         with pytest.raises(ValueError):
             gt.Controls(resolution_floor_ms=FLOOR, max_rerun_rounds=0, sampler=Rig().sampler,
                         **bad)

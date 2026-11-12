@@ -3176,3 +3176,35 @@ moves the crossover. The banked compiled records of the exploratory session and 
 are pre-lock evidence from another runner, and they are not a substitute. T4.1 items 29 (the
 compiled-versus-eager density tolerance) and 33 (the recompile gate) keep their values, and
 nothing reads them.
+
+## H4 and H5 are not scored, nothing is read by head type, and H6 is scored on P4 only (2026-11-12)
+
+**What happened.** Three inputs of the lock never ran: T1.5's pilot (H4's power rule and n),
+T1.8's recall matching (the admissibility Holm family) and audit B1's A100 cross-card dense
+control (the cross-card task-score bound). T1.3, the head-type criterion, was not pursued: the
+researcher delegated it on 12 Nov 2026 ("take whatever decision is best for the research and
+possible with our resources"), and no criterion could be fixed and validated with what was left.
+The lock types the five values "not applicable" and states H4 and H5 "not scored" (Appendix A,
+12 Nov 2026). P2's committed file carries no dispatcher choice: no P2 step extracts the kernel
+times the kernel-speedup rule reads, and with H4 not scored the admissible set has no accuracy
+source, so H6 is scored on P4 alone.
+
+**What it costs.** The study makes no claim that recall is sufficient for accuracy (H4), none on
+the direction a faster GPU or host moves the crossover (H5), and none by head type. T1.1's
+calibrated XAttention results are reported descriptively. H6 rests on one held-out pairing, P4,
+and its admissible set is fixed before P4's prediction rather than at the lock. The H4
+equivalence bound and family keep their lock values, and nothing reads them.
+
+## The residual spread tolerance is 0.2349, not the working 0.10 (2026-11-12)
+
+**What happened.** T4.1's residual spread tolerance was set from P1 before any P2 data, from
+T3.2d alone (the second lock-wave rulings of 12 Nov 2026, item 2): 0.10 if every layer's spread
+was inside it, else 1.5 times the largest. Two of T3.2d's 35 cells hold layers above 0.10, both
+dense: `dense_d1_L16384_b4` (layers 0, 26 and 27; largest 0.1566) and `dense_d1_L32768_b1`
+(layers 6 to 10; largest 0.1318). Every sparse cell is inside 0.075. The tolerance is
+1.5 × 0.1566 = 0.2349, with no layer excluded. T3.2c, on the superseded residual method, peaks
+at 0.1608 in the same batch-4 cell, inside the value.
+
+**What it costs.** The tolerance labels a cell's residual as unstable and refuses nothing, so a
+wider one labels fewer cells. On P1 at 0.10, two dense cells would have carried the label. At
+0.2349, a P2 or P4 layer whose spread is up to 2.3 times the working value goes unlabelled.

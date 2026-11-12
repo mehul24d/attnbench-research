@@ -60,19 +60,19 @@ def test_a_complete_lock_file_passes_and_its_report_says_so():
 
 def test_missing_unset_unsourced_and_unknown_entries_are_each_named():
     lock = _filled()
-    del lock["values"]["h6_regret_bound"]
+    del lock["values"]["h6_decision_error_bound"]
     lock["values"]["mask_gate_bound"]["value"] = None
     lock["values"]["probe_bounds"]["value"] = []
     lock["values"]["budget_cut_order"]["source"] = ""
     lock["values"]["a_value_t41_does_not_list"] = {"value": 1, "source": "x"}
     r = L.check(lock, PLAN_TEXT)
     assert not r.complete
-    assert r.missing == ("h6_regret_bound",)
+    assert r.missing == ("h6_decision_error_bound",)
     assert set(r.unset) == {"mask_gate_bound", "probe_bounds"}
     assert r.unsourced == ("budget_cut_order",)
     assert r.unknown == ("a_value_t41_does_not_list",)
     text = r.report()
-    for k in ("h6_regret_bound", "mask_gate_bound", "budget_cut_order"):
+    for k in ("h6_decision_error_bound", "mask_gate_bound", "budget_cut_order"):
         assert k in text
 
 
@@ -155,8 +155,8 @@ def test_a_lock_file_without_values_or_with_a_malformed_entry_is_refused():
     with pytest.raises(L.LockListError, match="values"):
         L.check({}, PLAN_TEXT)
     lock = _filled()
-    lock["values"]["h6_regret_bound"] = 3.0
-    with pytest.raises(L.LockListError, match="h6_regret_bound"):
+    lock["values"]["h6_decision_error_bound"] = 3.0
+    with pytest.raises(L.LockListError, match="h6_decision_error_bound"):
         L.check(lock, PLAN_TEXT)
 
 
@@ -198,7 +198,7 @@ AT_LOCK = [
      ("h4_equivalence_bound_with_its_justification_from_the_tasks",)),
     ("h4 bound justified at lock",
      ("h4_equivalence_bound_with_its_justification_from_the_tasks",)),
-    ("mean and worst case per pairing against **[lock]**", ("h6_regret_bound",)),
+    ("the dispatcher's count minus each comparator's, at most **[lock]**", ("h6_decision_error_bound",)),
     ("density (a set fixed at lock", ("ground_truth_density_set",)),
     ("each cell is checked at lock against the model's position limit",
      ("context_grid_checked_against_each_model_s_position_limit",)),
@@ -283,51 +283,83 @@ def test_the_draft_lock_package_lists_every_item_and_fixes_none():
     assert all(v is None for vals in draft["pairing_values"].values() for v in vals.values())
 
 
-# --- the staged lock (adviser's ruling 4, fourth set of 12 Nov 2026) --------------
+# --- "not applicable" and "not scored" (lock-wave rulings of 12 Nov 2026, items 1, 2, 6) ---
 
-DEFER = {"rule": "the 0.95 quantile of the dispatcher's regret over P2's banked cells",
-         "input": "predictions/P2/ledger/banked.json", "fixed_by": "the second lock commit, "
-         "before P4's prediction"}
+NA = {"reason": "hypothesis not scored: T1.5's pilot never ran",
+      "appendix_a": "Appendix A, 12 Nov 2026", "limitation": "H4 is not tested",
+      "hypotheses": ["H4", "H5"]}
+NOT_SCORED = {"reason": "T1.5, T1.8 and audit B1 never ran",
+              "appendix_a": "Appendix A, 12 Nov 2026"}
 
 
-def _deferring(key, deferred=DEFER, value=None):
+def _na_lock(key="power_target_and_n", form=NA, value=None, scored=None):
     lock = LF.complete_lock(PLAN_TEXT)
+    for h in ("H4", "H5"):
+        lock["scored_pairings"][h] = {"not_scored": dict(NOT_SCORED)}
+    lock["scored_pairings"].update(scored or {})
     lock["values"][key].update(value=value,
-                               deferred=dict(deferred) if isinstance(deferred, dict) else deferred)
+                               not_applicable=dict(form) if isinstance(form, dict) else form)
     return lock
 
 
-def test_a_deferred_value_with_its_rule_written_completes_the_first_lock_only():
-    lock = _deferring("h6_regret_bound")
+def test_a_value_that_does_not_apply_with_its_form_written_completes_the_lock():
+    lock = LF.complete_lock(PLAN_TEXT)
+    for h in ("H4", "H5"):
+        lock["scored_pairings"][h] = {"not_scored": dict(NOT_SCORED)}
+    for key in sorted(L.NOT_APPLICABLE):
+        form = dict(NA) if key != "head_type_criterion" else \
+            {k: v for k, v in NA.items() if k != "hypotheses"}
+        lock["values"][key].update(value=None, not_applicable=form)
     r = L.check(lock, PLAN_TEXT)
-    assert r.complete and r.deferred == ("h6_regret_bound",) and not r.unset
-    assert "deferred to the second lock: h6_regret_bound" in r.report()
-    second = L.check(lock, PLAN_TEXT, allow_deferred=False)
-    assert not second.complete and second.unset == ("h6_regret_bound",)
-    assert L.DEFERRABLE == {"h6_regret_bound", "power_target_and_n",
-                            "primary_cell_n_and_admissibility_n", "admissibility_holm_family",
-                            "cross_card_dense_task_score_bound"}
+    assert r.complete, r.report()
+    assert set(r.not_applicable) == L.NOT_APPLICABLE and r.not_scored == ("H4", "H5")
+    assert "not applicable: head_type_criterion" in r.report()
+    assert "scored pairings, H4: not scored" in r.report()
+    assert L.NOT_APPLICABLE == {"power_target_and_n", "primary_cell_n_and_admissibility_n",
+                                "admissibility_holm_family", "cross_card_dense_task_score_bound",
+                                "head_type_criterion"}
 
 
-@pytest.mark.parametrize("key", ["head_type_criterion", "rerun_budget", "throttle_set"])
-def test_a_value_a_pairing_reads_or_a_rule_itself_is_never_deferred(key):
-    r = L.check(_deferring(key), PLAN_TEXT)
-    assert not r.complete and r.deferral_problems[0][0] == key
-    assert "not deferrable" in r.deferral_problems[0][1]
+@pytest.mark.parametrize("key", ["h6_decision_error_bound", "rerun_budget", "throttle_set",
+                                 "probe_bounds"])
+def test_a_value_a_pairing_reads_or_a_scored_hypothesis_needs_always_applies(key):
+    r = L.check(_na_lock(key), PLAN_TEXT)
+    assert not r.complete and r.not_applicable_problems[0][0] == key
+    assert "not applicable is refused" in r.not_applicable_problems[0][1]
+    assert not r.not_applicable
 
 
 @pytest.mark.parametrize("bad,why", [
-    ({**DEFER, "rule": "TBD"}, "rule is not written"),
-    ({**DEFER, "rule": "  "}, "rule is not written"),
-    ({k: v for k, v in DEFER.items() if k != "input"}, "input is not written"),
-    ({**DEFER, "fixed_by": "later"}, "names no second lock"),
-    ("the rule", "is not {rule, input, fixed_by}")])
-def test_a_deferral_without_its_rule_input_and_second_lock_is_refused(bad, why):
-    r = L.check(_deferring("power_target_and_n", deferred=bad), PLAN_TEXT)
-    assert not r.complete and any(why in w for _, w in r.deferral_problems)
-    assert not r.deferred
+    ({**NA, "reason": "TBD"}, "reason is not written"),
+    ({**NA, "limitation": "  "}, "limitation is not written"),
+    ({k: v for k, v in NA.items() if k != "limitation"}, "limitation is not written"),
+    ({**NA, "appendix_a": "the plan"}, "names no dated Appendix A line"),
+    ({**NA, "appendix_a": "Appendix A, 1 Jan 2020"}, "has no line dated 1 Jan 2020"),
+    ({**NA, "fixed_by": "later"}, "not {reason, appendix_a, limitation}"),
+    ({**NA, "hypotheses": []}, "hypotheses is not a list"),
+    ({**NA, "hypotheses": ["H4", "H6"]}, "names H6, which is not stated not scored"),
+    ("does not apply", "not {reason, appendix_a, limitation}")])
+def test_a_not_applicable_form_not_written_in_full_is_refused(bad, why):
+    r = L.check(_na_lock(form=bad), PLAN_TEXT)
+    assert not r.complete and any(why in w for _, w in r.not_applicable_problems), \
+        r.not_applicable_problems
+    assert not r.not_applicable
 
 
-def test_a_deferral_beside_a_value_is_refused():
-    r = L.check(_deferring("h6_regret_bound", value={"mean": 0.1, "worst": 0.2}), PLAN_TEXT)
-    assert not r.complete and "both a value and a deferral" in r.deferral_problems[0][1]
+def test_not_applicable_beside_a_value_is_refused():
+    r = L.check(_na_lock(value={"alpha": 0.025, "power": 0.9, "n": 400}), PLAN_TEXT)
+    assert not r.complete
+    assert "both a value and not applicable" in r.not_applicable_problems[0][1]
+
+
+@pytest.mark.parametrize("stated,why", [
+    ([], "H4 names no pairing"),
+    ({"not_scored": {**NOT_SCORED, "reason": "n/a"}}, "H4 not scored: its reason is not written"),
+    ({"not_scored": {"reason": "x"}}, "H4 not scored: its appendix_a is not written"),
+    ({"not_scored": {**NOT_SCORED, "appendix_a": "Appendix A, 2 Feb 2021"}},
+     "H4 not scored: Appendix A has no line dated 2 Feb 2021"),
+    ({"not_scored": NOT_SCORED, "pairings": ["P4"]}, "H4 names no pairing")])
+def test_an_unscored_hypothesis_states_why_in_the_typed_form(stated, why):
+    r = L.check(_na_lock(scored={"H4": stated}), PLAN_TEXT)
+    assert not r.complete and why in r.scored_problems, r.scored_problems
+    assert "H4" not in r.not_scored

@@ -43,8 +43,10 @@ def prelaunch_pass(config: str) -> str:
     """The card's pre-launch CPU pass paragraph (adviser's ruling 4 of the
     11 Nov 2026 paste); the P4 card prints it too."""
     return (f"**Pre-launch CPU pass, before the yes is asked** (adviser's ruling 4 of the 11 Nov "
-            f"2026 paste). On this card's commit, from a clean tree: `scripts/prelaunch_cpu_pass.sh "
-            f"{config} results/p1_training/p1_training.json.gz`. It runs the session's real config "
+            f"2026 paste). On this card's commit, from a clean tree: `ATTNBENCH_PRELAUNCH_MASKS=<T3.2d's "
+            f"step 5 XAttention masks, staged> scripts/prelaunch_cpu_pass.sh "
+            f"{config} results/p1_training/p1_training.json.gz` (the masks: the third lock-wave "
+            f"rulings of 12 Nov 2026, item 2). It runs the session's real config "
             "and name through the real start checks (the exit wrapper, a clean tree, the "
             "timed-path pin, the banking times) and every step a CPU can run with its real body, "
             "prereqs and the staged inputs first; only the GPU steps, the device and the bucket "

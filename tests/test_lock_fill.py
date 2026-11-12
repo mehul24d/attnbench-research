@@ -54,11 +54,26 @@ def test_a_complete_lock_fills_p2s_values_and_says_so(tmp_path, monkeypatch):
     assert cfg["flag_reasons"] == v["throttle_set"]
     assert cfg["lengths"] == v[st.GRID_ITEM]["lengths"]
     assert cfg["resolution_floor_ms"] == v["resolution_and_noise_floors"]["resolution_floor_ms"]
-    assert cfg["chain_check_tolerance"] == v["chain_check_tolerance"]
+    assert cfg["chain_check_tolerance"] == {"aggregate": v["chain_check_tolerance"]}
     assert "working_values" not in cfg
     assert cfg["lock_values"]["source"] == "lock_values.json"
     assert set(cfg["lock_values"]["filled"]) >= {"densities", "reps", "dense_rounds",
                                                  "gt_groups.eager", "max_rerun_rounds"}
+
+
+def test_each_filled_value_has_the_working_value_s_shape(tmp_path, monkeypatch):
+    """The steps read a lock-filled value as they read P1's working one: a
+    lock fraction the steps take as {"aggregate"} broke P2's pre-launch pass
+    at host_components (12 Nov 2026)."""
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
+    cfg = st.load_config(str(P2_CONFIG), dry_run=False)
+    work, _ = st.working_values()
+    shared = set(st.LOCK_SOURCED) & set(work)
+    assert "chain_check_tolerance" in shared
+    for k in shared:
+        assert type(cfg[k]) is type(work[k]), k
+        if isinstance(work[k], dict):
+            assert set(cfg[k]) == set(work[k]), k
 
 
 def test_t41_items_come_from_the_lock_values_never_from_pairing_values(tmp_path, monkeypatch):
@@ -141,11 +156,14 @@ def test_held_out_pairings_flag_drift_relatively_and_take_the_locks_clean_minimu
     cfg = st.load_config(str(P2_CONFIG), dry_run=False)
     assert cfg["min_clean_rounds"] == LF.VALUES["rerun_budget"]["min_clean_rounds"]
     assert st.drift_controls(cfg) == {"drift_limit_relative": st.RELATIVE_DRIFT_LIMIT,
+                                      "drift_reference_min_rounds": 5,
                                       "min_clean_rounds": cfg["min_clean_rounds"]}
+    assert st.DRIFT_REFERENCE_MIN_ROUNDS == 5   # declared in docs/drift_reference_correction.md
     assert st.RELATIVE_DRIFT_LIMIT == pytest.approx(0.0631, abs=5e-5)
     with pytest.raises(st.StepFailed, match="min_clean_rounds is missing"):
         st.drift_controls(dict(cfg, min_clean_rounds=None))
     assert st.drift_controls({"pairing": "P1"}) == {"drift_limit_relative": None,
+                                                    "drift_reference_min_rounds": None,
                                                     "min_clean_rounds": None}
 
 
@@ -178,22 +196,27 @@ def test_the_ground_truth_step_hands_a_held_out_pairing_the_relative_controls(tm
                            session=str(tmp_path / "s"), group="eager")
     assert st.cmd_ground_truth_one(args) == 0
     assert seen["drift_limit_relative"] == st.RELATIVE_DRIFT_LIMIT
+    assert seen["drift_reference_min_rounds"] == st.DRIFT_REFERENCE_MIN_ROUNDS
     assert seen["min_clean_rounds"] == cfg["min_clean_rounds"]
     assert seen["max_rerun_rounds"] == cfg["max_rerun_rounds"]
 
 
-def test_p2_runs_on_a_staged_lock_and_p4_waits_for_the_second(tmp_path, monkeypatch):
-    # The adviser's ruling 4, fourth set of 12 Nov 2026.
+def test_both_pairings_run_on_a_lock_whose_unscored_values_do_not_apply(tmp_path, monkeypatch):
+    # The lock-wave rulings of 12 Nov 2026, items 1 and 2: no staged lock; rows 2
+    # to 6 are typed "not applicable", H4 and H5 "not scored".
     rec = lock()
-    rec["values"]["h6_regret_bound"].update(value=None, deferred={
-        "rule": "the 0.95 quantile of the regret over P2's banked cells",
-        "input": "predictions/P2/ledger/banked.json", "fixed_by": "the second lock"})
+    why = {"reason": "not scored in this study", "appendix_a": "Appendix A, 12 Nov 2026"}
+    for h in ("H4", "H5"):
+        rec["scored_pairings"][h] = {"not_scored": dict(why)}
+    rec["values"]["power_target_and_n"].update(value=None, not_applicable={
+        **why, "limitation": "H4 is not tested", "hypotheses": ["H4", "H5"]})
     rec["pairing_values"]["P4"] = P2_VALUES
     monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, rec))
     assert st.load_config(str(P2_CONFIG), dry_run=False)["reps"] == 12
-    with pytest.raises(st.StepFailed, match="not a complete lock"):
-        st.load_config(str(ROOT / "configs" / "t64" / "p4_session.json"), dry_run=False)
-    rec["values"]["h6_regret_bound"].update(value={"mean": 0.1, "worst": 0.2}, deferred=None)
-    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, rec))
     assert st.load_config(str(ROOT / "configs" / "t64" / "p4_session.json"),
                           dry_run=False)["reps"] == 12
+    rec["values"]["rerun_budget"].update(value=None, not_applicable={
+        **why, "limitation": "none"})
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, rec))
+    with pytest.raises(st.StepFailed, match="not applicable is refused"):
+        st.load_config(str(P2_CONFIG), dry_run=False)

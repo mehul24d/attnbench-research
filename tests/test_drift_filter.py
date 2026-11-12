@@ -61,3 +61,32 @@ def test_a_row_whose_samples_do_not_match_its_rounds_is_refused():
         DF.refilter(bad, mode=DF.NONE)
     with pytest.raises(DF.DriftFilterError):
         DF.refilter(result(), mode=DF.RELATIVE)
+
+
+def running_result():
+    # 100 ms rounds, round 3 at 120 ms, round 4 throttled at 150 ms
+    ms = [100.0, 101.0, 99.0, 120.0, 150.0, 100.0]
+    rounds = [{"round": i, "dense_ms": v, "dense_drift_ms": v - 90.0, "flagged": i == 4,
+               "flag_reasons": ["dense:throttled:hw_slowdown"] if i == 4 else []}
+              for i, v in enumerate(ms)]
+    rows = [{"arm": "dense", "reps": 6, "prefill_ms_samples": [v for i, v in enumerate(ms) if i != 4],
+             "flagged_ms_samples": [150.0]}]
+    return {"traced": False, "complete": False, "clean_rounds": 5, "rounds": rounds,
+            "dense_control": {"reference_ms": 90.0}, "rows": rows}
+
+
+def test_the_running_filter_is_the_sessions_rule_and_keeps_throttle_flags():
+    out = DF.refilter(running_result(), mode=DF.RUNNING, limit=0.10, min_rounds=3)
+    assert [r["flagged"] for r in out["rounds"]] == [False, False, False, True, True, False]
+    assert out["rounds"][4]["flag_reasons"][0] == "dense:throttled:hw_slowdown"
+    assert out["clean_rounds"] == 4 and out["drift_filter"]["min_rounds"] == 3
+    # Against the warm-up (90 ms) every round but none would sit beyond 10%.
+    assert DF.refilter(running_result(), mode=DF.RELATIVE, limit=0.10)["clean_rounds"] == 1
+    # Too few usable rounds: every round stays pending and is flagged.
+    out = DF.refilter(running_result(), mode=DF.RUNNING, limit=0.10, min_rounds=6)
+    assert out["clean_rounds"] == 0
+    for bad in ({"mode": DF.RUNNING, "limit": 0.1}, {"mode": DF.RELATIVE, "limit": 0.1,
+                                                     "min_rounds": 3},
+                {"mode": DF.RUNNING, "min_rounds": 3}):
+        with pytest.raises(DF.DriftFilterError):
+            DF.refilter(running_result(), **bad)

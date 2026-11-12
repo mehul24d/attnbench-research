@@ -55,9 +55,13 @@ as throttled. A flagged round is excluded from every statistic and rerun, up
 to `Controls.max_rerun_rounds` extra rounds; if fewer than `reps` clean rounds
 result, the result says `complete: False` and nothing hides it. The floor is
 fixed at lock from the measured run-to-run spread (Appendix A, 25 Oct 2026),
-so it has no default here. P2 and P4 flag drift relative to the warm-up time
-instead (`Controls.drift_limit_relative`), and are complete at the lock's
-`min_clean_rounds` (adviser's rulings 1 and 2, fourth set of 12 Nov 2026).
+so it has no default here. P2 and P4 flag drift relative to a running
+reference instead (`Controls.drift_limit_relative`, `running_judgments`): the
+median of the cell's own earlier timed rounds, warm-up excluded, once
+`Controls.drift_reference_min_rounds` usable rounds exist (the adviser's
+ruling 2 of the lock wave, 12 Nov 2026, correcting ruling 1 of the fourth
+set: a constant warm-up offset is not drift). They are complete at the lock's
+`min_clean_rounds` (ruling 2, fourth set of 12 Nov 2026).
 
 **The first clocked block's timestamp** (Appendix A, 25 and 27 Oct 2026) is
 the wall clock read immediately before the opening synchronise of the first
@@ -407,6 +411,40 @@ def untimed_setup(wrapped, input_ids, arm: Arm, *, score_kwargs: Optional[dict])
     return {}
 
 
+def running_judgments(dense_ms: list, throttled: list, *, limit: float,
+                      min_rounds: int) -> list:
+    """The running drift reference (the adviser's ruling 2 of the lock wave,
+    12 Nov 2026; `docs/drift_reference_correction.md`), one entry per round:
+    (reference_ms, drift_flagged), or None while the round is pending.
+
+    Round i is judged against the median dense time of the usable (not
+    throttled) rounds before it. Until `min_rounds` usable rounds exist every
+    round is pending; the round that brings the count to `min_rounds` and all
+    before it are judged against the median of those rounds. A judgment
+    depends only on earlier rounds (or the first `min_rounds`), so a prefix's
+    judgments never change as rounds are added."""
+    if len(dense_ms) != len(throttled):
+        raise ValueError("one throttle flag per round")
+    out: list = [None] * len(dense_ms)
+    usable: list = []
+    judging = False
+
+    def judge(ms, ref):
+        return (ref, abs(ms - ref) / ref > limit)
+
+    for i, (ms, thr) in enumerate(zip(dense_ms, throttled)):
+        if judging:
+            out[i] = judge(ms, statistics.median(usable))
+        if not thr:
+            usable.append(ms)
+        if not judging and len(usable) == min_rounds:
+            judging = True
+            ref = statistics.median(usable)
+            for j in range(i + 1):
+                out[j] = judge(dense_ms[j], ref)
+    return out
+
+
 def quantile(samples: list, q: float) -> float:
     """Linear-interpolation quantile (numpy's default), q in [0, 1]."""
     xs = sorted(samples)
@@ -422,9 +460,11 @@ class Controls:
     resolution_floor_ms: float   # dense drift beyond this flags a round (P1's protocol)
     max_rerun_rounds: int        # extra rounds allowed to replace flagged ones
     sampler: "BlockSampler | ProcessSampler"   # clocks and throttle reasons, every block
-    # P2 and P4 (adviser's rulings 1 and 2, fourth set of 12 Nov 2026): None
-    # keeps P1's protocol, the absolute floor above and `reps` clean rounds.
-    drift_limit_relative: Optional[float] = None   # |drift| / warm-up time beyond this flags
+    # P2 and P4 (rulings 1 and 2, fourth set, and ruling 2 of the lock wave,
+    # 12 Nov 2026): None keeps P1's protocol, the absolute floor above against
+    # the warm-up time and `reps` clean rounds.
+    drift_limit_relative: Optional[float] = None   # |drift| / running reference beyond this flags
+    drift_reference_min_rounds: Optional[int] = None   # usable rounds before the reference is used
     min_clean_rounds: Optional[int] = None         # clean rounds for `complete`
 
     def __post_init__(self) -> None:
@@ -435,6 +475,12 @@ class Controls:
         r = self.drift_limit_relative
         if r is not None and not (math.isfinite(r) and 0 < r < 1):
             raise ValueError("drift_limit_relative must be a fraction in (0, 1)")
+        m = self.drift_reference_min_rounds
+        if (r is None) != (m is None):
+            raise ValueError("drift_limit_relative and drift_reference_min_rounds are set "
+                             "together: the running reference needs both")
+        if m is not None and m < 1:
+            raise ValueError("drift_reference_min_rounds must be >= 1")
         if self.min_clean_rounds is not None and self.min_clean_rounds < 1:
             raise ValueError("min_clean_rounds must be >= 1")
         s = self.sampler
@@ -592,6 +638,10 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
     need = reps if controls.min_clean_rounds is None else controls.min_clean_rounds
     if need > reps:
         raise ValueError(f"min_clean_rounds {need} is above reps {reps}: no session reaches it")
+    min_ref = controls.drift_reference_min_rounds
+    if min_ref is not None and min_ref > reps:
+        raise ValueError(f"drift_reference_min_rounds {min_ref} is above reps {reps}: the "
+                         f"reference would never be used")
     if warmup < 2:
         raise ValueError("warmup must be >= 2: the first clocked forward is the "
                          "cold call and is dropped from the dense control's "
@@ -659,23 +709,16 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
             clocks[a.name] = got[0]
             samples[a.name].append((r, round_ms[a.name]))
             block_clock[a.name][r] = got[0]
-        drift = round_ms[control.name] - reference_ms
-        reasons = []
-        limit = controls.drift_limit_relative
-        if limit is None:
-            if abs(drift) > floor:
-                reasons.append(f"dense_drift_{drift:+.3f}ms_vs_{floor}ms_floor")
-        elif abs(drift) / reference_ms > limit:
-            reasons.append(f"dense_drift_{drift / reference_ms:+.4f}_vs_relative_{limit}")
-        for a in arms:
-            if clocks[a.name].flagged:
-                reasons.append(f"{a.name}:throttled:" + "+".join(clocks[a.name].flag_reasons))
+        throttle = [f"{a.name}:throttled:" + "+".join(clocks[a.name].flag_reasons)
+                    for a in arms if clocks[a.name].flagged]
         rounds.append({"round": r, "order": [a.name for a in order],
-                       "dense_ms": round_ms[control.name], "dense_drift_ms": drift,
-                       "flagged": bool(reasons), "flag_reasons": reasons,
+                       "dense_ms": round_ms[control.name], "throttle_reasons": throttle,
                        "blocks": {n: c.to_dict() for n, c in clocks.items()}})
-        clean += not reasons
         r += 1
+        clean = _judge_rounds(rounds, controls, reference_ms, floor, final=False)
+    _judge_rounds(rounds, controls, reference_ms, floor, final=True)
+    for x in rounds:
+        del x["throttle_reasons"]
 
     for a in arms:
         if not needs_compiled_checks(a):
@@ -741,15 +784,52 @@ def time_arms(wrapped, input_ids, arms, *, reps: int, controls: Controls,
         "traced": tracer is not None,
         "dense_control": {"arm": control.name, "warmup_ms": dense_warmup_ms,
                           "reference_ms": reference_ms,
+                          "drift_reference": "warmup" if min_ref is None else "running",
                           "resolution_floor_ms": floor},
         "controls": {"max_rerun_rounds": controls.max_rerun_rounds,
                      "min_clean_rounds": need,
                      "drift_limit_relative": controls.drift_limit_relative,
+                     "drift_reference_min_rounds": min_ref,
                      "flag_bits": reason_names(sampler.flag_bits),
                      "sampler_interval_s": sampler.interval_s,
                      "sampler_kind": type(sampler).__name__},
         "rounds": rounds, "rows": rows,
     }
+
+
+def _judge_rounds(rounds: list, controls: Controls, warmup_ms: float, floor: float, *,
+                  final: bool) -> int:
+    """Set each round's drift, flags and reasons; return the clean rounds so
+    far. P1's protocol judges each round against the warm-up time and the
+    absolute floor. The running reference leaves a round pending until it is
+    judged; `final` flags a round still pending when the session ends."""
+    limit, m = controls.drift_limit_relative, controls.drift_reference_min_rounds
+    if m is None:
+        judged = [(warmup_ms, None)] * len(rounds)
+    else:
+        judged = running_judgments([x["dense_ms"] for x in rounds],
+                                   [bool(x["throttle_reasons"]) for x in rounds],
+                                   limit=limit, min_rounds=m)
+    clean = 0
+    for x, j in zip(rounds, judged):
+        reasons = []
+        if j is None:
+            x["reference_ms"] = x["dense_drift_ms"] = None
+            if final:
+                reasons.append(f"dense_drift_pending_fewer_than_{m}_usable_rounds")
+        else:
+            ref, flagged = j
+            drift = x["dense_ms"] - ref
+            x["reference_ms"], x["dense_drift_ms"] = ref, drift
+            if m is None:
+                if abs(drift) > floor:
+                    reasons.append(f"dense_drift_{drift:+.3f}ms_vs_{floor}ms_floor")
+            elif flagged:
+                reasons.append(f"dense_drift_{drift / ref:+.4f}_vs_relative_{limit}")
+        reasons += x["throttle_reasons"]
+        x["flagged"], x["flag_reasons"] = bool(reasons), reasons
+        clean += j is not None and not reasons
+    return clean
 
 
 def profiler_overhead(untraced: dict, traced: dict, *, resolution_floor_ms: float) -> list:

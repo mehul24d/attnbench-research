@@ -21,6 +21,11 @@ fa3_import) run their dry bodies; the device under ground truth and the
 components; and the bucket (a directory store), since a CPU pass makes no
 cloud call. Skipped unless ATTNBENCH_PRELAUNCH names the config; the record
 goes to ATTNBENCH_PRELAUNCH_OUT/prelaunch_cpu_pass.json.
+
+ATTNBENCH_PRELAUNCH_MASKS names a directory of banked XAttention masks,
+staged into every session as launch stages them: T3.2d's step 5 masks as P2's
+`p1_masks`, and for P4, until P2 banks its own, the same masks as its
+`p2_masks` stand-in (as ruling 1h's synthetic P2 rows).
 """
 
 from __future__ import annotations
@@ -288,8 +293,15 @@ def test_the_real_session_passes_on_this_commit_with_only_the_gpu_mocked(tmp_pat
         assert why is None, why
         return br
 
+    masks = os.environ.get("ATTNBENCH_PRELAUNCH_MASKS")
+    into = S.P1_MASKS if cfg.pairing == "P2" else S.P2_MASKS
+    rec["masks"] = {"staged_from": masks, "into": into,
+                    "stand_in": bool(masks) and into == S.P2_MASKS}
+
     def run(name, bid=None, imports=(), start="prereqs", runner=runner):
         d = tmp_path / name
+        if masks:
+            shutil.copytree(masks, d / into, dirs_exist_ok=True)
         rc = S.run_session(cfg, d, start=start, extra=extra, dry_run=False, sync=False,
                            runner=runner, block=block(bid, imports) if bid else None)
         rec["sessions"][name] = {"rc": rc, "attempts": _attempts(d)}

@@ -134,7 +134,9 @@ LOCK_SOURCED = {
     "max_rerun_rounds": ("rerun_budget", lambda v: v["max_rerun_rounds"]),
     "min_clean_rounds": ("rerun_budget", lambda v: v["min_clean_rounds"]),
     "resolution_floor_ms": ("resolution_and_noise_floors", lambda v: v["resolution_floor_ms"]),
-    "chain_check_tolerance": ("chain_check_tolerance", lambda v: v),
+    # the lock types it one fraction (T4.1 row 32); the steps read {"aggregate"},
+    # as the working table holds it (found by P2's pre-launch pass, 12 Nov 2026)
+    "chain_check_tolerance": ("chain_check_tolerance", lambda v: {"aggregate": v}),
     "residual_spread_tolerance": ("residual_spread_tolerance", lambda v: v),
     "pricing_mismatch_share": ("pricing_mismatch_share", lambda v: v),
 }
@@ -142,7 +144,6 @@ PAIRING_KEYS = ("gt_groups", "reps", "dense_rounds", "sampler_interval_s")
 # Dropped from P2 and P4 (adviser's ruling 4, third set of 12 Nov 2026): four
 # rehearsal launches never reached the compiled stage on a GPU.
 DROPPED_GROUPS = ("compiled_default", "compiled_capture")
-DEFERRAL_PAIRINGS = ("P2",)        # the pairings that may run on a staged lock
 LOCK_KEYS = PAIRING_KEYS + tuple(LOCK_SOURCED)
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
@@ -347,9 +348,7 @@ def fill_lock_values(cfg: dict, path=None, plan_text=None) -> dict:
         return cfg
     text = plan_text if plan_text is not None else checklist.PLAN.read_text(encoding="utf-8")
     lock = json.loads(p.read_text(encoding="utf-8"))
-    # Only P2 runs on a staged lock; P4's prediction waits for the second
-    # lock commit (adviser's ruling 4, fourth set of 12 Nov 2026).
-    res = checklist.check(lock, text, allow_deferred=cfg.get("pairing") in DEFERRAL_PAIRINGS)
+    res = checklist.check(lock, text)
     if not res.complete:
         raise StepFailed(f"{p.name} is not a complete lock, so no pairing's values come from "
                          f"it:\n{res.report()}")
@@ -723,8 +722,12 @@ def rerun_budget(cfg) -> int:
 # The in-session dense-drift limit for every pairing but P1: the 0.95 quantile
 # of |drift| / warm-up time over T3.2a's and T3.2b's 120 rounds (Appendix A,
 # 9 Nov 2026), chosen before any P2 data (adviser's ruling 1, fourth set of
-# 12 Nov 2026). P1's sessions keep the absolute floor they ran under.
+# 12 Nov 2026). P1's sessions keep the absolute floor they ran under. The
+# reference is the cell's running median after this many usable rounds, not
+# the warm-up time (ruling 2 of the lock wave, 12 Nov 2026; declared in
+# docs/drift_reference_correction.md before any record was re-read).
 RELATIVE_DRIFT_LIMIT = 0.06311947327826187
+DRIFT_REFERENCE_MIN_ROUNDS = 5
 
 
 def drift_controls(cfg) -> dict:
@@ -732,12 +735,14 @@ def drift_controls(cfg) -> dict:
     of either) for P1, else the relative limit and the lock's minimum, which
     is refused when missing, as the rerun budget is."""
     if cfg.get("pairing") == WORKING_PAIRING:
-        return {"drift_limit_relative": None, "min_clean_rounds": None}
+        return {"drift_limit_relative": None, "drift_reference_min_rounds": None,
+                "min_clean_rounds": None}
     v = cfg.get("min_clean_rounds")
     if v is None:
         raise StepFailed(f"{cfg.get('pairing')}'s minimum clean rounds is a lock value (T4.1 "
                          f"rerun budget): min_clean_rounds is missing")
-    return {"drift_limit_relative": RELATIVE_DRIFT_LIMIT, "min_clean_rounds": int(v)}
+    return {"drift_limit_relative": RELATIVE_DRIFT_LIMIT,
+            "drift_reference_min_rounds": DRIFT_REFERENCE_MIN_ROUNDS, "min_clean_rounds": int(v)}
 
 
 def label_outside_layers(operations) -> list:
@@ -2057,7 +2062,8 @@ def cmd_ground_truth_one(args) -> int:
         from attnbench.components.shakedown_arms import Harness
         h = Harness(device="cpu", dry_run=True, score_cache_dir=str(out / "score_cache"))
         floor, rerun = cfg["resolution_floor_ms"], cfg["max_rerun_rounds"]
-        drift = {"drift_limit_relative": None, "min_clean_rounds": None}
+        drift = {"drift_limit_relative": None, "drift_reference_min_rounds": None,
+                 "min_clean_rounds": None}
     else:
         _need_gpu("the ground truth")
         h = _harness(args)
