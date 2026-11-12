@@ -726,7 +726,7 @@ def run_triton_smoke(cfg: SessionConfig, args, out: Path) -> tuple:
     rc = run(py("t31_steps.py", "triton-smoke", "--out", str(d), "--session",
                 str(args.session), "--config", str(ROOT / cfg.components_config)))
     found = read_json(d / "triton_smoke.json") or {}
-    if rc != 0 or "error" in found:
+    if rc != 0 or not found or "error" in found:
         return found, [f"the Triton smoke check failed (rc {rc}): "
                        f"{found.get('error', 'no triton_smoke.json')}"]
     return found, []

@@ -280,6 +280,7 @@ def test_the_triton_pairings_run_the_smoke_check_and_the_l4_rehearsal_does_not()
     (1, {"error": "ProfileMismatch: x"}, "ProfileMismatch: x"),
     (0, {"error": "StepFailed: y"}, "StepFailed: y"),
     (1, None, "no triton_smoke.json"),
+    (0, None, "no triton_smoke.json"),
 ])
 def test_the_smoke_check_runs_step_5s_cell_in_its_own_process_and_a_failure_is_a_problem(
         tmp_path, monkeypatch, rc, written, problem):
