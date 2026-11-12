@@ -1,6 +1,6 @@
 {
- "what": "the lock (T4.4; the second lock-wave rulings of 12 Nov 2026): every T4.1 value, typed as attnbench/lock/checklist.SCHEMA requires, checked against the plan at this commit (plan_sha256); the scored pairings and P2's and P4's pairing values. Built from docs/lock_package_draft.json and the dated rulings each value's source names",
- "plan_sha256": "2bd3f59893e13e07be19b87ac79cb69607aed5f2ac7cf6abae409f6c6943f2dd",
+ "what": "the lock (T4.4; the second and third lock-wave rulings of 12 Nov 2026): every T4.1 value, typed as attnbench/lock/checklist.SCHEMA requires, checked against the plan at this commit (plan_sha256); the scored pairings and P2's and P4's pairing values. Built from docs/lock_package_draft.json and the dated rulings each value's source names",
+ "plan_sha256": "5b5fb1a768d77f2eadd08fdcea46f4582b0a08c3c6a1a6d22a139a7409a842cc",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
@@ -392,9 +392,9 @@
    "status": "decided"
   },
   "timed_path_identity_for_p2_and_p4": {
-   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2, `84edb24d…` after the second set, `3aea782a…` after the third set, `a7ce881e…` after the fourth set, `b5043080…` after the lock-wave rulings of 12 Nov 2026 and `b9480848…` after the second lock-wave rulings; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
-   "value": "b9480848710d17f43ec2d2e5732171e64e1b3f37d6c4049266d5001d54da47c2",
-   "source": "scripts/timed_path.py --pin at 78349e0, 110 items (ruling 1f of 11 Nov 2026; the second lock-wave rulings of 12 Nov 2026: dispatcher.py and checklist.py changed since b5043080... at fb6dca8); re-checked on the lock commit",
+   "item": "the timed-path identity for P2 and P4 (`scripts/timed_path.py --pin`, whole files since ruling 1f of 11 Nov 2026, re-pinned at each T4.3 wave's last code commit, `0cc328c9…` after wave 1, `049e30f7…` after wave 2, `84edb24d…` after the second set, `3aea782a…` after the third set, `a7ce881e…` after the fourth set, `b5043080…` after the lock-wave rulings of 12 Nov 2026, `b9480848…` after the second lock-wave rulings and `2e07d371…` after the third, for Gate B's learned configuration; by the 8 Nov method `8716d7db…`, `main`'s since `050a96d`, whose T2.7 trace export runs outside the timed region; protocol identity inside the timed region with T3.2c and T3.2d, not byte identity; Appendix A, 10 Nov 2026)",
+   "value": "2e07d3716fe7ecf5cc7dff071e8abb2a57fd25d90854e180ce088532a2d284aa",
+   "source": "scripts/timed_path.py --pin at 341860c, 110 items (ruling 1f of 11 Nov 2026; the third lock-wave rulings of 12 Nov 2026: learned.py set LOCKED_CONFIG since b9480848... at 78349e0, where dispatcher.py and checklist.py changed since b5043080... at fb6dca8); re-checked on the lock commit",
    "status": "evidence"
   },
   "bootstrap_settings": {
@@ -409,8 +409,8 @@
   },
   "analysis_commit": {
    "item": "the analysis commit (the commit whose analysis code scores P2 and P4, pinned by the lock; Appendix A, 11 Nov 2026)",
-   "value": "78349e0252f1f9b849c4cacc0309a85a19d27ed5",
-   "source": "the last analysis-code commit, 78349e0 (H6 on decision errors, the residual spread script), after fb6dca8 (the HDBI fit, the probe flags), which the second lock-wave rulings of 12 Nov 2026 accepted (item 5) before item 3 changed H6's rule; moved from 14e4419 (ruling 2a of 11 Nov 2026; Appendix A, 12 Nov 2026)",
+   "value": "341860ceaaa2963fb840c9c63861db0a17f76bdc",
+   "source": "the last analysis-code commit, 341860c (learned.LOCKED_CONFIG, Gate B; the third lock-wave rulings of 12 Nov 2026, items 1 and 4), after 78349e0 (H6 on decision errors, the residual spread script), after fb6dca8 (the HDBI fit, the probe flags), which the second lock-wave rulings of 12 Nov 2026 accepted (item 5) before item 3 changed H6's rule; moved from 14e4419 (ruling 2a of 11 Nov 2026; Appendix A, 12 Nov 2026)",
    "status": "decided"
   },
   "marginal_label_s_sensitivity_floors": {

@@ -1,4 +1,4 @@
-# The lock (12 Nov 2026, after the second lock-wave rulings)
+# The lock (12 Nov 2026, after the third lock-wave rulings)
 
 The lock (T4.4) is Sat 14 Nov 2026. `docs/lock_values.json` holds all 40 of T4.1's values,
 typed as `attnbench/lock/checklist.SCHEMA` requires, with the scored pairings and P2's and P4's
@@ -29,12 +29,15 @@ The researcher's items: 31 = 0; 18 = 0.8867 (re-run on this lock with
 `scripts/hdbi_threshold.py`: unchanged); 28 = P7, then the chunked extension. Scored pairings:
 H0 [P2], H1 [P2, P4], H2 [P2], H3 [P4], H6 [P4], H4 and H5 not scored.
 
-The timed-path pin is `b9480848…` at `78349e0`, and the analysis commit is `78349e0`. Both moved
-from `fb6dca8` because H6's rule changed (Appendix A, 12 Nov 2026).
+The timed-path pin is `2e07d371…` at `341860c`, and the analysis commit is `341860c`. They moved
+from `fb6dca8` to `78349e0` when H6's rule changed, then to `341860c` when `learned.LOCKED_CONFIG`
+was set to config 4 for Gate B (Appendix A, 12 Nov 2026, the second and third lock-wave rulings).
+T4.4 is written Done in this commit, the one to be tagged `lock-2026-11-14`.
 
 ## Still to do
 
-1. Tag the lock commit. Pushing the tag needs its own yes.
+1. Tag the lock commit (`scripts/tag_lock.py --lock-file docs/lock_values.json --tag
+   lock-2026-11-14`). Pushing the tag needs its own yes.
 2. P4's Flex-start request needs its own yes.
 3. P2's Flex card is built from the lock commit, with the headroom table (`docs/p2_flex_card.md`).
    Its launch needs its own yes.
