@@ -2183,7 +2183,7 @@ def drift_step(cfg: SessionConfig, args) -> int:
     write_json(Path(args.out), {**out, "pairing": cfg.pairing, "lock_sha256":
                                 hashlib.sha256(Path(args.lock).read_bytes()).hexdigest()})
     d = out["drift"]
-    print(f"{cfg.pairing} block drift: {d.get('passed')}; above the bound "
+    print(f"{cfg.pairing} block drift: {d['status']}; above the bound "
           f"{d.get('bound')}: {d.get('above') or 'none'}")
     return 0
 

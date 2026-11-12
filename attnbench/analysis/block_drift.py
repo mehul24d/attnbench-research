@@ -121,6 +121,9 @@ def lock_bound(lock: Mapping) -> float:
     return float(v)
 
 
+NOT_APPLICABLE = "not applicable"
+
+
 def drift(rows: Sequence[Mapping], *, order: Sequence[str], bound: float,
           statistic: str = STATISTIC) -> dict:
     """The anchor's statistic per block, in `order` (the blocks that ran
@@ -148,8 +151,12 @@ def drift(rows: Sequence[Mapping], *, order: Sequence[str], bound: float,
         raise BlockDriftError(f"the anchor's {statistic} is not a finite positive time in {bad}")
     present = list(order)
     if len(present) < 2:
+        # a single session (P4 on one Flex grant) has nothing to drift from: the check
+        # reads "not applicable", never "passed" (adviser's ruling 2, second set of
+        # 12 Nov 2026)
         return {"anchor": next(iter(keys), None), "blocks": present, "per_block": {},
-                "passed": None, "why": f"{len(present)} block(s) with the anchor: nothing to compare"}
+                "passed": None, "status": NOT_APPLICABLE,
+                "why": f"{len(present)} block(s) with the anchor: nothing to compare"}
     per = {}
     for b in present:
         ref = statistics.median(by_block[o] for o in present if o != b)
@@ -157,7 +164,8 @@ def drift(rows: Sequence[Mapping], *, order: Sequence[str], bound: float,
                   "relative_difference": (by_block[b] - ref) / ref}
     above = [b for b in present if abs(per[b]["relative_difference"]) > bound]
     return {"anchor": next(iter(keys)), "reference": "the median of the other blocks' anchors",
-            "bound": bound, "per_block": per, "above": above, "passed": not above}
+            "bound": bound, "per_block": per, "above": above, "passed": not above,
+            "status": "above the bound" if above else "passed"}
 
 
 def pairing_drift(dirs: Sequence, spec, *, ground_truth_dir: str, bound: float) -> dict:

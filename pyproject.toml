@@ -64,6 +64,10 @@ learned = [
 ]
 dev = [
   "pytest>=8",
+  # The CPU suite reads Dynamo's graph-break message, which torch 2.14 rewords
+  # (docs/development.md; adviser's ruling 4, second set of 12 Nov 2026). The
+  # GPU images carry 2.9.1 and do not install this extra.
+  "torch<2.14",
 ]
 
 [build-system]

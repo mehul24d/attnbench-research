@@ -813,18 +813,23 @@ def pricing_gate(cells: Sequence[Mapping], max_share: float) -> dict:
     device position must be priced. An arm that fails is not priced: it is
     labelled `PRICING_NOT_VALIDATED` and kept out of the hypothesis claims.
     `cells` are step 6's entries: "arm" and "pricing" (a `summary`). Never
-    widened to pass."""
+    widened to pass. The nodes step 6 dropped (`EXTRA_NODE_DROPPED`) are
+    counted per arm for the step's report and decide nothing (adviser's
+    ruling 3, second set of 12 Nov 2026)."""
     if not 0 < max_share < 1:
         raise ValueError("the share is a fraction in (0, 1), fixed at lock")
     arms: dict = {}
     for e in cells:
         a = arms.setdefault(e["arm"], {"cells": 0, "priced_s": 0.0, "mismatch_s": 0.0,
-                                       "unpriced": 0})
+                                       "unpriced": 0, "dropped_nodes": 0, "dropped_s": 0.0})
         p = e["pricing"]
         a["cells"] += 1
         a["priced_s"] += p["priced_s"]
         a["mismatch_s"] += p["mismatch_s"]
         a["unpriced"] += len(p["unpriced"])
+        for d in (p.get(EXTRA_NODE_DROPPED) or {}).values():
+            a["dropped_nodes"] += int(d["nodes"])
+            a["dropped_s"] += float(d["s"])
     out = {}
     for arm, a in sorted(arms.items()):
         share = a["mismatch_s"] / a["priced_s"] if a["priced_s"] > 0 else None

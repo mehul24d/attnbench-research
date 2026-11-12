@@ -426,17 +426,23 @@ def test_an_arm_the_pricing_gate_refuses_is_labelled_and_left_out_of_the_predict
         if arm == "xattention":         # a position neither replay matches
             return replay.Pricing({i: dev[i] for i in rest}, {i: src[i] for i in rest}, (),
                                   {i: src[i] for i in rest}, (first,))
+        if arm == "dense":              # two stand-in nodes dropped: counted, not failed
+            return replay.Pricing(dict(dev), src, (), dict(src),
+                                  dropped={"graph": {"nodes": 2, "s": 1e-6}})
         return replay.Pricing(dict(dev), src, (), dict(src))
     monkeypatch.setattr(replay, "price_positions", price)
     a.out = str(st.step_dir(session, "device_components"))
     r = st.step_device_components(a, cfg)
-    assert r["pricing_gate"]["dense"] == {"share": 0.0, "validated": True}
+    assert r["pricing_gate"]["dense"] == {"share": 0.0, "validated": True,
+                                          "dropped_nodes": 2, "dropped_s": 1e-6}
     mp, xa = r["pricing_gate"]["meanpool"], r["pricing_gate"]["xattention"]
     assert not mp["validated"] and mp["label"] == replay.PRICING_NOT_VALIDATED
     assert mp["why"][0].startswith("mismatch share") and mp["share"] > 0.05
     assert xa["why"] == ["1 device positions neither replay matches"]
     cells = json.loads((Path(a.out) / "cells.json").read_text())
     assert cells["pricing_gate"]["meanpool"]["validated"] is False
+    n_dense = sum(c["arm"] == "dense" for c in cells["cells"])
+    assert n_dense and r["dropped_nodes"] == 2 * n_dense        # the step's report counts them
     assert [c["ops"] for c in cells["cells"] if c["arm"] == "xattention"] == [None]
     (st.step_dir(session, "link") / "recursion_inputs.json").write_text(json.dumps(
         {"queue_depth": 8, "fake": False,
