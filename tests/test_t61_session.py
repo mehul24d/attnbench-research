@@ -1312,15 +1312,17 @@ def gt_rounds(reasons):
             for i, r in enumerate(reasons)]
 
 
-def write_short_gt(d, cell, reasons, *, clean, max_rerun=0, reps=10):
+def write_short_gt(d, cell, reasons, *, clean, max_rerun=0, reps=10, min_clean=None):
     g = d / "eager"
     g.mkdir(parents=True, exist_ok=True)
     S.write_json(g / "stamps.json", {"group": "eager", "clock_not_before": T,
                                      "first_clocked_block_started_at": [T + 1]})
     row = dict(t31_row("dense", "dense", None, 2048, 1, 1951), reps=reps)
     S.write_json(g / f"gt_{cell}.json", {
-        "rows": [row], "traced": False, "complete": clean == reps, "clean_rounds": clean,
-        "rounds_run": len(reasons), "controls": {"max_rerun_rounds": max_rerun},
+        "rows": [row], "traced": False, "complete": clean >= (min_clean or reps),
+        "clean_rounds": clean,
+        "rounds_run": len(reasons),
+        "controls": {"max_rerun_rounds": max_rerun, "min_clean_rounds": min_clean},
         "rounds": gt_rounds(reasons)})
 
 
@@ -1336,7 +1338,7 @@ def test_flag_counts_count_each_round_once_per_type():
 
 def test_an_incomplete_ground_truth_names_each_short_cell_and_its_flag_counts(tmp_path):
     drift = "dense_drift_-8.0ms_vs_5.61ms_floor"
-    write_short_gt(tmp_path, "L2048_b1", [[]] + [[drift]] * 9, clean=1)
+    write_short_gt(tmp_path, "L2048_b1", [[]] + [[drift]] * 9, clean=1, reps=12, min_clean=10)
     write_short_gt(tmp_path, "L8192_b1",
                    [[], [drift], [], [], ["dense:throttled:hw_slowdown"]] + [[]] * 6, clean=9,
                    max_rerun=1)

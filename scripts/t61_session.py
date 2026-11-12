@@ -1171,7 +1171,8 @@ def t31_ground_truth_result(d: Path) -> dict:
                 short.append({"group": st_path.parent.name, "cell": g.stem[len("gt_"):],
                               "clean_rounds": r.get("clean_rounds"),
                               "rounds_run": r.get("rounds_run"),
-                              "reps": (r.get("rows") or [{}])[0].get("reps"),
+                              "reps": ((r.get("controls") or {}).get("min_clean_rounds")
+                                       or (r.get("rows") or [{}])[0].get("reps")),
                               "max_rerun_rounds": (r.get("controls") or {}).get("max_rerun_rounds"),
                               "flags": flag_counts(r) if "rounds" in r else {}})
             rows += [dict(row, group=st_path.parent.name, cell=t31_row_cell(row),

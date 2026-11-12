@@ -132,3 +132,51 @@ def test_a_compiled_group_is_refused_for_p2_and_p4(tmp_path, monkeypatch, group)
     monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
     with pytest.raises(st.StepFailed, match="dropped from P2 and P4"):
         st.fill_lock_values(cfg)
+
+
+def test_held_out_pairings_flag_drift_relatively_and_take_the_locks_clean_minimum(tmp_path,
+                                                                                  monkeypatch):
+    # The adviser's rulings 1 and 2, fourth set of 12 Nov 2026.
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
+    cfg = st.load_config(str(P2_CONFIG), dry_run=False)
+    assert cfg["min_clean_rounds"] == LF.VALUES["rerun_budget"]["min_clean_rounds"]
+    assert st.drift_controls(cfg) == {"drift_limit_relative": st.RELATIVE_DRIFT_LIMIT,
+                                      "min_clean_rounds": cfg["min_clean_rounds"]}
+    assert st.RELATIVE_DRIFT_LIMIT == pytest.approx(0.0631, abs=5e-5)
+    with pytest.raises(st.StepFailed, match="min_clean_rounds is missing"):
+        st.drift_controls(dict(cfg, min_clean_rounds=None))
+    assert st.drift_controls({"pairing": "P1"}) == {"drift_limit_relative": None,
+                                                    "min_clean_rounds": None}
+
+
+def test_the_ground_truth_step_hands_a_held_out_pairing_the_relative_controls(tmp_path,
+                                                                              monkeypatch):
+    # The GPU branch of `ground-truth-one`, its GPU pieces faked at the module boundary.
+    import contextlib
+    from types import SimpleNamespace
+    from attnbench import ground_truth as gt
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, lock()))
+    cfg = st.load_config(str(P2_CONFIG), dry_run=False)
+    seen = {}
+
+    class Controls:
+        def __init__(self, **kw):
+            seen.update(kw)
+    monkeypatch.setattr(gt, "Controls", Controls)
+    monkeypatch.setattr(st, "load_config", lambda path, dry_run: cfg)
+    monkeypatch.setattr(st, "_skew", lambda c, d: (0, 0))
+    monkeypatch.setattr(st, "_gap", lambda c, d: 0)
+    monkeypatch.setattr(st.so, "check_session_skew", lambda *a, **k: None)
+    monkeypatch.setattr(st.so, "ready_to_clock", lambda *a, **k: None)
+    monkeypatch.setattr(st, "_receipt", lambda s: (SimpleNamespace(synced_at=st.so.utc_now()), None))
+    monkeypatch.setattr(st, "_need_gpu", lambda what: None)
+    monkeypatch.setattr(st, "_harness", lambda args: None)
+    monkeypatch.setattr(st, "session_floor_ms", lambda *a: 1.0)
+    monkeypatch.setattr(st, "_sampler", lambda c, d: contextlib.nullcontext("sampler"))
+    monkeypatch.setattr(st, "_real_cells", lambda *a: [])
+    args = SimpleNamespace(config=None, dry_run=False, out=str(tmp_path / "g"),
+                           session=str(tmp_path / "s"), group="eager")
+    assert st.cmd_ground_truth_one(args) == 0
+    assert seen["drift_limit_relative"] == st.RELATIVE_DRIFT_LIMIT
+    assert seen["min_clean_rounds"] == cfg["min_clean_rounds"]
+    assert seen["max_rerun_rounds"] == cfg["max_rerun_rounds"]
