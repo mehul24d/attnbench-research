@@ -80,7 +80,8 @@ from torch.utils._python_dispatch import TorchDispatchMode, _disable_current_mod
 from .host_profile import (ISOLATED_OUTSIDE_LAYERS, ISOLATED_REPLAY, NULL_PASS, HostProfile,
                            NullDevice, NullEntry, ProfileMismatch, _isolated_origins, _layer_hooks,
                            _State, align_calls, all_empty, aten_name, device_call,
-                           isolated_positions, launching_names, met_at, signature)
+                           install, isolated_positions, launching_names, met_at,
+                           signature)
 from .op_sequence import OpSequence, SeqKind
 from .sync_tape import SyncTape, TapeReplayer
 
@@ -324,23 +325,20 @@ def _bare_entries(entries: Sequence[NullEntry], mode: BareMode):
     saved = []
     try:
         for e in entries:
-            original = getattr(e.module, e.attr)
-            saved.append((e, original))
-
-            def bare(*args, _orig=original,
-                     _name=f"{getattr(e.module, '__name__', type(e.module).__name__)}.{e.attr}",
-                     **kwargs):
-                # Inside a met call it is the call's child; inside a re-issue
-                # it is the repetition's (Shakedown 6: a custom op's 1000
-                # repetitions each reached the entry and were counted).
-                if mode.inside or mode.pricer.busy:
-                    return _orig(*args, **kwargs)
-                with _disable_current_modes():
-                    out = _orig(*args, **kwargs)
-                price = mode.pricer.entry(_name, _orig, args, kwargs)
-                mode.add(BareCall(None, mode.state.layer, price + mode.carried, None))
-                return out
-            setattr(e.module, e.attr, bare)
+            def wrap(_orig, _name):
+                def bare(*args, **kwargs):
+                    # Inside a met call it is the call's child; inside a re-issue
+                    # it is the repetition's (Shakedown 6: a custom op's 1000
+                    # repetitions each reached the entry and were counted).
+                    if mode.inside or mode.pricer.busy:
+                        return _orig(*args, **kwargs)
+                    with _disable_current_modes():
+                        out = _orig(*args, **kwargs)
+                    price = mode.pricer.entry(_name, _orig, args, kwargs)
+                    mode.add(BareCall(None, mode.state.layer, price + mode.carried, None))
+                    return out
+                return bare
+            saved.append((e, install(e, wrap)))
         yield
     finally:
         for e, original in saved:

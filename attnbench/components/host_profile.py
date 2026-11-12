@@ -225,10 +225,40 @@ def aten_name(func) -> str:
 class NullEntry:
     """A non-aten entry point whose device work is replaced: while the pass
     runs, `module.attr` is a function that takes the call's start, issues one
-    null launch and returns `make_output(*args, **kwargs)`."""
+    null launch and returns `make_output(*args, **kwargs)`.
 
-    def __init__(self, module, attr: str, make_output: Callable):
+    With `grid`, the entry is a Triton kernel, launched as
+    `module.attr[grid](*args)`: the stand-in is subscripted the same way and
+    the launch is replaced (`install`)."""
+
+    def __init__(self, module, attr: str, make_output: Callable, *, grid: bool = False):
         self.module, self.attr, self.make_output = module, attr, make_output
+        self.grid = grid
+
+    @property
+    def label(self) -> str:
+        return f"{getattr(self.module, '__name__', type(self.module).__name__)}.{self.attr}"
+
+
+class _Gridded:
+    """A Triton kernel's stand-in: `kernel[grid]` is `wrap` of the original
+    kernel's launcher for that grid, and its label names the grid."""
+
+    def __init__(self, original, wrap: Callable, label: str):
+        self.original, self.wrap, self.label = original, wrap, label
+
+    def __getitem__(self, grid):
+        return self.wrap(self.original[grid], f"{self.label}[{grid}]")
+
+
+def install(e: NullEntry, wrap: Callable[[Callable, str], Callable]):
+    """Put `wrap(original, label)` in place of entry `e` and return the
+    original, which the caller restores. For a Triton kernel (`e.grid`), the
+    original is the kernel's launcher for the grid each launch names."""
+    original = getattr(e.module, e.attr)
+    setattr(e.module, e.attr,
+            _Gridded(original, wrap, e.label) if e.grid else wrap(original, e.label))
+    return original
 
 
 def block_sparse_entry(module=None) -> NullEntry:
@@ -251,6 +281,31 @@ def block_sparse_entry(module=None) -> NullEntry:
         module = importlib.import_module("block_sparse_attn_cuda")
     return NullEntry(module, "fwd_block",
                      lambda q, *a, **kw: (torch.empty_like(q), None, None, None))
+
+
+# Every Triton kernel `xattn.src.kernels` defines at the pinned commit (e379887);
+# the estimator's Triton path (`use_triton`, an A100 or H100) launches the
+# first two, once each per query chunk per layer.
+XATTN_TRITON_KERNELS = ("flat_group_gemm_fuse_reshape_kernel",
+                        "softmax_fuse_block_sum_kernel_causal",
+                        "flat_group_gemm_kernel",
+                        "softmax_fuse_block_sum_kernel_non_causal")
+
+
+def xattention_triton_entries(module=None) -> tuple[NullEntry, ...]:
+    """XAttention's Triton kernels, the estimator's entry points on its Triton
+    path: each wrapper in `xattn.src.kernels` allocates its output with
+    `torch.empty` and launches `kernel[grid](...)`, which no aten operator
+    issues, so the recording holds each launch as an entry point (P2's step 7,
+    12 Nov 2026: `flat_group_gemm_fuse_reshape_kernel` and
+    `softmax_fuse_block_sum_kernel_causal`, two per layer at 2048). Only the
+    launch is nulled: the wrapper's Python, the allocation included, is the
+    arm's and runs. A launch returns nothing the wrappers read."""
+    if module is None:
+        import importlib
+        module = importlib.import_module("xattn.src.kernels")
+    return tuple(NullEntry(module, name, lambda *a, **kw: None, grid=True)
+                 for name in XATTN_TRITON_KERNELS)
 
 
 def _named_device(func, kwargs, tensors) -> Optional[torch.device]:
@@ -430,15 +485,14 @@ def _entries(entries: Sequence[NullEntry], device: NullDevice, log: PassLog,
     saved = []
     try:
         for e in entries:
-            original = getattr(e.module, e.attr)
-            saved.append((e, original))
-
-            def null(*args, _e=e, **kwargs):
-                entry = clock()
-                out = _e.make_output(*args, **kwargs)
-                state.issue(log, None, entry, device, clock)
-                return out
-            setattr(e.module, e.attr, null)
+            def wrap(original, label, _e=e):
+                def null(*args, **kwargs):
+                    entry = clock()
+                    out = _e.make_output(*args, **kwargs)
+                    state.issue(log, None, entry, device, clock)
+                    return out
+                return null
+            saved.append((e, install(e, wrap)))
         yield
     finally:
         for e, original in saved:
