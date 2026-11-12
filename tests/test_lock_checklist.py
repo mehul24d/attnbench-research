@@ -281,3 +281,53 @@ def test_the_draft_lock_package_lists_every_item_and_fixes_none():
     assert set(result.unset) == set(result.items) and not result.complete
     assert all(e["proposed"] and e["status"] for e in draft["values"].values())
     assert all(v is None for vals in draft["pairing_values"].values() for v in vals.values())
+
+
+# --- the staged lock (adviser's ruling 4, fourth set of 12 Nov 2026) --------------
+
+DEFER = {"rule": "the 0.95 quantile of the dispatcher's regret over P2's banked cells",
+         "input": "predictions/P2/ledger/banked.json", "fixed_by": "the second lock commit, "
+         "before P4's prediction"}
+
+
+def _deferring(key, deferred=DEFER, value=None):
+    lock = LF.complete_lock(PLAN_TEXT)
+    lock["values"][key].update(value=value,
+                               deferred=dict(deferred) if isinstance(deferred, dict) else deferred)
+    return lock
+
+
+def test_a_deferred_value_with_its_rule_written_completes_the_first_lock_only():
+    lock = _deferring("h6_regret_bound")
+    r = L.check(lock, PLAN_TEXT)
+    assert r.complete and r.deferred == ("h6_regret_bound",) and not r.unset
+    assert "deferred to the second lock: h6_regret_bound" in r.report()
+    second = L.check(lock, PLAN_TEXT, allow_deferred=False)
+    assert not second.complete and second.unset == ("h6_regret_bound",)
+    assert L.DEFERRABLE == {"h6_regret_bound", "power_target_and_n",
+                            "primary_cell_n_and_admissibility_n", "admissibility_holm_family",
+                            "cross_card_dense_task_score_bound"}
+
+
+@pytest.mark.parametrize("key", ["head_type_criterion", "rerun_budget", "throttle_set"])
+def test_a_value_a_pairing_reads_or_a_rule_itself_is_never_deferred(key):
+    r = L.check(_deferring(key), PLAN_TEXT)
+    assert not r.complete and r.deferral_problems[0][0] == key
+    assert "not deferrable" in r.deferral_problems[0][1]
+
+
+@pytest.mark.parametrize("bad,why", [
+    ({**DEFER, "rule": "TBD"}, "rule is not written"),
+    ({**DEFER, "rule": "  "}, "rule is not written"),
+    ({k: v for k, v in DEFER.items() if k != "input"}, "input is not written"),
+    ({**DEFER, "fixed_by": "later"}, "names no second lock"),
+    ("the rule", "is not {rule, input, fixed_by}")])
+def test_a_deferral_without_its_rule_input_and_second_lock_is_refused(bad, why):
+    r = L.check(_deferring("power_target_and_n", deferred=bad), PLAN_TEXT)
+    assert not r.complete and any(why in w for _, w in r.deferral_problems)
+    assert not r.deferred
+
+
+def test_a_deferral_beside_a_value_is_refused():
+    r = L.check(_deferring("h6_regret_bound", value={"mean": 0.1, "worst": 0.2}), PLAN_TEXT)
+    assert not r.complete and "both a value and a deferral" in r.deferral_problems[0][1]

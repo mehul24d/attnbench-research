@@ -180,3 +180,20 @@ def test_the_ground_truth_step_hands_a_held_out_pairing_the_relative_controls(tm
     assert seen["drift_limit_relative"] == st.RELATIVE_DRIFT_LIMIT
     assert seen["min_clean_rounds"] == cfg["min_clean_rounds"]
     assert seen["max_rerun_rounds"] == cfg["max_rerun_rounds"]
+
+
+def test_p2_runs_on_a_staged_lock_and_p4_waits_for_the_second(tmp_path, monkeypatch):
+    # The adviser's ruling 4, fourth set of 12 Nov 2026.
+    rec = lock()
+    rec["values"]["h6_regret_bound"].update(value=None, deferred={
+        "rule": "the 0.95 quantile of the regret over P2's banked cells",
+        "input": "predictions/P2/ledger/banked.json", "fixed_by": "the second lock"})
+    rec["pairing_values"]["P4"] = P2_VALUES
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, rec))
+    assert st.load_config(str(P2_CONFIG), dry_run=False)["reps"] == 12
+    with pytest.raises(st.StepFailed, match="not a complete lock"):
+        st.load_config(str(ROOT / "configs" / "t64" / "p4_session.json"), dry_run=False)
+    rec["values"]["h6_regret_bound"].update(value={"mean": 0.1, "worst": 0.2}, deferred=None)
+    monkeypatch.setattr(st, "LOCK_FILE", write(tmp_path, rec))
+    assert st.load_config(str(ROOT / "configs" / "t64" / "p4_session.json"),
+                          dry_run=False)["reps"] == 12

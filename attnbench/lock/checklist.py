@@ -40,6 +40,16 @@ is not complete (audit C4, finding 3; ruling 1b, 11 Nov 2026). P1 is the
 development pairing and is never counted as a test (H1), so P1 in H1's list
 is refused; **plan default, flagged:** also in H3's and H6's, which Section
 4 scores on held-out pairings only.
+
+**A staged lock** (adviser's ruling 4, fourth set of 12 Nov 2026). An item in
+`DEFERRABLE` may be locked with its rule and inputs only, `{"value": null,
+"deferred": {"rule": ..., "input": ..., "fixed_by": "the second lock ..."},
+"source": ...}`: the rule is fixed at the first lock, and only the number it
+gives is deferred, computed mechanically from its input and fixed by a second
+lock commit before P4's prediction. `check(..., allow_deferred=False)` (the
+second lock, and P4) reads a deferred item as unset. An item outside
+`DEFERRABLE` (anything a P2 or P4 runner reads, and a criterion that is
+itself the rule) is refused deferral.
 """
 
 from __future__ import annotations
@@ -64,6 +74,16 @@ _HYPOTHESIS = re.compile(r"H\d+")
 _PAIRING = re.compile(r"P\d+")
 ROW_PREFIX = "| T4.1 |"
 LEAD = "Fix every **[lock]** value:"
+
+
+# Rows 1 to 5 of the 14-value table (docs/lock_remaining.md): read by neither
+# pairing, each a number or record a written rule computes. Row 6 (the
+# head-type criterion) is the rule itself, so nothing of it can be deferred.
+DEFERRABLE = frozenset({"h6_regret_bound", "power_target_and_n",
+                        "primary_cell_n_and_admissibility_n", "admissibility_holm_family",
+                        "cross_card_dense_task_score_bound"})
+DEFERRED_FIELDS = ("rule", "input", "fixed_by")
+_SECOND_LOCK = re.compile(r"\bsecond lock\b", re.I)
 
 
 class LockListError(ValueError):
@@ -350,11 +370,14 @@ class LockCheck:
     mistyped: tuple = ()           # (key, problem): set, but not of the item's type
     scored_pairings: tuple = ()    # (hypothesis, (pairing, ...)), as stated
     scored_problems: tuple = ()    # why the statement is unusable
+    deferred: tuple = ()           # keys locked by rule, their number fixed at a second lock
+    deferral_problems: tuple = ()  # (key, problem): a deferral the checker refuses
 
     @property
     def complete(self) -> bool:
         return not (self.missing or self.unset or self.unsourced or self.unknown
-                    or self.scored_problems or self.mistyped) and self.plan_matches
+                    or self.scored_problems or self.mistyped
+                    or self.deferral_problems) and self.plan_matches
 
     def report(self) -> str:
         lines = [f"{len(self.items)} values listed by T4.1; "
@@ -364,6 +387,10 @@ class LockCheck:
                 lines.append(f"  {name}: {k} ({self.items.get(k, 'not in T4.1')})")
         for k, why in self.mistyped:
             lines.append(f"  mistyped: {why}")
+        for k in self.deferred:
+            lines.append(f"  deferred to the second lock: {k}")
+        for k, why in self.deferral_problems:
+            lines.append(f"  deferral refused: {k}: {why}")
         if not self.plan_matches:
             lines.append("  the lock file was written against another version of the plan")
         for h, ps in self.scored_pairings:
@@ -404,13 +431,33 @@ def plan_sha256(plan_text: str) -> str:
     return hashlib.sha256(plan_text.encode("utf-8")).hexdigest()
 
 
-def check(lock: Mapping, plan_text: str) -> LockCheck:
-    """`lock` is the parsed lock file (module docstring)."""
+def deferral_problems(key: str, entry: Mapping) -> list[str]:
+    """Why `entry`'s deferral is refused ([] when it is a valid one)."""
+    d = entry.get("deferred")
+    if key not in DEFERRABLE:
+        return ["not deferrable: a value a pairing reads, or a rule, is fixed at the first lock"]
+    if not _unset(entry.get("value")):
+        return ["both a value and a deferral: one or the other"]
+    if not isinstance(d, Mapping):
+        return ["`deferred` is not {rule, input, fixed_by}"]
+    out = []
+    for f in DEFERRED_FIELDS:
+        v = d.get(f)
+        if not isinstance(v, str) or _unset(v.strip()) or _is_placeholder(v):
+            out.append(f"its {f} is not written")
+    if not out and not _SECOND_LOCK.search(d["fixed_by"]):
+        out.append("fixed_by names no second lock")
+    return out
+
+
+def check(lock: Mapping, plan_text: str, *, allow_deferred: bool = True) -> LockCheck:
+    """`lock` is the parsed lock file (module docstring). With
+    `allow_deferred` False, a deferred item is unset."""
     items = lock_items(plan_text)
     values = lock.get("values")
     if not isinstance(values, Mapping):
         raise LockListError("the lock file has no `values` mapping")
-    missing, unset, unsourced, mistyped = [], [], [], []
+    missing, unset, unsourced, mistyped, deferred, refused = [], [], [], [], [], []
     for k in items:
         e = values.get(k)
         if e is None:
@@ -418,7 +465,14 @@ def check(lock: Mapping, plan_text: str) -> LockCheck:
             continue
         if not isinstance(e, Mapping) or "value" not in e:
             raise LockListError(f"entry {k!r} is not {{'value': ..., 'source': ...}}")
-        if _unset(e["value"]):
+        if e.get("deferred") is not None:
+            why = deferral_problems(k, e)
+            refused += [(k, w) for w in why]
+            if not why and allow_deferred:
+                deferred.append(k)
+            elif not why:
+                unset.append(k)
+        elif _unset(e["value"]):
             unset.append(k)
         else:
             mistyped += [(k, why) for why in type_problems(k, e["value"])]
@@ -432,7 +486,8 @@ def check(lock: Mapping, plan_text: str) -> LockCheck:
                      unsourced=tuple(unsourced), unknown=tuple(unknown),
                      plan_matches=lock.get("plan_sha256") == plan_sha256(plan_text),
                      scored_pairings=scored, scored_problems=scored_problems,
-                     mistyped=tuple(mistyped))
+                     mistyped=tuple(mistyped), deferred=tuple(deferred),
+                     deferral_problems=tuple(refused))
 
 
 def skeleton(plan_text: str) -> dict:

@@ -142,6 +142,7 @@ PAIRING_KEYS = ("gt_groups", "reps", "dense_rounds", "sampler_interval_s")
 # Dropped from P2 and P4 (adviser's ruling 4, third set of 12 Nov 2026): four
 # rehearsal launches never reached the compiled stage on a GPU.
 DROPPED_GROUPS = ("compiled_default", "compiled_capture")
+DEFERRAL_PAIRINGS = ("P2",)        # the pairings that may run on a staged lock
 LOCK_KEYS = PAIRING_KEYS + tuple(LOCK_SOURCED)
 CALIBRATED = "calibrated"          # a density the estimator sets (XAttention), not the cell
 # Arms that run at batch 1 only: XAttention's kernel call (T2.12), and the
@@ -346,7 +347,9 @@ def fill_lock_values(cfg: dict, path=None, plan_text=None) -> dict:
         return cfg
     text = plan_text if plan_text is not None else checklist.PLAN.read_text(encoding="utf-8")
     lock = json.loads(p.read_text(encoding="utf-8"))
-    res = checklist.check(lock, text)
+    # Only P2 runs on a staged lock; P4's prediction waits for the second
+    # lock commit (adviser's ruling 4, fourth set of 12 Nov 2026).
+    res = checklist.check(lock, text, allow_deferred=cfg.get("pairing") in DEFERRAL_PAIRINGS)
     if not res.complete:
         raise StepFailed(f"{p.name} is not a complete lock, so no pairing's values come from "
                          f"it:\n{res.report()}")
