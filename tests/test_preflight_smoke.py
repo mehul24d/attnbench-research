@@ -142,6 +142,7 @@ def test_the_smoke_check_runs_every_arm_through_every_stage_behind_the_cpu_bound
         assert sum(c["device_cost_sources"].values()) > 0, name              # step 8
         assert c["unpriced"] == 0 and c["predict_input"]["priced"] > 0, name  # the input
     assert sorted(found["pricing_gate"]) == sorted(ARMS)
+    assert [c["correct"] for c in found["dense_select"]["cells"].values()] == [["sdpa_math"]]
     assert all("share" in g for g in found["pricing_gate"].values())
     gt = found["ground_truth"]
     assert gt["controls"] == ["sdpa_math"]                 # the CPU card's candidates
@@ -150,6 +151,9 @@ def test_the_smoke_check_runs_every_arm_through_every_stage_behind_the_cpu_bound
         a = next(v for k, v in gt["arms"].items() if k.startswith(arm))
         assert all(n > 0 for n in a["score_calls"]) and len(a["score_calls"]) == 2
     assert all(v["executed_density"] is not None for v in gt["arms"].values())
+    assert len(gt["traces"]) == 1 + len(ARMS) and gt["sampler"]       # control + each arm
+    assert all((out / "ground_truth" / "trace_checks" / Path(t).stem).is_dir()
+               for t in gt["traces"])
 
 
 @needs_xattn
@@ -165,6 +169,61 @@ def test_the_harness_refuses_a_deployable_arm_whose_forward_the_probe_saw_score_
         h = sa.Harness(device="cpu", dry_run=True, score_cache_dir=tempfile.mkdtemp())
         try:
             with pytest.raises(st.StepFailed, match=r"meanpool@0.25: the probe saw \[0, 0\]"):
-                st.ground_truth_smoke(h, cfg, st.smoke_cells(cfg))
+                st.ground_truth_smoke(h, cfg, st.smoke_cells(cfg), Path(tempfile.mkdtemp()))
         finally:
             h.unwrap()
+
+
+@needs_xattn
+def test_the_smoke_refuses_when_no_dense_candidate_passes_k2_s_screen(monkeypatch):
+    import tempfile
+    from attnbench import dense_selection as ds
+    from attnbench import gates
+    from attnbench.components import shakedown_arms as sa
+    cfg = st.load_config(ROOT / CONFIGS["P2"], dry_run=False)
+    with cb.installed():
+        h = sa.Harness(device="cpu", dry_run=True, score_cache_dir=tempfile.mkdtemp())
+        try:
+            found = st.dense_select_smoke(h, cfg)
+            assert found["card"] == ds.CPU_CARD
+            assert {k: c["correct"] for k, c in found["cells"].items()} == {
+                ds.Cell(ds.CPU_CARD, 2048, 1).key: ["sdpa_math"]}
+            wrong = gates.check_for_family
+
+            def fails(backend, cfg, **kw):
+                v = wrong(backend, cfg, **kw)
+                return type(v)(**{**v.__dict__, "passed": False, "detail": "broken"})
+            monkeypatch.setattr(gates, "check_for_family", fails)
+            monkeypatch.setattr(ds.screen, "__kwdefaults__",
+                                {**ds.screen.__kwdefaults__, "check": fails})
+            with pytest.raises(st.StepFailed, match="no dense candidate passed its checks"):
+                st.dense_select_smoke(h, cfg)
+        finally:
+            h.unwrap()
+
+
+def test_on_a_gpu_the_smoke_screens_every_cell_k2_screens(monkeypatch):
+    from attnbench import dense_selection as ds
+    seen = []
+    monkeypatch.setattr(st, "_boundary", lambda: False)
+    monkeypatch.setattr(st, "smoke_controls", lambda card: {"sdpa_flash": "be"})
+    monkeypatch.setattr(ds, "screen", lambda c, planned, cands, **kw: (
+        seen.append((c.seq_len, c.batch, tuple(planned))) or
+        ({"sdpa_flash": types.SimpleNamespace(status="correct", check_kind="exact",
+                                              max_abs_err=0.0, reason="")}, {"sdpa_flash": "be"})))
+    for pairing in sorted(CONFIGS):
+        cfg = st.load_config(ROOT / CONFIGS[pairing], dry_run=False)
+        seen.clear()
+        st.dense_select_smoke(_Cfg(), cfg)
+        assert [(L, b) for L, b, _ in seen] == st.dense_select_cells(cfg)
+        assert (16384, 4) in st.dense_select_cells(cfg)
+        assert {p for *_, p in seen} == {ds.planned_candidates(cfg["card"])}
+
+
+class _Cfg:
+    """A harness whose dense config is a real `AttnConfig` (`replace` needs one)."""
+
+    def __init__(self):
+        from attnbench.config import AttnConfig
+        self._cfg = lambda spec, L: AttnConfig(seq_len=L, batch=1, n_heads_q=12, n_heads_kv=2,
+                                               head_dim=128, mask="causal")

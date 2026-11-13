@@ -1852,9 +1852,14 @@ def preflight_smoke(args, cfg) -> dict:
          reported, as step 8 reports it;
       3. the prediction's input from that cell (`predict_cell`), on the
          stand-in link inputs above;
-      4. the ground truth's harness (`ground_truth_smoke`): one untimed
+      4. K2's untimed part (`dense_select_smoke`): every planned dense
+         candidate's capability and correctness checks, at every cell K2
+         screens (at 2048 only behind the CPU boundary);
+      5. the ground truth's harness (`ground_truth_smoke`): one untimed
          forward of every dense candidate and every arm, untraced and
-         traced, under the probe, then the density twin.
+         traced, under the probe and with the session's throttle sampler
+         running, then the density twin; each traced forward's trace is
+         exported and given step 14's trace checks (`check_trace.py kineto`).
 
     No timer runs and every output is discarded: these calls are not clocked
     blocks under the stamp rule (`docs/smoke_untimed_note_2026-11-13.md`).
@@ -1906,7 +1911,10 @@ def preflight_smoke(args, cfg) -> dict:
             torch.cuda.empty_cache()
     found["pricing_gate"] = gate_brief(replay.pricing_gate(devs, float(share)))
     t3 = time.time()
-    found["ground_truth"] = ground_truth_smoke(h, cfg, cells)
+    found["dense_select"] = dense_select_smoke(h, cfg)
+    found["dense_select"]["seconds"] = round(time.time() - t3, 1)
+    t3 = time.time()
+    found["ground_truth"] = ground_truth_smoke(h, cfg, cells, out / "ground_truth")
     found["ground_truth"]["seconds"] = round(time.time() - t3, 1)
     h.unwrap()
     _write_json(out / "smoke.json", found)
@@ -1930,15 +1938,66 @@ def smoke_controls(card: str) -> dict:
     return {n: be for n, be in planned.items() if be is not None}
 
 
-def ground_truth_smoke(h, cfg, cells) -> dict:
+def dense_select_cells(cfg) -> list:
+    """The (length, batch) cells K2 screens (`step_dense_select`)."""
+    return [(L, b) for L in cfg["lengths"] for b in cfg["batches"].get(str(L), [1])]
+
+
+def dense_select_smoke(h, cfg) -> dict:
+    """Step `dense_select`'s untimed part (`dense_selection.screen`): each
+    planned candidate's capability check, then its correctness check against
+    the others, at every cell K2 will screen, on the session's card. K2's
+    timed rounds are not run. Which check runs depends on the device's memory
+    (`gates.exact_oracle_fits`): on an 80 GB card the float64 oracle runs at
+    16384, batch 1, where the L4 took the cross-backend check
+    (`docs/gpu_path_audit.md`). Behind the CPU boundary, at 2048, batch 1
+    only, at the GPU's dtype: the CPU card has one candidate, so no
+    cross-backend check can run. Refused when a cell has no correct
+    candidate, as K2 then cannot choose; one found incorrect is reported, as
+    K2 records it."""
+    import torch
+    from dataclasses import replace
+    from attnbench import dense_selection as ds
+    from attnbench.components.shakedown_arms import ARMS, Harness
+    card = ds.CPU_CARD if _boundary() else cfg["card"]
+    planned = list(ds.planned_candidates(card))
+    controls = smoke_controls(cfg["card"])
+    cuda = torch.cuda.is_available() and not _boundary()
+    found = {"card": card, "cells": {}}
+    for L, b in [(SMOKE_LENGTH, SMOKE_BATCH)] if _boundary() else dense_select_cells(cfg):
+        attn_cfg = replace(h._cfg(ARMS["dense"], L), batch=b)
+        if _boundary():
+            # The tiny model's float32, which every planned kernel declines;
+            # the GPU session's dtype is the harness's default.
+            attn_cfg = replace(attn_cfg, dtype=Harness.__init__.__kwdefaults__["dtype"])
+        if cuda:
+            torch.cuda.reset_peak_memory_stats()
+        results, live = ds.screen(attn_cfg, planned, controls, device=_device())
+        key = ds.Cell(card=card, context_length=L, batch=b).key
+        found["cells"][key] = {
+            "correct": sorted(live),
+            "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 2) if cuda else None,
+            "results": {n: {"status": r.status, "check_kind": r.check_kind,
+                            "max_abs_err": r.max_abs_err, "reason": r.reason[:300]}
+                        for n, r in results.items()}}
+        if not live:
+            raise StepFailed(f"{key}: no dense candidate passed its checks: "
+                             f"{found['cells'][key]['results']}", found)
+    return found
+
+
+def ground_truth_smoke(h, cfg, cells, out: Path) -> dict:
     """Step 12's harness on the smoke's cells, untimed: the arms as
     `time_arms` takes them (`Harness.timing_arms`), each dense candidate as
     the control, then every arm under the probe with its setup
     (`untimed_setup`), one forward untraced and one inside the session's
-    tracer, and the density twin (`kernel_densities`). No timer, no stamp,
-    every output discarded. A deployable arm whose forward the probe saw
-    compute no scores, or that scored in its setup, is refused, as
-    `check_timed_region` refuses it."""
+    tracer, and the density twin (`kernel_densities`), all with the
+    session's throttle sampler running (`_sampler`; NVML on a GPU). No timer,
+    no stamp, every output discarded. A deployable arm whose forward the
+    probe saw compute no scores, or that scored in its setup, is refused, as
+    `check_timed_region` refuses it. Each traced forward's trace is exported
+    and checked as step 14 checks the ground truth's (`check_trace.py
+    kineto`); a flagged trace is refused."""
     import torch
     from attnbench import ground_truth as gt
     sync = torch.cuda.synchronize if (torch.cuda.is_available() or _boundary()) else (lambda: None)
@@ -1946,44 +2005,60 @@ def ground_truth_smoke(h, cfg, cells) -> dict:
     dens = [None] + [c[1] for c in cells[1:]]
     wrapped, ids, pid, arms, score_kwargs = h.timing_arms(names, SMOKE_LENGTH, densities=dens,
                                                           batch=SMOKE_BATCH)
-    trace = _tracer()
-    found = {"prompt_id": pid, "controls": [], "arms": {}}
+    make = _tracer()
+    traces = Path(out) / "traces"
+    traces.mkdir(parents=True, exist_ok=True)
+    found = {"prompt_id": pid, "controls": [], "arms": {}, "traces": []}
 
-    def forward(backend, a, kw):
-        wrapped.run_measured(ids, backend, cfg=a.cfg, logits_to_keep=1, **kw)
-        sync()
-    for name, be in smoke_controls(cfg["card"]).items():
-        forward(be, arms[0], {})
-        with trace():
+    def forward(backend, a, kw, label=None):
+        if label is None:
+            wrapped.run_measured(ids, backend, cfg=a.cfg, logits_to_keep=1, **kw)
+            sync()
+            return
+        with make() as prof:
+            wrapped.run_measured(ids, backend, cfg=a.cfg, logits_to_keep=1, **kw)
+            sync()
+        path = traces / f"{label}.json"
+        prof.export_chrome_trace(str(path))
+        found["traces"].append(path.name)
+
+    with _sampler(cfg, _boundary()) as sampler:
+        for name, be in smoke_controls(cfg["card"]).items():
             forward(be, arms[0], {})
-        found["controls"].append(name)
-    for a in arms:
-        log = gt.EventLog()
-        scored = []
-        with gt.probe_for(log, a):
-            kw = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
-            log.phase = gt.WARMUP
-            for traced in (False, True):
-                n = len(log.events)
-                with (trace() if traced else contextlib.nullcontext()):
-                    forward(a.backend, a, kw)
-                scored.append(sum(e.kind == "score" for e in log.events[n:]))
-        if a.deployable:
-            setup = [e.what for e in log.events
-                     if e.kind in ("score", "mask_build") and e.phase == gt.SETUP]
-            if setup or not all(scored):
-                raise StepFailed(f"{a.name}: the probe saw {scored} score call(s) in its "
-                                 f"untraced and traced forwards and {setup} in its setup")
+            forward(be, arms[0], {}, label=f"control_{name}")
+            found["controls"].append(name)
+        for j, a in enumerate(arms):
+            log = gt.EventLog()
+            scored = []
+            with gt.probe_for(log, a):
+                kw = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
+                log.phase = gt.WARMUP
+                for label in (None, f"{j}_{a.name}"):
+                    n = len(log.events)
+                    forward(a.backend, a, kw, label=label)
+                    scored.append(sum(e.kind == "score" for e in log.events[n:]))
+            if a.deployable:
+                setup = [e.what for e in log.events
+                         if e.kind in ("score", "mask_build") and e.phase == gt.SETUP]
+                if setup or not all(scored):
+                    raise StepFailed(f"{a.name}: the probe saw {scored} score call(s) in its "
+                                     f"untraced and traced forwards and {setup} in its setup")
 
-        def run(backend=None, input_ids=None, a=a, kw=kw):
-            wrapped.run_measured(input_ids if input_ids is not None else ids,
-                                 backend if backend is not None else a.backend,
-                                 cfg=a.cfg, logits_to_keep=1, **kw)
-        dens_found = gt.kernel_densities(a, run)
-        sync()
-        found["arms"][a.name] = {"score_calls": scored,
-                                 "mask_density": dens_found.get("mask_density"),
-                                 "executed_density": dens_found.get("executed_density")}
+            def run(backend=None, input_ids=None, a=a, kw=kw):
+                wrapped.run_measured(input_ids if input_ids is not None else ids,
+                                     backend if backend is not None else a.backend,
+                                     cfg=a.cfg, logits_to_keep=1, **kw)
+            dens_found = gt.kernel_densities(a, run)
+            sync()
+            found["arms"][a.name] = {"score_calls": scored,
+                                     "mask_density": dens_found.get("mask_density"),
+                                     "executed_density": dens_found.get("executed_density")}
+        found["sampler"] = sampler.timing_stats()
+    bad = [t for t in found["traces"]
+           if _run(_py("check_trace.py", "kineto", str(traces / t), "--out",
+                       str(Path(out) / "trace_checks" / Path(t).stem)))]
+    if bad:
+        raise StepFailed(f"check_trace.py flagged or failed on {len(bad)} smoke trace(s): {bad}")
     return found
 
 
