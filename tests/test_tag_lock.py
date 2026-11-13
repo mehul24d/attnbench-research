@@ -105,6 +105,23 @@ def test_an_existing_tag_or_a_bad_name_is_refused(repo, capsys):
     assert "lock-YYYY-MM-DD" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("tag, ok", [
+    ("lock-2026-11-13", True), ("lock-2026-11-13-r2", True), ("lock-2026-11-13-r9", True),
+    ("lock-2026-11-13-r10", True), ("lock-2026-11-13-r23", True),
+    ("lock-2026-11-13-r1", False), ("lock-2026-11-13-r0", False), ("lock-2026-11-13-r01", False),
+    ("lock-2026-11-13-r", False), ("lock-2026-11-13r2", False), ("lock-2026-11-13-R2", False),
+    ("lock-2026-11-13-r2-x", False), ("lock-2026-11-13-v2", False), ("lock-2026-11-13_r2", False),
+    ("lock-2026-11-1-r2", False), ("lock-26-11-13-r2", False), ("lock-final", False),
+    ("lock-2026-11-13-r2\n", False), ("xlock-2026-11-13-r2", False),
+])
+def test_a_re_cut_tag_takes_rn_and_every_other_form_is_refused(repo, capsys, tag, ok):
+    # the adviser's rulings dated 13 Nov 2026, item 6: lock-2026-11-13 and -14 are taken
+    tag = tag.replace("\\n", "\n")
+    rc = tag_lock.main(["--repo", str(repo), "--lock-file", LOCK, "--tag", tag, "--dry-run"])
+    err = capsys.readouterr().err
+    assert (rc == 0) if ok else (rc == 2 and "lock-YYYY-MM-DD-rN" in err), (tag, rc, err)
+
+
 def test_a_lock_file_for_another_plan_is_refused(repo, capsys):
     (repo / "docs" / "RESEARCH_PLAN.md").write_text(PLAN_TEXT + "\nlater\n", encoding="utf-8")
     git(repo, "commit", "-q", "-am", "plan changed after the lock values")

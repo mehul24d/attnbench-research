@@ -10,7 +10,9 @@ adversarial reads (T4.3) are the researcher's to confirm. It refuses unless:
   - the lock file is tracked and committed at HEAD, unchanged;
   - every value T4.1 lists is fixed in the lock file, with its source, and
     the file names the plan it was written against (`attnbench.lock.checklist`);
-  - the tag is new and named lock-YYYY-MM-DD.
+  - the tag is new and named lock-YYYY-MM-DD, or lock-YYYY-MM-DD-rN for a
+    re-cut on a date whose tag is taken (N from 2; the adviser's rulings
+    dated 13 Nov 2026, item 6).
 
 It then makes an annotated tag on HEAD whose message records the lock file's
 and the plan's sha256. It never pushes: pushing the tag is the researcher's
@@ -36,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from attnbench.lock import checklist  # noqa: E402
 
-TAG_RE = re.compile(r"^lock-\d{4}-\d{2}-\d{2}$")
+TAG_RE = re.compile(r"^lock-\d{4}-\d{2}-\d{2}(-r[2-9]|-r[1-9]\d+)?$")
 PLAN_PATH = "docs/RESEARCH_PLAN.md"
 
 
@@ -53,8 +55,8 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
 
 def check_lock_commit(repo: Path, lock_file: str, tag: str) -> dict:
     """Everything the tag needs, or `Refused`. Returns what the tag records."""
-    if not TAG_RE.match(tag):
-        raise Refused(f"the tag {tag!r} is not lock-YYYY-MM-DD")
+    if not TAG_RE.fullmatch(tag):         # `$` alone would let a trailing newline through
+        raise Refused(f"the tag {tag!r} is not lock-YYYY-MM-DD or lock-YYYY-MM-DD-rN")
     status = _git(repo, "status", "--porcelain", "--untracked-files=all")
     if status.strip():
         raise Refused(f"the working tree is not clean:\n{status}")
