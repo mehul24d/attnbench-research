@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6559 passed, 182 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6586 passed, 185 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -34,7 +34,7 @@ torch the check refuses the variant, so it fails closed (Appendix A, 12 Nov
 2026). The counts below were measured with torch 2.13.0 and the `[eval]`
 extra's `wonderwords`, which one RULER test needs.
 
-The 182 skips are the honest part, and they split eight ways: **53** need CUDA
+The 185 skips are the honest part, and they split eight ways: **56** need CUDA
 or the GPU image's x-attention and block-sparse-attn, or the pinned x-attention clone
 (`$ATTNBENCH_XATTN_DIR`, for the tests behind the CPU boundary), **86** read banked result
 files that `results/` keeps out of git, **18** are scripts
@@ -47,12 +47,14 @@ skips without `wonderwords`, which the `[eval]` extra installs), **2** need the 
 Face cache, **1** needs the primary model's pinned `config.json` there, and **1** is the pre-launch CPU pass (`tests/test_prelaunch_cpu_pass.py`), which runs only from `scripts/prelaunch_cpu_pass.sh`. Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
-the tokenizer.
-**With `results/` present the suite reads 6646 passed, 95 skipped**, because
+the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden):
+`f38a625` gives the same 185, skip for skip, on the machine that measured these, so
+the change is the environment's, not the code's (13 Nov 2026).
+**With `results/` present the suite reads 6676 passed, 95 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6644 passed, 97 skipped). All three
-totals are 6741, which is
+present and those two hidden it reads 6671 passed, 100 skipped). All three
+totals are 6771, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).
 
