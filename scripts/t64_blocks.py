@@ -204,8 +204,12 @@ def main(argv=None) -> int:
     rate = args.rate or SPOT_RATES[args.pairing]
     args.max_hours = args.max_hours or BLOCK_HOURS[args.pairing]
     n = card_numbers(CARDS[args.pairing].read_text())
-    blocks = plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=BOOT[args.pairing],
-                         rate=rate, max_hours=args.max_hours, suite_min=n["suite_min"])
+    try:
+        blocks = plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=BOOT[args.pairing],
+                             rate=rate, max_hours=args.max_hours, suite_min=n["suite_min"])
+    except ValueError as e:
+        print(f"REFUSING: no blocks at {args.max_hours} h: {e}", file=sys.stderr)
+        return 2
     if args.blocks is not None and len(blocks) != args.blocks:
         print(f"REFUSING: {len(blocks)} blocks at {args.max_hours} h, not {args.blocks}",
               file=sys.stderr)

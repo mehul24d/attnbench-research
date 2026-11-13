@@ -11,6 +11,8 @@ ground truth's harness, untimed, before anything long.
 The real check runs here behind the CPU boundary on P2's and P4's configs:
 the same code, the real arms, the tiny model; XAttention takes its torch
 path, as on the L4 (its Triton path is `tests/test_arm_module_parity.py`'s).
+Since the adviser's rulings dated 13 Nov 2026, second set, item 2, it also
+runs each XAttention arm at 32768 (`long_smoke`).
 """
 
 from __future__ import annotations
@@ -81,6 +83,52 @@ def test_the_smoke_cells_are_every_arm_at_2048_batch_1_dense_first(pairing):
     assert all(c[1] is None for c in cells if c[0].startswith("xattention"))
     with pytest.raises(st.StepFailed, match="dense arm first"):
         st.smoke_cells({**cfg, "arms": list(reversed(cfg["arms"]))})
+
+
+@pytest.mark.parametrize("pairing", sorted(CONFIGS))
+def test_the_long_smoke_cells_are_each_xattention_arm_at_32768_batch_1(pairing):
+    cfg = st.load_config(ROOT / CONFIGS[pairing], dry_run=False)
+    assert st.smoke_long_cells(cfg) == [("xattention", None, 32768, 1),
+                                        ("xattention_noassert", None, 32768, 1)]
+
+
+@pytest.mark.parametrize("length, chunks, size, last", [
+    (32700, 4, 8192, 8124),     # the session's 32768 prompt on a GPU: a partial last chunk
+    (32768, 4, 8192, 8192),     # the CPU boundary's: four whole chunks
+    (30720, 4, 8192, 6144),     # the probe's: a partial last chunk
+    (20480, 3, 8192, 4096),
+    (16384, 1, 16384, 16384),
+    (1951, 1, 2048, 1951),      # the 2048 prompt: one padded chunk
+])
+def test_the_query_chunks_are_the_estimator_s(length, chunks, size, last):
+    assert st.query_chunks(length) == {"context_length": length, "chunk_size": size,
+                                       "chunks": chunks, "last_chunk_tokens": last}
+
+
+def _long_cfg():
+    return {"arms": ["dense", "xattention"],
+            "densities": {"dense": [1.0], "xattention": [st.CALIBRATED]},
+            "chain_check_tolerance": {"aggregate": 0.1}}
+
+
+@pytest.mark.parametrize("length, impl, boundary, match", [
+    (16384, "xattn:triton", False, "16384 tokens give no partial last query chunk"),
+    (16384, "xattn:torch", True, "16384 tokens give no partial last query chunk"),
+    (32768, "xattn:triton", False, "32768 tokens give no partial last query chunk"),
+    (32700, "xattn:torch", False, "xattention_dcal_L32768_b1 took xattn:torch"),
+])
+def test_the_long_smoke_refuses_one_chunk_and_the_torch_path_on_a_gpu(
+        tmp_path, monkeypatch, length, impl, boundary, match):
+    monkeypatch.setattr(st, "_boundary", lambda: boundary)
+    monkeypatch.setattr(st, "ready_cell", lambda h, *cell: types.SimpleNamespace(
+        length=length, code_path=types.SimpleNamespace(implementation=impl)))
+    with pytest.raises(st.StepFailed, match=match):
+        st.long_smoke(object(), _long_cfg(), tmp_path)
+
+
+def test_the_long_smoke_runs_nothing_for_a_session_with_no_xattention_arm(tmp_path):
+    assert st.long_smoke(object(), {"arms": ["dense"], "densities": {"dense": [1.0]}},
+                         tmp_path) == {"cells": {}, "forwards": {}}
 
 
 def test_a_planned_fa3_that_is_not_available_is_refused(monkeypatch):
@@ -154,6 +202,13 @@ def test_the_smoke_check_runs_every_arm_through_every_stage_behind_the_cpu_bound
     assert len(gt["traces"]) == 1 + len(ARMS) and gt["sampler"]       # control + each arm
     assert all((out / "ground_truth" / "trace_checks" / Path(t).stem).is_dir()
                for t in gt["traces"])
+    long = found["long"]                                                 # audit item B
+    assert sorted(long["cells"]) == ["xattention_dcal_L32768_b1",
+                                     "xattention_noassert_dcal_L32768_b1"]
+    for name, c in long["cells"].items():
+        assert c["chunks"] == 4 and c["host_cost_sources"].get("null_pass", 0) > 0, name
+    assert sorted(long["forwards"]) == ["xattention", "xattention_noassert"]
+    assert all(f["score_calls"] > 0 for f in long["forwards"].values())
 
 
 @needs_xattn
@@ -169,7 +224,8 @@ def test_the_harness_refuses_a_deployable_arm_whose_forward_the_probe_saw_score_
         h = sa.Harness(device="cpu", dry_run=True, score_cache_dir=tempfile.mkdtemp())
         try:
             with pytest.raises(st.StepFailed, match=r"meanpool@0.25: the probe saw \[0, 0\]"):
-                st.ground_truth_smoke(h, cfg, st.smoke_cells(cfg), Path(tempfile.mkdtemp()))
+                st.ground_truth_smoke(h, cfg, st.smoke_cells(cfg), Path(tempfile.mkdtemp()),
+                                      st.smoke_controls(cfg["card"]))
         finally:
             h.unwrap()
 
@@ -227,3 +283,45 @@ class _Cfg:
         from attnbench.config import AttnConfig
         self._cfg = lambda spec, L: AttnConfig(seq_len=L, batch=1, n_heads_q=12, n_heads_kv=2,
                                                head_dim=128, mask="causal")
+
+
+def test_the_harness_is_smoked_only_with_the_controls_k2_s_screen_found_correct_at_2048():
+    from attnbench import dense_selection as ds
+    key = ds.Cell(card="A100", context_length=2048, batch=1).key
+    other = ds.Cell(card="A100", context_length=16384, batch=1).key
+    dense = {"card": "A100", "cells": {key: {"correct": ["sdpa_flash", "sdpa_cudnn"]},
+                                       other: {"correct": ["sdpa_flash", "fa2"]}}}
+    controls = {"sdpa_flash": "f", "sdpa_cudnn": "c", "sdpa_efficient": "e", "fa2": "2"}
+    assert st.smoke_gt_controls(dense, controls) == {"sdpa_flash": "f", "sdpa_cudnn": "c"}
+
+
+def test_the_smoke_hands_the_harness_the_screen_s_controls(tmp_path, monkeypatch):
+    from attnbench.components import recorder
+    got = {}
+    monkeypatch.setattr(st, "_need_gpu", lambda what: None)
+    monkeypatch.setattr(st, "_boundary", lambda: False)
+    monkeypatch.setattr(st, "_harness", lambda args: types.SimpleNamespace(unwrap=lambda: None))
+    monkeypatch.setattr(st, "bare_pricer", lambda: "pricer")
+    monkeypatch.setattr(st, "host_cell", lambda h, cfg, out, cell, pricer: {
+        "dir": st.cell_dir(Path(), *cell).name, "host_cost_sources": {},
+        "code_path": {"implementation": "eager"}})
+    monkeypatch.setattr(recorder, "load_recording", lambda d: types.SimpleNamespace(
+        sequence=types.SimpleNamespace(ops=[])))
+    monkeypatch.setattr(st, "ready_cell", lambda h, *cell: object())
+    monkeypatch.setattr(st, "_device_cell_priced", lambda *a: {
+        "arm": "dense", "ops": None, "cost_sources": {},
+        "pricing": {"mismatch_s": 0.0, "priced_s": 1.0, "unpriced": []}})
+    monkeypatch.setattr(st, "gate_brief", lambda g: {})
+    from attnbench.components import replay
+    monkeypatch.setattr(replay, "pricing_gate", lambda devs, share: None)
+    from attnbench import dense_selection as ds
+    key = ds.Cell(card="A100", context_length=2048, batch=1).key
+    monkeypatch.setattr(st, "dense_select_smoke", lambda h, cfg: {
+        "card": "A100", "cells": {key: {"correct": ["sdpa_flash"]}}})
+    monkeypatch.setattr(st, "smoke_controls", lambda card: {"sdpa_flash": "f", "sdpa_efficient": "e"})
+    monkeypatch.setattr(st, "ground_truth_smoke",
+                        lambda h, cfg, cells, out, controls: got.update(controls) or {})
+    cfg = {"arms": ["dense"], "densities": {"dense": [1.0]}, "pricing_mismatch_share": 0.05,
+           "pairing": "P2", "model": "m", "card": "A100"}
+    st.preflight_smoke(types.SimpleNamespace(out=str(tmp_path), session="s"), cfg)
+    assert got == {"sdpa_flash": "f"}

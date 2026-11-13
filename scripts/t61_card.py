@@ -77,25 +77,33 @@ def status_head(status: str) -> str:
 
 
 def costs(minutes: dict):
-    """(steps, setup h, teardown h, suite min, the Flex-start session, the Spot blocks)."""
+    """(steps, setup h, teardown h, suite min, the Flex-start session, the Spot
+    blocks, why there are none). No blocks when the planner refuses them: since
+    the adviser's rulings dated 13 Nov 2026, second set, the preflight no longer
+    leaves a block room for `host_components`, and P2 launches on Flex-start
+    with no Spot."""
     steps = [(s.name, float(sum(minutes["steps"][s.name]["minutes"]))) for s in S.T61.steps]
     setup, tear = minutes["setup_h"]["value"], minutes["teardown_h"]["value"]
     suite = float(minutes["suite_record_min"]["value"])
     run_min = sum(m for _, m in steps)
     flex = B._block([n for n, _ in steps], 0.0, run_min, setup, tear, FLEX_RATE, suite)
-    blocks = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P2"], rate=SPOT_RATE,
-                           suite_min=suite)
-    return steps, setup, tear, suite, flex, blocks
+    try:
+        blocks, refusal = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P2"], rate=SPOT_RATE,
+                                        suite_min=suite), None
+    except ValueError as e:
+        blocks, refusal = [], str(e)
+    return steps, setup, tear, suite, flex, blocks, refusal
 
 
 def caps(minutes: dict | None = None) -> dict:
-    """P2's cap on each provisioning, for the budget interlock."""
-    *_, flex, blocks = costs(minutes or load_minutes())
-    return {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks)}
+    """P2's cap on each provisioning, for the budget interlock; None where
+    there is no plan."""
+    *_, flex, blocks, _ = costs(minutes or load_minutes())
+    return {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks) if blocks else None}
 
 
 def build(minutes: dict, plan_text: str, on: str) -> str:
-    steps, setup, tear, suite, flex, blocks = costs(minutes)
+    steps, setup, tear, suite, flex, blocks, refusal = costs(minutes)
     run_min = sum(m for _, m in steps)
     statuses = S.plan_statuses(plan_text)
     appendix = S.appendix_a_dates(plan_text)
@@ -222,6 +230,19 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         f"{flex.cost_at_delete_inr} |",
         f"| **The cap** | | **{flex.cap_inr}** |",
         "",
+    ]
+    if not blocks:
+        out += [
+            f"**On Spot (₹{SPOT_RATE}/h): no plan.** `scripts/t64_blocks.py --pairing P2` "
+            f"refuses blocks of at most {B.MAX_BLOCK_HOURS} h: {refusal}. Each block's boot "
+            f"steps ({', '.join(f'`{x}`' for x in B.BOOT['P2'])}) include the preflight. P2 "
+            "launches on Flex-start with no Spot (the adviser's rulings dated 13 Nov 2026, "
+            "second set, item 4).",
+            "",
+            *BI.section("P2"),
+        ]
+        return _prereqs(out, statuses, appendix, unmet)
+    out += [
         f"**On Spot (₹{SPOT_RATE}/h), in {len(blocks)} blocks of at most {B.MAX_BLOCK_HOURS} h** "
         "(`scripts/t64_blocks.py --pairing P2`, which reads this card):",
         "",
@@ -241,6 +262,13 @@ def build(minutes: dict, plan_text: str, on: str) -> str:
         "cannot overlap: the GPU quota across regions is 1.",
         "",
         *BI.section("P2"),
+    ]
+    return _prereqs(out, statuses, appendix, unmet)
+
+
+def _prereqs(out: list, statuses: dict, appendix, unmet) -> str:
+    """The card's last section, after `out`: each task `prereqs` checks."""
+    out += [
         "## What `prereqs` checks",
         "",
         "The step refuses a real session unless every task below reads Done in the deployed "

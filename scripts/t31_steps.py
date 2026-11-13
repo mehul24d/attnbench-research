@@ -181,6 +181,7 @@ MEMSET_ZOO = "memset_zoo.json"            # the memset zoo, measured once for st
 XATTN_TRITON = "xattn:triton"             # XAttention's Triton path (`Harness.code_path`)
 SMOKE = "preflight-smoke"                 # the preflight's smoke check (`preflight_smoke`)
 SMOKE_LENGTH, SMOKE_BATCH = 2048, 1
+SMOKE_LONG_LENGTH = 32768                 # the XAttention arms' long smoke (`long_smoke`)
 
 # A dry run's own values: small, and labelled so nothing it writes can pass
 # for P1's.
@@ -1856,10 +1857,16 @@ def preflight_smoke(args, cfg) -> dict:
          candidate's capability and correctness checks, at every cell K2
          screens (at 2048 only behind the CPU boundary);
       5. the ground truth's harness (`ground_truth_smoke`): one untimed
-         forward of every dense candidate and every arm, untraced and
+         forward of every dense candidate K2 can choose at 2048 (the
+         screen's correct ones, `smoke_gt_controls`) and every arm, untraced and
          traced, under the probe and with the session's throttle sampler
          running, then the density twin; each traced forward's trace is
-         exported and given step 14's trace checks (`check_trace.py kineto`).
+         exported and given step 14's trace checks (`check_trace.py kineto`);
+      6. each XAttention arm at 32768, batch 1 (`long_smoke`; the adviser's
+         rulings dated 13 Nov 2026, second set, item 2): step 7's full-length
+         recording and its null pass with the structure check, on a prompt
+         whose last query chunk is partial, then one untimed forward of the
+         ground truth's harness.
 
     No timer runs and every output is discarded: these calls are not clocked
     blocks under the stamp rule (`docs/smoke_untimed_note_2026-11-13.md`).
@@ -1914,8 +1921,13 @@ def preflight_smoke(args, cfg) -> dict:
     found["dense_select"] = dense_select_smoke(h, cfg)
     found["dense_select"]["seconds"] = round(time.time() - t3, 1)
     t3 = time.time()
-    found["ground_truth"] = ground_truth_smoke(h, cfg, cells, out / "ground_truth")
+    found["ground_truth"] = ground_truth_smoke(
+        h, cfg, cells, out / "ground_truth",
+        smoke_gt_controls(found["dense_select"], smoke_controls(cfg["card"])))
     found["ground_truth"]["seconds"] = round(time.time() - t3, 1)
+    t3 = time.time()
+    found["long"] = long_smoke(h, cfg, out / "long")
+    found["long"]["seconds"] = round(time.time() - t3, 1)
     h.unwrap()
     _write_json(out / "smoke.json", found)
     return found
@@ -1986,10 +1998,23 @@ def dense_select_smoke(h, cfg) -> dict:
     return found
 
 
-def ground_truth_smoke(h, cfg, cells, out: Path) -> dict:
+def smoke_gt_controls(dense: dict, controls: dict) -> dict:
+    """The controls the ground truth's harness is smoked with: the dense
+    candidates K2's screen found correct at 2048, batch 1
+    (`dense_select_smoke`), the ones step 12 can be given there. Step 12
+    runs only K2's choice; a candidate the screen records as incorrect is
+    never one (P2 at `lock-2026-11-13-r2`, 13 Nov 2026: `sdpa_efficient`,
+    unsupported on GQA shapes, was run as a control and stopped the
+    preflight)."""
+    from attnbench import dense_selection as ds
+    key = ds.Cell(card=dense["card"], context_length=SMOKE_LENGTH, batch=SMOKE_BATCH).key
+    return {n: controls[n] for n in dense["cells"][key]["correct"]}
+
+
+def ground_truth_smoke(h, cfg, cells, out: Path, controls: dict) -> dict:
     """Step 12's harness on the smoke's cells, untimed: the arms as
-    `time_arms` takes them (`Harness.timing_arms`), each dense candidate as
-    the control, then every arm under the probe with its setup
+    `time_arms` takes them (`Harness.timing_arms`), each of `controls` (by
+    name) as the control, then every arm under the probe with its setup
     (`untimed_setup`), one forward untraced and one inside the session's
     tracer, and the density twin (`kernel_densities`), all with the
     session's throttle sampler running (`_sampler`; NVML on a GPU). No timer,
@@ -2023,7 +2048,7 @@ def ground_truth_smoke(h, cfg, cells, out: Path) -> dict:
         found["traces"].append(path.name)
 
     with _sampler(cfg, _boundary()) as sampler:
-        for name, be in smoke_controls(cfg["card"]).items():
+        for name, be in controls.items():
             forward(be, arms[0], {})
             forward(be, arms[0], {}, label=f"control_{name}")
             found["controls"].append(name)
@@ -2059,6 +2084,99 @@ def ground_truth_smoke(h, cfg, cells, out: Path) -> dict:
                        str(Path(out) / "trace_checks" / Path(t).stem)))]
     if bad:
         raise StepFailed(f"check_trace.py flagged or failed on {len(bad)} smoke trace(s): {bad}")
+    return found
+
+
+def smoke_long_cells(cfg) -> list:
+    """`long_smoke`'s cells: each XAttention arm of the session at 32768,
+    batch 1, at its first configured density."""
+    return [(arm, nominal_density(cfg["densities"][arm][0]), SMOKE_LONG_LENGTH, SMOKE_BATCH)
+            for arm in cfg["arms"] if _is_xattention(arm)]
+
+
+def query_chunks(length: int) -> dict:
+    """XAttention's query chunks on a prompt of `length` tokens, at the
+    official chunk size (`backends.xattention.official_chunk_size`)."""
+    from attnbench.backends.xattention import official_chunk_size
+    size = official_chunk_size(length)
+    return {"context_length": length, "chunk_size": size, "chunks": -(-length // size),
+            "last_chunk_tokens": length - size * ((length - 1) // size)}
+
+
+def long_smoke(h, cfg, out: Path) -> dict:
+    """Audit item B (the adviser's rulings dated 13 Nov 2026, second set,
+    item 2; `docs/gpu_path_audit.md`): each XAttention arm at 32768, batch 1,
+    untimed. Above 2048 the estimator runs more query chunks, the last one
+    padded, and no step 7 or step 8 cell had run there on an A100 or H100.
+    Per arm: step 7's recording at the prompt's full length and its isolated
+    replay and null pass with the structure check (`host_profile_cell`, as
+    `host_cell` runs them; the bare pass and the residual are not run), then
+    one untimed, untraced forward of the ground truth's harness under the
+    probe. The prompt is the session's own at 32768 (`qa_1_32768_0`, 32700
+    tokens on the L4: four chunks of 8192, the last one 8124 tokens and
+    padded). Refused when the prompt has one query chunk or its last chunk
+    is whole (except behind the CPU boundary, whose random prompt is
+    exactly 32768 tokens), when the cell is off the Triton path (except
+    behind the CPU boundary), and when a deployable arm's forward scored
+    nothing, as `ground_truth_smoke` refuses it. No timer runs and every
+    output is discarded, as for the rest of the smoke."""
+    import torch
+    from attnbench import ground_truth as gt
+    from attnbench.components import recorder
+    cells = smoke_long_cells(cfg)
+    found = {"cells": {}, "forwards": {}}
+    if not cells:
+        return found
+    for cell in cells:
+        arm, d, L, b = cell
+        cd = cell_dir(out, *cell)
+        t0 = time.time()
+        a = ready_cell(h, *cell)
+        chunks = query_chunks(a.length)
+        whole = chunks["last_chunk_tokens"] == chunks["chunk_size"]
+        if chunks["chunks"] < 2 or (whole and not _boundary()):
+            raise StepFailed(f"{cd.name}: the prompt's {a.length} tokens give no partial last "
+                             f"query chunk after the first ({chunks})")
+        impl = a.code_path.implementation
+        if impl != XATTN_TRITON and not _boundary():
+            raise StepFailed(f"{cd.name} took {impl}, not {XATTN_TRITON}")
+        entries = null_entries(arm, a.code_path, a.backend)
+        rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording",
+                                          code_path=a.code_path, context_length=a.length,
+                                          batch=b, prompt_id=a.prompt_id, layers=a.layers)
+        prof, check = host_profile_cell(
+            a, rec, cd, reps=HOST_PROFILE_REPS, entries=entries,
+            tolerance=cfg["chain_check_tolerance"],
+            segment_layers=int(cfg.get("isolated_segment_layers", ISOLATED_SEGMENT_LAYERS)))
+        found["cells"][cd.name] = {
+            **chunks, "implementation": impl, "host_cost_sources": prof.sources(),
+            "entry_points": sum(1 for op in rec.sequence.ops if _entry_point(op)),
+            "operations": len(rec.sequence.ops),
+            "seconds": round(time.time() - t0, 1)}
+        del rec, prof, check, a
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    sync = torch.cuda.synchronize if (torch.cuda.is_available() or _boundary()) else (lambda: None)
+    names = ["dense"] + [c[0] for c in cells]
+    wrapped, ids, pid, arms, score_kwargs = h.timing_arms(
+        names, SMOKE_LONG_LENGTH, densities=[None] + [c[1] for c in cells], batch=SMOKE_BATCH)
+    found["prompt_id"] = pid
+    with _sampler(cfg, _boundary()):
+        for a in arms[1:]:
+            t0 = time.time()
+            log = gt.EventLog()
+            with gt.probe_for(log, a):
+                kw = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
+                log.phase = gt.WARMUP
+                n = len(log.events)
+                wrapped.run_measured(ids, a.backend, cfg=a.cfg, logits_to_keep=1, **kw)
+                sync()
+            scored = sum(e.kind == "score" for e in log.events[n:])
+            if a.deployable and not scored:
+                raise StepFailed(f"{a.name} at {SMOKE_LONG_LENGTH}: the probe saw no score call "
+                                 f"in its forward")
+            found["forwards"][a.name] = {"score_calls": scored,
+                                         "seconds": round(time.time() - t0, 1)}
     return found
 
 

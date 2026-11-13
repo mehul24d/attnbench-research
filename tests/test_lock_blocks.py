@@ -108,6 +108,9 @@ def test_the_planners_skeleton_is_a_valid_plan_for_both_pairings():
     import t64_blocks as TB
     for pairing, cfg in (("P4", P4.T64), ("P2", S.T61)):
         n = TB.card_numbers(TB.CARDS[pairing].read_text())
+        # the cards' preflight before the adviser's rulings dated 13 Nov 2026, second set:
+        # at its 12 minutes since, no block fits (tests/test_t64_blocks.py)
+        n["steps"] = [(s, 8.0 if s == "preflight" else m) for s, m in n["steps"]]
         h = {"P2": 2.2, "P4": 2.3}[pairing]      # P4 at 2.2 h refuses (t64_card.py)
         blocks = TB.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"],
                                 boot=TB.BOOT[pairing], rate=TB.SPOT_RATES[pairing], max_hours=h)

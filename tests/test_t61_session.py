@@ -1155,6 +1155,7 @@ def test_the_real_preflight_stops_on_a_failed_smoke_check(tmp_path, monkeypatch)
     monkeypatch.setattr(S, "lightgbm_problem", lambda: None)
     monkeypatch.setattr(S, "import_check", lambda cfg: ([], {"required": {}, "kernel_problems": []}))
     monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "3.5.1\n", ""))
+    monkeypatch.setattr(S, "run_kernel_contract", lambda cfg, out: ({"status": "passed"}, []))
     monkeypatch.setattr(S, "run_preflight_smoke", lambda cfg, args, out: (
         {"error": "ProfileMismatch: x"}, ["the preflight smoke check failed (rc 1): ProfileMismatch: x"]))
     with pytest.raises(S.StepFailed) as e:

@@ -128,6 +128,7 @@ authority is the billing console.
 | 2026-11-12 | `attnbench-a100-p2-20261112-2157`, **P2 (T6.1), launch 1: stopped in the bootstrap, before any step (no T6.1 data)** (researcher's own-words yes of 12 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g`, FLEX_START granted at once (submitted 16:28:15Z, RUNNING by 16:29:47Z), ₹297.47/h (planning rate, all-in); `3aa0449` (the tag `lock-2026-11-14`) from a fresh GitHub clone, clean tree, image v6, halt 390 min, delete 400 min, cap ₹1,934. Deploy, preflight (`--quarantine`) and the write gate passed; the bootstrap's suite record (T2.26, `--suite-record`) returned rc 1: 6 failed, 6,404 passed, 221 skipped, 40 deselected. The six assume a CPU-only or smaller-memory host and are not in `tests/gpu_host_deselect.txt` (four in `test_stage1_memory_lifetime.py`: a config infeasible on 24 GB fits in 80 GB; `test_t31_wiring.py::test_a_trained_prediction_with_the_learned_baseline_builds_from_the_session_cells`; `test_t61_session.py::test_the_real_preflight_refuses_a_cpu_host`). By the card the session did not start. Torn down while running: the teardown's sync check found no `results/` objects in the bucket (none written) and refused twice; deleted with `TEARDOWN_DELETE_WITHOUT_BUCKET_SYNC` after the 10 home logs and the suite log were pulled. `gcp_cleanup_check.sh` clean | **22** | **109** | `session_cost.txt` (`attnbench_backups/p2_launch1_20261112/`) |
 | 2026-11-12 | `attnbench-a100-p2r-20261112-2309`, **P2 (T6.1), relaunch: stopped in step 7 (`host_components`), no T6.1 data banked** (researcher's own-words yes of 12 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START, image v6, `3aa0449` (the tag), no suite record, ₹297.47/h; 34 min (17:40:21Z to the self-halt; one restart after a refused start). Boot 1: the start passed `--banked-at`, refused in a real run (ruling 1e); halted itself after 6 min. Boot 2: steps 1 to 6 passed (preflight with T2.26's five GPU variants, the mask gate); step 7 failed on `xattention_dcal_L2048_b1`: `ProfileMismatch`, the recording's call 35 an XAttention entry point in layer 0, the null pass's `aten::_to_copy`. Synced at exit, deleted, cleanup clean; logs in `attnbench_backups/p2_relaunch_20261112/` | **34** | **169** | `session_cost.txt` (`attnbench_backups/p2_relaunch_20261112/`) |
 | 2026-11-13 | `attnbench-a100-p2c-20261113-0238`, **P2 (T6.1), launch at `lock-2026-11-13`: stopped in step 7 (`host_components`), no T6.1 data banked** (researcher's own-words yes of 13 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START, image v6, `5347b73` (the tag), no suite record, ₹297.47/h; 34 min (21:08:22Z to the self-halt, 12 Nov UTC). Steps 1 to 6 passed (preflight's Triton smoke check on `xattention_dcal_L2048_b1`, the mask gate); in step 7 `xattention_dcal_L2048_b1` passed, and `xattention_noassert_dcal_L2048_b1` failed: `ProfileMismatch`, the recording's call 35 an entry point in layer 0 (position 38), the null pass's `aten::_to_copy`. Synced at exit, deleted, cleanup clean; logs in `attnbench_backups/p2_launch3_20261113/` | **34** | **169** | `session_cost.txt` (`attnbench_backups/p2_launch3_20261113/`) |
+| 2026-11-13 | `attnbench-a100-p2d-20261113-0933`, **P2 (T6.1), launch at `lock-2026-11-13-r2`: stopped in preflight (step 2) by the smoke check, no T6.1 data** (researcher's own-words yes of 13 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START granted at once, image v6, `886fa28` (the tag), no suite record, ₹297.47/h; 14 min (04:03:56Z boot to the self-halt). Deploy, preflight (`--quarantine`), the write gate and the bootstrap passed; step 1 passed. In step 2 the smoke check ran steps 7 and 8 on all five arms, the pricing check and K2's screen at its six cells, then stopped in the ground truth's harness: it ran every available dense candidate as the control, and `sdpa_efficient`, which K2's screen records as incorrect (unsupported on GQA shapes), raised `UnsupportedConfig: No available kernel` in the model's forward. A smoke defect: step 12 runs only K2's chosen candidate. Synced at exit (rc 1), deleted by `gcp_teardown_session.sh`, cleanup clean | **14** | **69** | `session_cost.txt` (`results/t61_p2_20261113T0409Z/`, scratchpad clone) |
 
 ### New-spend headroom against the ₹14,000 budget (10 Nov 2026, after the rehearsal's launch 3)
 
@@ -165,11 +166,45 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | P2, launch 1 (A100; stopped in the bootstrap, no T6.1 data) | 109 |
 | P2, relaunch (A100; stopped in step 7, no T6.1 data) | 169 |
 | P2 at `lock-2026-11-13` (A100; stopped in step 7, no T6.1 data) | 169 |
-| **Total** | **~5,290** |
+| P2 at `lock-2026-11-13-r2` (A100; stopped in preflight by the smoke check, no T6.1 data) | 69 |
+| **Total** | **~5,359** |
 
-Headroom: ₹14,000 − ₹5,290 = **about ₹8,710** (after P2's launch at `lock-2026-11-13`, 13 Nov 2026: `attnbench-a100-p2c-20261113-0238`, `5347b73`, 34 min billable at ₹297.47/h, stopped in step 7, self-halted, deleted, cleanup clean; before it, P2's relaunch ₹169 and launch 1 ₹109). The caps still planned, at the rebuilt cards (the wider smoke check, 13 Nov 2026): P2 on Flex-start ₹1,966 and P4 on Flex-start ₹3,197, ₹3,547 left (the ruled P2 launch cap stays ₹1,934: the card's ₹1,966 includes the suite record's 20 minutes, which P2 does not run); P4 on Spot is ruled out (the adviser's rulings dated 13 Nov 2026, item 6).
+Headroom: ₹14,000 − ₹5,359 = **about ₹8,641** (after P2's launch at `lock-2026-11-13-r2`, 13 Nov 2026: `attnbench-a100-p2d-20261113-0933`, `886fa28`, 14 min billable at ₹297.47/h, stopped in preflight by the smoke check, self-halted, deleted, cleanup clean; before it, P2 at `lock-2026-11-13` ₹169, P2's relaunch ₹169 and launch 1 ₹109). The interlock is reprinted below after the cards' rebuild.
 
-### Budget interlock (13 Nov 2026, after P2's launch at `lock-2026-11-13` and the wider smoke check)
+### Budget interlock (13 Nov 2026, after the preflight's second-set additions)
+
+Reprinted from `scripts/budget_interlock.py` after the cards' rebuild: the preflight at 12 minutes (the kernel contract and the XAttention arms at 32768; the adviser's rulings dated 13 Nov 2026, second set), so neither card plans Spot blocks.
+
+Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all still-planned sessions is negative. Budget ₹14,000 (plan Section 5.2); spent ₹5,359 (the ledger's new-spend table, the L4 rehearsal's ₹304 in it); the rehearsal closed, so nothing more is reserved for it. P2 and P4 at their cards' caps, the ground truth's worst case of 5 reruns at every cell in each: P2 Flex-start ₹1,992, Spot no plan; P4 Flex-start ₹3,237, Spot no plan. Not counted: a Spot block rerun after an interruption, image storage, egress.
+
+| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |
+|---|---|---|---|---|
+| Flex-start | Flex-start | 10,588 | 3,412 | yes |
+| Flex-start | Spot | — | — | no: no Spot plan |
+| Spot | Flex-start | — | — | no: no Spot plan |
+| Spot | Spot | — | — | no: both on Spot |
+
+- **P4 on Spot: ruled out** (the adviser's rulings dated 13 Nov 2026, item 6: Spot no longer fits the budget).
+- **P2 on Flex-start: may launch**, headroom ₹3,412 with the other pairing at the dearest provisioning the rules allow.
+
+### Budget interlock (13 Nov 2026, after P2's launch at `lock-2026-11-13-r2`; superseded 13 Nov 2026)
+
+Reprinted from `scripts/budget_interlock.py` after the ₹69 row.
+
+Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all still-planned sessions is negative. Budget ₹14,000 (plan Section 5.2); spent ₹5,359 (the ledger's new-spend table, the L4 rehearsal's ₹304 in it); the rehearsal closed, so nothing more is reserved for it. P2 and P4 at their cards' caps, the ground truth's worst case of 5 reruns at every cell in each: P2 Flex-start ₹1,966, Spot ₹3,529; P4 Flex-start ₹3,197, Spot ₹7,327. Not counted: a Spot block rerun after an interruption, image storage, egress.
+
+| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |
+|---|---|---|---|---|
+| Flex-start | Flex-start | 10,522 | 3,478 | yes |
+| Flex-start | Spot | 14,652 | -652 | no: ruled out |
+| Spot | Flex-start | 12,085 | 1,915 | yes |
+| Spot | Spot | 16,215 | -2,215 | no: both on Spot |
+
+- **P4 on Spot: ruled out** (the adviser's rulings dated 13 Nov 2026, item 6: Spot no longer fits the budget).
+- **P2 on Flex-start: may launch**, headroom ₹3,478 with the other pairing at the dearest provisioning the rules allow.
+- **P2 on Spot: may launch**, headroom ₹1,915 with the other pairing at the dearest provisioning the rules allow.
+
+### Budget interlock (13 Nov 2026, after P2's launch at `lock-2026-11-13` and the wider smoke check; superseded 13 Nov 2026)
 
 Reprinted from `scripts/budget_interlock.py` after the ₹169 row and the cards' rebuild.
 

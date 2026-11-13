@@ -31,12 +31,33 @@ def test_the_cards_step_table_is_the_runners_steps_with_the_minutes_files_sums()
     assert (got["setup_h"], got["teardown_h"]) == (m["setup_h"]["value"], m["teardown_h"]["value"])
 
 
-def test_the_block_planner_reads_the_card_back_to_its_own_blocks():
+def _preflight_at(m: dict, minutes: int) -> dict:
+    return {**m, "steps": {**m["steps"], "preflight": {**m["steps"]["preflight"],
+                                                       "minutes": [minutes]}}}
+
+
+def test_the_card_has_no_spot_plan_and_says_why():
+    """The adviser's rulings dated 13 Nov 2026, second set: the preflight's 12
+    minutes leave a block no room for host_components; P2 is Flex-start only."""
     card = _card()
     n = B.card_numbers(card)
-    assert n["suite_min"] == C.load_minutes()["suite_record_min"]["value"]
+    with pytest.raises(ValueError) as e:
+        B.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=B.BOOT["P2"],
+                      rate=B.SPOT_RATES["P2"], suite_min=n["suite_min"])
+    assert f"no plan.** `scripts/t64_blocks.py --pairing P2` refuses blocks of at most " \
+           f"{B.MAX_BLOCK_HOURS} h: {e.value}." in card
+    assert "| b1 |" not in card and C.caps()["SPOT"] is None
+
+
+def test_the_block_planner_reads_the_card_back_to_its_own_blocks():
+    """With the preflight at its earlier 8 minutes the card has blocks."""
+    m = _preflight_at(C.load_minutes(), 8)
+    card = C.build(m, C.PLAN.read_text(), "2026-11-09")
+    n = B.card_numbers(card)
+    assert n["suite_min"] == m["suite_record_min"]["value"]
     blocks = B.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=B.BOOT["P2"],
                            rate=B.SPOT_RATES["P2"], suite_min=n["suite_min"])
+    assert blocks
     for i, b in enumerate(blocks, 1):
         assert f"| b{i} | {', '.join(f'`{x}`' for x in b.steps)} | {b.planned_h:.2f} | " \
                f"{b.cap_inr} | {b.halt_min} | {b.delete_min} |" in card
@@ -73,13 +94,13 @@ def test_the_prerequisites_follow_the_plan():
 def test_the_suite_record_is_in_the_setup_and_in_every_cap():
     """Adviser's ruling 1h dated 10 Nov 2026: `--suite-record` in P2's bootstrap,
     its 20 minutes in the Flex-start cap and in block b1's."""
-    m = C.load_minutes()
     text = _card()
     assert "**The suite record is in the setup**" in text and "--suite-record" in text
     assert "| Suite record: `--suite-record`, first boot only | 20 min |" in text
+    m = _preflight_at(C.load_minutes(), 8)          # where there are blocks
     no_suite = {**m, "suite_record_min": {"value": 0, "basis": "x"}}
-    *_, flex, blocks = C.costs(m)
-    *_, flex0, blocks0 = C.costs(no_suite)
+    *_, flex, blocks, _ = C.costs(m)
+    *_, flex0, blocks0, _ = C.costs(no_suite)
     assert abs(flex.planned_h - flex0.planned_h - 20 / 60) < 0.002
     assert flex.cap_inr > flex0.cap_inr and blocks[0].planned_h > blocks0[0].planned_h
     assert C.caps(m) == {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks)}
