@@ -127,6 +127,7 @@ authority is the billing console.
 | 2026-11-10 | `attnbench-l4-reh-a-20261110-0653`, **the L4 rehearsal of the P2 runner, launch 3 (exploratory; not T6.1 data; no row enters training, the floors, Gate A, the lock or any claim)** (researcher's own-words yes of 10 Nov 2026 for launch 3 at `59cc607`, cap ₹254, ₹422 in all), asia-northeast1-a (ten stockouts from 01:23Z, created on the eleventh try), on-demand, ₹108.64/h (planning rate, all-in); `59cc607` from a fresh GitHub clone, clean tree, halt 80 min, delete 1h30m, `ATTNBENCH_REH_COMPILED=1`. Created 01:47:34Z, the first deploy refused (SSH not up), setup done 01:51Z, session start 01:51:27Z. Steps 1 to 10 passed in 26.5 min (T2.26's five variants: 5 passed), then the session stopped itself at step 11, `predict`: `PredictionCommitError: P1 is listed as banked before its own prediction` (the record took the components config's pairing, P1, not the session's, P2-R). T2.17's assert gate passed; the compiled stage refused (rc 2, no b1 prediction). Self-halted 02:22:48Z, 36 min, **₹65** (`session_cost.txt`), torn down from the bucket (112 of 112 logs and manifests), `gcp_cleanup_check.sh` clean. Instance B not started (it imports b1's ground truth, which never ran). Fix in `3057240`; launch 4 needs its own yes |
 | 2026-11-12 | `attnbench-a100-p2-20261112-2157`, **P2 (T6.1), launch 1: stopped in the bootstrap, before any step (no T6.1 data)** (researcher's own-words yes of 12 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g`, FLEX_START granted at once (submitted 16:28:15Z, RUNNING by 16:29:47Z), ₹297.47/h (planning rate, all-in); `3aa0449` (the tag `lock-2026-11-14`) from a fresh GitHub clone, clean tree, image v6, halt 390 min, delete 400 min, cap ₹1,934. Deploy, preflight (`--quarantine`) and the write gate passed; the bootstrap's suite record (T2.26, `--suite-record`) returned rc 1: 6 failed, 6,404 passed, 221 skipped, 40 deselected. The six assume a CPU-only or smaller-memory host and are not in `tests/gpu_host_deselect.txt` (four in `test_stage1_memory_lifetime.py`: a config infeasible on 24 GB fits in 80 GB; `test_t31_wiring.py::test_a_trained_prediction_with_the_learned_baseline_builds_from_the_session_cells`; `test_t61_session.py::test_the_real_preflight_refuses_a_cpu_host`). By the card the session did not start. Torn down while running: the teardown's sync check found no `results/` objects in the bucket (none written) and refused twice; deleted with `TEARDOWN_DELETE_WITHOUT_BUCKET_SYNC` after the 10 home logs and the suite log were pulled. `gcp_cleanup_check.sh` clean | **22** | **109** | `session_cost.txt` (`attnbench_backups/p2_launch1_20261112/`) |
 | 2026-11-12 | `attnbench-a100-p2r-20261112-2309`, **P2 (T6.1), relaunch: stopped in step 7 (`host_components`), no T6.1 data banked** (researcher's own-words yes of 12 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START, image v6, `3aa0449` (the tag), no suite record, ₹297.47/h; 34 min (17:40:21Z to the self-halt; one restart after a refused start). Boot 1: the start passed `--banked-at`, refused in a real run (ruling 1e); halted itself after 6 min. Boot 2: steps 1 to 6 passed (preflight with T2.26's five GPU variants, the mask gate); step 7 failed on `xattention_dcal_L2048_b1`: `ProfileMismatch`, the recording's call 35 an XAttention entry point in layer 0, the null pass's `aten::_to_copy`. Synced at exit, deleted, cleanup clean; logs in `attnbench_backups/p2_relaunch_20261112/` | **34** | **169** | `session_cost.txt` (`attnbench_backups/p2_relaunch_20261112/`) |
+| 2026-11-13 | `attnbench-a100-p2c-20261113-0238`, **P2 (T6.1), launch at `lock-2026-11-13`: stopped in step 7 (`host_components`), no T6.1 data banked** (researcher's own-words yes of 13 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START, image v6, `5347b73` (the tag), no suite record, ₹297.47/h; 34 min (21:08:22Z to the self-halt, 12 Nov UTC). Steps 1 to 6 passed (preflight's Triton smoke check on `xattention_dcal_L2048_b1`, the mask gate); in step 7 `xattention_dcal_L2048_b1` passed, and `xattention_noassert_dcal_L2048_b1` failed: `ProfileMismatch`, the recording's call 35 an entry point in layer 0 (position 38), the null pass's `aten::_to_copy`. Synced at exit, deleted, cleanup clean; logs in `attnbench_backups/p2_launch3_20261113/` | **34** | **169** | `session_cost.txt` (`attnbench_backups/p2_launch3_20261113/`) |
 
 ### New-spend headroom against the ₹14,000 budget (10 Nov 2026, after the rehearsal's launch 3)
 
@@ -163,11 +164,29 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | L4 rehearsal, launch 4, instance A (L4; exploratory, not T6.1 data) | 71 |
 | P2, launch 1 (A100; stopped in the bootstrap, no T6.1 data) | 109 |
 | P2, relaunch (A100; stopped in step 7, no T6.1 data) | 169 |
-| **Total** | **~5,121** |
+| P2 at `lock-2026-11-13` (A100; stopped in step 7, no T6.1 data) | 169 |
+| **Total** | **~5,290** |
 
-Headroom: ₹14,000 − ₹5,121 = **about ₹8,879** (after P2's relaunch, 12 Nov 2026: `attnbench-a100-p2r-20261112-2309`, `3aa0449`, 34 min billable at ₹297.47/h, stopped in step 7, self-halted, deleted, cleanup clean; before it, P2's launch 1, ₹109). The caps still planned: P2 on Flex-start ₹1,934 and P4 on Flex-start ₹3,146, ₹3,799 left; P4 on Spot is ruled out (the adviser's rulings dated 13 Nov 2026, item 6).
+Headroom: ₹14,000 − ₹5,290 = **about ₹8,710** (after P2's launch at `lock-2026-11-13`, 13 Nov 2026: `attnbench-a100-p2c-20261113-0238`, `5347b73`, 34 min billable at ₹297.47/h, stopped in step 7, self-halted, deleted, cleanup clean; before it, P2's relaunch ₹169 and launch 1 ₹109). The caps still planned, at the rebuilt cards (the wider smoke check, 13 Nov 2026): P2 on Flex-start ₹1,966 and P4 on Flex-start ₹3,197, ₹3,547 left (the ruled P2 launch cap stays ₹1,934: the card's ₹1,966 includes the suite record's 20 minutes, which P2 does not run); P4 on Spot is ruled out (the adviser's rulings dated 13 Nov 2026, item 6).
 
-### Budget interlock (13 Nov 2026, after P2's relaunch; P4 on Spot ruled out by the adviser's rulings dated 13 Nov 2026, item 6)
+### Budget interlock (13 Nov 2026, after P2's launch at `lock-2026-11-13` and the wider smoke check)
+
+Reprinted from `scripts/budget_interlock.py` after the ₹169 row and the cards' rebuild.
+
+Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all still-planned sessions is negative. Budget ₹14,000 (plan Section 5.2); spent ₹5,290 (the ledger's new-spend table, the L4 rehearsal's ₹304 in it); the rehearsal closed, so nothing more is reserved for it. P2 and P4 at their cards' caps, the ground truth's worst case of 5 reruns at every cell in each: P2 Flex-start ₹1,966, Spot ₹3,529; P4 Flex-start ₹3,197, Spot ₹7,327. Not counted: a Spot block rerun after an interruption, image storage, egress.
+
+| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |
+|---|---|---|---|---|
+| Flex-start | Flex-start | 10,453 | 3,547 | yes |
+| Flex-start | Spot | 14,583 | -583 | no: ruled out |
+| Spot | Flex-start | 12,016 | 1,984 | yes |
+| Spot | Spot | 16,146 | -2,146 | no: both on Spot |
+
+- **P4 on Spot: ruled out** (the adviser's rulings dated 13 Nov 2026, item 6: Spot no longer fits the budget).
+- **P2 on Flex-start: may launch**, headroom ₹3,547 with the other pairing at the dearest provisioning the rules allow.
+- **P2 on Spot: may launch**, headroom ₹1,984 with the other pairing at the dearest provisioning the rules allow.
+
+### Budget interlock (13 Nov 2026, after P2's relaunch; P4 on Spot ruled out by the adviser's rulings dated 13 Nov 2026, item 6; superseded 13 Nov 2026)
 
 Reprinted from `scripts/budget_interlock.py` after the relaunch's row.
 

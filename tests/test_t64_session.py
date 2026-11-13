@@ -26,8 +26,8 @@ from test_t61_session import GOOD_ROW, inproc  # noqa: E402
 
 T64 = P4.T64
 SHA = "ab" * 32
-STEPS = ("prereqs", "preflight", "link", "launch_queue", "probe", "masks",
-         "host_components", "device_components", "fa3_import", "dense_select",
+STEPS = ("prereqs", "fa3_import", "preflight", "link", "launch_queue", "probe", "masks",
+         "host_components", "device_components", "dense_select",
          "host_speed_mid", "predict", "ground_truth", "late_check", "trace_checks",
          "host_speed_end")
 
@@ -39,8 +39,8 @@ def args_for(tmp_path, *, sha=SHA, dry_run=False):
 
 def test_the_p4_steps_put_fa3_before_k2_and_record_masks():
     assert T64.names == STEPS
-    assert T64.names.index("fa3_import") < T64.names.index("dense_select") \
-        < T64.names.index("predict")
+    assert T64.names.index("fa3_import") < T64.names.index("preflight") \
+        < T64.names.index("dense_select") < T64.names.index("predict")
     assert "mask_gate" not in T64.names           # the gate is P2's (Section 7)
     assert T64.provisioning == ("FLEX_START", "SPOT") and T64.instance_type == "a3-highgpu-1g"
     assert T64.banked == ("P1", "P2")
@@ -62,7 +62,7 @@ def test_the_dry_run_passes_in_their_own_processes(tmp_path):
     assert p.returncode == 0, p.stdout[-3000:] + p.stderr[-3000:]
     st = S.last_status(json.loads((session / "manifest.json").read_text()))
     assert st["prereqs"] == "skipped" and all(st[s] == "passed" for s in STEPS[1:])
-    log = (session / "09_fa3_import" / "step.log").read_text()
+    log = (session / "02_fa3_import" / "step.log").read_text()
     assert "t64_session.py step fa3_import" in log and f"--fa3-sha256 {SHA}" in log
     rec = json.loads((session / S.RECEIPT).read_text())
     assert rec["remote_path"].startswith("predictions/P4/")
@@ -211,7 +211,7 @@ def test_an_in_process_dry_run_matches(tmp_path):
 
 def test_the_steps_are_named_for_t64_in_run_phase(tmp_path):
     cmd = S.step_command(T64, "fa3_import", tmp_path, tmp_path, [], dry_run=False, sync=True)
-    assert cmd[2] == "t64_09_fa3_import" and cmd[5].endswith("scripts/t64_session.py")
+    assert cmd[2] == "t64_02_fa3_import" and cmd[5].endswith("scripts/t64_session.py")
 
 
 # --- the FA3 correctness gate (`--gate-only`) ------------------------------------------
@@ -304,7 +304,7 @@ def test_a_p4_session_resumed_after_a_restart_is_discarded_in_full(tmp_path, mon
     d = _session(tmp_path, "boot-A")
     ran = []
     monkeypatch.setattr(S, "boot_id", lambda: "boot-B")
-    rc = S.run_session(T64, d, start="preflight", extra=[], dry_run=False, sync=False,
+    rc = S.run_session(T64, d, start="fa3_import", extra=[], dry_run=False, sync=False,
                        runner=lambda cmd, log: ran.append(cmd) or 1)
     assert rc == 2 and ran == []
     assert "discarded in full" in (d / "INTERRUPTED_DISCARD.md").read_text()

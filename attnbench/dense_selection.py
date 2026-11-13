@@ -200,30 +200,13 @@ def _default_sync(device: str) -> Callable[[], None]:
     return lambda: None
 
 
-def select_dense_baseline(cell: Cell, cfg: AttnConfig, candidates: dict, *,
-                          rounds: int, resolution_floor_ms: float,
-                          device: str = "cuda",
-                          synchronize: Optional[Callable[[], None]] = None,
-                          clock: Callable[[], float] = time.perf_counter,
-                          wall_clock: Callable[[], float] = time.time,
-                          check: Callable = gates.check_for_family) -> Choice:
-    """Run the protocol for one cell. `candidates` maps each planned name to a
-    backend, or to None where it is unavailable; a name that is not planned
-    for the card is refused, and a planned name left out is unavailable."""
-    if rounds < 2:
-        raise ValueError("rounds must be >= 2: a median of one is not a median")
-    if not (resolution_floor_ms > 0):
-        raise ValueError("resolution_floor_ms must be positive")
-    if cfg.seq_len != cell.context_length or cfg.batch != cell.batch:
-        raise SelectionError(f"cfg ({cfg.seq_len}, batch {cfg.batch}) is not the cell "
-                             f"{cell.key}")
-    planned = list(planned_candidates(cell.card))
-    extra = sorted(set(candidates) - set(planned))
-    if extra:
-        raise SelectionError(f"{extra} are not planned candidates for {cell.card} "
-                             f"({planned}); the candidate set is the protocol's")
-    sync = synchronize or _default_sync(device)
-
+def screen(cfg: AttnConfig, planned, candidates: dict, *, device: str = "cuda",
+           check: Callable = gates.check_for_family) -> tuple[dict, dict]:
+    """The protocol's untimed part for one cell: each planned candidate
+    unavailable, declined by its capability check, or checked for
+    correctness against the others (`check`). (results by name, the correct
+    candidates by name.) `select_dense_baseline`'s, and the preflight smoke
+    check's at 2048 (the adviser's rulings dated 13 Nov 2026, item 3)."""
     results = {n: CandidateResult(n, UNAVAILABLE,
                                   "not installed, or no backend of this name exists"
                                   if candidates.get(n) is None else "")
@@ -256,6 +239,33 @@ def select_dense_baseline(cell: Cell, cfg: AttnConfig, candidates: dict, *,
             tolerance=dict(gates.TOL[tol_key]), correctness_detail=verdict.detail)
         if not verdict.passed:
             del live[name]
+    return results, live
+
+
+def select_dense_baseline(cell: Cell, cfg: AttnConfig, candidates: dict, *,
+                          rounds: int, resolution_floor_ms: float,
+                          device: str = "cuda",
+                          synchronize: Optional[Callable[[], None]] = None,
+                          clock: Callable[[], float] = time.perf_counter,
+                          wall_clock: Callable[[], float] = time.time,
+                          check: Callable = gates.check_for_family) -> Choice:
+    """Run the protocol for one cell. `candidates` maps each planned name to a
+    backend, or to None where it is unavailable; a name that is not planned
+    for the card is refused, and a planned name left out is unavailable."""
+    if rounds < 2:
+        raise ValueError("rounds must be >= 2: a median of one is not a median")
+    if not (resolution_floor_ms > 0):
+        raise ValueError("resolution_floor_ms must be positive")
+    if cfg.seq_len != cell.context_length or cfg.batch != cell.batch:
+        raise SelectionError(f"cfg ({cfg.seq_len}, batch {cfg.batch}) is not the cell "
+                             f"{cell.key}")
+    planned = list(planned_candidates(cell.card))
+    extra = sorted(set(candidates) - set(planned))
+    if extra:
+        raise SelectionError(f"{extra} are not planned candidates for {cell.card} "
+                             f"({planned}); the candidate set is the protocol's")
+    sync = synchronize or _default_sync(device)
+    results, live = screen(cfg, planned, candidates, device=device, check=check)
 
     # The warm-up block: interleaved rounds, the order rotating each round, on
     # one set of inputs every candidate sees.

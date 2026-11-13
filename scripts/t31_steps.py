@@ -179,8 +179,8 @@ CELL_EXIT = "cell_exit.json"              # the child's own high-water mark, err
 PRICE_CACHE = "bare_price_cache.pkl"      # the bare prices, shared by step 5's cells
 MEMSET_ZOO = "memset_zoo.json"            # the memset zoo, measured once for step 6
 XATTN_TRITON = "xattn:triton"             # XAttention's Triton path (`Harness.code_path`)
-TRITON_SMOKE = "triton-smoke"             # the preflight's Triton smoke check (`triton_smoke`)
-TRITON_SMOKE_CELL = ("xattention", None, 2048, 1)
+SMOKE = "preflight-smoke"                 # the preflight's smoke check (`preflight_smoke`)
+SMOKE_LENGTH, SMOKE_BATCH = 2048, 1
 
 # A dry run's own values: small, and labelled so nothing it writes can pass
 # for P1's.
@@ -1423,18 +1423,25 @@ def soak(cap, *, seconds: float = SOAK_S, min_replays: int = SOAK_MIN_REPLAYS,
     return {"replays": n, "seconds": round(clock() - t0, 3)}
 
 
-def null_entries(arm: str, code_path) -> tuple:
+def null_entries(arm: str, code_path, backend=None) -> tuple:
     """The entry points step 5's passes null for a cell (`host_profile.
     NullEntry`): none for dense; the block-sparse kernel's extension call for
     a sparse arm; on XAttention's Triton path its Triton kernels as well
     (P2's step 7, 12 Nov 2026: unnulled, they ran for real and the structure
-    check refused the cell)."""
+    check refused the cell), in the module the cell's own backend launches
+    them from (`kernels_module`; 13 Nov 2026: the asserts-removed arm's are
+    its stripped copy's, which nulling `xattn.src.kernels` missed)."""
     from attnbench.components import host_profile as hp
     if arm == "dense":
         return ()
     entries = (hp.block_sparse_entry(),)
     if code_path.implementation == XATTN_TRITON:
-        entries += hp.xattention_triton_entries()
+        kernels = getattr(backend, "kernels_module", None) or \
+            getattr(getattr(backend, "arm", None), "kernels_module", None)   # a compiled arm's
+        if kernels is None:
+            raise StepFailed(f"{arm} took {XATTN_TRITON}, but its backend names no kernels "
+                             f"module to null")
+        entries += hp.xattention_triton_entries(kernels())
     return entries
 
 
@@ -1449,7 +1456,7 @@ def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
     cd = cell_dir(out, arm, d, L, b)
     a = ready_cell(h, arm, d, L, b)
     seconds, t0 = {}, time.time()
-    entries = null_entries(arm, a.code_path)
+    entries = null_entries(arm, a.code_path, a.backend)
     with pricing_clocks.PricingClocks(cd, enabled=pricing_sampled()) as pc:
         with pc.phase("record"):
             rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording",
@@ -1811,46 +1818,247 @@ def _device_cell_entry(args, cfg, cell) -> dict:
     return entry
 
 
-def triton_smoke(args, cfg) -> dict:
-    """The preflight's Triton smoke check (adviser's rulings of 13 Nov 2026,
-    item 3), untimed and before anything long: step 5's whole cell
-    (`host_cell`: the recording, the isolated replay, the null pass and its
-    structure check against the recording, the bare pass, the residual) on
-    one XAttention cell at 2048 on its Triton path, then step 6's one
-    refusing check on that recording (the CUDA graph's live masks against
-    the bank), with whether step 6 would need the isolated original
-    reported. P1 ran on the L4, which has no Triton path, so P2's step 5
-    met it first (12 Nov 2026). Refuses a cell that took another path;
-    behind the CPU boundary, where there is none, the path is recorded."""
+# The smoke's stand-ins for the link step, which runs after the preflight: its
+# prices are discarded, so only their shape matters (the dry run's table).
+SMOKE_LINK_ROW = {f"bw_{d}_{m}_Bps": 1e10 for d in ("h2d", "d2h") for m in ("pinned", "pageable")}
+SMOKE_RECURSION_INPUTS = {"queue_depth": 8,
+                          "hardware": {"pinned_bandwidth": 2e10, "pageable_bandwidth": 5e9},
+                          "by_length": {str(SMOKE_LENGTH): FAKE_MECHANISMS}}
+
+
+def smoke_cells(cfg) -> list:
+    """The smoke's cells: every arm of the session at 2048, batch 1, at its
+    first configured density (a plan default; the code path does not depend
+    on the density), the dense control first."""
+    out = [(arm, nominal_density(cfg["densities"][arm][0]), SMOKE_LENGTH, SMOKE_BATCH)
+           for arm in cfg["arms"]]
+    if not out or out[0][0] != "dense":
+        raise StepFailed(f"the smoke needs the dense arm first; the session's arms are "
+                         f"{cfg['arms']}")
+    return out
+
+
+def preflight_smoke(args, cfg) -> dict:
+    """The preflight's smoke check (the adviser's rulings dated 13 Nov 2026,
+    items 3 and 5): every arm of the session at 2048, batch 1, before anything
+    long, untimed, each through the code the session's later steps run:
+
+      1. step 7's whole cell (`host_cell`: the recording, the isolated replay,
+         the null pass and its structure check, the bare pass, the residual);
+      2. step 8's whole cell on that recording (`_device_cell_priced`: the
+         graph replay, its live masks against the bank, the match, the
+         isolated original if needed, the pricing by structure), then its
+         pricing check (`replay.pricing_gate`) with the arm's mismatch share,
+         reported, as step 8 reports it;
+      3. the prediction's input from that cell (`predict_cell`), on the
+         stand-in link inputs above;
+      4. K2's untimed part (`dense_select_smoke`): every planned dense
+         candidate's capability and correctness checks, at every cell K2
+         screens (at 2048 only behind the CPU boundary);
+      5. the ground truth's harness (`ground_truth_smoke`): one untimed
+         forward of every dense candidate and every arm, untraced and
+         traced, under the probe and with the session's throttle sampler
+         running, then the density twin; each traced forward's trace is
+         exported and given step 14's trace checks (`check_trace.py kineto`).
+
+    No timer runs and every output is discarded: these calls are not clocked
+    blocks under the stamp rule (`docs/smoke_untimed_note_2026-11-13.md`).
+    A failure stops the session in preflight. An XAttention cell that did not
+    take the Triton path is refused, except behind the CPU boundary."""
+    import torch
+    from attnbench import pricing_clocks
     from attnbench.components import recorder
     from attnbench.components import replay
-    _need_gpu("the Triton smoke check")
+    from attnbench.predict.training import HardwareFeatures
+    _need_gpu("the preflight smoke check")
     out = Path(args.out)
+    share = cfg.get("pricing_mismatch_share")
+    if share is None:
+        share = working_values()[0]["pricing_mismatch_share"]
+    hw = HardwareFeatures(**SMOKE_RECURSION_INPUTS["hardware"])
     h = _harness(args)
-    a = ready_cell(h, *TRITON_SMOKE_CELL)
-    impl = a.code_path.implementation
-    if impl != XATTN_TRITON and not _boundary():
-        raise StepFailed(f"the smoke cell took {impl}, not {XATTN_TRITON}")
-    entry = host_cell(h, cfg, out, TRITON_SMOKE_CELL, bare_pricer())
-    rec = recorder.load_recording(out / entry["dir"] / "recording")
-    a = ready_cell(h, *TRITON_SMOKE_CELL)          # as step 6 readies its cell
-    cap = replay.capture(a.run_prefill, rec.tape, device=_device(), masks=rec.masks,
-                         backend=_graph_backend())
-    try:
-        agreement = replay.mask_agreement(cap)
-    except replay.ReplayError as e:
-        raise StepFailed(f"the smoke cell's replay: {e}") from e
-    if agreement is not None and not agreement.get("identical"):
-        raise StepFailed("the smoke cell's replay: its live masks differ from the bank")
-    trace = replay.profile_replay(cap, out / entry["dir"] / "replay_trace.json")
-    m = replay.match(rec.sequence, replay.replay_nodes(trace))
+    cells, devs, found = smoke_cells(cfg), [], {"cells": {}}
+    for cell in cells:
+        arm = cell[0]
+        t0 = time.time()
+        entry = host_cell(h, cfg, out, cell, bare_pricer())                    # step 7
+        impl = entry["code_path"]["implementation"]
+        if _is_xattention(arm) and impl != XATTN_TRITON and not _boundary():
+            raise StepFailed(f"{entry['dir']} took {impl}, not {XATTN_TRITON}")
+        t1 = time.time()
+        rec = recorder.load_recording(out / entry["dir"] / "recording")
+        a = ready_cell(h, *cell)                                             # as step 8 readies it
+        dd = out / "device" / entry["dir"]
+        dd.mkdir(parents=True, exist_ok=True)
+        with pricing_clocks.PricingClocks(dd, enabled=False) as pc:
+            dev = _device_cell_priced(pc, a, entry, rec, SMOKE_LINK_ROW, dd, out / "device", out)
+        devs.append(dev)
+        t2 = time.time()
+        predicted = None
+        if dev["ops"] is not None:
+            c = predict_cell(cfg["pairing"], cfg["model"], dev, SMOKE_RECURSION_INPUTS, hw)
+            predicted = {"operations": len(dev["ops"]), "priced": len(c.priced)}
+        found["cells"][entry["dir"]] = {
+            "implementation": impl, "host_cost_sources": entry["host_cost_sources"],
+            "entry_points": sum(1 for op in rec.sequence.ops if _entry_point(op)),
+            "device_cost_sources": dev["cost_sources"],
+            "mismatch_s": dev["pricing"]["mismatch_s"], "priced_s": dev["pricing"]["priced_s"],
+            "unpriced": len(dev["pricing"]["unpriced"]), "predict_input": predicted,
+            "seconds": {"step_7": round(t1 - t0, 1), "step_8": round(t2 - t1, 1),
+                        "predict_input": round(time.time() - t2, 1)}}
+        del rec, a
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    found["pricing_gate"] = gate_brief(replay.pricing_gate(devs, float(share)))
+    t3 = time.time()
+    found["dense_select"] = dense_select_smoke(h, cfg)
+    found["dense_select"]["seconds"] = round(time.time() - t3, 1)
+    t3 = time.time()
+    found["ground_truth"] = ground_truth_smoke(h, cfg, cells, out / "ground_truth")
+    found["ground_truth"]["seconds"] = round(time.time() - t3, 1)
     h.unwrap()
-    found = {"cell": entry["dir"], "implementation": impl,
-             "host_cost_sources": entry["host_cost_sources"],
-             "entry_points": sum(1 for op in rec.sequence.ops if _entry_point(op)),
-             "replay_needs_original": replay.needs_original(rec.sequence, m),
-             "replay_unmatched_positions": len(m.unmatched_positions)}
-    _write_json(out / "triton_smoke.json", found)
+    _write_json(out / "smoke.json", found)
+    return found
+
+
+def _is_xattention(arm: str) -> bool:
+    from attnbench.components.shakedown_arms import ARMS
+    return ARMS[arm].xattention
+
+
+def smoke_controls(card: str) -> dict:
+    """The dense candidates the ground truth's control can be (K2 chooses
+    among them in `dense_select`), by name; behind the CPU boundary, the CPU
+    card's. A planned FA3 that is not available is refused: P4 depends on it
+    (T2.16), and its import runs before the preflight."""
+    from attnbench import dense_selection as ds
+    planned = ds.registry_candidates(ds.CPU_CARD if _boundary() else card)
+    if ds.FA3 in planned and planned[ds.FA3] is None:
+        raise StepFailed(f"{ds.FA3} is planned on {card} and not available")
+    return {n: be for n, be in planned.items() if be is not None}
+
+
+def dense_select_cells(cfg) -> list:
+    """The (length, batch) cells K2 screens (`step_dense_select`)."""
+    return [(L, b) for L in cfg["lengths"] for b in cfg["batches"].get(str(L), [1])]
+
+
+def dense_select_smoke(h, cfg) -> dict:
+    """Step `dense_select`'s untimed part (`dense_selection.screen`): each
+    planned candidate's capability check, then its correctness check against
+    the others, at every cell K2 will screen, on the session's card. K2's
+    timed rounds are not run. Which check runs depends on the device's memory
+    (`gates.exact_oracle_fits`): on an 80 GB card the float64 oracle runs at
+    16384, batch 1, where the L4 took the cross-backend check
+    (`docs/gpu_path_audit.md`). Behind the CPU boundary, at 2048, batch 1
+    only, at the GPU's dtype: the CPU card has one candidate, so no
+    cross-backend check can run. Refused when a cell has no correct
+    candidate, as K2 then cannot choose; one found incorrect is reported, as
+    K2 records it."""
+    import torch
+    from dataclasses import replace
+    from attnbench import dense_selection as ds
+    from attnbench.components.shakedown_arms import ARMS, Harness
+    card = ds.CPU_CARD if _boundary() else cfg["card"]
+    planned = list(ds.planned_candidates(card))
+    controls = smoke_controls(cfg["card"])
+    cuda = torch.cuda.is_available() and not _boundary()
+    found = {"card": card, "cells": {}}
+    for L, b in [(SMOKE_LENGTH, SMOKE_BATCH)] if _boundary() else dense_select_cells(cfg):
+        attn_cfg = replace(h._cfg(ARMS["dense"], L), batch=b)
+        if _boundary():
+            # The tiny model's float32, which every planned kernel declines;
+            # the GPU session's dtype is the harness's default.
+            attn_cfg = replace(attn_cfg, dtype=Harness.__init__.__kwdefaults__["dtype"])
+        if cuda:
+            torch.cuda.reset_peak_memory_stats()
+        results, live = ds.screen(attn_cfg, planned, controls, device=_device())
+        key = ds.Cell(card=card, context_length=L, batch=b).key
+        found["cells"][key] = {
+            "correct": sorted(live),
+            "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 2) if cuda else None,
+            "results": {n: {"status": r.status, "check_kind": r.check_kind,
+                            "max_abs_err": r.max_abs_err, "reason": r.reason[:300]}
+                        for n, r in results.items()}}
+        if not live:
+            raise StepFailed(f"{key}: no dense candidate passed its checks: "
+                             f"{found['cells'][key]['results']}", found)
+    return found
+
+
+def ground_truth_smoke(h, cfg, cells, out: Path) -> dict:
+    """Step 12's harness on the smoke's cells, untimed: the arms as
+    `time_arms` takes them (`Harness.timing_arms`), each dense candidate as
+    the control, then every arm under the probe with its setup
+    (`untimed_setup`), one forward untraced and one inside the session's
+    tracer, and the density twin (`kernel_densities`), all with the
+    session's throttle sampler running (`_sampler`; NVML on a GPU). No timer,
+    no stamp, every output discarded. A deployable arm whose forward the
+    probe saw compute no scores, or that scored in its setup, is refused, as
+    `check_timed_region` refuses it. Each traced forward's trace is exported
+    and checked as step 14 checks the ground truth's (`check_trace.py
+    kineto`); a flagged trace is refused."""
+    import torch
+    from attnbench import ground_truth as gt
+    sync = torch.cuda.synchronize if (torch.cuda.is_available() or _boundary()) else (lambda: None)
+    names = [c[0] for c in cells]
+    dens = [None] + [c[1] for c in cells[1:]]
+    wrapped, ids, pid, arms, score_kwargs = h.timing_arms(names, SMOKE_LENGTH, densities=dens,
+                                                          batch=SMOKE_BATCH)
+    make = _tracer()
+    traces = Path(out) / "traces"
+    traces.mkdir(parents=True, exist_ok=True)
+    found = {"prompt_id": pid, "controls": [], "arms": {}, "traces": []}
+
+    def forward(backend, a, kw, label=None):
+        if label is None:
+            wrapped.run_measured(ids, backend, cfg=a.cfg, logits_to_keep=1, **kw)
+            sync()
+            return
+        with make() as prof:
+            wrapped.run_measured(ids, backend, cfg=a.cfg, logits_to_keep=1, **kw)
+            sync()
+        path = traces / f"{label}.json"
+        prof.export_chrome_trace(str(path))
+        found["traces"].append(path.name)
+
+    with _sampler(cfg, _boundary()) as sampler:
+        for name, be in smoke_controls(cfg["card"]).items():
+            forward(be, arms[0], {})
+            forward(be, arms[0], {}, label=f"control_{name}")
+            found["controls"].append(name)
+        for j, a in enumerate(arms):
+            log = gt.EventLog()
+            scored = []
+            with gt.probe_for(log, a):
+                kw = gt.untimed_setup(wrapped, ids, a, score_kwargs=score_kwargs)
+                log.phase = gt.WARMUP
+                for label in (None, f"{j}_{a.name}"):
+                    n = len(log.events)
+                    forward(a.backend, a, kw, label=label)
+                    scored.append(sum(e.kind == "score" for e in log.events[n:]))
+            if a.deployable:
+                setup = [e.what for e in log.events
+                         if e.kind in ("score", "mask_build") and e.phase == gt.SETUP]
+                if setup or not all(scored):
+                    raise StepFailed(f"{a.name}: the probe saw {scored} score call(s) in its "
+                                     f"untraced and traced forwards and {setup} in its setup")
+
+            def run(backend=None, input_ids=None, a=a, kw=kw):
+                wrapped.run_measured(input_ids if input_ids is not None else ids,
+                                     backend if backend is not None else a.backend,
+                                     cfg=a.cfg, logits_to_keep=1, **kw)
+            dens_found = gt.kernel_densities(a, run)
+            sync()
+            found["arms"][a.name] = {"score_calls": scored,
+                                     "mask_density": dens_found.get("mask_density"),
+                                     "executed_density": dens_found.get("executed_density")}
+        found["sampler"] = sampler.timing_stats()
+    bad = [t for t in found["traces"]
+           if _run(_py("check_trace.py", "kineto", str(traces / t), "--out",
+                       str(Path(out) / "trace_checks" / Path(t).stem)))]
+    if bad:
+        raise StepFailed(f"check_trace.py flagged or failed on {len(bad)} smoke trace(s): {bad}")
     return found
 
 
@@ -1861,17 +2069,18 @@ def _entry_point(op) -> bool:
     return hp._is_issue(op) and op.aten_op is None
 
 
-def cmd_triton_smoke(args) -> int:
+def cmd_preflight_smoke(args) -> int:
+    """The smoke check as its own process (`t61_session.run_preflight_smoke`):
+    `smoke.json` holds its findings, or the error that stopped it."""
     cfg = load_config(args.config, dry_run=False, cpu_boundary=args.cpu_boundary)
     try:
-        found = triton_smoke(args, cfg)
+        found = preflight_smoke(args, cfg)
     except Exception as e:
         traceback.print_exc()
-        _write_json(Path(args.out) / "triton_smoke.json",
-                    {"error": f"{type(e).__name__}: {e}"})
-        print(f"[{TRITON_SMOKE}] FAILED: {type(e).__name__}: {e}", flush=True)
+        _write_json(Path(args.out) / "smoke.json", {"error": f"{type(e).__name__}: {e}"})
+        print(f"[{SMOKE}] FAILED: {type(e).__name__}: {e}", flush=True)
         return 1
-    print(f"[{TRITON_SMOKE}] passed: {found}", flush=True)
+    print(f"[{SMOKE}] passed: {json.dumps(found)[:2000]}", flush=True)
     return 0
 
 
@@ -1914,11 +2123,8 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
     "fitted_sum_plus_s0": ...}; P1 has none. `pairing`, the session's own
     when it is not the config's: the L4 rehearsal runs P1's config as P2-R,
     and a record named P1 and trained on P1 is refused (launch 3, 10 Nov 2026)."""
-    from attnbench.components import event_rule
     from attnbench.predict import commit as C
-    from attnbench.predict.recursion import MechanismCost, close_prefill, price
-    from attnbench.predict.intensity import shape_for
-    from attnbench.predict.training import Cell, HardwareFeatures
+    from attnbench.predict.training import HardwareFeatures
 
     name = pairing or cfg["pairing"]
     rin = json.loads((step_dir(session, "link") / "recursion_inputs.json").read_text())
@@ -1931,18 +2137,9 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
     for e in dev["cells"]:
         if e["arm"] in refused:
             continue
-        label = C.code_path_label(e["code_path"])
-        code_paths[label] = e["code_path"]
-        # The link table is per grid length; a prompt lands at or below its budget.
-        grid_L = e.get("budget", e["context_length"])
-        mech = {m: MechanismCost(**v) for m, v in rin["by_length"][str(grid_L)].items()}
-        ops = list(close_prefill(op_from_dict(o) for o in e["ops"]))
-        check_payload_bound(ops, rin.get("max_payload_bytes"), label)
-        priced = event_rule.apply(price(ops, mech), e.get("event_syncs", []), mech)
-        out.append(Cell(pairing=name, model_name=cfg["model"], code_path=label,
-                        arm=e["arm"], context_length=e["context_length"],
-                        density=e["density"], batch=e["batch"], priced=priced, hardware=hw,
-                        model=shape_for(cfg["model"])))
+        cell = predict_cell(name, cfg["model"], e, rin, hw)
+        code_paths[cell.code_path] = e["code_path"]
+        out.append(cell)
     want = {(a, d, L, b) for a, d, L, b in cells(cfg) if a not in refused}
     # A cell is named by its setting: the nominal density (None where the
     # estimator sets it) and the length budget (the prompt lands at or below it).
@@ -1960,6 +2157,28 @@ def build_prediction(cfg, session: Path, *, dry_run: bool, now=None, local=None,
     return C.build_record(name, out, rin["queue_depth"], code_paths=code_paths,
                           code=code, written_at=now or datetime.now(timezone.utc),
                           not_priced=refused, **fitted)
+
+
+def predict_cell(pairing: str, model: str, e: dict, rin: dict, hw):
+    """One of step 6's priced entries as the prediction's input
+    (`training.Cell`): its operations closed and priced at the link table of
+    its grid length, the payload bound checked and the event rule applied.
+    `build_prediction`'s, and the preflight smoke's on stand-in link inputs."""
+    from attnbench.components import event_rule
+    from attnbench.predict import commit as C
+    from attnbench.predict.intensity import shape_for
+    from attnbench.predict.recursion import MechanismCost, close_prefill, price
+    from attnbench.predict.training import Cell
+    label = C.code_path_label(e["code_path"])
+    # The link table is per grid length; a prompt lands at or below its budget.
+    grid_L = e.get("budget", e["context_length"])
+    mech = {m: MechanismCost(**v) for m, v in rin["by_length"][str(grid_L)].items()}
+    ops = list(close_prefill(op_from_dict(o) for o in e["ops"]))
+    check_payload_bound(ops, rin.get("max_payload_bytes"), label)
+    priced = event_rule.apply(price(ops, mech), e.get("event_syncs", []), mech)
+    return Cell(pairing=pairing, model_name=model, code_path=label, arm=e["arm"],
+                context_length=e["context_length"], density=e["density"], batch=e["batch"],
+                priced=priced, hardware=hw, model=shape_for(model))
 
 
 def not_priced(dev: dict) -> dict:
@@ -2570,7 +2789,7 @@ def run_step(name: str, args) -> int:
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("step", choices=STEPS + ("ground-truth-one", TRITON_SMOKE) + CELL_CHILDREN)
+    ap.add_argument("step", choices=STEPS + ("ground-truth-one", SMOKE) + CELL_CHILDREN)
     ap.add_argument("--out", required=True)
     ap.add_argument("--session", required=True)
     ap.add_argument("--dry-run", action="store_true")
@@ -2595,7 +2814,7 @@ def main(argv=None) -> int:
             print("REFUSING: --cpu-boundary runs the real steps; it is not --dry-run",
                   file=sys.stderr)
             return 2
-        if args.step not in STEPS[:STEPS.index("hold") + 1] + ("delay_injection", TRITON_SMOKE) \
+        if args.step not in STEPS[:STEPS.index("hold") + 1] + ("delay_injection", SMOKE) \
                 + CELL_CHILDREN:
             print(f"REFUSING: the CPU boundary runs steps 1 to 8 and 12, not {args.step}",
                   file=sys.stderr)
@@ -2604,13 +2823,13 @@ def main(argv=None) -> int:
         with cpu_boundary.installed():
             if args.step in CELL_CHILDREN:
                 return cmd_cell_one(args)
-            if args.step == TRITON_SMOKE:
-                return cmd_triton_smoke(args)
+            if args.step == SMOKE:
+                return cmd_preflight_smoke(args)
             return run_step(args.step, args)
     if args.step in CELL_CHILDREN:
         return cmd_cell_one(args)
-    if args.step == TRITON_SMOKE:
-        return cmd_triton_smoke(args)
+    if args.step == SMOKE:
+        return cmd_preflight_smoke(args)
     if args.step == "ground-truth-one":
         try:
             return cmd_ground_truth_one(args)

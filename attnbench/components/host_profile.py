@@ -292,18 +292,19 @@ XATTN_TRITON_KERNELS = ("flat_group_gemm_fuse_reshape_kernel",
                         "softmax_fuse_block_sum_kernel_non_causal")
 
 
-def xattention_triton_entries(module=None) -> tuple[NullEntry, ...]:
+def xattention_triton_entries(module) -> tuple[NullEntry, ...]:
     """XAttention's Triton kernels, the estimator's entry points on its Triton
-    path: each wrapper in `xattn.src.kernels` allocates its output with
+    path: each wrapper in the arm's kernels module allocates its output with
     `torch.empty` and launches `kernel[grid](...)`, which no aten operator
     issues, so the recording holds each launch as an entry point (P2's step 7,
     12 Nov 2026: `flat_group_gemm_fuse_reshape_kernel` and
     `softmax_fuse_block_sum_kernel_causal`, two per layer at 2048). Only the
     launch is nulled: the wrapper's Python, the allocation included, is the
-    arm's and runs. A launch returns nothing the wrappers read."""
-    if module is None:
-        import importlib
-        module = importlib.import_module("xattn.src.kernels")
+    arm's and runs. A launch returns nothing the wrappers read.
+
+    `module` is the arm's own (`XAttentionBackend.kernels_module`), with no
+    default: the asserts-removed arm launches from its stripped copy, and a
+    default of `xattn.src.kernels` left its kernels running (13 Nov 2026)."""
     return tuple(NullEntry(module, name, lambda *a, **kw: None, grid=True)
                  for name in XATTN_TRITON_KERNELS)
 

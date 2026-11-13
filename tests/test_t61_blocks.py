@@ -71,12 +71,11 @@ def three(tmp_path, monkeypatch=None):
 def test_three_blocks_run_in_turn_on_their_own_boots_and_the_prediction_is_made_once(tmp_path):
     lock, rcs, (d1, d2, d3), ran = three(tmp_path)
     assert rcs == (0, 0, 0)
-    boot = ["prereqs", "preflight", "fa3_import"]
-    assert ran["b1"] == boot[:2] + ["link", "launch_queue", "probe", "masks", "host_components",
-                                    "fa3_import", "host_speed_end"]
-    assert ran["b2"] == ["prereqs", "preflight", "device_components", "fa3_import",
-                         "dense_select", "host_speed_mid", "predict", "ground_truth",
-                         "late_check", "trace_checks", "host_speed_end"]
+    boot = ["prereqs", "fa3_import", "preflight"]      # FA3 before the preflight's smoke check
+    assert ran["b1"] == boot + ["link", "launch_queue", "probe", "masks", "host_components",
+                                "host_speed_end"]
+    assert ran["b2"] == boot + ["device_components", "dense_select", "host_speed_mid", "predict",
+                                "ground_truth", "late_check", "trace_checks", "host_speed_end"]
     assert ran["b3"] == boot + ["ground_truth", "late_check", "trace_checks", "host_speed_end"]
     m3 = json.loads((d3 / "manifest.json").read_text())
     assert m3["block"]["id"] == "b3" and set(m3["block"]["imported"]) == {"b1", "b2"}
@@ -201,7 +200,7 @@ def test_a_later_block_on_another_cpu_stops_after_its_preflight(tmp_path, monkey
     monkeypatch.setenv("ATTNBENCH_FAKE_CPU_MODEL", "another cpu")
     calls = []
     rc, d2 = run_block(T64, tmp_path, lock, "b2", [d1], calls=calls)
-    assert rc == 1 and calls == ["prereqs", "preflight"]
+    assert rc == 1 and calls == ["prereqs", "fa3_import", "preflight"]
     a = json.loads((d2 / "manifest.json").read_text())["attempts"][-1]
     assert a["step"] == "preflight" and a["status"] == "failed"
     assert "cpu_model is 'another cpu' here and 'fake cpu' in block b1" in a["reason"]

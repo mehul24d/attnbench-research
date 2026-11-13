@@ -48,6 +48,16 @@ class XAttentionNoAssertBackend(XAttentionBackend):
         assert_strip.install()
         import attnbench_xattn_noassert.src.Xattention  # noqa: F401
 
+    @staticmethod
+    def kernels_module():
+        """The stripped copy's `src.kernels`, a different module object from
+        the shipped `xattn.src.kernels`: its wrappers launch the copy's own
+        kernels. Nulling the shipped module's left this arm's launches running
+        in P2's step 7 (13 Nov 2026, `xattention_noassert_dcal_L2048_b1`)."""
+        assert_strip.install()
+        import attnbench_xattn_noassert.src.kernels
+        return attnbench_xattn_noassert.src.kernels
+
     def estimate(self, q: torch.Tensor, k_rep: torch.Tensor) -> torch.Tensor:
         """`XAttentionBackend.estimate`, from the stripped package."""
         assert_strip.install()

@@ -1143,7 +1143,7 @@ def test_the_real_preflight_stops_on_a_missing_lightgbm_before_any_step_is_timed
     assert "lightgbm does not import" in e.value.findings["problems"]
 
 
-def test_the_real_preflight_stops_on_a_failed_triton_smoke_check(tmp_path, monkeypatch):
+def test_the_real_preflight_stops_on_a_failed_smoke_check(tmp_path, monkeypatch):
     # adviser's rulings of 13 Nov 2026, item 3: P2's step 7 met the Triton path first
     pytest.importorskip("torch")
     from attnbench import provenance
@@ -1155,14 +1155,14 @@ def test_the_real_preflight_stops_on_a_failed_triton_smoke_check(tmp_path, monke
     monkeypatch.setattr(S, "lightgbm_problem", lambda: None)
     monkeypatch.setattr(S, "import_check", lambda cfg: ([], {"required": {}, "kernel_problems": []}))
     monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "3.5.1\n", ""))
-    monkeypatch.setattr(S, "run_triton_smoke", lambda cfg, args, out: (
-        {"error": "ProfileMismatch: x"}, ["the Triton smoke check failed (rc 1): ProfileMismatch: x"]))
+    monkeypatch.setattr(S, "run_preflight_smoke", lambda cfg, args, out: (
+        {"error": "ProfileMismatch: x"}, ["the preflight smoke check failed (rc 1): ProfileMismatch: x"]))
     with pytest.raises(S.StepFailed) as e:
         S.real_preflight(T61, args_for(tmp_path, tmp_path, dry_run=False))
-    assert e.value.findings["problems"] == ["the Triton smoke check failed (rc 1): ProfileMismatch: x"]
-    assert e.value.findings["triton_smoke"] == {"error": "ProfileMismatch: x"}
-    monkeypatch.setattr(S, "run_triton_smoke", lambda cfg, args, out: ({"cell": "c"}, []))
-    assert S.real_preflight(T61, args_for(tmp_path, tmp_path, dry_run=False))["triton_smoke"] == {"cell": "c"}
+    assert e.value.findings["problems"] == ["the preflight smoke check failed (rc 1): ProfileMismatch: x"]
+    assert e.value.findings["smoke"] == {"error": "ProfileMismatch: x"}
+    monkeypatch.setattr(S, "run_preflight_smoke", lambda cfg, args, out: ({"cell": "c"}, []))
+    assert S.real_preflight(T61, args_for(tmp_path, tmp_path, dry_run=False))["smoke"] == {"cell": "c"}
 
 
 # --- T2.26's GPU variants in the preflight ----------------------------------------------

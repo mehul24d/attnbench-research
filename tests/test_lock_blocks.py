@@ -42,7 +42,7 @@ def problems(lk, complete=True):
 def test_the_planned_p4_spec_is_whole_and_each_block_runs_its_boot_steps():
     spec = B.parse(good(), "P4")
     assert B.check(spec, NAMES, BOOT) == []
-    assert spec.run_steps("b3", NAMES, BOOT) == ("prereqs", "preflight", "fa3_import",
+    assert spec.run_steps("b3", NAMES, BOOT) == ("prereqs", "fa3_import", "preflight",
                                                  "ground_truth", "late_check", "trace_checks",
                                                  "host_speed_end")
     assert spec.predict_block() == "b2" and [b.id for b in spec.before("b3")] == ["b1", "b2"]

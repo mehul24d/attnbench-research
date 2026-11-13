@@ -252,20 +252,27 @@ def test_the_residual_times_a_triton_launch_as_one_call():
 
 # --- which cells null them (t31_steps.null_entries) -------------------------------------
 
-def test_only_the_triton_path_nulls_the_triton_kernels(monkeypatch):
+def test_only_the_triton_path_nulls_the_triton_kernels_in_the_backend_s_own_module(monkeypatch):
     import t31_steps as st
-    bsa, tri = object(), (object(), object())
+    bsa = object()
     monkeypatch.setattr(hp, "block_sparse_entry", lambda: bsa)
-    monkeypatch.setattr(hp, "xattention_triton_entries", lambda: tri)
     path = lambda impl: types.SimpleNamespace(implementation=impl)
-    assert st.null_entries("dense", path("eager")) == ()
-    assert st.null_entries("oracle", path("eager")) == (bsa,)
-    assert st.null_entries("xattention", path("xattn:torch")) == (bsa,)
-    assert st.null_entries("xattention", path("xattn:triton")) == (bsa, *tri)
-    assert st.null_entries("xattention_noassert", path("xattn:triton")) == (bsa, *tri)
+    shipped, stripped = fake_kernels(), fake_kernels()
+    be = lambda mod: types.SimpleNamespace(kernels_module=lambda: mod)
+    assert st.null_entries("dense", path("eager"), None) == ()
+    assert st.null_entries("oracle", path("eager"), object()) == (bsa,)
+    assert st.null_entries("xattention", path("xattn:torch"), be(shipped)) == (bsa,)
+    for mod in (shipped, stripped):
+        got = st.null_entries("xattention_noassert", path("xattn:triton"), be(mod))
+        assert got[0] is bsa and len(got) == 5 and all(e.module is mod for e in got[1:])
+    compiled = types.SimpleNamespace(arm=be(stripped))      # a compiled arm's eager backend
+    assert all(e.module is stripped for e in st.null_entries(
+        "xattention", path("xattn:triton"), compiled)[1:])
+    with pytest.raises(st.StepFailed, match="names no kernels module"):
+        st.null_entries("xattention", path("xattn:triton"), object())
 
 
-# --- the preflight's Triton smoke check (item 3) ----------------------------------------
+# --- which pairings run the preflight smoke check (`tests/test_preflight_smoke.py`) ------
 
 def test_the_triton_pairings_run_the_smoke_check_and_the_l4_rehearsal_does_not():
     import t61_rehearsal as R
@@ -273,94 +280,3 @@ def test_the_triton_pairings_run_the_smoke_check_and_the_l4_rehearsal_does_not()
     import t64_session as P4
     assert T61.triton_pairing(T61.T61) and T61.triton_pairing(P4.T64)
     assert not T61.triton_pairing(R.REHEARSAL)
-
-
-@pytest.mark.parametrize("rc, written, problem", [
-    (0, {"cell": "xattention_dcal_L2048_b1"}, None),
-    (1, {"error": "ProfileMismatch: x"}, "ProfileMismatch: x"),
-    (0, {"error": "StepFailed: y"}, "StepFailed: y"),
-    (1, None, "no triton_smoke.json"),
-    (0, None, "no triton_smoke.json"),
-])
-def test_the_smoke_check_runs_step_5s_cell_in_its_own_process_and_a_failure_is_a_problem(
-        tmp_path, monkeypatch, rc, written, problem):
-    import t31_steps as st
-    import t61_session as T61
-    cmds = []
-
-    def run(cmd, **kw):
-        cmds.append(cmd)
-        if written is not None:
-            (tmp_path / "triton_smoke" / "triton_smoke.json").write_text(json.dumps(written))
-        return rc
-    monkeypatch.setattr(T61, "run", run)
-    args = types.SimpleNamespace(session="results/t61_p2_x")
-    found, problems = T61.run_triton_smoke(T61.T61, args, tmp_path)
-    assert cmds[0][2:5] == [st.TRITON_SMOKE, "--out", str(tmp_path / "triton_smoke")]
-    assert cmds[0][-1].endswith("configs/t61/p2_session.json")
-    assert (problems == []) if problem is None else (problem in problems[0])
-
-
-def test_the_smoke_cell_is_xattention_at_2048_and_its_child_is_a_cli_step():
-    import t31_steps as st
-    assert st.TRITON_SMOKE_CELL == ("xattention", None, 2048, 1)
-    assert st.parser().parse_args([st.TRITON_SMOKE, "--out", "o", "--session", "s"]).step \
-        == st.TRITON_SMOKE
-
-
-def _smoke_fakes(monkeypatch, st, impl="xattn:triton", identical=True):
-    """`triton_smoke` with the GPU's parts faked: the harness, step 5's cell,
-    the recording and the replay; returns what was called."""
-    from attnbench.components import recorder
-    from attnbench.components import replay
-    seen = []
-    arm = types.SimpleNamespace(code_path=types.SimpleNamespace(implementation=impl),
-                                run_prefill=lambda: None)
-    h = types.SimpleNamespace(ready=None, unwrap=lambda: seen.append("unwrap"))
-    monkeypatch.setattr(st, "_need_gpu", lambda what: None)
-    monkeypatch.setattr(st, "_harness", lambda args: h)
-    monkeypatch.setattr(st, "ready_cell", lambda h_, *cell: seen.append(("ready", cell)) or arm)
-    monkeypatch.setattr(st, "bare_pricer", lambda: "pricer")
-    monkeypatch.setattr(st, "_graph_backend", lambda: "graph")
-    monkeypatch.setattr(st, "host_cell", lambda h_, cfg, out, cell, pricer: seen.append(
-        ("host_cell", cell, pricer)) or {"dir": "xattention_dcal_L2048_b1",
-                                         "host_cost_sources": {hp.NULL_PASS: 3}})
-    rec = types.SimpleNamespace(sequence=_fixture(), tape="tape", masks="masks")
-    monkeypatch.setattr(recorder, "load_recording", lambda d: seen.append(("load", d)) or rec)
-    monkeypatch.setattr(replay, "capture", lambda run, tape, **kw: seen.append(
-        ("capture", tape, kw["masks"], kw["backend"])) or "cap")
-    monkeypatch.setattr(replay, "mask_agreement",
-                        lambda cap: {"identical": identical})
-    monkeypatch.setattr(replay, "profile_replay", lambda cap, path: path)
-    monkeypatch.setattr(replay, "replay_nodes", lambda trace: [])
-    monkeypatch.setattr(replay, "match", lambda seq, nodes: types.SimpleNamespace(
-        unmatched_positions=(1, 2)))
-    monkeypatch.setattr(replay, "needs_original", lambda seq, m: True)
-    return seen
-
-
-def test_the_smoke_check_runs_step_5s_cell_then_step_6s_mask_check(tmp_path, monkeypatch):
-    import t31_steps as st
-    seen = _smoke_fakes(monkeypatch, st)
-    args = types.SimpleNamespace(out=str(tmp_path), session="s")
-    found = st.triton_smoke(args, {})
-    assert ("host_cell", st.TRITON_SMOKE_CELL, "pricer") in seen
-    assert ("capture", "tape", "masks", "graph") in seen and seen[-1] == "unwrap"
-    assert found["implementation"] == "xattn:triton" and found["entry_points"] == 2
-    assert found["replay_needs_original"] is True and found["replay_unmatched_positions"] == 2
-    assert json.loads((tmp_path / "triton_smoke.json").read_text()) == found
-
-
-def test_the_smoke_check_refuses_a_cell_off_the_triton_path_before_step_5(tmp_path, monkeypatch):
-    import t31_steps as st
-    seen = _smoke_fakes(monkeypatch, st, impl="xattn:torch")
-    with pytest.raises(st.StepFailed, match="took xattn:torch"):
-        st.triton_smoke(types.SimpleNamespace(out=str(tmp_path), session="s"), {})
-    assert not any(s[0] == "host_cell" for s in seen if isinstance(s, tuple))
-
-
-def test_the_smoke_check_refuses_live_masks_that_differ_from_the_bank(tmp_path, monkeypatch):
-    import t31_steps as st
-    _smoke_fakes(monkeypatch, st, identical=False)
-    with pytest.raises(st.StepFailed, match="live masks differ"):
-        st.triton_smoke(types.SimpleNamespace(out=str(tmp_path), session="s"), {})

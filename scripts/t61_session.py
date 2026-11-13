@@ -668,8 +668,8 @@ def import_check(cfg: SessionConfig) -> tuple[list, dict]:
 def real_preflight(cfg: SessionConfig, args) -> dict:
     """T2.20 provenance and the T2.1 host-speed probe at the start, read from
     the probe's own row; Triton imports (the XAttention code path here); the
-    GPU variants of T2.26 pass on this GPU; on a Triton pairing, the Triton
-    smoke check (`run_triton_smoke`)."""
+    GPU variants of T2.26 pass on this GPU; on a Triton pairing, the smoke
+    check (`run_preflight_smoke`)."""
     from attnbench import provenance
     out = Path(args.out)
     if run(py("host_cpu_probe.py", "snapshot", "--out", str(out), "--tag", "start")):
@@ -687,7 +687,7 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
         problems.append(lgbm)
     variants, vproblems = run_gpu_variants(out)
     problems += vproblems
-    smoke, sproblems = run_triton_smoke(cfg, args, out)
+    smoke, sproblems = run_preflight_smoke(cfg, args, out)
     problems += sproblems
     findings = {"provisioning_model": row.get("provisioning_model"),
                 "instance_type": row.get("instance_type"), "gpu_name": row.get("gpu_name"),
@@ -696,7 +696,7 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
                 "bootstrap_sha256": row.get("bootstrap_sha256"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
                 "triton": tri.stdout.strip() or None, "gpu_variants": variants,
-                "triton_smoke": smoke,
+                "smoke": smoke,
                 "imports_checked": sorted(found["required"]),
                 "kernel_modules_absent": found["kernel_problems"],
                 "problems": problems}
@@ -714,21 +714,22 @@ def triton_pairing(cfg: SessionConfig) -> bool:
         str(cfg.code_path.get("implementation", "")).endswith(":triton")
 
 
-def run_triton_smoke(cfg: SessionConfig, args, out: Path) -> tuple:
-    """T3.1's Triton smoke check (`t31_steps.triton_smoke`) in its own process,
-    before anything long (adviser's rulings of 13 Nov 2026, item 3): step 5's
-    cell and step 6's refusing check on one XAttention cell at 2048.
-    (findings, problems); none for a pairing off the Triton path."""
+def run_preflight_smoke(cfg: SessionConfig, args, out: Path) -> tuple:
+    """T3.1's preflight smoke check (`t31_steps.preflight_smoke`) in its own
+    process, before anything long (the adviser's rulings dated 13 Nov 2026,
+    item 3): every arm at 2048 through steps 7 and 8, the prediction's input
+    and the ground truth's harness, untimed. (findings, problems); none for a
+    pairing off the Triton path."""
     if not triton_pairing(cfg):
         return None, []
-    d = Path(out) / "triton_smoke"
+    d = Path(out) / "smoke"
     d.mkdir(parents=True, exist_ok=True)
-    rc = run(py("t31_steps.py", "triton-smoke", "--out", str(d), "--session",
+    rc = run(py("t31_steps.py", "preflight-smoke", "--out", str(d), "--session",
                 str(args.session), "--config", str(ROOT / cfg.components_config)))
-    found = read_json(d / "triton_smoke.json") or {}
+    found = read_json(d / "smoke.json") or {}
     if rc != 0 or not found or "error" in found:
-        return found, [f"the Triton smoke check failed (rc {rc}): "
-                       f"{found.get('error', 'no triton_smoke.json')}"]
+        return found, [f"the preflight smoke check failed (rc {rc}): "
+                       f"{found.get('error', 'no smoke.json')}"]
     return found, []
 
 
@@ -1648,7 +1649,8 @@ BUILT_FILES = (
 
 COMMON_STEPS_HEAD = (
     Step("prereqs", "Section 8", "plan rows Done (or waived, P2); deployed files present"),
-    Step("preflight", "T2.20, T2.1", "provenance on the probe's row; host speed (start); Triton"),
+    Step("preflight", "T2.20, T2.1", "provenance on the probe's row; host speed (start); "
+                                     "Triton; the smoke check, every arm at 2048, untimed"),
     Step("link", "T2.5", "link microbenchmarks, one stamped row"),
     Step("launch_queue", "T2.6", "launch-queue depth Q"),
     Step("probe", "T2.18", "structural probe of the new code path; durations discarded"),

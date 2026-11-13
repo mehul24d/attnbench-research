@@ -205,6 +205,14 @@ class XAttentionBackend(AttentionBackend):
         import block_sparse_attn  # noqa: F401
         import xattn.src.Xattention  # noqa: F401
 
+    @staticmethod
+    def kernels_module():
+        """The module whose Triton kernels this arm's estimator launches, which
+        the null pass nulls (`host_profile.xattention_triton_entries`): the
+        shipped package's. The asserts-removed arm launches its own copy's."""
+        import xattn.src.kernels
+        return xattn.src.kernels
+
     def reset_density(self) -> None:
         self.last_layer_density = []
 
