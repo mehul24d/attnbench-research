@@ -1,4 +1,10 @@
-"""The P4 Spot blocks (researcher, 7 Nov 2026): numbers from the card, not typed in."""
+"""The P4 Spot blocks (researcher, 7 Nov 2026): numbers from the card, not typed in.
+
+Since the adviser's rulings dated 13 Nov 2026, second set, the preflight takes
+12 minutes and no card plans Spot blocks any more: host_components no longer
+fits a block (`test_the_cards_plan_no_spot_blocks_now`). The planner's own
+tests run on the cards' numbers with the preflight at its earlier 8 minutes
+(`numbers`), so what they check is unchanged."""
 
 from __future__ import annotations
 
@@ -11,14 +17,37 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import t64_blocks as B  # noqa: E402
 
-N = B.card_numbers(B.CARD.read_text())
+PREFLIGHT_BEFORE = 8      # the cards' preflight minutes before the second set's additions
+
+
+def numbers(pairing="P4") -> dict:
+    """The card's numbers, the preflight at `PREFLIGHT_BEFORE`."""
+    n = B.card_numbers(B.CARDS[pairing].read_text())
+    n["steps"] = [(s, PREFLIGHT_BEFORE if s == "preflight" else m) for s, m in n["steps"]]
+    return n
+
+
+N = numbers()
 
 
 def test_the_numbers_are_read_from_the_cards_tables():
-    assert [n for n, _ in N["steps"]][:3] == ["prereqs", "fa3_import", "preflight"]
-    assert len(N["steps"]) == 16 and N["setup_h"] == 0.6 and N["teardown_h"] == 0.15
-    assert dict(N["steps"])["ground_truth"] == 49          # "2 + 28 + 5 + 14" (5 reruns)
-    assert sum(m for _, m in N["steps"]) == 254            # the card's "254 minutes"
+    n = B.card_numbers(B.CARD.read_text())
+    assert [s for s, _ in n["steps"]][:3] == ["prereqs", "fa3_import", "preflight"]
+    assert len(n["steps"]) == 16 and n["setup_h"] == 0.6 and n["teardown_h"] == 0.15
+    assert dict(n["steps"])["ground_truth"] == 49          # "2 + 28 + 5 + 14" (5 reruns)
+    assert dict(n["steps"])["preflight"] == 12
+    assert sum(m for _, m in n["steps"]) == 258            # the card's "258 minutes"
+
+
+@pytest.mark.parametrize("pairing, room", [("P4", 75), ("P2", 78)])
+def test_the_cards_plan_no_spot_blocks_now(pairing, room, capsys):
+    n = B.card_numbers(B.CARDS[pairing].read_text())
+    with pytest.raises(ValueError, match=f"host_components takes 79 min, more than a block's {room}"):
+        B.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=B.BOOT[pairing],
+                      rate=B.SPOT_RATES[pairing], max_hours=B.BLOCK_HOURS[pairing],
+                      suite_min=n["suite_min"])
+    assert B.main(["--pairing", pairing]) == 2
+    assert "REFUSING: no blocks" in capsys.readouterr().err
 
 
 def test_a_card_without_its_tables_is_refused():
@@ -28,7 +57,7 @@ def test_a_card_without_its_tables_is_refused():
 
 def plan(h=None, pairing="P4"):
     h = h or {"P2": 2.2, "P4": 2.3}[pairing]     # P4 at 2.2 h refuses (below)
-    n = B.card_numbers(B.CARDS[pairing].read_text())
+    n = numbers(pairing)
     return B.plan_blocks(n["steps"], n["setup_h"], n["teardown_h"], boot=B.BOOT[pairing],
                          rate=B.SPOT_RATES[pairing], max_hours=h, suite_min=n["suite_min"])
 
@@ -36,7 +65,7 @@ def plan(h=None, pairing="P4"):
 def test_the_spot_terms_are_cap_1_3_halt_1_3_rounded_down_and_delete_10_minutes_after():
     # researcher, 7 Nov 2026: halt = 1.3 x planned hours, hard delete = halt + 10 min
     for pairing in ("P4", "P2"):
-        n, rate = B.card_numbers(B.CARDS[pairing].read_text()), B.SPOT_RATES[pairing]
+        n, rate = numbers(pairing), B.SPOT_RATES[pairing]
         for i, b in enumerate(plan(pairing=pairing)):
             # the suite record (ruling 1h dated 10 Nov 2026) on the first boot only
             suite = n["suite_min"] if i == 0 else 0.0
@@ -73,14 +102,11 @@ def test_p4_refuses_2_2_hour_blocks_and_is_four_blocks_at_2_3():
     gt = [b for b in blocks if "ground_truth" in b.steps]
     assert len(gt) == 2 and all({"late_check", "trace_checks"} <= set(b.steps) for b in gt)
     assert "predict" in gt[0].steps and "predict" not in gt[1].steps
-    assert B.main(["--max-hours", "2.3", "--blocks", "4"]) == 0
-    assert B.main(["--blocks", "4"]) == 0          # P4's default is the ruled 2.3 h
-    assert B.main(["--max-hours", "2.3", "--blocks", "3"]) == 2
 
 
 def test_every_step_but_the_boot_steps_is_planned_once_in_order():
     for pairing in ("P4", "P2"):
-        names = [n for n, _ in B.card_numbers(B.CARDS[pairing].read_text())["steps"]]
+        names = [n for n, _ in numbers(pairing)["steps"]]
         own = [s for b in plan(pairing=pairing) for s in b.steps
                if s not in ("ground_truth", "late_check", "trace_checks")]
         assert own == [n for n in names if n not in B.BOOT[pairing]

@@ -126,3 +126,15 @@ def test_the_cli_refuses_a_ruled_out_launch(monkeypatch, capsys):
     assert BI.main(["--launch", "P4:SPOT"]) == 2
     assert "ruled out" in capsys.readouterr().out
     assert BI.main(["--launch", "P2:FLEX_START"]) == 0
+
+
+def test_a_provisioning_a_card_has_no_plan_for_is_never_possible():
+    # since the adviser's rulings dated 13 Nov 2026, second set, neither card plans Spot
+    caps = {"P2": {"FLEX_START": 1000, "SPOT": None}, "P4": {"FLEX_START": 3000, "SPOT": None}}
+    cs = BI.cases(4000, 0, caps)
+    flex = next(c for c in cs if c.p2 == c.p4 == "FLEX_START")
+    assert flex.planned and flex.possible and flex.headroom == 14000 - 8000
+    assert [c.planned for c in cs if "SPOT" in (c.p2, c.p4)] == [False] * 3
+    assert not BI.possible("P2", "SPOT", cs) and not BI.possible("P4", "SPOT", cs)
+    assert BI.may_launch("P2", "FLEX_START", cs)
+    assert BI.launch_headroom("P2", "FLEX_START", cs) == 6000

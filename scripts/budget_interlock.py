@@ -28,6 +28,7 @@ import sys
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -100,14 +101,20 @@ def pairing_caps() -> dict:
 class Case:
     p2: str
     p4: str
-    committed: int          # spent + every still-planned cap
-    headroom: int
+    committed: Optional[int]   # spent + every still-planned cap; None with no plan
+    headroom: Optional[int]
     ruled_out: bool = False  # a provisioning in it is ruled out (`RULED_OUT`)
 
     @property
+    def planned(self) -> bool:
+        """Whether both cards plan their provisioning (a card's cap is None
+        where it has no plan)."""
+        return self.committed is not None
+
+    @property
     def possible(self) -> bool:
-        """The one-Spot rule and no provisioning ruled out."""
-        return not (self.p2 == self.p4 == "SPOT") and not self.ruled_out
+        """The one-Spot rule, both planned, and no provisioning ruled out."""
+        return not (self.p2 == self.p4 == "SPOT") and self.planned and not self.ruled_out
 
     @property
     def allowed(self) -> bool:
@@ -118,8 +125,9 @@ class Case:
 def cases(spent_inr: int, rehearsal_inr: int, caps: dict, ruled_out=()) -> list:
     out = []
     for p2, p4 in product(PROVISIONING, PROVISIONING):
-        c = spent_inr + rehearsal_inr + caps["P2"][p2] + caps["P4"][p4]
-        out.append(Case(p2, p4, c, BUDGET_INR - c,
+        a, b = caps["P2"][p2], caps["P4"][p4]
+        c = None if a is None or b is None else spent_inr + rehearsal_inr + a + b
+        out.append(Case(p2, p4, c, None if c is None else BUDGET_INR - c,
                         ruled_out=("P2", p2) in ruled_out or ("P4", p4) in ruled_out))
     return out
 
@@ -157,6 +165,10 @@ def current() -> tuple[int, tuple, dict, list]:
     return s, (card, done), caps, cases(s, r, caps, RULED_OUT)
 
 
+def _cap(inr) -> str:
+    return "no plan" if inr is None else f"₹{inr:,}"
+
+
 def _p(prov: str) -> str:
     return {"FLEX_START": "Flex-start", "SPOT": "Spot"}[prov]
 
@@ -180,16 +192,19 @@ def section(pairing: str) -> list:
            f"still-planned sessions is negative. Budget ₹{BUDGET_INR:,} (plan Section 5.2); "
            f"{rehearsal}. P2 and P4 at their cards' caps, the ground truth's worst case of 5 "
            "reruns at every cell in each: P2 Flex-start "
-           f"₹{caps['P2']['FLEX_START']:,}, Spot ₹{caps['P2']['SPOT']:,}; P4 Flex-start "
-           f"₹{caps['P4']['FLEX_START']:,}, Spot ₹{caps['P4']['SPOT']:,}. Not counted: a Spot "
+           f"₹{caps['P2']['FLEX_START']:,}, Spot {_cap(caps['P2']['SPOT'])}; P4 Flex-start "
+           f"₹{caps['P4']['FLEX_START']:,}, Spot {_cap(caps['P4']['SPOT'])}. Not counted: a Spot "
            "block rerun after an interruption, image storage, egress.", "",
            "| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |",
            "|---|---|---|---|---|"]
     for c in cs:
         why = ("no: both on Spot" if c.p2 == c.p4 == "SPOT" else
+               "no: no Spot plan" if not c.planned else
                "no: ruled out" if c.ruled_out else
                "no: negative" if c.headroom < 0 else "yes")
-        out.append(f"| {_p(c.p2)} | {_p(c.p4)} | {c.committed:,} | {c.headroom:,} | {why} |")
+        num = (lambda x: "—" if x is None else f"{x:,}")  # noqa: E731
+        out.append(f"| {_p(c.p2)} | {_p(c.p4)} | {num(c.committed)} | {num(c.headroom)} | "
+                   f"{why} |")
     out.append("")
     for (pp, prov), why in RULED_OUT.items():
         out.append(f"- **{pp} on {_p(prov)}: ruled out** ({why}).")

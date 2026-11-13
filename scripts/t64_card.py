@@ -58,9 +58,16 @@ def load_minutes(path=MINUTES) -> dict:
 
 def spot_blocks(steps, setup, tear, suite=0.0):
     """The fallback's blocks at the ruled 2.3 h, refused unless they are the
-    ruled four; with why the general 2.2 h length refuses, if it does."""
-    blocks = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE,
-                           max_hours=SPOT_HOURS, suite_min=suite)
+    ruled four; with why the general 2.2 h length refuses, if it does. No
+    blocks, and why, when the planner refuses 2.3 h as well: since the
+    adviser's rulings dated 13 Nov 2026, second set, the preflight no longer
+    leaves a block room for `host_components`, and Spot is ruled out for P4
+    (the first set, item 6)."""
+    try:
+        blocks = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE,
+                               max_hours=SPOT_HOURS, suite_min=suite)
+    except ValueError as e:
+        return [], str(e)
     if len(blocks) != SPOT_BLOCKS:
         raise ValueError(f"{len(blocks)} blocks at {SPOT_HOURS} h, not the ruled "
                          f"{SPOT_BLOCKS}: the fallback needs a new ruling")
@@ -87,7 +94,7 @@ def costs(minutes: dict):
 def caps(minutes: dict | None = None) -> dict:
     """P4's cap on each provisioning, for the budget interlock."""
     _, _, _, _, flex, blocks, _ = costs(minutes or load_minutes())
-    return {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks)}
+    return {"FLEX_START": flex.cap_inr, "SPOT": sum(b.cap_inr for b in blocks) if blocks else None}
 
 
 def build(minutes: dict, on: str) -> str:
@@ -98,7 +105,8 @@ def build(minutes: dict, on: str) -> str:
     per_boot_h = setup + boot_min / 60 + tear
     spot_h = sum(b.planned_h for b in blocks)
     spot_exp = math.ceil(spot_h * SPOT_RATE)
-    worst = max(range(len(blocks)), key=lambda i: blocks[i].cap_inr)
+    worst = max(range(len(blocks)), key=lambda i: blocks[i].cap_inr) if blocks else None
+    no = "no plan"
     measured = [n for n, _ in steps if "measured" in minutes["steps"][n]["basis"]]
     out = [BEGIN, "",
            f"Built {on}. {len(measured)} of {len(steps)} steps' minutes are measured on P1's "
@@ -156,22 +164,32 @@ def build(minutes: dict, on: str) -> str:
         "|---|---|---|---|",
         f"| Rate | ₹{FLEX_RATE}/h (`us-central1`) | ₹{SPOT_RATE}/h (`asia-southeast1`, the "
         f"higher; `us-central1` ₹{SPOT_RATE_LOW}/h) | not offered for `a3-highgpu-1g` |",
-        f"| Boots | 1 | {len(blocks)} | |",
-        f"| Overhead paid per boot | {per_boot_h:.2f} h | {per_boot_h:.2f} h x {len(blocks)}, "
-        "plus the anchor and the trace steps in each ground-truth block | |",
-        f"| Planned hours | {flex.planned_h:.2f} | {spot_h:.2f} | |",
-        f"| Expected, nothing fails | ₹{math.ceil(flex.planned_h * FLEX_RATE)} | ₹{spot_exp} | |",
+        f"| Boots | 1 | {len(blocks) if blocks else no} | |",
+        f"| Overhead paid per boot | {per_boot_h:.2f} h | "
+        + (f"{per_boot_h:.2f} h x {len(blocks)}, plus the anchor and the trace steps in each "
+           "ground-truth block" if blocks else no) + " | |",
+        f"| Planned hours | {flex.planned_h:.2f} | {f'{spot_h:.2f}' if blocks else no} | |",
+        f"| Expected, nothing fails | ₹{math.ceil(flex.planned_h * FLEX_RATE)} | "
+        f"{f'₹{spot_exp}' if blocks else no} | |",
         f"| Cap | ₹{flex.cap_inr} (halt {flex.halt_min} min, hard delete {flex.delete_min} min) | "
-        f"₹{sum(b.cap_inr for b in blocks)}, the caps summed | |",
+        + (f"₹{sum(b.cap_inr for b in blocks)}, the caps summed" if blocks else no) + " | |",
         "| Interruption risk | None once granted: a Flex-start VM runs up to seven days. The "
         "risk is the grant: a waiting request may not be granted, and costs nothing while it "
-        "waits (`docs/launch_cards/h100_flex_attempts.md`) | Any block can be preempted at "
-        "any time. Its rows are discarded and it is rerun on a new instance, so one "
-        f"interruption adds up to that block's cap (at most ₹{blocks[worst].cap_inr}, b{worst + 1}) "
-        "| Compute Engine offers A3 High with fewer than 8 GPUs only as Spot or Flex-start; "
+        "waits (`docs/launch_cards/h100_flex_attempts.md`) | "
+        + ("Any block can be preempted at any time. Its rows are discarded and it is rerun on "
+           "a new instance, so one interruption adds up to that block's cap (at most "
+           f"₹{blocks[worst].cap_inr}, b{worst + 1})" if blocks else no)
+        + " | Compute Engine offers A3 High with fewer than 8 GPUs only as Spot or Flex-start; "
         "`a3-highgpu-8g` would need 8 GPUs against a quota of 1 |",
         "",
     ]
+    if not blocks:
+        out += [f"**The fallback, Spot blocks at {SPOT_HOURS} h: no plan.** The planner refuses "
+                f"them: {refusal} (setup, teardown and the boot steps take "
+                f"{per_boot_h * 60:.0f} of a block's {SPOT_HOURS * 60:.0f} minutes). Spot is "
+                "ruled out for P4 (the adviser's rulings dated 13 Nov 2026, item 6).", "",
+                *BI.section("P4"), END]
+        return "\n".join(out)
     if refusal:
         out += [f"**Why {SPOT_HOURS} h, not the {B.MAX_BLOCK_HOURS} h of 7 Nov:** at "
                 f"{B.MAX_BLOCK_HOURS} h the blocks are refused: {refusal} (setup, teardown and "

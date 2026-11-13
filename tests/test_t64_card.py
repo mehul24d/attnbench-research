@@ -21,8 +21,28 @@ import t64_card as C  # noqa: E402
 from t64_session import T64  # noqa: E402
 
 
-def _built():
-    return C.build(C.load_minutes(), "2026-11-13")
+def _built(m=None):
+    return C.build(m or C.load_minutes(), "2026-11-13")
+
+
+def _preflight_at(m: dict, minutes: int) -> dict:
+    """The adviser's rulings dated 13 Nov 2026, second set, took the preflight
+    from 8 to 12 minutes, and no Spot block fits since; the block tests run
+    at 8, where they do."""
+    return {**m, "steps": {**m["steps"], "preflight": {**m["steps"]["preflight"],
+                                                       "minutes": [minutes]}}}
+
+
+def test_the_card_has_no_spot_fallback_and_says_why():
+    m = C.load_minutes()
+    steps = [(s.name, float(sum(m["steps"][s.name]["minutes"]))) for s in T64.steps]
+    blocks, refusal = C.spot_blocks(steps, 0.6, 0.15, m["suite_record_min"]["value"])
+    assert blocks == [] and refusal == "host_components takes 79 min, more than a block's 75"
+    card = _built()
+    assert f"Spot blocks at {C.SPOT_HOURS} h: no plan.** The planner refuses them: {refusal}" \
+        in card
+    assert "| Boots | 1 | no plan | |" in card and "| b1 |" not in card
+    assert C.caps()["SPOT"] is None
 
 
 def test_the_card_on_disk_is_this_build():
@@ -41,11 +61,11 @@ def test_the_step_table_is_the_runners_steps_with_the_minutes_files_sums():
 
 
 def test_flex_and_spot_come_from_the_same_minutes_with_each_boots_overhead():
-    m = C.load_minutes()
+    m = _preflight_at(C.load_minutes(), 8)
     steps = [(s.name, float(sum(m["steps"][s.name]["minutes"]))) for s in T64.steps]
     run = sum(x for _, x in steps)
     planned = 0.6 + (m["suite_record_min"]["value"] + run) / 60 + 0.15   # ruling 1h
-    card = _built()
+    card = _built(m)
     assert f"| Expected, nothing fails | ₹{math.ceil(round(planned, 3) * C.FLEX_RATE)} |" in card
     assert f"₹{math.ceil(round(planned, 3) * C.FLEX_RATE * B.CAP_FACTOR)} (halt" in card
     blocks, refusal = C.spot_blocks(steps, 0.6, 0.15, m["suite_record_min"]["value"])
@@ -58,8 +78,9 @@ def test_flex_and_spot_come_from_the_same_minutes_with_each_boots_overhead():
 
 
 def test_flex_is_first_and_the_fallback_is_four_blocks_at_2_3_hours():
-    card = _built()
-    steps = B.card_numbers(C.CARD.read_text())["steps"]
+    m = _preflight_at(C.load_minutes(), 8)
+    card = _built(m)
+    steps = B.card_numbers(card)["steps"]
     blocks, refusal = C.spot_blocks(steps, 0.6, 0.15)
     assert len(blocks) == 4 and all(b.planned_h <= 2.3 + 1e-9 for b in blocks)
     assert "Flex-start first, its request submitted right after the lock (16 Nov 2026)" in card
@@ -86,8 +107,8 @@ def test_a_minutes_file_off_the_runners_steps_is_refused(tmp_path):
 
 def test_the_suite_record_is_in_the_setup_and_in_every_cap():
     # adviser's ruling 1h dated 10 Nov 2026: first boot only, so on Spot in b1
-    m = C.load_minutes()
-    text = _built()
+    m = _preflight_at(C.load_minutes(), 8)          # where there are blocks
+    text = _built(m)
     assert "**The suite record is in the setup**" in text
     assert "| Suite record: `--suite-record`, first boot only | 20 min |" in text
     _, _, _, _, flex, blocks, _ = C.costs(m)

@@ -171,7 +171,23 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 
 Headroom: ₹14,000 − ₹5,359 = **about ₹8,641** (after P2's launch at `lock-2026-11-13-r2`, 13 Nov 2026: `attnbench-a100-p2d-20261113-0933`, `886fa28`, 14 min billable at ₹297.47/h, stopped in preflight by the smoke check, self-halted, deleted, cleanup clean; before it, P2 at `lock-2026-11-13` ₹169, P2's relaunch ₹169 and launch 1 ₹109). The interlock is reprinted below after the cards' rebuild.
 
-### Budget interlock (13 Nov 2026, after P2's launch at `lock-2026-11-13-r2`)
+### Budget interlock (13 Nov 2026, after the preflight's second-set additions)
+
+Reprinted from `scripts/budget_interlock.py` after the cards' rebuild: the preflight at 12 minutes (the kernel contract and the XAttention arms at 32768; the adviser's rulings dated 13 Nov 2026, second set), so neither card plans Spot blocks.
+
+Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all still-planned sessions is negative. Budget ₹14,000 (plan Section 5.2); spent ₹5,359 (the ledger's new-spend table, the L4 rehearsal's ₹304 in it); the rehearsal closed, so nothing more is reserved for it. P2 and P4 at their cards' caps, the ground truth's worst case of 5 reruns at every cell in each: P2 Flex-start ₹1,992, Spot no plan; P4 Flex-start ₹3,237, Spot no plan. Not counted: a Spot block rerun after an interruption, image storage, egress.
+
+| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |
+|---|---|---|---|---|
+| Flex-start | Flex-start | 10,588 | 3,412 | yes |
+| Flex-start | Spot | — | — | no: no Spot plan |
+| Spot | Flex-start | — | — | no: no Spot plan |
+| Spot | Spot | — | — | no: both on Spot |
+
+- **P4 on Spot: ruled out** (the adviser's rulings dated 13 Nov 2026, item 6: Spot no longer fits the budget).
+- **P2 on Flex-start: may launch**, headroom ₹3,412 with the other pairing at the dearest provisioning the rules allow.
+
+### Budget interlock (13 Nov 2026, after P2's launch at `lock-2026-11-13-r2`; superseded 13 Nov 2026)
 
 Reprinted from `scripts/budget_interlock.py` after the ₹69 row.
 
