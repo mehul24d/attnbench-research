@@ -12,7 +12,9 @@ on P4:
   - `masks`: XAttention's Triton masks recorded untimed on the target, on
     the cells and prompts P2's mask gate recorded, and T2.24's comparison
     with P2's (`real_masks`);
-  - `fa3_import`, before `dense_select`: `scripts/fa3_import_check.sh` with
+  - `fa3_import`, after `prereqs` and before the preflight, whose smoke
+    check runs FA3 as a dense candidate (the adviser's rulings dated 13 Nov
+    2026, item 3): `scripts/fa3_import_check.sh` with
     the wheel's sha256 recorded at its build (`--fa3-sha256`), which checks
     the hash, the Python and torch tags, installs it without dependencies,
     imports it and checks the `fa3` backend is available on sm_90. A failure
@@ -170,17 +172,19 @@ def _t64() -> S.SessionConfig:
         gpu="H100", instance_type="a3-highgpu-1g", provisioning=("FLEX_START", "SPOT"),
         discard_on_restart=True,
         # the wheel is installed on each boot, so every block runs its own import
-        boot_steps=("prereqs", "preflight", "fa3_import", "host_speed_end"),
+        boot_steps=("prereqs", "fa3_import", "preflight", "host_speed_end"),
         code_path={"gpu": "H100", "implementation": "xattention:triton",
                    "libraries": [["torch", "dry"], ["triton", "dry"], ["flash_attn_3", "dry"]],
                    "python_optimize": 0},
         banked=("P1", "P2"), components_config="configs/t64/p4_session.json",
-        steps=S.COMMON_STEPS_HEAD + (
+        # FA3 is installed before the preflight, whose smoke check runs it as a
+        # dense candidate (the adviser's rulings dated 13 Nov 2026, item 3).
+        steps=S.COMMON_STEPS_HEAD[:1] + (
+            S.Step("fa3_import", "T2.16", "FA3 wheel: hash, tags, install, import, backend"),
+        ) + S.COMMON_STEPS_HEAD[1:] + (
             S.Step("masks", "T2.23, T2.24", "Triton masks recorded untimed at the grid "
                                             "lengths, for the comparison with P2's"),
-        ) + S.COMMON_STEPS_COMPONENTS + (
-            S.Step("fa3_import", "T2.16", "FA3 wheel: hash, tags, install, import, backend"),
-        ) + S.COMMON_STEPS_TAIL,
+        ) + S.COMMON_STEPS_COMPONENTS + S.COMMON_STEPS_TAIL,
         requirements=S.PHASE2 + (
             S.Requirement("T2.23", "the mask recording P4's Triton masks use", gate=True),
         ) + S.GATES + (

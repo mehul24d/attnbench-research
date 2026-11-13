@@ -65,7 +65,7 @@ def test_flex_is_first_and_the_fallback_is_four_blocks_at_2_3_hours():
     assert "Flex-start first, its request submitted right after the lock (16 Nov 2026)" in card
     assert "if no grant has come by about 22 Nov 2026, Spot in 4 blocks of 2.3 h" in card
     # why not 2.2 h is stated, not hidden
-    assert refusal == "host_components takes 79 min, more than a block's 78"
+    assert refusal == "host_components takes 79 min, more than a block's 73"
     assert f"at {B.MAX_BLOCK_HOURS} h the blocks are refused: {refusal}" in card
     short = [(n, 20.0 if n == "host_components" else x) for n, x in steps]
     with pytest.raises(ValueError, match="not the ruled 4"):

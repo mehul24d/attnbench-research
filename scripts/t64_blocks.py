@@ -18,8 +18,8 @@ so the cost at the halt is never above the cap (rounded down, the halt's
 minutes cost at most rate x planned hours x 1.3); `plan_blocks` refuses a
 block where it would be. The hard delete is the backstop if the halt fails.
 
-Every block runs the boot steps (`prereqs`, `preflight`, the end host-speed
-probe, and P4's `fa3_import`), and the steps between them in order. Ground
+Every block runs the boot steps (`prereqs`, P4's `fa3_import`, `preflight`,
+the end host-speed probe), and the steps between them in order. Ground
 truth is split across blocks by its minutes: each block with ground truth
 also measures the anchor cell (`ANCHOR_MIN`, an estimate: no anchor has been
 timed) and runs the late check and the trace checks after it; `predict` is in
@@ -47,7 +47,7 @@ CARD = CARDS["P4"]
 SPOT_RATES = {"P4": 668.04,    # plan Section 5.2, the higher H100 Spot region
               "P2": 350.14}    # plan Section 5.2, A100 Spot in asia-southeast1
 SPOT_RATE_INR_HR = SPOT_RATES["P4"]
-BOOT = {"P4": ("prereqs", "preflight", "fa3_import", "host_speed_end"),
+BOOT = {"P4": ("prereqs", "fa3_import", "preflight", "host_speed_end"),
         "P2": ("prereqs", "preflight", "host_speed_end")}
 CAP_FACTOR = 1.3
 HALT_FACTOR = 1.3

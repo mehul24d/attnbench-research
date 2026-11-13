@@ -164,7 +164,8 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | L4 rehearsal, launch 4, instance A (L4; exploratory, not T6.1 data) | 71 |
 | P2, launch 1 (A100; stopped in the bootstrap, no T6.1 data) | 109 |
 | P2, relaunch (A100; stopped in step 7, no T6.1 data) | 169 |
-| **Total** | **~5,121** |
+| P2 at `lock-2026-11-13` (A100; stopped in step 7, no T6.1 data) | 169 |
+| **Total** | **~5,290** |
 
 Headroom: ₹14,000 − ₹5,290 = **about ₹8,710** (after P2's launch at `lock-2026-11-13`, 13 Nov 2026: `attnbench-a100-p2c-20261113-0238`, `5347b73`, 34 min billable at ₹297.47/h, stopped in step 7, self-halted, deleted, cleanup clean; before it, P2's relaunch ₹169 and launch 1 ₹109). The caps still planned: P2 on Flex-start ₹1,934 and P4 on Flex-start ₹3,146, ₹3,630 left; P4 on Spot is ruled out (the adviser's rulings dated 13 Nov 2026, item 6).
 
