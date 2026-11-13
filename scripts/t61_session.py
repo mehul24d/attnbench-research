@@ -668,8 +668,9 @@ def import_check(cfg: SessionConfig) -> tuple[list, dict]:
 def real_preflight(cfg: SessionConfig, args) -> dict:
     """T2.20 provenance and the T2.1 host-speed probe at the start, read from
     the probe's own row; Triton imports (the XAttention code path here); the
-    GPU variants of T2.26 pass on this GPU; on a Triton pairing, the smoke
-    check (`run_preflight_smoke`)."""
+    GPU variants of T2.26 pass on this GPU; on a Triton pairing, the
+    block-sparse kernel's contract (`run_kernel_contract`), then, if it held,
+    the smoke check (`run_preflight_smoke`)."""
     from attnbench import provenance
     out = Path(args.out)
     if run(py("host_cpu_probe.py", "snapshot", "--out", str(out), "--tag", "start")):
@@ -687,7 +688,9 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
         problems.append(lgbm)
     variants, vproblems = run_gpu_variants(out)
     problems += vproblems
-    smoke, sproblems = run_preflight_smoke(cfg, args, out)
+    contract, cproblems = run_kernel_contract(cfg, out)
+    problems += cproblems
+    smoke, sproblems = (None, []) if cproblems else run_preflight_smoke(cfg, args, out)
     problems += sproblems
     findings = {"provisioning_model": row.get("provisioning_model"),
                 "instance_type": row.get("instance_type"), "gpu_name": row.get("gpu_name"),
@@ -696,7 +699,7 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
                 "bootstrap_sha256": row.get("bootstrap_sha256"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
                 "triton": tri.stdout.strip() or None, "gpu_variants": variants,
-                "smoke": smoke,
+                "kernel_contract": contract, "smoke": smoke,
                 "imports_checked": sorted(found["required"]),
                 "kernel_modules_absent": found["kernel_problems"],
                 "problems": problems}
@@ -712,6 +715,40 @@ def triton_pairing(cfg: SessionConfig) -> bool:
     H100) and it runs T3.1's component steps."""
     return bool(cfg.components_config) and \
         str(cfg.code_path.get("implementation", "")).endswith(":triton")
+
+
+def run_kernel_contract(cfg: SessionConfig, out: Path) -> tuple:
+    """The block-sparse kernel's contract (`bsa_contract.contract_check`, the
+    check of P1's preflight, `t31_steps.kernel_contract`) in its own process,
+    on a Triton pairing (the adviser's rulings dated 13 Nov 2026, second set,
+    item 3; `docs/gpu_path_audit.md`, item E): the pinned library, the
+    kernel against a reference, the padded and the library's own buffer
+    bitwise equal over every layer of a real XAttention prompt, and memcheck
+    with and without the fix. (findings, problems): a refusal, or a result
+    that is not clean, is a problem. Unlike P1's preflight, a run where the
+    library's own buffer faulted, so the bitwise comparison was not made, is
+    refused: the read whose value is discarded is then not ruled out."""
+    if not triton_pairing(cfg):
+        return None, []
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from t31_xa_diag import find_sanitizer
+    d = Path(out) / "kernel_contract"
+    d.mkdir(parents=True, exist_ok=True)
+    tool = find_sanitizer()
+    rc = run([sys.executable, "-m", "attnbench.bsa_contract", "check", "--out", str(d),
+              *(["--sanitizer", tool] if tool else [])])
+    rep = read_json(d / "kernel_contract.json") or {}
+    found = {k: rep.get(k) for k in ("status", "clean", "reason", "identity", "real_prompt")}
+    found["sanitizer"] = {k: (rep.get("sanitizer") or {}).get(k)
+                          for k in ("status", "shipped", "fixed")}
+    if rc != 0 or rep.get("status") != "passed":
+        return found, [f"the kernel contract refused (rc {rc}): "
+                       f"{rep.get('reason') or 'no kernel_contract.json'}"]
+    if not rep.get("clean"):
+        real = rep.get("real_prompt") or {}
+        return found, [f"the kernel contract is not clean: padded against unpadded is "
+                       f"{real.get('padded_vs_unpadded')} ({real.get('unpadded')})"]
+    return found, []
 
 
 def run_preflight_smoke(cfg: SessionConfig, args, out: Path) -> tuple:

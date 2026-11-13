@@ -34,3 +34,12 @@ block, which the stamp rule then refuses:
 - a smoke output read by a later step.
 
 Neither path exists. A change that adds one needs a new ruling.
+
+**Addendum (the adviser's rulings dated 13 Nov 2026, second set, item 2).** The smoke check
+now also runs each XAttention arm at 32768, batch 1 (`t31_steps.long_smoke`): step 7's
+recording, isolated replay and null pass with the structure check, then one untraced
+ground-truth forward under the probe. Both conditions above hold for these calls too:
+- no timer runs;
+- every output is discarded into the preflight's `smoke/long/` directory.
+
+They are not clocked blocks.

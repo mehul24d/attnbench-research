@@ -1,12 +1,12 @@
-# Mutations: the arm's own kernels module, the arm-parity test, the smoke's K2 screen and `tag_lock` (13 Nov 2026)
+# Mutations: the arm's own kernels module, the arm-parity test, the smoke's K2 screen, `tag_lock` and the kernel contract in P2's and P4's preflight (13 Nov 2026)
 
-The adviser's rulings dated 13 Nov 2026, items 1, 2, 3 and 6.
+The adviser's rulings dated 13 Nov 2026, items 1, 2, 3 and 6, and item 3 of the second set.
 
 **Method.**
 - Each mutation was applied alone to the working tree and run against the named tests with
   `PYTHONDONTWRITEBYTECODE=1`. The tree was restored after each one.
 - "Killed" means at least one test failed.
-- Results: 14 of 14 killed.
+- Results: 20 of 20 killed.
 
 ## Items 1 and 2: the Triton null entries and arm parity
 
@@ -43,7 +43,21 @@ Test: `tests/test_tag_lock.py`.
 | T5 | `match` instead of `fullmatch` (a trailing newline passes) | yes |
 | T6 | the format check skipped | yes |
 
+## Second set, item 3: the kernel contract in P2's and P4's preflight
+
+Test: `tests/test_preflight_kernel_contract.py`.
+
+| # | Mutation | File | Killed |
+|---|---|---|---|
+| K1 | a refusal or a failed status is not a problem | `scripts/t61_session.py` | yes |
+| K2 | a result that is not clean is not a problem | `scripts/t61_session.py` | yes |
+| K3 | the preflight drops the contract's problems | `scripts/t61_session.py` | yes |
+| K4 | the contract never runs | `scripts/t61_session.py` | yes |
+| K5 | the smoke check runs after a refused contract | `scripts/t61_session.py` | yes |
+| K6 | the contract skips the real prompt's padded-against-unpadded comparison | `attnbench/bsa_contract.py` | yes |
+
 **Drivers.** The drivers are in the session scratchpad and are not banked:
 - `mut12.py` (M1 to M5);
 - `mut6.py` (T1 to T6);
-- M6 to M8 were applied by hand.
+- M6 to M8 were applied by hand;
+- `mutE.py` (K1 to K6).
