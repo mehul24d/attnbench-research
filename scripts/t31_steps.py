@@ -1423,18 +1423,25 @@ def soak(cap, *, seconds: float = SOAK_S, min_replays: int = SOAK_MIN_REPLAYS,
     return {"replays": n, "seconds": round(clock() - t0, 3)}
 
 
-def null_entries(arm: str, code_path) -> tuple:
+def null_entries(arm: str, code_path, backend=None) -> tuple:
     """The entry points step 5's passes null for a cell (`host_profile.
     NullEntry`): none for dense; the block-sparse kernel's extension call for
     a sparse arm; on XAttention's Triton path its Triton kernels as well
     (P2's step 7, 12 Nov 2026: unnulled, they ran for real and the structure
-    check refused the cell)."""
+    check refused the cell), in the module the cell's own backend launches
+    them from (`kernels_module`; 13 Nov 2026: the asserts-removed arm's are
+    its stripped copy's, which nulling `xattn.src.kernels` missed)."""
     from attnbench.components import host_profile as hp
     if arm == "dense":
         return ()
     entries = (hp.block_sparse_entry(),)
     if code_path.implementation == XATTN_TRITON:
-        entries += hp.xattention_triton_entries()
+        kernels = getattr(backend, "kernels_module", None) or \
+            getattr(getattr(backend, "arm", None), "kernels_module", None)   # a compiled arm's
+        if kernels is None:
+            raise StepFailed(f"{arm} took {XATTN_TRITON}, but its backend names no kernels "
+                             f"module to null")
+        entries += hp.xattention_triton_entries(kernels())
     return entries
 
 
@@ -1449,7 +1456,7 @@ def host_cell(h, cfg, out: Path, cell, pricer) -> dict:
     cd = cell_dir(out, arm, d, L, b)
     a = ready_cell(h, arm, d, L, b)
     seconds, t0 = {}, time.time()
-    entries = null_entries(arm, a.code_path)
+    entries = null_entries(arm, a.code_path, a.backend)
     with pricing_clocks.PricingClocks(cd, enabled=pricing_sampled()) as pc:
         with pc.phase("record"):
             rec = recorder.record_arm_prefill(a.run_prefill, cd / "recording",

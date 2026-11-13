@@ -252,17 +252,24 @@ def test_the_residual_times_a_triton_launch_as_one_call():
 
 # --- which cells null them (t31_steps.null_entries) -------------------------------------
 
-def test_only_the_triton_path_nulls_the_triton_kernels(monkeypatch):
+def test_only_the_triton_path_nulls_the_triton_kernels_in_the_backend_s_own_module(monkeypatch):
     import t31_steps as st
-    bsa, tri = object(), (object(), object())
+    bsa = object()
     monkeypatch.setattr(hp, "block_sparse_entry", lambda: bsa)
-    monkeypatch.setattr(hp, "xattention_triton_entries", lambda: tri)
     path = lambda impl: types.SimpleNamespace(implementation=impl)
-    assert st.null_entries("dense", path("eager")) == ()
-    assert st.null_entries("oracle", path("eager")) == (bsa,)
-    assert st.null_entries("xattention", path("xattn:torch")) == (bsa,)
-    assert st.null_entries("xattention", path("xattn:triton")) == (bsa, *tri)
-    assert st.null_entries("xattention_noassert", path("xattn:triton")) == (bsa, *tri)
+    shipped, stripped = fake_kernels(), fake_kernels()
+    be = lambda mod: types.SimpleNamespace(kernels_module=lambda: mod)
+    assert st.null_entries("dense", path("eager"), None) == ()
+    assert st.null_entries("oracle", path("eager"), object()) == (bsa,)
+    assert st.null_entries("xattention", path("xattn:torch"), be(shipped)) == (bsa,)
+    for mod in (shipped, stripped):
+        got = st.null_entries("xattention_noassert", path("xattn:triton"), be(mod))
+        assert got[0] is bsa and len(got) == 5 and all(e.module is mod for e in got[1:])
+    compiled = types.SimpleNamespace(arm=be(stripped))      # a compiled arm's eager backend
+    assert all(e.module is stripped for e in st.null_entries(
+        "xattention", path("xattn:triton"), compiled)[1:])
+    with pytest.raises(st.StepFailed, match="names no kernels module"):
+        st.null_entries("xattention", path("xattn:triton"), object())
 
 
 # --- the preflight's Triton smoke check (item 3) ----------------------------------------
