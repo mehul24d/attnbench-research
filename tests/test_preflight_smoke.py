@@ -169,7 +169,8 @@ def test_the_harness_refuses_a_deployable_arm_whose_forward_the_probe_saw_score_
         h = sa.Harness(device="cpu", dry_run=True, score_cache_dir=tempfile.mkdtemp())
         try:
             with pytest.raises(st.StepFailed, match=r"meanpool@0.25: the probe saw \[0, 0\]"):
-                st.ground_truth_smoke(h, cfg, st.smoke_cells(cfg), Path(tempfile.mkdtemp()))
+                st.ground_truth_smoke(h, cfg, st.smoke_cells(cfg), Path(tempfile.mkdtemp()),
+                                      st.smoke_controls(cfg["card"]))
         finally:
             h.unwrap()
 
@@ -227,3 +228,45 @@ class _Cfg:
         from attnbench.config import AttnConfig
         self._cfg = lambda spec, L: AttnConfig(seq_len=L, batch=1, n_heads_q=12, n_heads_kv=2,
                                                head_dim=128, mask="causal")
+
+
+def test_the_harness_is_smoked_only_with_the_controls_k2_s_screen_found_correct_at_2048():
+    from attnbench import dense_selection as ds
+    key = ds.Cell(card="A100", context_length=2048, batch=1).key
+    other = ds.Cell(card="A100", context_length=16384, batch=1).key
+    dense = {"card": "A100", "cells": {key: {"correct": ["sdpa_flash", "sdpa_cudnn"]},
+                                       other: {"correct": ["sdpa_flash", "fa2"]}}}
+    controls = {"sdpa_flash": "f", "sdpa_cudnn": "c", "sdpa_efficient": "e", "fa2": "2"}
+    assert st.smoke_gt_controls(dense, controls) == {"sdpa_flash": "f", "sdpa_cudnn": "c"}
+
+
+def test_the_smoke_hands_the_harness_the_screen_s_controls(tmp_path, monkeypatch):
+    from attnbench.components import recorder
+    got = {}
+    monkeypatch.setattr(st, "_need_gpu", lambda what: None)
+    monkeypatch.setattr(st, "_boundary", lambda: False)
+    monkeypatch.setattr(st, "_harness", lambda args: types.SimpleNamespace(unwrap=lambda: None))
+    monkeypatch.setattr(st, "bare_pricer", lambda: "pricer")
+    monkeypatch.setattr(st, "host_cell", lambda h, cfg, out, cell, pricer: {
+        "dir": st.cell_dir(Path(), *cell).name, "host_cost_sources": {},
+        "code_path": {"implementation": "eager"}})
+    monkeypatch.setattr(recorder, "load_recording", lambda d: types.SimpleNamespace(
+        sequence=types.SimpleNamespace(ops=[])))
+    monkeypatch.setattr(st, "ready_cell", lambda h, *cell: object())
+    monkeypatch.setattr(st, "_device_cell_priced", lambda *a: {
+        "arm": "dense", "ops": None, "cost_sources": {},
+        "pricing": {"mismatch_s": 0.0, "priced_s": 1.0, "unpriced": []}})
+    monkeypatch.setattr(st, "gate_brief", lambda g: {})
+    from attnbench.components import replay
+    monkeypatch.setattr(replay, "pricing_gate", lambda devs, share: None)
+    from attnbench import dense_selection as ds
+    key = ds.Cell(card="A100", context_length=2048, batch=1).key
+    monkeypatch.setattr(st, "dense_select_smoke", lambda h, cfg: {
+        "card": "A100", "cells": {key: {"correct": ["sdpa_flash"]}}})
+    monkeypatch.setattr(st, "smoke_controls", lambda card: {"sdpa_flash": "f", "sdpa_efficient": "e"})
+    monkeypatch.setattr(st, "ground_truth_smoke",
+                        lambda h, cfg, cells, out, controls: got.update(controls) or {})
+    cfg = {"arms": ["dense"], "densities": {"dense": [1.0]}, "pricing_mismatch_share": 0.05,
+           "pairing": "P2", "model": "m", "card": "A100"}
+    st.preflight_smoke(types.SimpleNamespace(out=str(tmp_path), session="s"), cfg)
+    assert got == {"sdpa_flash": "f"}

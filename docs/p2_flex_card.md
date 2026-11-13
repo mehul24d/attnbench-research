@@ -1,20 +1,26 @@
-# P2 on Flex-start: the relaunch at `lock-2026-11-13-r2` (13 Nov 2026)
+# P2 on Flex-start: the relaunch at `lock-2026-11-13-r3` (13 Nov 2026)
 
 **Not launched.** P2's relaunch needs its own yes. It is asked only after the pre-launch CPU pass
 prints PASSED at the commit the tag names (`scripts/prelaunch_cpu_pass.sh p2`, with T3.2d's step 5
 XAttention masks staged as P1's). The step list and minutes are in
 `docs/launch_cards/t61_p2_a100.md`.
 
-**Why a relaunch.** Both earlier relaunches stopped in step 7, with no T6.1 data:
+**Why a relaunch.** The three earlier relaunches stopped with no T6.1 data:
 
 - 12 Nov 2026, `3aa0449`: on `xattention_dcal_L2048_b1`, 34 min, ₹169. XAttention's Triton kernels
   were not nulled.
 - 13 Nov 2026, `5347b73`, the tag `lock-2026-11-13`: on `xattention_noassert_dcal_L2048_b1`,
   34 min, ₹169. The fix nulled the shipped package's kernels, and the asserts-removed arm launches
   its own copy's.
+- 13 Nov 2026, `886fa28`, the tag `lock-2026-11-13-r2`: in preflight, by the smoke check, 14 min, ₹69.
+  Steps 7 and 8 on all five arms, the pricing check and K2's screen passed; the ground truth's
+  harness then ran `sdpa_efficient` as a control, which K2's screen records as incorrect
+  (unsupported on GQA shapes) and step 12 never runs.
 
 Each XAttention arm's kernels are now nulled in its own kernels module. The smoke check runs every
-arm before anything long (below), and the lock is re-cut (Appendix A, 13 Nov 2026, `-r2`).
+arm before anything long (below), and smokes the ground truth's harness only with the dense
+candidates K2's screen found correct at 2048. The lock is re-cut (Appendix A, 13 Nov 2026, `-r2` and
+`-r3`).
 
 ## What is asked
 
@@ -22,7 +28,7 @@ arm before anything long (below), and the lock is re-cut (Appendix A, 13 Nov 202
 |---|---|
 | Machine | one `a2-ultragpu-1g` (A100 80GB), `asia-southeast1-c` |
 | Provisioning | Flex-start; no Spot fallback (the scratchpad's `gcloud` wrapper refuses Spot, since `gcp_launch_a100.sh` falls back to Spot by itself) |
-| Code | a fresh clone at the tag `lock-2026-11-13-r2`, deployed by `gcp_deploy_source.sh` |
+| Code | a fresh clone at the tag `lock-2026-11-13-r3`, deployed by `gcp_deploy_source.sh` |
 | Bootstrap | `gcp_bootstrap_instance.sh "$NAME" "$ZONE"`, without `--suite-record` (the researcher's ruling of 12 Nov 2026) |
 | Staged by scp | P1's masks (20 files) as `results/<session>/p1_masks/`, the P1 training file (`de7f0f44…`) |
 | Start | `nohup bash scripts/session_exit.sh --log ~/p2.log -- python3 scripts/t61_session.py run --session results/t61_p2_<UTC>`; no `--banked-at`, which a real run refuses |
@@ -45,7 +51,8 @@ runs before anything long. It is untimed and its outputs are discarded
 4. K2's untimed screen (each dense candidate's capability and correctness checks) at every cell K2
    screens. At 16384 batch 1 the float64 oracle runs here, where the L4 took the cross-backend
    check;
-5. the ground truth's harness: one untraced and one traced forward per dense control and per arm,
+5. the ground truth's harness: one untraced and one traced forward per dense control K2's screen
+   found correct at 2048 and per arm,
    under the probe and the NVML throttle sampler, then the density twin, then step 14's trace
    checks on each trace.
 
@@ -56,12 +63,12 @@ adviser's acceptance.
 
 ## Headroom (`scripts/budget_interlock.py`)
 
-Spent ₹5,290. P4 on Spot is ruled out (the adviser's rulings dated 13 Nov 2026, item 6).
+Spent ₹5,359. P4 on Spot is ruled out (the adviser's rulings dated 13 Nov 2026, item 6).
 
 | P2 | P4 | Spent + caps ₹ | Headroom ₹ |
 |---|---|---|---|
-| Flex-start ₹1,966 | Flex-start ₹3,197 | 10,453 | 3,547 |
-| Flex-start ₹1,966 | Spot ₹7,327 | 14,583 | −583: ruled out |
+| Flex-start ₹1,966 | Flex-start ₹3,197 | 10,522 | 3,478 |
+| Flex-start ₹1,966 | Spot ₹7,327 | 14,652 | −652: ruled out |
 
 The card's P2 cap (₹1,966) includes the suite record's 20 minutes, which P2 does not run. The
 launch keeps the ruled ₹1,934, halt 390 and delete 400 minutes. The steps total 246 minutes.

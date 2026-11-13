@@ -1856,7 +1856,8 @@ def preflight_smoke(args, cfg) -> dict:
          candidate's capability and correctness checks, at every cell K2
          screens (at 2048 only behind the CPU boundary);
       5. the ground truth's harness (`ground_truth_smoke`): one untimed
-         forward of every dense candidate and every arm, untraced and
+         forward of every dense candidate K2 can choose at 2048 (the
+         screen's correct ones, `smoke_gt_controls`) and every arm, untraced and
          traced, under the probe and with the session's throttle sampler
          running, then the density twin; each traced forward's trace is
          exported and given step 14's trace checks (`check_trace.py kineto`).
@@ -1914,7 +1915,9 @@ def preflight_smoke(args, cfg) -> dict:
     found["dense_select"] = dense_select_smoke(h, cfg)
     found["dense_select"]["seconds"] = round(time.time() - t3, 1)
     t3 = time.time()
-    found["ground_truth"] = ground_truth_smoke(h, cfg, cells, out / "ground_truth")
+    found["ground_truth"] = ground_truth_smoke(
+        h, cfg, cells, out / "ground_truth",
+        smoke_gt_controls(found["dense_select"], smoke_controls(cfg["card"])))
     found["ground_truth"]["seconds"] = round(time.time() - t3, 1)
     h.unwrap()
     _write_json(out / "smoke.json", found)
@@ -1986,10 +1989,23 @@ def dense_select_smoke(h, cfg) -> dict:
     return found
 
 
-def ground_truth_smoke(h, cfg, cells, out: Path) -> dict:
+def smoke_gt_controls(dense: dict, controls: dict) -> dict:
+    """The controls the ground truth's harness is smoked with: the dense
+    candidates K2's screen found correct at 2048, batch 1
+    (`dense_select_smoke`), the ones step 12 can be given there. Step 12
+    runs only K2's choice; a candidate the screen records as incorrect is
+    never one (P2 at `lock-2026-11-13-r2`, 13 Nov 2026: `sdpa_efficient`,
+    unsupported on GQA shapes, was run as a control and stopped the
+    preflight)."""
+    from attnbench import dense_selection as ds
+    key = ds.Cell(card=dense["card"], context_length=SMOKE_LENGTH, batch=SMOKE_BATCH).key
+    return {n: controls[n] for n in dense["cells"][key]["correct"]}
+
+
+def ground_truth_smoke(h, cfg, cells, out: Path, controls: dict) -> dict:
     """Step 12's harness on the smoke's cells, untimed: the arms as
-    `time_arms` takes them (`Harness.timing_arms`), each dense candidate as
-    the control, then every arm under the probe with its setup
+    `time_arms` takes them (`Harness.timing_arms`), each of `controls` (by
+    name) as the control, then every arm under the probe with its setup
     (`untimed_setup`), one forward untraced and one inside the session's
     tracer, and the density twin (`kernel_densities`), all with the
     session's throttle sampler running (`_sampler`; NVML on a GPU). No timer,
@@ -2023,7 +2039,7 @@ def ground_truth_smoke(h, cfg, cells, out: Path) -> dict:
         found["traces"].append(path.name)
 
     with _sampler(cfg, _boundary()) as sampler:
-        for name, be in smoke_controls(cfg["card"]).items():
+        for name, be in controls.items():
             forward(be, arms[0], {})
             forward(be, arms[0], {}, label=f"control_{name}")
             found["controls"].append(name)
