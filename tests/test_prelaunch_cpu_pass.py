@@ -148,7 +148,9 @@ def make_runner(cfg, comp, seen):
         log.parent.mkdir(parents=True, exist_ok=True)
         out.mkdir(parents=True, exist_ok=True)
         if step in GPU_STEPS:
-            ns = Namespace(session=str(session), out=str(out), dry_run=True)
+            # the step's own options, as its process would parse them (P4's FA3 hash)
+            fa3 = argv[argv.index("--fa3-sha256") + 1] if "--fa3-sha256" in argv else None
+            ns = Namespace(session=str(session), out=str(out), dry_run=True, fa3_sha256=fa3)
             found = cfg.fakes[step](cfg, ns)
             if step == "link":
                 import pandas as pd
