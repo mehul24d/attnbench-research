@@ -22,7 +22,7 @@ from t64_session import T64  # noqa: E402
 
 
 def _built(m=None):
-    return C.build(m or C.load_minutes(), "2026-11-13")
+    return C.build(m or C.load_minutes(), "2026-11-14")
 
 
 def _preflight_at(m: dict, minutes: int) -> dict:
