@@ -42,19 +42,19 @@ at `lock-2026-11-13-r2` stopped in preflight (Appendix A, 13 Nov 2026, `-r3`), t
 the preflight gained the block-sparse kernel's contract and the smoke check the XAttention arms at
 32768 (the adviser's rulings dated 13 Nov 2026, second set; Appendix A, 13 Nov 2026, `-r4`),
 then to `161cd95` when P4's preflight gained the check of its libraries against P2's (the
-adviser's rulings dated 14 Nov 2026; Appendix A, 14 Nov 2026, `lock-2026-11-14-r1`).
+adviser's rulings dated 14 Nov 2026; Appendix A, 14 Nov 2026, `lock-2026-11-14-r2`).
 T4.4 was written Done at `0301fb6`, and the tag `lock-2026-11-14` is on its child `3aa0449`; the
 first re-cut's tag `lock-2026-11-13` is on `5347b73`, the second's, `lock-2026-11-13-r2`, on `886fa28`,
 the third's, `lock-2026-11-13-r3`, on `f38a625` (local only, never pushed), and the fourth's,
 `lock-2026-11-13-r4`, on `a16ae1a`, where P2 ran. The re-cut for P4's lock commit holds this file,
-the plan's Appendix A lines and the new pin; the tag `lock-2026-11-14-r1` goes on its child,
+the plan's Appendix A lines and the new pin; the tag `lock-2026-11-14-r2` goes on its child,
 which carries the suite counts and P4's Flex-start card. Neither the plan nor the pin changes there.
 No earlier tag is moved.
 
 ## Still to do
 
 1. Tag the re-cut's lock commit (`scripts/tag_lock.py --lock-file docs/lock_values.json --tag
-   lock-2026-11-14-r1`). Pushing the tag needs its own yes.
+   lock-2026-11-14-r2`). Pushing the tag needs its own yes.
 2. P4's Flex-start request needs its own yes.
 3. P4's Flex card is built from the lock commit, with the headroom table (`docs/p4_flex_card.md`).
    Its launch needs its own yes.

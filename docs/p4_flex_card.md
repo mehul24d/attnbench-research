@@ -1,4 +1,4 @@
-# P4 on Flex-start at `lock-2026-11-14-r1` (14 Nov 2026)
+# P4 on Flex-start at `lock-2026-11-14-r2` (14 Nov 2026)
 
 **Not launched.** P4's Flex-start request and launch need one yes, asked together. They are asked
 only after the pre-launch CPU pass prints PASSED at the commit the tag names
@@ -24,7 +24,7 @@ training file against that entry. The step list and minutes are in
 | Machine | one `a3-highgpu-1g` (H100 80GB), `us-central1-a` |
 | Provisioning | Flex-start (`gcp_launch_h100.sh`'s default); no Spot (ruled out for P4, 13 Nov 2026; the scratchpad's `gcloud` wrapper refuses Spot) |
 | Image | `attnbench-env-v6-20260917`, P2's, the only one the launcher boots |
-| Code | a fresh clone at the tag `lock-2026-11-14-r1`, deployed by `gcp_deploy_source.sh` |
+| Code | a fresh clone at the tag `lock-2026-11-14-r2`, deployed by `gcp_deploy_source.sh` |
 | Bootstrap | `FA3_WHEEL_SHA256=1676ef0b86c377ae911a7de238c2a1f6b58a7666f1a6eef919d4dc7b0973b64a gcp_bootstrap_instance.sh "$NAME" "$ZONE" --suite-record`. **Plan default, flagged:** the suite record runs, as ruling 1h of 10 Nov 2026 and the card's cap have it; the H100 has none. P2 ran without one, by the researcher's ruling of 12 Nov 2026 for P2 |
 | Staged by scp | the P1 training file (`de7f0f44…`) and P2's (`96c6670c…`) under `results/`; P2's Triton masks (P2's `06_mask_gate/masks/triton`, read from the bucket for this, under the launch yes) as `results/<session>/p2_masks/` |
 | Start | `nohup bash scripts/session_exit.sh --log ~/p4.log -- python3 scripts/t64_session.py run --session results/t64_p4_<UTC> --fa3-sha256 1676ef0b…`; no `--banked-at`, which a real run refuses (it reads P1's and P2's banking times from the ledger) |

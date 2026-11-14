@@ -49,7 +49,7 @@ Face cache, **1** needs the primary model's pinned `config.json` there, and **1*
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden):
 `f38a625` gives the same 185, skip for skip, on the machine that measured these, so
-the change is the environment's, not the code's (13 Nov 2026). At `lock-2026-11-14-r1` the
+the change is the environment's, not the code's (13 Nov 2026). At `lock-2026-11-14-r2` the
 Mac has the RULER data and the tokenizer in `~/.cache`, so the fresh count is measured with
 `HOME` pointed at an empty directory (14 Nov 2026).
 **With `results/` present the suite reads 6690 passed, 95 skipped**, because
