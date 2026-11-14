@@ -29,3 +29,14 @@ A mutation is detected when the run fails or errors.
 | L9 | a list naming a library twice accepted | killed (1 failed) |
 | L10 | P4 given no reference | detected (collection error: the reference path is empty) |
 | L11 | the reference left out of P4's deployed files | killed (1 failed) |
+
+## The interlock for a pairing that ran (`scripts/budget_interlock.py`, `RAN`; `tests/test_budget_interlock.py`)
+
+| # | Mutation | Result |
+|---|---|---|
+| R1 | `ran_caps` returns the cards' caps unchanged | killed (2 failed) |
+| R2 | a ran pairing keeps its card's cap on its provisioning | killed (2 failed) |
+| R3 | the card's section says a ran pairing may launch | killed (1 failed) |
+| R4 | the CLI launches a ran pairing | killed (1 failed) |
+| R5 | `RAN` names no real pairing | killed (2 failed) |
+| R6 | `current` ignores `RAN` | killed (2 failed) |
