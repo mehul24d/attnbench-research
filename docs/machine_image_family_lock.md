@@ -80,7 +80,7 @@ gcloud compute instances create attnbench-a100-... \
     --zone=asia-southeast1-c \
     --machine-type=a2-ultragpu-1g \
     --provisioning-model=SPOT \
-    --image=attnbench-env-v5 --image-project=research-507316 \
+    --image=attnbench-env-v5 --image-project="$ATTNBENCH_GCP_PROJECT" \
     --boot-disk-size=200 --boot-disk-type=pd-balanced
 ```
 

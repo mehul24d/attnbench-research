@@ -244,7 +244,7 @@ threshold about 47 minutes. The session billed 201 minutes, about INR 268.
 There are four files of 400 rows each, all `git_dirty=False` and at the one
 commit, with the per-task counts the plan fixes. They are under
 `results/t4_xattn_pilot_session_20261003/` locally and under the instance's
-prefix in `gs://attnbench-results-research-507316/`.
+prefix in `gs://attnbench-results-<project>/`.
 
 **The dense reference reproduced exactly.** All 400 dense predictions are
 identical, character for character, to the sparse pilot's dense rows for the
