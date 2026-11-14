@@ -69,6 +69,7 @@ def test_a_negative_headroom_refuses_the_launch():
 
 
 def test_the_cli_exits_2_on_a_refused_launch(monkeypatch, capsys):
+    monkeypatch.setattr(BI, "RAN", {})       # the mechanics, before P2 ran
     monkeypatch.setattr(BI, "current", lambda: (7000, (250, 233), CAPS, BI.cases(7000, 250, CAPS)))
     assert BI.main(["--launch", "P2:FLEX_START"]) == 2
     assert "REFUSED" in capsys.readouterr().out
@@ -76,6 +77,7 @@ def test_the_cli_exits_2_on_a_refused_launch(monkeypatch, capsys):
 
 
 def test_launch_4_is_counted_at_the_larger_reading(monkeypatch):
+    monkeypatch.setattr(BI, "RAN", {})       # the mechanics, before P2 ran
     monkeypatch.setattr(BI, "pairing_caps", lambda: CAPS)
     monkeypatch.setattr(BI, "rehearsal_cap", lambda text: (100, 233))   # 403 - 233 = 170 > 100
     monkeypatch.setattr(BI, "rehearsal_closed", lambda text: None)
@@ -99,7 +101,7 @@ def test_a_closed_rehearsal_reserves_nothing_and_its_spend_is_the_ledgers(monkey
     monkeypatch.setattr(BI, "pairing_caps", lambda: CAPS)
     s, _, _, cs = BI.current()
     assert BI.rehearsal_closed(text) <= s
-    assert cs[0].committed == s + 1000 + 2000                   # nothing reserved
+    assert cs[0].committed == s + 0 + 2000      # nothing reserved; P2 ran (RAN)
 
 
 # --- a ruled-out provisioning (the adviser's rulings dated 13 Nov 2026, item 6) ---------------
@@ -121,6 +123,7 @@ def test_the_real_interlock_rules_out_p4_on_spot():
 
 
 def test_the_cli_refuses_a_ruled_out_launch(monkeypatch, capsys):
+    monkeypatch.setattr(BI, "RAN", {})       # the mechanics, before P2 ran
     cs = BI.cases(4000, 0, CAPS, BI.RULED_OUT)
     monkeypatch.setattr(BI, "current", lambda: (4000, (250, 233), CAPS, cs))
     assert BI.main(["--launch", "P4:SPOT"]) == 2
@@ -138,3 +141,23 @@ def test_a_provisioning_a_card_has_no_plan_for_is_never_possible():
     assert not BI.possible("P2", "SPOT", cs) and not BI.possible("P4", "SPOT", cs)
     assert BI.may_launch("P2", "FLEX_START", cs)
     assert BI.launch_headroom("P2", "FLEX_START", cs) == 6000
+
+
+# --- a pairing that ran (P2, 14 Nov 2026) ------------------------------------------------------
+
+def test_a_pairing_that_ran_reserves_nothing_and_is_not_launched_again(monkeypatch, capsys):
+    assert BI.ran_caps(CAPS, {}) == CAPS
+    got = BI.ran_caps(CAPS, {"P2": ("FLEX_START", "x")})
+    assert got["P2"] == {"FLEX_START": 0, "SPOT": None} and got["P4"] == CAPS["P4"]
+    assert set(BI.RAN) == {"P2"} and BI.RAN["P2"][0] == "FLEX_START"
+    monkeypatch.setattr(BI, "pairing_caps", lambda: CAPS)
+    s, _, caps, cs = BI.current()
+    flex = next(c for c in cs if (c.p2, c.p4) == ("FLEX_START", "FLEX_START"))
+    assert flex.committed == s + CAPS["P4"]["FLEX_START"]       # P2's cap not counted again
+    assert not next(c for c in cs if (c.p2, c.p4) == ("SPOT", "FLEX_START")).possible
+    assert BI.launch_headroom("P4", "FLEX_START", cs) == BI.BUDGET_INR - s - CAPS["P4"]["FLEX_START"]
+    text = "\n".join(BI.section("P2"))
+    assert "- **P2 ran** (" in text and "may launch" not in text
+    assert "| Spot | Flex-start | — | — | no: P2 ran on Flex-start |" in text
+    assert BI.main(["--launch", "P2:FLEX_START"]) == 2
+    assert "REFUSED: P2 ran" in capsys.readouterr().out

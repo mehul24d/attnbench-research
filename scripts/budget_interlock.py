@@ -14,7 +14,9 @@ so P2 on Flex-start is counted with P4 on Spot, and P2 on Spot with P4 on
 Flex-start only (P4 then cannot fall back to Spot). A provisioning ruled out
 (`RULED_OUT`) is neither launched nor counted: P4 on Spot since the adviser's
 rulings dated 13 Nov 2026 (item 6), so P2 on Flex-start is counted with P4
-on Flex-start.
+on Flex-start. A pairing that has run (`RAN`) reserves nothing, as a
+closed rehearsal reserves nothing: its spend is in the ledger, and it is
+counted on the provisioning it ran on only.
 
     python3 scripts/budget_interlock.py                  # the table
     python3 scripts/budget_interlock.py --launch P2:FLEX_START   # exit 2 if refused
@@ -42,6 +44,9 @@ PAIRINGS = ("P2", "P4")
 # (pairing, provisioning) -> the ruling that took it off the table
 RULED_OUT = {("P4", "SPOT"): "the adviser's rulings dated 13 Nov 2026, item 6: Spot no longer "
                              "fits the budget"}
+# pairing -> (the provisioning it ran on, the record): its spend is the ledger's
+RAN = {"P2": ("FLEX_START", "at lock-2026-11-13-r4 on 14 Nov 2026, all 15 steps passed, "
+                            "₹823 in the ledger; banked")}
 _HEAD = "### New-spend headroom against the ₹14,000 budget"
 _ROW = re.compile(r"^\|\s*(?!\*\*Total)(.+?)\s*\|\s*~?([\d,]+)\s*\|\s*$")
 _TOTAL = re.compile(r"^\|\s*\*\*Total\*\*\s*\|\s*\*\*~?([\d,]+)\*\*\s*\|\s*$")
@@ -95,6 +100,14 @@ def pairing_caps() -> dict:
     import t61_card
     import t64_card
     return {"P2": t61_card.caps(), "P4": t64_card.caps()}
+
+
+def ran_caps(caps: dict, ran=None) -> dict:
+    """`caps` with each pairing that ran at 0 on its provisioning and with no
+    plan on the others."""
+    ran = RAN if ran is None else ran
+    return {p: ({k: (0 if k == ran[p][0] else None) for k in PROVISIONING} if p in ran else c)
+            for p, c in caps.items()}
 
 
 @dataclass(frozen=True)
@@ -160,7 +173,7 @@ def current() -> tuple[int, tuple, dict, list]:
     s = spent(LEDGER.read_text(encoding="utf-8"))
     text = REHEARSAL_CARD.read_text(encoding="utf-8")
     card, done = rehearsal_cap(text)
-    caps = pairing_caps()
+    caps = ran_caps(pairing_caps())
     r = 0 if rehearsal_closed(text) is not None else max(card, REHEARSAL_CAP_RULED - done)
     return s, (card, done), caps, cases(s, r, caps, RULED_OUT)
 
@@ -190,15 +203,19 @@ def section(pairing: str) -> list:
            "Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one "
            "of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all "
            f"still-planned sessions is negative. Budget ₹{BUDGET_INR:,} (plan Section 5.2); "
-           f"{rehearsal}. P2 and P4 at their cards' caps, the ground truth's worst case of 5 "
-           "reruns at every cell in each: P2 Flex-start "
-           f"₹{caps['P2']['FLEX_START']:,}, Spot {_cap(caps['P2']['SPOT'])}; P4 Flex-start "
-           f"₹{caps['P4']['FLEX_START']:,}, Spot {_cap(caps['P4']['SPOT'])}. Not counted: a Spot "
-           "block rerun after an interruption, image storage, egress.", "",
+           f"{rehearsal}. "
+           + " ".join(f"{pp} ran ({why}), so nothing is reserved for it." for pp, (_, why)
+                      in RAN.items())
+           + " " + "; ".join(f"{pp} at its card's caps, the ground truth's worst case of 5 "
+                             f"reruns at every cell: Flex-start {_cap(caps[pp]['FLEX_START'])}, "
+                             f"Spot {_cap(caps[pp]['SPOT'])}" for pp in PAIRINGS if pp not in RAN)
+           + ". Not counted: a Spot block rerun after an interruption, image storage, egress.", "",
            "| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |",
            "|---|---|---|---|---|"]
     for c in cs:
+        ran = [pp for pp, prov in (("P2", c.p2), ("P4", c.p4)) if pp in RAN and RAN[pp][0] != prov]
         why = ("no: both on Spot" if c.p2 == c.p4 == "SPOT" else
+               f"no: {ran[0]} ran on {_p(RAN[ran[0]][0])}" if ran else
                "no: no Spot plan" if not c.planned else
                "no: ruled out" if c.ruled_out else
                "no: negative" if c.headroom < 0 else "yes")
@@ -208,6 +225,8 @@ def section(pairing: str) -> list:
     out.append("")
     for (pp, prov), why in RULED_OUT.items():
         out.append(f"- **{pp} on {_p(prov)}: ruled out** ({why}).")
+    if pairing in RAN:
+        return out + [f"- **{pairing} ran** ({RAN[pairing][1]}); it is not launched again.", ""]
     for prov in PROVISIONING:
         if not possible(pairing, prov, cs):
             continue
@@ -224,6 +243,9 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     if args.launch:
         pairing, prov = args.launch.split(":")
+        if pairing in RAN:
+            print(f"{pairing} on {prov}: REFUSED: {pairing} ran ({RAN[pairing][1]})")
+            return 2
         _, _, _, cs = current()
         if not possible(pairing, prov, cs):
             print(f"{pairing} on {prov}: REFUSED: ruled out ({RULED_OUT.get((pairing, prov))})")

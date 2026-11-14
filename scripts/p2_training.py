@@ -6,12 +6,17 @@ receipt names it (`predictions/P2/<session>/prediction_P2_<t>.json`), read
 through `load_committed` with its local copy LOCAL, P1's training rows (the
 lock's file) and P1's banking time from the pairing ledger. Each `--block` is
 one of P2's block session directories; `block_drift.collect` keeps the passed
-ones. LINK is the session's `recursion_inputs.json` (the link figures).
+ones. P2 on Flex-start runs unblocked: `--session` names that one session
+directory instead, read as P2's one block, its id the directory's name, once
+every step of the session has passed, `late_check` among them (plan default,
+flagged, 14 Nov 2026: neither card plans Spot blocks since the -r4 re-cut).
+LINK is the session's `recursion_inputs.json` (the link figures).
 
     python3 scripts/p2_training.py --remote predictions/P2/<s>/prediction_P2_<t>.json \\
         --local <local copy> --link <recursion_inputs.json> \\
         --block results/t61_p2_<b1> --block results/t61_p2_<b2> \\
         --out results/p2_training/p2_training.json.gz
+    python3 scripts/p2_training.py ... --session results/t61_p2_<s> --out ...
 
 It reads the bucket (the prediction, its ledger entries); ask before running it.
 """
@@ -44,23 +49,46 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--remote", required=True)
     ap.add_argument("--local", required=True)
     ap.add_argument("--link", required=True)
-    ap.add_argument("--block", action="append", required=True)
+    one = ap.add_mutually_exclusive_group(required=True)
+    one.add_argument("--block", action="append")
+    one.add_argument("--session")
     ap.add_argument("--clock-skew-s", type=float, default=C.CLOCK_SKEW_ALLOWED_S)
     ap.add_argument("--out", required=True)
     return ap
 
 
+def unblocked(d: Path, gt_dir: str) -> tuple[list, list]:
+    """One unblocked session as P2's one block: ([(id, results)], starts).
+    Refused unless every step of the session's last attempts passed."""
+    m = json.loads((d / "manifest.json").read_text())
+    if m.get("block"):
+        raise P2T.TrainingRowsError(f"{d} is a block's session: name it with --block")
+    if m.get("dry_run"):
+        raise P2T.TrainingRowsError(f"{d} is a dry run's session")
+    if (d / BD.DISCARD).exists():
+        raise P2T.TrainingRowsError(f"{d} carries {BD.DISCARD}")
+    bad = BD._unpassed(m, {"steps": S.T61.names})
+    if bad:
+        raise P2T.TrainingRowsError(f"{d}: steps not passed: {bad}")
+    results, starts = GA.ground_truth(d / gt_dir)
+    return [(d.name, results)], starts
+
+
 def session(args, store, prefix) -> P2T.PairingSession:
     gt_dir = S.step_dir(Path(), "ground_truth", S.T61).name
-    got = BD.collect(args.block, ground_truth_dir=gt_dir)
-    blocks, starts = [], []
-    for d in args.block:
-        m = json.loads((Path(d) / "manifest.json").read_text())
-        if m["block"]["id"] not in got["blocks"]:
-            continue
-        results, st = GA.ground_truth(Path(d) / gt_dir)
-        blocks.append((m["block"]["id"], results))
-        starts += st
+    if args.session:
+        blocks, starts = unblocked(Path(args.session), gt_dir)
+        got = {"discarded": [], "unpassed": []}
+    else:
+        got = BD.collect(args.block, ground_truth_dir=gt_dir)
+        blocks, starts = [], []
+        for d in args.block:
+            m = json.loads((Path(d) / "manifest.json").read_text())
+            if m["block"]["id"] not in got["blocks"]:
+                continue
+            results, st = GA.ground_truth(Path(d) / gt_dir)
+            blocks.append((m["block"]["id"], results))
+            starts += st
     p1 = Ledger(store, prefix, "P1").banked()
     if p1 is None:
         raise P2T.TrainingRowsError("P1 has no banked entry in the pairing ledger")

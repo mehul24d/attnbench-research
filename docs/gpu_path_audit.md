@@ -45,3 +45,15 @@ and arm names. Then each hit was traced to the steps that reach it.
 
 What remains uncovered is A, the clocked part of step 12, and C, P4's H100 beyond FA3, which is
 looked at again before P4's card.
+
+## C, revisited before P4's card (the adviser's rulings dated 14 Nov 2026, item 5)
+
+| What | Status |
+|---|---|
+| The boot image | **Fixed.** `gcp_launch_h100.sh` defaulted to v5, the H100's earlier image; P2 ran v6. It now boots only `attnbench-env-v6-20260917`, and P4's preflight refuses libraries other than P2's (`configs/t64/p2_libraries.json`), FA3 alone excepted |
+| block_sparse_attn and flash_attn on sm_90 | v6's build logs (`bsa_build.log`, `fa_build.log`, pulled with P2's logs) show `archs=80;90` for both, rc 0. Running on the H100 is covered by P4's preflight: the kernel contract (E) and the smoke's steps 7 and 8 and `long_smoke` (B) on every sparse arm |
+| XAttention's Triton kernels on sm_90 | covered by the same preflight; Triton JIT-compiles per card |
+| FA3 on v6 | v6's Python is 3.10, the wheel's cp310 tag; `fa3_import` checks hash, tags, install and import before the preflight |
+| v6 has never booted an `a3-highgpu-1g` | **listed for acceptance.** The driver is read into the preflight's provenance; a boot or driver failure stops in prereqs or preflight, before anything is timed, at the cost of the boot |
+| The H100's timed rounds | A, accepted 13 Nov 2026 |
+| Flex-start capacity for `a3-highgpu-1g` | availability, not correctness: none in three zones on 6 Nov 2026 |

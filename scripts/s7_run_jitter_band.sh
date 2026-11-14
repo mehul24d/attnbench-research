@@ -56,7 +56,7 @@ BANKED="$REF/accuracy_forced_sink.parquet"
 BANKED_MD5=4101d787f7951b72e289a583fdeb5c71
 BANKED_CACHE=/tmp/banked_score_cache   # outside results/, so run_phase.sh does
                                        # not rsync 370MB of banked tensors back
-BUCKET="${ATTNBENCH_BUCKET:-gs://attnbench-results-research-507316}"
+BUCKET="${ATTNBENCH_BUCKET:-gs://attnbench-results-${ATTNBENCH_GCP_PROJECT:?set ATTNBENCH_GCP_PROJECT}}"
 BANKED_URI="$BUCKET/l4-forced-sink/results/accuracy_forced_sink/accuracy.parquet"
 BANKED_CACHE_URI="$BUCKET/l4-forced-sink/results/accuracy/score_cache"
 RCFILE=/tmp/s7_jitter.rc

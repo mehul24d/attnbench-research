@@ -101,7 +101,16 @@ gcp_project_pin
 source "$(dirname "${BASH_SOURCE[0]}")/_flex_request.sh"
 MACHINE_TYPE="a3-highgpu-1g"
 ACCELERATOR="type=nvidia-h100-80gb,count=1"
-IMAGE="${GCP_IMAGE:-attnbench-env-v5-20260905}"
+# P4 boots P2's image (the adviser's rulings dated 14 Nov 2026, item 3), so the
+# libraries P4's preflight compares against P2's banked manifest are the same
+# build; v5, the H100's earlier image, is no longer a default. GCP_IMAGE, if
+# set, must name the pinned image.
+IMAGE_PINNED="attnbench-env-v6-20260917"
+IMAGE="${GCP_IMAGE:-$IMAGE_PINNED}"
+if [[ "$IMAGE" != "$IMAGE_PINNED" ]]; then
+  echo "REFUSING TO LAUNCH -- the H100 boots $IMAGE_PINNED (P2's image), not $IMAGE" >&2
+  exit 1
+fi
 BOOT_DISK_SIZE="200GB"
 BOOT_DISK_TYPE="pd-balanced"
 # How long a FLEX_START request may wait for capacity before Compute Engine

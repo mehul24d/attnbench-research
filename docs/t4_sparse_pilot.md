@@ -221,7 +221,7 @@ The canary ran on an NVIDIA L4 in `asia-northeast1-a` (instance
 2.9.1+cu129 and transformers 4.46.0. Every phase was synced to GCS, and the
 instance was then torn down through `scripts/gcp_teardown_session.sh`. The
 rows are under `results/t4_sparse_canary_session_20261002/` locally and under
-`gs://attnbench-results-research-507316/attnbench-l4-t4canary-20261002-0214/`.
+`gs://attnbench-results-<project>/attnbench-l4-t4canary-20261002-0214/`.
 They are never pooled with the pilot.
 
 | # | criterion | result |
@@ -284,7 +284,7 @@ Every row has `git_dirty=False` and the one commit. The per-task counts are
 the plan's: 100/50/50 dense rows per band, and 300/150/150 for each scorer.
 The rows are under `results/t4_sparse_pilot_session_16384_20261002/` and
 `results/t4_sparse_pilot_session_32768_20261002/` locally, and under each
-instance's prefix in `gs://attnbench-results-research-507316/`. The 32768
+instance's prefix in `gs://attnbench-results-<project>/`. The 32768
 session's copy also holds `results/s7_7b_16384/accuracy.parquet` at commit
 `35ac080`. That is a force-committed file that the quarantine's
 `git checkout -- results` restores. It is not pilot data, and the analysis

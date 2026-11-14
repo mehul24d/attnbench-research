@@ -195,9 +195,12 @@ def _t64() -> S.SessionConfig:
             ("scripts/_fa3_pin.sh", None),
             ("attnbench/backends/fa3.py", None),
             ("attnbench/fa3_wheel.py", None),
+            ("configs/t64/p2_libraries.json", None),
         ),
         fakes=fakes, reals=reals, preflight_findings=floor_findings,
-        staged=p4_staged_inputs, pin_timed_path=True)
+        staged=p4_staged_inputs, pin_timed_path=True,
+        # P2's libraries, the preflight's reference (the adviser's rulings dated 14 Nov 2026, item 3)
+        library_reference="configs/t64/p2_libraries.json")
     S.validate(cfg)
     return cfg
 

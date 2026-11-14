@@ -129,6 +129,7 @@ authority is the billing console.
 | 2026-11-12 | `attnbench-a100-p2r-20261112-2309`, **P2 (T6.1), relaunch: stopped in step 7 (`host_components`), no T6.1 data banked** (researcher's own-words yes of 12 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START, image v6, `3aa0449` (the tag), no suite record, ₹297.47/h; 34 min (17:40:21Z to the self-halt; one restart after a refused start). Boot 1: the start passed `--banked-at`, refused in a real run (ruling 1e); halted itself after 6 min. Boot 2: steps 1 to 6 passed (preflight with T2.26's five GPU variants, the mask gate); step 7 failed on `xattention_dcal_L2048_b1`: `ProfileMismatch`, the recording's call 35 an XAttention entry point in layer 0, the null pass's `aten::_to_copy`. Synced at exit, deleted, cleanup clean; logs in `attnbench_backups/p2_relaunch_20261112/` | **34** | **169** | `session_cost.txt` (`attnbench_backups/p2_relaunch_20261112/`) |
 | 2026-11-13 | `attnbench-a100-p2c-20261113-0238`, **P2 (T6.1), launch at `lock-2026-11-13`: stopped in step 7 (`host_components`), no T6.1 data banked** (researcher's own-words yes of 13 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START, image v6, `5347b73` (the tag), no suite record, ₹297.47/h; 34 min (21:08:22Z to the self-halt, 12 Nov UTC). Steps 1 to 6 passed (preflight's Triton smoke check on `xattention_dcal_L2048_b1`, the mask gate); in step 7 `xattention_dcal_L2048_b1` passed, and `xattention_noassert_dcal_L2048_b1` failed: `ProfileMismatch`, the recording's call 35 an entry point in layer 0 (position 38), the null pass's `aten::_to_copy`. Synced at exit, deleted, cleanup clean; logs in `attnbench_backups/p2_launch3_20261113/` | **34** | **169** | `session_cost.txt` (`attnbench_backups/p2_launch3_20261113/`) |
 | 2026-11-13 | `attnbench-a100-p2d-20261113-0933`, **P2 (T6.1), launch at `lock-2026-11-13-r2`: stopped in preflight (step 2) by the smoke check, no T6.1 data** (researcher's own-words yes of 13 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START granted at once, image v6, `886fa28` (the tag), no suite record, ₹297.47/h; 14 min (04:03:56Z boot to the self-halt). Deploy, preflight (`--quarantine`), the write gate and the bootstrap passed; step 1 passed. In step 2 the smoke check ran steps 7 and 8 on all five arms, the pricing check and K2's screen at its six cells, then stopped in the ground truth's harness: it ran every available dense candidate as the control, and `sdpa_efficient`, which K2's screen records as incorrect (unsupported on GQA shapes), raised `UnsupportedConfig: No available kernel` in the model's forward. A smoke defect: step 12 runs only K2's chosen candidate. Synced at exit (rc 1), deleted by `gcp_teardown_session.sh`, cleanup clean | **14** | **69** | `session_cost.txt` (`results/t61_p2_20261113T0409Z/`, scratchpad clone) |
+| 2026-11-14 | `attnbench-a100-p2e-20261114-0546`, **P2 (T6.1), launch at `lock-2026-11-13-r4`: all 15 steps passed** (researcher's own-words yes of 14 Nov 2026), asia-southeast1-c, `a2-ultragpu-1g` on FLEX_START granted at once, image v6, `a16ae1a` (the tag), no suite record, ₹297.47/h; 166 min (00:16:48Z boot to the self-halt at 03:02:19Z). Deploy, preflight (`--quarantine`), the write gate and the bootstrap passed; steps 1 to 15 passed, the preflight's kernel contract and the XAttention arms at 32768 among them; the prediction was committed at 02:22:20Z and synced at 02:24:23Z; `late_check` passed. Exit marker rc 0 at 02:58:01Z, synced; deleted by `gcp_teardown_session.sh`, cleanup clean | **166** | **823** | `session_cost.txt` (`results/t61_p2_20261114T0022Z/`, scratchpad clone) |
 
 ### New-spend headroom against the ₹14,000 budget (10 Nov 2026, after the rehearsal's launch 3)
 
@@ -167,11 +168,28 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | P2, relaunch (A100; stopped in step 7, no T6.1 data) | 169 |
 | P2 at `lock-2026-11-13` (A100; stopped in step 7, no T6.1 data) | 169 |
 | P2 at `lock-2026-11-13-r2` (A100; stopped in preflight by the smoke check, no T6.1 data) | 69 |
-| **Total** | **~5,359** |
+| P2 at `lock-2026-11-13-r4` (A100; all 15 steps passed) | 823 |
+| **Total** | **~6,182** |
 
-Headroom: ₹14,000 − ₹5,359 = **about ₹8,641** (after P2's launch at `lock-2026-11-13-r2`, 13 Nov 2026: `attnbench-a100-p2d-20261113-0933`, `886fa28`, 14 min billable at ₹297.47/h, stopped in preflight by the smoke check, self-halted, deleted, cleanup clean; before it, P2 at `lock-2026-11-13` ₹169, P2's relaunch ₹169 and launch 1 ₹109). The interlock is reprinted below after the cards' rebuild.
+Headroom: ₹14,000 − ₹6,182 = **about ₹7,818** (after P2's launch at `lock-2026-11-13-r4`, 14 Nov 2026: `attnbench-a100-p2e-20261114-0546`, `a16ae1a`, 166 min billable at ₹297.47/h, all 15 steps passed, self-halted, deleted, cleanup clean; before it, P2 at `lock-2026-11-13-r2` ₹69, at `lock-2026-11-13` ₹169, P2's relaunch ₹169 and launch 1 ₹109). The interlock below is reprinted after it (14 Nov 2026): P4 on Flex-start leaves ₹4,581.
 
-### Budget interlock (13 Nov 2026, after the preflight's second-set additions)
+### Budget interlock (14 Nov 2026, after P2 ran)
+
+Reprinted from `scripts/budget_interlock.py` after P2's ₹823 row: P2 ran, so it reserves nothing (`RAN`), and only P4's cap is still planned.
+
+Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all still-planned sessions is negative. Budget ₹14,000 (plan Section 5.2); spent ₹6,182 (the ledger's new-spend table, the L4 rehearsal's ₹304 in it); the rehearsal closed, so nothing more is reserved for it. P2 ran (at lock-2026-11-13-r4 on 14 Nov 2026, all 15 steps passed, ₹823 in the ledger; banked), so nothing is reserved for it. P4 at its card's caps, the ground truth's worst case of 5 reruns at every cell: Flex-start ₹3,237, Spot no plan. Not counted: a Spot block rerun after an interruption, image storage, egress.
+
+| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |
+|---|---|---|---|---|
+| Flex-start | Flex-start | 9,419 | 4,581 | yes |
+| Flex-start | Spot | — | — | no: no Spot plan |
+| Spot | Flex-start | — | — | no: P2 ran on Flex-start |
+| Spot | Spot | — | — | no: both on Spot |
+
+- **P4 on Spot: ruled out** (the adviser's rulings dated 13 Nov 2026, item 6: Spot no longer fits the budget).
+- **P4 on Flex-start: may launch**, headroom ₹4,581 with the other pairing at the dearest provisioning the rules allow.
+
+### Budget interlock (13 Nov 2026, after the preflight's second-set additions); superseded 14 Nov 2026
 
 Reprinted from `scripts/budget_interlock.py` after the cards' rebuild: the preflight at 12 minutes (the kernel contract and the XAttention arms at 32768; the adviser's rulings dated 13 Nov 2026, second set), so neither card plans Spot blocks.
 
