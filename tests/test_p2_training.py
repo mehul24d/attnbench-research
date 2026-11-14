@@ -267,3 +267,66 @@ def test_the_builder_reads_only_passed_blocks_against_the_ledgers_p1(tmp_path, m
     assert dense["target_s"] == pytest.approx(0.006)                     # b2's 100, 200 unread
     assert seen["banked_at"] == {"P1": datetime.fromisoformat(P1_BANKED)}   # the records', not the store's
     assert seen["training_files"] == {"P1": _sha(p1)} and len(seen["training_rows"]) == 2
+
+
+def _session_dir(tmp_path, name, result, *, status=None, **manifest):
+    import json
+    gt_dir = S.step_dir(Path(), "ground_truth", S.T61).name
+    d = tmp_path / name
+    (d / gt_dir / "g1").mkdir(parents=True)
+    status = status or {}
+    (d / "manifest.json").write_text(json.dumps({
+        "task": "T6.1", "dry_run": False, "code_commit": "c" * 40,
+        "attempts": [{"step": s, "status": status.get(s, "passed")} for s in S.T61.names
+                     if status.get(s) != "absent"], **manifest}))
+    (d / gt_dir / "g1" / "stamps.json").write_text(json.dumps(
+        {"clock_not_before": FX.STARTED_AT.timestamp(), "first_clocked_block_started_at": []}))
+    (d / gt_dir / "g1" / "gt_L4_b1.json").write_text(json.dumps(result))
+    return d
+
+
+def test_an_unblocked_session_is_p2s_one_block_once_every_step_passed(tmp_path, monkeypatch,
+                                                                      capsys):
+    import p2_training as B
+    from attnbench.predict import commit as C
+    from test_t61_session import _lock_training, _p1_training_file, _sha
+    from attnbench.predict.ledger import Ledger
+    (tmp_path / "p1").mkdir()
+    p1 = _lock_training(tmp_path, monkeypatch, _p1_training_file(tmp_path / "p1"))
+    monkeypatch.setattr(S, "P1_TRAINING", p1)
+    cp = loaded_p2(tmp_path)
+    monkeypatch.setattr(C, "load_committed", lambda store, remote, **kw: cp)
+    local = tmp_path / "local.json"
+    local.write_text('{"cells": [{"arm": "xattn", "context_length": 4, "batch": 1}]}')
+    link = tmp_path / "link.json"
+    link.write_text('{"hardware": {"pinned_bandwidth": 2e10, "pageable_bandwidth": 1e10}}')
+    store = S.DirStore(tmp_path / "store", lambda: 1.8e9)
+    Ledger(store, S.DirStore.PREFIX, "P1").record_banked({"training_file_sha256": _sha(p1),
+                                                         "banked_at": P1_BANKED})
+    out = tmp_path / "p2.json.gz"
+
+    def run(d):
+        return B.main(["--remote", "predictions/P2/t61_p2_s/p.json", "--local", str(local),
+                       "--link", str(link), "--session", str(d), "--out", str(out)],
+                      store=store, prefix=S.DirStore.PREFIX)
+
+    good = block([10, 20, 30], [5, 6, 7])
+    for name, kw, why in (
+            ("late", {"status": {"late_check": "failed"}}, "late_check"),
+            ("nolate", {"status": {"late_check": "absent"}}, "late_check"),
+            ("mid", {"status": {"host_speed_mid": "failed"}}, "host_speed_mid"),
+            ("dry", {"dry_run": True}, "dry run"),
+            ("blk", {"block": {"id": "b1", "steps": ["ground_truth"]}}, "block's session")):
+        assert run(_session_dir(tmp_path, f"t61_p2_{name}", good, **kw)) == 2, name
+        assert why in capsys.readouterr().err, name
+    d = _session_dir(tmp_path, "t61_p2_disc", good)
+    (d / "INTERRUPTED_DISCARD.md").write_text("x")
+    assert run(d) == 2 and "INTERRUPTED_DISCARD" in capsys.readouterr().err
+    assert run(_session_dir(tmp_path, "t61_p2_20261114T0022Z", good)) == 0
+    rec = P2T.load(out)
+    assert rec["blocks"] == ["t61_p2_20261114T0022Z"] and rec["unpassed"] == []
+    dense = next(r for r in rec["rows"] if r["cell"]["arm"] == "dense")
+    assert dense["target_s"] == pytest.approx(0.006)
+    with pytest.raises(SystemExit):
+        B.parser().parse_args(["--remote", "r", "--local", "l", "--link", "k", "--out", "o",
+                               "--session", "s", "--block", "b"])
