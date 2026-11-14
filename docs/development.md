@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6586 passed, 185 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6600 passed, 185 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -49,12 +49,14 @@ Face cache, **1** needs the primary model's pinned `config.json` there, and **1*
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden):
 `f38a625` gives the same 185, skip for skip, on the machine that measured these, so
-the change is the environment's, not the code's (13 Nov 2026).
-**With `results/` present the suite reads 6676 passed, 95 skipped**, because
+the change is the environment's, not the code's (13 Nov 2026). At `lock-2026-11-14-r1` the
+Mac has the RULER data and the tokenizer in `~/.cache`, so the fresh count is measured with
+`HOME` pointed at an empty directory (14 Nov 2026).
+**With `results/` present the suite reads 6690 passed, 95 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6671 passed, 100 skipped). All three
-totals are 6771, which is
+present and those two hidden it reads 6685 passed, 100 skipped). All three
+totals are 6785, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).
 
