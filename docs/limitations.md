@@ -3192,7 +3192,7 @@ source, so H6 is scored on P4 alone.
 **What it costs.** The study makes no claim that recall is sufficient for accuracy (H4), none on
 the direction a faster GPU or host moves the crossover (H5), and none by head type. T1.1's
 calibrated XAttention results are reported descriptively. H6 rests on one held-out pairing, P4,
-and its admissible set is fixed before P4's prediction rather than at the lock. The H4
+and its admissible set is fixed before P4's prediction rather than at the lock (superseded 14 Nov 2026: H6 is not scored, below). The H4
 equivalence bound and family keep their lock values, and nothing reads them.
 
 ## The residual spread tolerance is 0.2349, not the working 0.10 (2026-11-12)
@@ -3208,3 +3208,9 @@ at 0.1608 in the same batch-4 cell, inside the value.
 **What it costs.** The tolerance labels a cell's residual as unstable and refuses nothing, so a
 wider one labels fewer cells. On P1 at 0.10, two dense cells would have carried the label. At
 0.2349, a P2 or P4 layer whose spread is up to 2.3 times the working value goes unlabelled.
+
+## H6 is not scored (2026-11-14)
+
+**What happened.** No admissible set could be certified for quality. H4 is not scored, so recall certifies none. T1.1 certified calibrated XAttention on the L4's PyTorch path, but XAttention's Triton path, which the A100 and H100 run, fails the mask gate on P2's own card (10 of 10 records beyond ±0.01, all in layer 0, Triton 1.8 to 3.6 points less dense), so the certification does not transfer. With only dense admissible, every rule chooses dense and H6 cannot fail. The adviser's rulings dated 14 Nov 2026 (item 2) type H6 "not scored", reversing the 12 Nov 2026 ruling, before any hypothesis is scored and before any P4 data.
+
+**What it costs.** The study makes no confirmatory claim on dispatch (RQ4). The dispatcher is reported as an exploratory comparison on P4: its decisions over all five arms against the measured outcomes, with no claim that any sparse choice keeps quality. XAttention stays in H1, which is about latency only.
