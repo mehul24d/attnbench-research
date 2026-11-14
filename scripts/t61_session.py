@@ -207,6 +207,7 @@ class SessionConfig:
     exploratory: str = ""         # why no row of the session is evidence (a rehearsal), or ""
     staged: Optional[Callable] = None   # (cfg, args, steps) -> (findings, problems), at step 1 (P2)
     pin_timed_path: bool = False  # refuse to start unless the timed path is the lock's (P2, P4)
+    library_reference: str = ""   # a banked pairing's libraries the preflight must match (P4: P2's)
 
     @property
     def names(self) -> tuple:
@@ -642,6 +643,44 @@ def run_gpu_variants(out: Path) -> tuple[dict, list]:
     return gpu_variant_problems(junit, rc)
 
 
+# The one library P4 may have that P2 has not (the adviser's rulings dated 14 Nov 2026, item 3).
+LIBRARIES_ALLOWED_DIFFERENCE = ("flash_attn_3",)
+
+
+def session_libraries() -> list:
+    """[name, version] of this instance's libraries, as each cell's manifest
+    records them (`shakedown_arms.libraries`), read in a process of its own so
+    the session's own imports are not changed."""
+    got = subprocess.run(
+        [sys.executable, "-c", "import json; from attnbench.components.shakedown_arms "
+                               "import libraries; print(json.dumps(libraries()))"],
+        capture_output=True, text=True, cwd=str(ROOT))
+    if got.returncode != 0:
+        raise StepFailed(f"the libraries could not be read: {got.stderr.strip()[-300:]}")
+    return [list(x) for x in json.loads(got.stdout)]
+
+
+def library_problems(cfg: SessionConfig, got: list) -> list:
+    """The differences between this instance's libraries and the banked
+    pairing's (`cfg.library_reference`): a library missing, added or at
+    another version is a problem, FA3 alone excepted."""
+    ref = json.loads((ROOT / cfg.library_reference).read_text())
+    want, have = dict(ref["libraries"]), dict(got)
+    if len(want) != len(ref["libraries"]) or len(have) != len(got) or not want:
+        raise StepFailed(f"a library list names a library twice, or is empty: {cfg.library_reference}")
+    who, out = ref["pairing"], []
+    for n in sorted(set(want) | set(have)):
+        if n in LIBRARIES_ALLOWED_DIFFERENCE:
+            continue
+        if n not in have:
+            out.append(f"{n} {want[n]} is {who}'s and is not here")
+        elif n not in want:
+            out.append(f"{n} {have[n]} is here and not {who}'s")
+        elif have[n] != want[n]:
+            out.append(f"{n} is {have[n]} here and {want[n]} on {who}")
+    return out
+
+
 def lightgbm_problem() -> str | None:
     """The learned predictor's step (11) needs lightgbm at the pinned version;
     a session without it would spend steps 3 to 10 before stopping there."""
@@ -683,6 +722,13 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
         problems.append("triton does not import, so XAttention cannot take its Triton path")
     imports, found = import_check(cfg)
     problems += imports
+    libs = None
+    if cfg.library_reference:
+        try:
+            libs = session_libraries()
+            problems += library_problems(cfg, libs)
+        except (StepFailed, OSError, ValueError, KeyError, TypeError) as e:
+            problems.append(f"the library check against {cfg.library_reference} did not run: {e}")
     lgbm = lightgbm_problem()
     if lgbm:
         problems.append(lgbm)
@@ -699,7 +745,7 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
                 "bootstrap_sha256": row.get("bootstrap_sha256"),
                 "null_launch_us_median": _us(row.get("null_launch_s_median")),
                 "triton": tri.stdout.strip() or None, "gpu_variants": variants,
-                "kernel_contract": contract, "smoke": smoke,
+                "kernel_contract": contract, "smoke": smoke, "libraries": libs,
                 "imports_checked": sorted(found["required"]),
                 "kernel_modules_absent": found["kernel_problems"],
                 "problems": problems}

@@ -1,0 +1,42 @@
+{
+ "what": "P2's libraries, as every cell manifest of P2's banked session records them (identity.libraries, attnbench.components.shakedown_arms.libraries); P4's preflight refuses any other set, FA3 the only allowed difference (the adviser's rulings dated 14 Nov 2026, item 3)",
+ "pairing": "P2",
+ "session": "t61_p2_20261114T0022Z",
+ "code_commit": "a16ae1a84e740e489b3124009836911202388d73",
+ "boot_image": "attnbench-env-v6-20260917",
+ "source": "08_device_components/<cell>/cell_manifest.json, 35 cells, all identical",
+ "libraries": [
+  [
+   "torch",
+   "2.9.1+cu129"
+  ],
+  [
+   "transformers",
+   "4.46.0"
+  ],
+  [
+   "flash_attn",
+   "2.8.3.post1"
+  ],
+  [
+   "block_sparse_attn",
+   "0.0.2"
+  ],
+  [
+   "triton",
+   "3.5.1"
+  ],
+  [
+   "bsa_row_mask_fix",
+   "row-mask-tail-1"
+  ],
+  [
+   "bsa_interface",
+   "0d28e66dc351"
+  ],
+  [
+   "xattn",
+   "e37988770b9d1bebd489eba011d615f35587ba08"
+  ]
+ ]
+}
