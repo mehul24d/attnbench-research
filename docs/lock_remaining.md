@@ -29,7 +29,7 @@ The researcher's items: 31 = 0; 18 = 0.8867 (re-run on this lock with
 `scripts/hdbi_threshold.py`: unchanged); 28 = P7, then the chunked extension. Scored pairings:
 H0 [P2], H1 [P2, P4], H2 [P2], H3 [P4], H6 [P4], H4 and H5 not scored.
 
-The timed-path pin is `26e41876…` at `2b4bdf2`, and the analysis commit is `2b4bdf2`. They moved
+The timed-path pin is `0e0fb012…` at `83b2edf`, and the analysis commit is `83b2edf`. They moved
 from `fb6dca8` to `78349e0` when H6's rule changed, then to `341860c` when `learned.LOCKED_CONFIG`
 was set to config 4 for Gate B, then to `9ddb9ee` when the lock fill's chain-check shape was
 fixed (Appendix A, 12 Nov 2026, the second and third lock-wave rulings), then to `aa02da2` when
@@ -42,7 +42,7 @@ at `lock-2026-11-13-r2` stopped in preflight (Appendix A, 13 Nov 2026, `-r3`), t
 the preflight gained the block-sparse kernel's contract and the smoke check the XAttention arms at
 32768 (the adviser's rulings dated 13 Nov 2026, second set; Appendix A, 13 Nov 2026, `-r4`),
 then to `161cd95` when P4's preflight gained the check of its libraries against P2's (the
-adviser's rulings dated 14 Nov 2026; Appendix A, 14 Nov 2026, `lock-2026-11-14-r2`), then to `2b4bdf2`
+adviser's rulings dated 14 Nov 2026; Appendix A, 14 Nov 2026, `lock-2026-11-14-r2`), then to `83b2edf`
 when later Spot blocks gained the short preflight and P4's block spec entered the lock (the
 researcher's decision of 15 Nov 2026; Appendix A, 15 Nov 2026, `lock-2026-11-14-r3`).
 T4.4 was written Done at `0301fb6`, and the tag `lock-2026-11-14` is on its child `3aa0449`; the

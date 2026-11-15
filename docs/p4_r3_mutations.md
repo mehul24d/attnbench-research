@@ -22,3 +22,11 @@ A mutation is detected when the run fails or errors.
 | B4 | the anchor also a block's own cell | `scripts/t64_blocks.py` | `tests/test_p4_block_spec.py` | killed (1 failed) |
 | B5 | a grid cell left out of every block | `scripts/t64_blocks.py` | `tests/test_p4_block_spec.py` | killed (1 failed) |
 | B6 | the last block drops a group | `scripts/t64_blocks.py` | `tests/test_p4_block_spec.py` | killed (1 failed) |
+
+## The block's ground-truth config (after the CPU pass of 15 Nov 2026)
+
+| # | Mutation | File | Test file | Result |
+|---|---|---|---|---|
+| G1 | the block grid not applied | `scripts/t31_steps.py` | `tests/test_p4_block_spec.py` | killed (1 failed) |
+| G2 | a block grid outside the pairing's grid accepted | `scripts/t31_steps.py` | `tests/test_p4_block_spec.py` | killed (1 failed) |
+| G3 | the block's file sets the grid itself again | `scripts/t61_session.py` | `tests/test_p4_block_spec.py` | killed (1 failed) |

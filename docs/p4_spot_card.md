@@ -55,7 +55,7 @@ and the kernel contract, about 4 min). Estimates; nothing has booted v6 on an `a
 | Point | Minutes from RUNNING | ₹ at 629.94/h |
 |---|---|---|
 | Setup: deploy, instance preflight, GCS write gate, bootstrap (v6's first boot on an H100 fails here) | up to 36 | 378 |
-| Session start: identity (exit wrapper, clean tree), the timed-path pin `26e41876…`, the banking times | 36 | 378 |
+| Session start: identity (exit wrapper, clean tree), the timed-path pin `0e0fb012…`, the banking times | 36 | 378 |
 | `prereqs`: plan rows, deployed files, staged inputs and their sha256s | 37 | 389 |
 | `fa3_import`, first: the libraries against P2's (FA3 alone may differ) | 38 | 399 |
 | `fa3_import`: the wheel's hash, tags, install and import | 40 | 420 |
