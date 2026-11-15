@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6600 passed, 185 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6619 passed, 183 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -34,12 +34,12 @@ torch the check refuses the variant, so it fails closed (Appendix A, 12 Nov
 2026). The counts below were measured with torch 2.13.0 and the `[eval]`
 extra's `wonderwords`, which one RULER test needs.
 
-The 185 skips are the honest part, and they split eight ways: **56** need CUDA
+The 183 skips are the honest part, and they split eight ways: **56** need CUDA
 or the GPU image's x-attention and block-sparse-attn, or the pinned x-attention clone
 (`$ATTNBENCH_XATTN_DIR`, for the tests behind the CPU boundary), **86** read banked result
-files that `results/` keeps out of git, **18** are scripts
+files that `results/` keeps out of git, **17** are scripts
 `test_script_call_sites.py` has nothing to check because they import nothing
-from `attnbench`, **18** are the same scripts skipped again by
+from `attnbench`, **17** are the same scripts skipped again by
 `test_import_resolution.py`, **3** need the pinned RULER data directory
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
 `~/.cache/attnbench/ruler_data`; one of them wants a pinned build; a fourth
@@ -52,10 +52,10 @@ the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden)
 the change is the environment's, not the code's (13 Nov 2026). At `lock-2026-11-14-r2` the
 Mac has the RULER data and the tokenizer in `~/.cache`, so the fresh count is measured with
 `HOME` pointed at an empty directory (14 Nov 2026).
-**With `results/` present the suite reads 6690 passed, 95 skipped**, because
+**With `results/` present the suite reads 6709 passed, 93 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6685 passed, 100 skipped). All three
+present and those two hidden it reads 6704 passed, 98 skipped). All three
 totals are 6785, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).

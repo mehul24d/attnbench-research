@@ -3,7 +3,10 @@
 of P2 and P4 on Spot, and every launch card shows the headroom left after the
 caps of all still-planned sessions; no launch if it is negative.
 
-    headroom = BUDGET_INR - spent - (the cap of every still-planned session)
+    headroom = CEILING_INR - spent - (the cap of every still-planned session)
+
+The ceiling is the budget and the overrun the researcher approved on 15 Nov
+2026 (`OVERRUN_INR`).
 
 `spent` is the ledger's new-spend table (`docs/spend_ledger.md`, its rows
 summed and checked against its own total). The still-planned sessions are the
@@ -12,9 +15,11 @@ from its minutes file). A launch of one pairing on one provisioning counts the
 other pairing at the dearest provisioning the one-Spot rule still allows it,
 so P2 on Flex-start is counted with P4 on Spot, and P2 on Spot with P4 on
 Flex-start only (P4 then cannot fall back to Spot). A provisioning ruled out
-(`RULED_OUT`) is neither launched nor counted: P4 on Spot since the adviser's
-rulings dated 13 Nov 2026 (item 6), so P2 on Flex-start is counted with P4
-on Flex-start. A pairing that has run (`RAN`) reserves nothing, as a
+(`RULED_OUT`) is neither launched nor counted: P4 on Spot from the adviser's
+rulings dated 13 Nov 2026 (item 6) until the researcher's decision of 15 Nov
+2026, which runs P4 on Flex-start and Spot in parallel, the first grant
+running; each case counts one, so the launch reserves the dearer (Spot's
+caps). A pairing that has run (`RAN`) reserves nothing, as a
 closed rehearsal reserves nothing: its spend is in the ledger, and it is
 counted on the provisioning it ran on only.
 
@@ -38,12 +43,17 @@ sys.path.insert(0, str(ROOT / "scripts"))
 LEDGER = ROOT / "docs" / "spend_ledger.md"
 REHEARSAL_CARD = ROOT / "docs" / "launch_cards" / "t61_rehearsal_l4.md"
 BUDGET_INR = 14_000            # plan Section 5.2, new spend through 30 Nov 2026
+# The researcher, 15 Nov 2026: "I approve exceeding the ₹14,000 ceiling by at
+# most ₹1,500 (effective remaining ₹8,228 from ₹6,728)" (plan Section 5.2).
+OVERRUN_INR = 1_500
+CEILING_INR = BUDGET_INR + OVERRUN_INR
 REHEARSAL_CAP_RULED = 403      # the rehearsal's cap as ruling 1g names it (in all)
 PROVISIONING = ("FLEX_START", "SPOT")
 PAIRINGS = ("P2", "P4")
-# (pairing, provisioning) -> the ruling that took it off the table
-RULED_OUT = {("P4", "SPOT"): "the adviser's rulings dated 13 Nov 2026, item 6: Spot no longer "
-                             "fits the budget"}
+# (pairing, provisioning) -> the ruling that took it off the table. P4 on Spot,
+# out from the adviser's rulings dated 13 Nov 2026 (item 6), is back by the
+# researcher's decision of 15 Nov 2026 (Flex-start and Spot in parallel).
+RULED_OUT: dict = {}
 # pairing -> (the provisioning it ran on, the record): its spend is the ledger's
 RAN = {"P2": ("FLEX_START", "at lock-2026-11-13-r4 on 14 Nov 2026, all 15 steps passed, "
                             "₹823 in the ledger; banked")}
@@ -140,7 +150,7 @@ def cases(spent_inr: int, rehearsal_inr: int, caps: dict, ruled_out=()) -> list:
     for p2, p4 in product(PROVISIONING, PROVISIONING):
         a, b = caps["P2"][p2], caps["P4"][p4]
         c = None if a is None or b is None else spent_inr + rehearsal_inr + a + b
-        out.append(Case(p2, p4, c, None if c is None else BUDGET_INR - c,
+        out.append(Case(p2, p4, c, None if c is None else CEILING_INR - c,
                         ruled_out=("P2", p2) in ruled_out or ("P4", p4) in ruled_out))
     return out
 
@@ -202,7 +212,9 @@ def section(pairing: str) -> list:
     out = ["## Budget interlock", "",
            "Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one "
            "of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all "
-           f"still-planned sessions is negative. Budget ₹{BUDGET_INR:,} (plan Section 5.2); "
+           f"still-planned sessions is negative. Budget ₹{BUDGET_INR:,} (plan Section 5.2) and "
+           f"the overrun of at most ₹{OVERRUN_INR:,} the researcher approved on 15 Nov 2026: "
+           f"ceiling ₹{CEILING_INR:,}; "
            f"{rehearsal}. "
            + " ".join(f"{pp} ran ({why}), so nothing is reserved for it." for pp, (_, why)
                       in RAN.items())

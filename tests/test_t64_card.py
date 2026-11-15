@@ -22,7 +22,7 @@ from t64_session import T64  # noqa: E402
 
 
 def _built(m=None):
-    return C.build(m or C.load_minutes(), "2026-11-14")
+    return C.build(m or C.load_minutes(), "2026-11-15")
 
 
 def _preflight_at(m: dict, minutes: int) -> dict:
@@ -33,16 +33,25 @@ def _preflight_at(m: dict, minutes: int) -> dict:
                                                        "minutes": [minutes]}}}
 
 
-def test_the_card_has_no_spot_fallback_and_says_why():
+def test_the_card_plans_spot_on_the_short_preflight_after_b1_and_not_without_it():
+    # 15 Nov 2026: with the full preflight on every boot host_components does
+    # not fit (75 min of room); with the short one on boots 2 to 4 it does
     m = C.load_minutes()
     steps = [(s.name, float(sum(m["steps"][s.name]["minutes"]))) for s in T64.steps]
-    blocks, refusal = C.spot_blocks(steps, 0.6, 0.15, m["suite_record_min"]["value"])
-    assert blocks == [] and refusal == "host_components takes 79 min, more than a block's 75"
+    with pytest.raises(ValueError, match="host_components takes 79 min, more than a block's 75"):
+        B.plan_blocks(steps, 0.6, 0.15, boot=B.BOOT["P4"], rate=C.SPOT_RATE, max_hours=2.3,
+                      suite_min=m["suite_record_min"]["value"])
+    blocks, _ = C.spot_blocks(steps, 0.6, 0.15, m["suite_record_min"]["value"])
+    assert [b.steps[0] for b in blocks] == ["link", "host_components", "device_components",
+                                            "ground_truth"]
+    first, later = (sum(dict(steps)[x] for x in B.BOOT["P4"]),
+                    sum(dict(steps)[x] for x in B.BOOT["P4"]) - dict(steps)["preflight"] + C.SHORT)
+    assert blocks[1].run_min == later + dict(steps)["host_components"]
+    assert blocks[0].run_min == first + sum(dict(steps)[x] for x in blocks[0].steps)
     card = _built()
-    assert f"Spot blocks at {C.SPOT_HOURS} h: no plan.** The planner refuses them: {refusal}" \
-        in card
-    assert "| Boots | 1 | no plan | |" in card and "| b1 |" not in card
-    assert C.caps()["SPOT"] is None
+    assert "| Boots | 1 | 4 | |" in card and "| b4 |" in card
+    assert C.caps()["SPOT"] == sum(b.cap_inr for b in blocks)
+    assert C.SPOT_RATE == 629.94 and C.SPOT_RATE_LOW == 603.61     # the catalog, 15 Nov 2026
 
 
 def test_the_card_on_disk_is_this_build():
@@ -69,8 +78,8 @@ def test_flex_and_spot_come_from_the_same_minutes_with_each_boots_overhead():
     assert f"| Expected, nothing fails | ₹{math.ceil(round(planned, 3) * C.FLEX_RATE)} |" in card
     assert f"₹{math.ceil(round(planned, 3) * C.FLEX_RATE * B.CAP_FACTOR)} (halt" in card
     blocks, refusal = C.spot_blocks(steps, 0.6, 0.15, m["suite_record_min"]["value"])
-    boot = sum(dict(steps)[s] for s in B.BOOT["P4"])
-    # every block pays setup, its boot steps and teardown again
+    boot = sum(dict(steps)[s] for s in B.BOOT["P4"]) - dict(steps)["preflight"] + C.SHORT
+    # every later block pays setup, its boot steps (the short preflight) and teardown again
     assert sum(b.planned_h for b in blocks) > planned + (len(blocks) - 1) * (0.75 + boot / 60) - 1e-6
     assert f"₹{math.ceil(sum(b.planned_h for b in blocks) * C.SPOT_RATE)} |" in card
     assert f"₹{sum(b.cap_inr for b in blocks)}, the caps summed" in card
@@ -83,10 +92,11 @@ def test_flex_is_first_and_the_fallback_is_four_blocks_at_2_3_hours():
     steps = B.card_numbers(card)["steps"]
     blocks, refusal = C.spot_blocks(steps, 0.6, 0.15)
     assert len(blocks) == 4 and all(b.planned_h <= 2.3 + 1e-9 for b in blocks)
-    assert "Flex-start first, its request submitted right after the lock (16 Nov 2026)" in card
-    assert "if no grant has come by about 22 Nov 2026, Spot in 4 blocks of 2.3 h" in card
+    assert "**Provisioning: Flex-start and Spot in parallel** (the researcher's decision of " \
+        "15 Nov 2026" in card
+    assert "the first RUNNING grant runs P4, every other request is cancelled at once" in card
     # why not 2.2 h is stated, not hidden
-    assert refusal == "host_components takes 79 min, more than a block's 73"
+    assert refusal == "host_components takes 79 min, more than a block's 77"
     assert f"at {B.MAX_BLOCK_HOURS} h the blocks are refused: {refusal}" in card
     short = [(n, 20.0 if n == "host_components" else x) for n, x in steps]
     with pytest.raises(ValueError, match="not the ruled 4"):

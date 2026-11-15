@@ -41,10 +41,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))      # `attnbench` from this tree (lock_spec)
 CARDS = {"P4": ROOT / "docs" / "launch_cards" / "t64_p4_h100.md",
          "P2": ROOT / "docs" / "launch_cards" / "t61_p2_a100.md"}
 CARD = CARDS["P4"]
-SPOT_RATES = {"P4": 668.04,    # plan Section 5.2, the higher H100 Spot region
+# H100 Spot, all-in, from the Cloud Billing catalog read 2026-11-15T14:24:56Z
+# (prices effective 2026-11-15T08:00Z; plan Section 5.2): GPU + 26 cores +
+# 234 GiB RAM + the 200 GB balanced disk + the two local-SSD partitions.
+P4_SPOT_RATES = {"us-central1": 629.94, "asia-southeast1": 603.61}
+SPOT_RATES = {"P4": max(P4_SPOT_RATES.values()),   # the higher region; 668.04 until 15 Nov
               "P2": 350.14}    # plan Section 5.2, A100 Spot in asia-southeast1
 SPOT_RATE_INR_HR = SPOT_RATES["P4"]
 BOOT = {"P4": ("prereqs", "fa3_import", "preflight", "host_speed_end"),
@@ -55,6 +60,10 @@ DELETE_AFTER_HALT_MIN = 10
 MAX_BLOCK_HOURS = 2.2
 BLOCK_HOURS = {"P2": MAX_BLOCK_HOURS,
                "P4": 2.3}   # P4's Spot fallback (adviser's ruling 5, 10 Nov 2026): 2.2 h refuses
+# The preflight on a block after the first (`t61_session.real_preflight`, short):
+# provenance, imports, the library check and the kernel contract; the smoke
+# checks and the GPU variants ran on the first boot (P4 on Spot, 15 Nov 2026).
+SHORT_PREFLIGHT_MIN = {"P4": 4.0}   # an estimate: the kernel contract 0.5 min, P1's L4
 ANCHOR_MIN = 2.0               # the anchor cell's ground truth per block: an estimate
 SPLIT_FOLLOWERS = ("late_check", "trace_checks")
 
@@ -105,30 +114,38 @@ def _block(steps, gt_min, run_min, setup_h, teardown_h, rate, suite_min: float =
 
 def plan_blocks(steps, setup_h: float, teardown_h: float, *, boot=BOOT["P4"],
                 rate: float = SPOT_RATE_INR_HR, max_hours: float = MAX_BLOCK_HOURS,
-                anchor_min: float = ANCHOR_MIN, suite_min: float = 0.0) -> list:
+                anchor_min: float = ANCHOR_MIN, suite_min: float = 0.0,
+                short_preflight_min: float | None = None) -> list:
     """Greedy blocks in step order, each at most `max_hours` planned hours,
     ground truth split across them by its minutes. The suite record
     (`suite_min`, the bootstrap's `--suite-record`) runs on the first boot
     only: the image, the commit and the GPU model are the same on every
-    block, so it is one record per pairing (a plan default, 11 Nov 2026)."""
+    block, so it is one record per pairing (a plan default, 11 Nov 2026).
+    With `short_preflight_min`, every block after the first runs the short
+    preflight in those minutes instead of the full one."""
     mins = dict(steps)
-    boot_min = sum(mins.get(s, 0.0) for s in boot)
-    room0 = max_hours * 60 - (setup_h + teardown_h) * 60 - boot_min
+    first_boot = sum(mins.get(s, 0.0) for s in boot)
+    later_boot = first_boot if short_preflight_min is None else \
+        first_boot - mins.get("preflight", 0.0) + short_preflight_min
+    room0 = max_hours * 60 - (setup_h + teardown_h) * 60 - later_boot
     followers = [s for s in SPLIT_FOLLOWERS if s in mins]
     gt_extra = anchor_min + sum(mins[s] for s in followers)
-    if room0 - suite_min <= gt_extra:
+    if room0 - suite_min - (first_boot - later_boot) <= gt_extra:
         raise ValueError("setup, teardown and the boot steps alone fill the block")
     order = [n for n, _ in steps if n not in boot and n not in followers]
     blocks, cur, used = [], [], 0.0
     gt_used = 0.0
 
+    def boot_min():
+        return later_boot if blocks else first_boot
+
     def room():
-        return room0 - (suite_min if not blocks else 0.0)
+        return room0 - (suite_min + first_boot - later_boot if not blocks else 0.0)
 
     def close():
         nonlocal cur, used, gt_used
         if cur:
-            blocks.append(_block(cur, gt_used, boot_min + used, setup_h, teardown_h, rate,
+            blocks.append(_block(cur, gt_used, boot_min() + used, setup_h, teardown_h, rate,
                                  suite_min if not blocks else 0.0))
         cur, used, gt_used = [], 0.0, 0.0
 
@@ -174,6 +191,65 @@ def spec(blocks, *, max_hours: float) -> dict:
             e.update(ground_truth_minutes=round(b.ground_truth_min, 1), cells=None)
         out.append(e)
     return {"max_hours": max_hours, "anchor": None, "blocks": out}
+
+
+# P4's anchor (a plan default, 15 Nov 2026, flagged): dense at 8192, batch 1, as
+# the L4 rehearsal's (`configs/t61/rehearsal_lock.json`) and the docstring of
+# `attnbench.lock.blocks`; measured in every block with ground truth.
+P4_ANCHOR = {"arm": "dense", "density": 1.0, "context_length": 8192, "batch": 1}
+
+
+def group_weight(cells) -> int:
+    """A (length, batch) group's share of the ground truth's time, by the
+    tokens its cells prefill: cells x length x batch (an estimate; nothing
+    is timed per cell on an H100)."""
+    return sum(L * b for _, _, L, b in cells)
+
+
+def assign_cells(blocks, grid, anchor: dict) -> list:
+    """Each ground-truth block's own cells: the grid's (length, batch) groups
+    in grid order, the anchor left out, each block taking whole groups while
+    their weight (`group_weight`) stays within its share of the ground
+    truth's minutes; the last block takes the rest. Whole groups keep each
+    group's dense control with it (`t61_session.block_config`)."""
+    a = (anchor["arm"], anchor["density"], anchor["context_length"], anchor["batch"])
+    if a not in grid:
+        raise ValueError(f"the anchor {a} is not a grid cell")
+    groups: dict = {}
+    for c in grid:
+        if c != a:
+            groups.setdefault((c[2], c[3]), []).append(c)
+    gt = [b for b in blocks if "ground_truth" in b.steps]
+    total_w = sum(group_weight(g) for g in groups.values())
+    total_m = sum(b.ground_truth_min for b in gt)
+    keys, out = list(groups), []
+    for i, b in enumerate(gt):
+        mine, w = [], 0
+        if i == len(gt) - 1:
+            mine, keys = keys, []
+        else:
+            while keys and (w + group_weight(groups[keys[0]])) / total_w <= \
+                    b.ground_truth_min / total_m + 1e-9:
+                w += group_weight(groups[keys[0]])
+                mine.append(keys.pop(0))
+        if not mine:
+            raise ValueError(f"a ground-truth block gets no cell group (share "
+                             f"{b.ground_truth_min:.0f} of {total_m:.0f} min)")
+        out.append([c for k in mine for c in groups[k]])
+    return out
+
+
+def lock_spec(blocks, grid, *, max_hours: float, anchor: dict = P4_ANCHOR) -> dict:
+    """The lock file's complete block spec: `spec` with the anchor and each
+    ground-truth block's cells (`assign_cells`)."""
+    from attnbench.lock.blocks import CELL_FIELDS
+    s = spec(blocks, max_hours=max_hours)
+    s["anchor"] = dict(anchor)
+    cells = iter(assign_cells(blocks, grid, anchor))
+    for e in s["blocks"]:
+        if "ground_truth" in e["steps"]:
+            e["cells"] = [dict(zip(CELL_FIELDS, c)) for c in next(cells)]
+    return s
 
 
 def report(blocks, rate: float) -> str:

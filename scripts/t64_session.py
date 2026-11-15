@@ -71,11 +71,21 @@ def _sha(args) -> str:
 
 
 def real_fa3_import(cfg, args) -> dict:
+    """The library check against P2's first, seconds where the wheel's
+    install takes minutes (the preflight's order, cheapest first, 15 Nov
+    2026); the preflight checks the libraries again with FA3 installed."""
     sha = _sha(args)
     script = S.ROOT / "scripts" / "fa3_import_check.sh"
     if not script.exists():
         raise S.StepFailed("scripts/fa3_import_check.sh is not in the deployed tree "
                            "(it is on main from PR #22)")
+    try:
+        bad = S.library_problems(cfg, S.session_libraries())
+    except (S.StepFailed, OSError, ValueError, KeyError, TypeError) as e:
+        bad = [f"the library check against {cfg.library_reference} did not run: {e}"]
+    if bad:
+        raise S.StepFailed(f"{len(bad)} library problem(s) before FA3's install: {bad[:3]}",
+                           {"library_problems": bad})
     rc = S.run(["bash", str(script), sha])
     if rc != 0:
         raise S.StepFailed(f"fa3_import_check.sh exited {rc}: no FA3 backend, so K2 would "
@@ -170,7 +180,7 @@ def _t64() -> S.SessionConfig:
         task="T6.4", pairing="P4", title="The P4 session (T6.4: Sapphire Rapids + H100)",
         script="t64_session.py", phase_prefix="t64", session_prefix="t64_p4",
         gpu="H100", instance_type="a3-highgpu-1g", provisioning=("FLEX_START", "SPOT"),
-        discard_on_restart=True,
+        discard_on_restart=True, short_later_preflight=True,
         # the wheel is installed on each boot, so every block runs its own import
         boot_steps=("prereqs", "fa3_import", "preflight", "host_speed_end"),
         code_path={"gpu": "H100", "implementation": "xattention:triton",

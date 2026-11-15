@@ -6,10 +6,12 @@ basis (`configs/t64/p4_card_minutes.json`), then Flex-start, Spot blocks
 and on-demand side by side, each with its expected cost, its cap and its
 interruption risk, the overhead every Spot block pays on its own boot
 included. The measurement protocol is the same under each; only the
-provisioning differs. The order is ruled (adviser's ruling 5 of the 10 Nov
-2026 paste): Flex-start first, requested right after the lock; Spot in four
-blocks of 2.3 h if no grant comes by about 22 Nov. A plan that is not those
-four blocks is refused, not printed.
+provisioning differs. Since the researcher's decision of 15 Nov 2026,
+Flex-start and Spot are requested in parallel and the first RUNNING grant
+runs P4 (before it, adviser's ruling 5 of the 10 Nov 2026 paste: Flex-start
+first, Spot after about 22 Nov); Spot in four blocks of 2.3 h, every block
+after the first on the short preflight (`t64_blocks.SHORT_PREFLIGHT_MIN`).
+A plan that is not those four blocks is refused, not printed.
 
 Only the region between the card's two markers is built; the rest of
 `docs/launch_cards/t64_p4_h100.md` is prose and stays hand-written.
@@ -39,10 +41,9 @@ MINUTES = ROOT / "configs" / "t64" / "p4_card_minutes.json"
 CARD = B.CARDS["P4"]
 FLEX_RATE = 462.42           # plan Section 5.2, H100 Flex-start, us-central1, all-in
 SPOT_RATE = B.SPOT_RATES["P4"]
-SPOT_RATE_LOW = 629.94       # plan Section 5.2, H100 Spot, us-central1, all-in
+SPOT_RATE_LOW = B.P4_SPOT_RATES["asia-southeast1"]   # the lower region, 15 Nov 2026
 SPOT_HOURS, SPOT_BLOCKS = 2.3, 4   # the fallback as ruled, 10 Nov 2026
-FLEX_REQUEST = "right after the lock (16 Nov 2026)"
-SPOT_FROM = "about 22 Nov 2026"
+SHORT = B.SHORT_PREFLIGHT_MIN["P4"]
 BEGIN = "<!-- built by scripts/t64_card.py from configs/t64/p4_card_minutes.json: rebuild, do not edit -->"
 END = "<!-- end of the built region -->"
 
@@ -59,20 +60,21 @@ def load_minutes(path=MINUTES) -> dict:
 def spot_blocks(steps, setup, tear, suite=0.0):
     """The fallback's blocks at the ruled 2.3 h, refused unless they are the
     ruled four; with why the general 2.2 h length refuses, if it does. No
-    blocks, and why, when the planner refuses 2.3 h as well: since the
-    adviser's rulings dated 13 Nov 2026, second set, the preflight no longer
-    leaves a block room for `host_components`, and Spot is ruled out for P4
-    (the first set, item 6)."""
+    blocks, and why, when the planner refuses 2.3 h as well (as it did from the
+    adviser's rulings dated 13 Nov 2026, second set, when the full preflight
+    on every boot left no block room for `host_components`, until the short
+    preflight on later boots of 15 Nov 2026)."""
     try:
         blocks = B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE,
-                               max_hours=SPOT_HOURS, suite_min=suite)
+                               max_hours=SPOT_HOURS, suite_min=suite, short_preflight_min=SHORT)
     except ValueError as e:
         return [], str(e)
     if len(blocks) != SPOT_BLOCKS:
         raise ValueError(f"{len(blocks)} blocks at {SPOT_HOURS} h, not the ruled "
                          f"{SPOT_BLOCKS}: the fallback needs a new ruling")
     try:
-        B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE, suite_min=suite)
+        B.plan_blocks(steps, setup, tear, boot=B.BOOT["P4"], rate=SPOT_RATE, suite_min=suite,
+                      short_preflight_min=SHORT)
         refusal = None
     except ValueError as e:
         refusal = str(e)
@@ -125,10 +127,11 @@ def build(minutes: dict, on: str) -> str:
         "",
         "## Time and cost: Flex-start, Spot blocks, on-demand",
         "",
-        f"**Provisioning, in this order** (adviser's ruling 5 of the 10 Nov 2026 paste): "
-        f"Flex-start first, its request submitted {FLEX_REQUEST}; if no grant has come by "
-        f"{SPOT_FROM}, Spot in {SPOT_BLOCKS} blocks of {SPOT_HOURS} h (below). On-demand "
-        "is not offered. The measurement protocol is the same under each.",
+        "**Provisioning: Flex-start and Spot in parallel** (the researcher's decision of 15 Nov "
+        "2026, which replaces the order of the adviser's ruling 5 of the 10 Nov 2026 paste): "
+        "the first RUNNING grant runs P4, every other request is cancelled at once, and a "
+        f"second grant is deleted unused; on Spot, in {SPOT_BLOCKS} blocks of {SPOT_HOURS} h "
+        "(below). On-demand is not offered. The measurement protocol is the same under each.",
         "",
         f"Cap = rate x planned hours x {B.CAP_FACTOR}; halt = {B.HALT_FACTOR} x planned hours "
         f"(rounded down); hard delete = the halt + {B.DELETE_AFTER_HALT_MIN} min. Rates are "
@@ -136,7 +139,11 @@ def build(minutes: dict, on: str) -> str:
         f"(adviser's ruling 1h dated 10 Nov 2026; {suite:.0f} min) runs on the first boot "
         "only, so on Spot in block b1. Every boot pays the setup, the boot "
         f"steps ({', '.join(f'`{x}`' for x in B.BOOT['P4'])}: {boot_min:.0f} min) and the "
-        f"teardown, {per_boot_h:.2f} h; a Spot block with ground truth also measures the "
+        f"teardown, {per_boot_h:.2f} h. A Spot block after the first runs the short preflight "
+        f"({SHORT:g} min, an estimate, for the preflight's {mins['preflight']:.0f}): provenance, "
+        "imports, the library check and the kernel contract; the GPU variants and the smoke "
+        "checks ran on b1's boot, whose instance type, GPU, CPU, zone, image, driver and "
+        "bootstrap every later block must share. A Spot block with ground truth also measures the "
         f"anchor cell ({B.ANCHOR_MIN:g} min, an estimate) and runs `late_check` and "
         "`trace_checks` again.",
         "",
@@ -162,11 +169,13 @@ def build(minutes: dict, on: str) -> str:
         "",
         "| | Flex-start, one session (first) | Spot, in blocks (the fallback) | On-demand |",
         "|---|---|---|---|",
-        f"| Rate | ₹{FLEX_RATE}/h (`us-central1`) | ₹{SPOT_RATE}/h (`asia-southeast1`, the "
-        f"higher; `us-central1` ₹{SPOT_RATE_LOW}/h) | not offered for `a3-highgpu-1g` |",
+        f"| Rate | ₹{FLEX_RATE}/h (`us-central1`) | ₹{SPOT_RATE}/h (`us-central1`, the "
+        f"higher; `asia-southeast1` ₹{SPOT_RATE_LOW}/h; the catalog read 15 Nov 2026) | "
+        "not offered for `a3-highgpu-1g` |",
         f"| Boots | 1 | {len(blocks) if blocks else no} | |",
         f"| Overhead paid per boot | {per_boot_h:.2f} h | "
-        + (f"{per_boot_h:.2f} h x {len(blocks)}, plus the anchor and the trace steps in each "
+        + (f"{per_boot_h:.2f} h on b1, {per_boot_h - (mins['preflight'] - SHORT) / 60:.2f} h on "
+           f"each of the {len(blocks) - 1} later, plus the anchor and the trace steps in each "
            "ground-truth block" if blocks else no) + " | |",
         f"| Planned hours | {flex.planned_h:.2f} | {f'{spot_h:.2f}' if blocks else no} | |",
         f"| Expected, nothing fails | ₹{math.ceil(flex.planned_h * FLEX_RATE)} | "

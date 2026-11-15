@@ -819,8 +819,15 @@ def _harness_setup(tmp_path, monkeypatch):
     a fake T3.1 step writes one eager group's untraced and traced files."""
     import t31_steps as st
     comp, grid = p1_grid()
-    monkeypatch.setattr(st, "load_config", lambda path, dry_run: json.loads(Path(path).read_text())
-                        if Path(path).name == "block_config.json" else comp)
+    def load(path, dry_run):
+        # a block's file: the lock's values filled (P1's working values stand in), then
+        # its block_grid applied, as `t31_steps.load_config` does
+        if Path(path).name != "block_config.json":
+            return comp
+        f = json.loads(Path(path).read_text())
+        return st.narrow_to_block(dict(comp, not_measured=f["not_measured"],
+                                       block_grid=f["block_grid"]))
+    monkeypatch.setattr(st, "load_config", load)
     seen = []
 
     def step(ns, cfg, *, raise_=None):
@@ -872,8 +879,13 @@ def test_the_real_harness_runs_a_block_on_the_blocks_grid_only(tmp_path, monkeyp
     S.real_harness(T61, args, block, step_fn=step)
     ns, cfg = seen[0]
     assert Path(ns.config) == Path(args.out) / "block_config.json"
-    assert cfg == json.loads(json.dumps(S.block_config(comp, block)))
     assert {k for k in map(tuple, st.cells(cfg))} == {tuple(grid[0]), tuple(grid[1])}
+    # the file sets no T4.1 item the lock fills: it is the repository's config,
+    # the block's grid named apart (the lock fill refused the grid itself, 15 Nov 2026)
+    f = json.loads(Path(ns.config).read_text())
+    raw = json.loads((ROOT / T61.components_config).read_text())
+    assert {k: f[k] for k in st.LOCK_SOURCED if k in f} == {k: raw[k] for k in st.LOCK_SOURCED if k in raw}
+    assert f["block_grid"] == {"lengths": [2048], "batches": {"2048": [1]}}
 
 
 def test_the_real_harness_reports_an_incomplete_cell_and_passes_on_a_refusal(tmp_path, monkeypatch):

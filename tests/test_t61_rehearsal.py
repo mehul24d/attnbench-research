@@ -258,7 +258,8 @@ def test_the_interrupt_starts_boot2_and_no_ssh_in_it_reads_stdin(tmp_path):
     assert p.returncode == 0, text
     assert "INTERRUPT_DONE: boot2 started" in text
     import time
-    for _ in range(100):                      # the boot2 session runs in the background
+    for _ in range(400):                      # the boot2 session runs in the background
+        # (20 s: under the full suite's load 5 s ran out, 15 Nov 2026)
         if (home / "boot2_started").exists():
             break
         time.sleep(0.05)

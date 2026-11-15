@@ -208,6 +208,7 @@ class SessionConfig:
     staged: Optional[Callable] = None   # (cfg, args, steps) -> (findings, problems), at step 1 (P2)
     pin_timed_path: bool = False  # refuse to start unless the timed path is the lock's (P2, P4)
     library_reference: str = ""   # a banked pairing's libraries the preflight must match (P4: P2's)
+    short_later_preflight: bool = False   # a block after the first runs the short preflight (P4)
 
     @property
     def names(self) -> tuple:
@@ -704,14 +705,37 @@ def import_check(cfg: SessionConfig) -> tuple[list, dict]:
     return session_import_problems([cfg.script], shell_files=chains)
 
 
+def preflight_mode(cfg: SessionConfig, args) -> str:
+    """"short" on a block after the first of a pairing that runs the short
+    preflight on later boots (`short_later_preflight`, P4 on Spot, 15 Nov
+    2026), else "full". A short preflight needs an imported block whose
+    preflight was full and ran the smoke check: that block's instance is the
+    later blocks' (`block_identity_problems`), so the GPU variants and the
+    smoke checks are not repeated on every boot."""
+    if not cfg.short_later_preflight:
+        return "full"
+    imported = (load_manifest(Path(args.session)).get("block") or {}).get("imported") or {}
+    if not imported:
+        return "full"
+    for bid, d in imported.items():
+        f = (read_json(step_dir(Path(d), "preflight", cfg) / "result.json") or {}) \
+            .get("findings", {})
+        if f.get("mode", "full") == "full" and (f.get("smoke") or f.get("fake")):
+            return "short"
+    raise StepFailed(f"a short preflight needs an earlier block whose full preflight ran the "
+                     f"smoke check; none of {sorted(imported)} did")
+
+
 def real_preflight(cfg: SessionConfig, args) -> dict:
     """T2.20 provenance and the T2.1 host-speed probe at the start, read from
     the probe's own row; Triton imports (the XAttention code path here); the
     GPU variants of T2.26 pass on this GPU; on a Triton pairing, the
     block-sparse kernel's contract (`run_kernel_contract`), then, if it held,
-    the smoke check (`run_preflight_smoke`)."""
+    the smoke check (`run_preflight_smoke`). A short preflight
+    (`preflight_mode`) leaves out the GPU variants and the smoke check."""
     from attnbench import provenance
     out = Path(args.out)
+    mode = preflight_mode(cfg, args)
     if run(py("host_cpu_probe.py", "snapshot", "--out", str(out), "--tag", "start")):
         raise StepFailed("host_cpu_probe.py snapshot failed")
     row = _host_speed_row(out, "start")
@@ -732,13 +756,14 @@ def real_preflight(cfg: SessionConfig, args) -> dict:
     lgbm = lightgbm_problem()
     if lgbm:
         problems.append(lgbm)
-    variants, vproblems = run_gpu_variants(out)
+    variants, vproblems = (None, []) if mode == "short" else run_gpu_variants(out)
     problems += vproblems
     contract, cproblems = run_kernel_contract(cfg, out)
     problems += cproblems
-    smoke, sproblems = (None, []) if cproblems else run_preflight_smoke(cfg, args, out)
+    smoke, sproblems = (None, []) if cproblems or mode == "short" else \
+        run_preflight_smoke(cfg, args, out)
     problems += sproblems
-    findings = {"provisioning_model": row.get("provisioning_model"),
+    findings = {"mode": mode, "provisioning_model": row.get("provisioning_model"),
                 "instance_type": row.get("instance_type"), "gpu_name": row.get("gpu_name"),
                 "cpu_model": row.get("cpu_model"), "zone": row.get("zone"),
                 "boot_image": row.get("boot_image"), "driver": row.get("driver"),
@@ -834,7 +859,8 @@ def fake_preflight(cfg: SessionConfig, args) -> dict:
     if problems:
         raise StepFailed(f"the fake row fails its own checks: {problems}")
     write_json(Path(args.out) / "host_speed_start.json", row)
-    findings = {"provisioning_model": row["provisioning_model"], "fake": True,
+    findings = {"mode": preflight_mode(cfg, args),
+                "provisioning_model": row["provisioning_model"], "fake": True,
                 "instance_type": row["instance_type"], "gpu_name": row["gpu_name"],
                 "cpu_model": os.environ.get("ATTNBENCH_FAKE_CPU_MODEL", "fake cpu"),
                 "zone": "dry-zone", "boot_image": "dry-image", "driver": "dry",
@@ -1282,6 +1308,19 @@ def block_config(comp: dict, block: dict) -> dict:
     return out
 
 
+def block_file_config(raw: dict, sub: dict) -> dict:
+    """The file a block's ground truth reads, every process of it: the
+    pairing's repository config (`raw`, whose T4.1 items the lock fills) with
+    the block's grid as `block_grid` (`t31_steps.narrow_to_block`) and its
+    `not_measured` cells from `block_config` (`sub`). Written with the grid
+    itself, it was refused by the lock fill on P2 and P4, whose grids are
+    lock values (the CPU pass of 15 Nov 2026)."""
+    out = json.loads(json.dumps(raw))
+    out["block_grid"] = {"lengths": sub["lengths"], "batches": sub["batches"]}
+    out["not_measured"] = sub["not_measured"]
+    return out
+
+
 def t31_row_cell(row: dict) -> list:
     """The grid cell a T3.1 ground-truth row times: its cell arm (not its
     label), the density setting (dense's 1.0, which `density_setting` drops),
@@ -1358,7 +1397,8 @@ def real_harness(cfg, args, block=None, *, step_fn=None) -> dict:
     config = ROOT / cfg.components_config
     if block is not None:
         comp = st.load_config(str(config), dry_run=False)
-        config = write_json(out / "block_config.json", block_config(comp, block))
+        config = write_json(out / "block_config.json", block_file_config(
+            json.loads(config.read_text()), block_config(comp, block)))
     ns = SimpleNamespace(out=str(out), session=args.session, dry_run=False,
                          cpu_boundary=False, config=str(config), step="ground_truth")
     step_fn = step_fn or st.step_ground_truth
