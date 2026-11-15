@@ -44,7 +44,11 @@ ROOT = Path(__file__).resolve().parent.parent
 CARDS = {"P4": ROOT / "docs" / "launch_cards" / "t64_p4_h100.md",
          "P2": ROOT / "docs" / "launch_cards" / "t61_p2_a100.md"}
 CARD = CARDS["P4"]
-SPOT_RATES = {"P4": 668.04,    # plan Section 5.2, the higher H100 Spot region
+# H100 Spot, all-in, from the Cloud Billing catalog read 2026-11-15T14:24:56Z
+# (prices effective 2026-11-15T08:00Z; plan Section 5.2): GPU + 26 cores +
+# 234 GiB RAM + the 200 GB balanced disk + the two local-SSD partitions.
+P4_SPOT_RATES = {"us-central1": 629.94, "asia-southeast1": 603.61}
+SPOT_RATES = {"P4": max(P4_SPOT_RATES.values()),   # the higher region; 668.04 until 15 Nov
               "P2": 350.14}    # plan Section 5.2, A100 Spot in asia-southeast1
 SPOT_RATE_INR_HR = SPOT_RATES["P4"]
 BOOT = {"P4": ("prereqs", "fa3_import", "preflight", "host_speed_end"),
@@ -55,6 +59,10 @@ DELETE_AFTER_HALT_MIN = 10
 MAX_BLOCK_HOURS = 2.2
 BLOCK_HOURS = {"P2": MAX_BLOCK_HOURS,
                "P4": 2.3}   # P4's Spot fallback (adviser's ruling 5, 10 Nov 2026): 2.2 h refuses
+# The preflight on a block after the first (`t61_session.real_preflight`, short):
+# provenance, imports, the library check and the kernel contract; the smoke
+# checks and the GPU variants ran on the first boot (P4 on Spot, 15 Nov 2026).
+SHORT_PREFLIGHT_MIN = {"P4": 4.0}   # an estimate: the kernel contract 0.5 min, P1's L4
 ANCHOR_MIN = 2.0               # the anchor cell's ground truth per block: an estimate
 SPLIT_FOLLOWERS = ("late_check", "trace_checks")
 
@@ -105,30 +113,38 @@ def _block(steps, gt_min, run_min, setup_h, teardown_h, rate, suite_min: float =
 
 def plan_blocks(steps, setup_h: float, teardown_h: float, *, boot=BOOT["P4"],
                 rate: float = SPOT_RATE_INR_HR, max_hours: float = MAX_BLOCK_HOURS,
-                anchor_min: float = ANCHOR_MIN, suite_min: float = 0.0) -> list:
+                anchor_min: float = ANCHOR_MIN, suite_min: float = 0.0,
+                short_preflight_min: float | None = None) -> list:
     """Greedy blocks in step order, each at most `max_hours` planned hours,
     ground truth split across them by its minutes. The suite record
     (`suite_min`, the bootstrap's `--suite-record`) runs on the first boot
     only: the image, the commit and the GPU model are the same on every
-    block, so it is one record per pairing (a plan default, 11 Nov 2026)."""
+    block, so it is one record per pairing (a plan default, 11 Nov 2026).
+    With `short_preflight_min`, every block after the first runs the short
+    preflight in those minutes instead of the full one."""
     mins = dict(steps)
-    boot_min = sum(mins.get(s, 0.0) for s in boot)
-    room0 = max_hours * 60 - (setup_h + teardown_h) * 60 - boot_min
+    first_boot = sum(mins.get(s, 0.0) for s in boot)
+    later_boot = first_boot if short_preflight_min is None else \
+        first_boot - mins.get("preflight", 0.0) + short_preflight_min
+    room0 = max_hours * 60 - (setup_h + teardown_h) * 60 - later_boot
     followers = [s for s in SPLIT_FOLLOWERS if s in mins]
     gt_extra = anchor_min + sum(mins[s] for s in followers)
-    if room0 - suite_min <= gt_extra:
+    if room0 - suite_min - (first_boot - later_boot) <= gt_extra:
         raise ValueError("setup, teardown and the boot steps alone fill the block")
     order = [n for n, _ in steps if n not in boot and n not in followers]
     blocks, cur, used = [], [], 0.0
     gt_used = 0.0
 
+    def boot_min():
+        return later_boot if blocks else first_boot
+
     def room():
-        return room0 - (suite_min if not blocks else 0.0)
+        return room0 - (suite_min + first_boot - later_boot if not blocks else 0.0)
 
     def close():
         nonlocal cur, used, gt_used
         if cur:
-            blocks.append(_block(cur, gt_used, boot_min + used, setup_h, teardown_h, rate,
+            blocks.append(_block(cur, gt_used, boot_min() + used, setup_h, teardown_h, rate,
                                  suite_min if not blocks else 0.0))
         cur, used, gt_used = [], 0.0, 0.0
 

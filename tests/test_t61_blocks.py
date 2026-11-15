@@ -465,3 +465,88 @@ def test_a_real_pairing_marked_exploratory_cannot_skip_the_lock(tmp_path, pairin
     f.write_bytes(b"not read: refused first")
     with pytest.raises(S.StepFailed, match=f"{pairing} is a real pairing"):
         S.training_rows(cfg, path=f)
+
+
+# --- the short preflight on later boots (P4 on Spot, 15 Nov 2026) ------------------------------
+
+def _preflight_findings(cfg, d):
+    return json.loads((S.step_dir(d, "preflight", cfg) / "result.json").read_text())["findings"]
+
+
+def test_b1_runs_the_full_preflight_and_every_later_block_the_short_one(tmp_path):
+    _, rcs, (d1, d2, d3), _ = three(tmp_path)
+    assert rcs == (0, 0, 0)
+    assert [_preflight_findings(T64, d)["mode"] for d in (d1, d2, d3)] == ["full", "short", "short"]
+
+
+def _later_block(tmp_path, earlier: dict, cfg=T64):
+    """A later block's session importing one earlier block whose preflight
+    found `earlier`."""
+    d1 = tmp_path / "b1"
+    out = S.step_dir(d1, "preflight", cfg)
+    out.mkdir(parents=True)
+    (out / "result.json").write_text(json.dumps({"findings": earlier}))
+    d2 = tmp_path / "b2"
+    d2.mkdir()
+    (d2 / "manifest.json").write_text(json.dumps({"block": {"id": "b2", "imported": {"b1": str(d1)}}}))
+    return Namespace(session=str(d2), out=str(tmp_path / "out"), dry_run=False, banked_at=[],
+                     fa3_sha256=None)
+
+
+def _real_preflight_mocks(monkeypatch, ran):
+    import subprocess
+    from attnbench import provenance
+    from test_t61_session import GOOD_ROW
+    monkeypatch.setattr(S, "run", lambda *a, **k: 0)
+    monkeypatch.setattr(S, "_host_speed_row", lambda out, tag: GOOD_ROW)
+    monkeypatch.setattr(provenance, "stamp_integrity_problems", lambda row: [])
+    monkeypatch.setattr(S, "check_provenance_row", lambda cfg, row, p: list(p))
+    monkeypatch.setattr(S, "lightgbm_problem", lambda: None)
+    monkeypatch.setattr(S, "import_check", lambda cfg: ([], {"required": {}, "kernel_problems": []}))
+    monkeypatch.setattr(S, "session_libraries", lambda: [])
+    monkeypatch.setattr(S, "library_problems", lambda cfg, got: ran.append("libraries") or [])
+    monkeypatch.setattr(S.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, "3.5.1\n", ""))
+    monkeypatch.setattr(S, "run_gpu_variants", lambda out: ran.append("variants") or ({}, []))
+    monkeypatch.setattr(S, "run_kernel_contract",
+                        lambda cfg, out: ran.append("contract") or ({"status": "passed"}, []))
+    monkeypatch.setattr(S, "run_preflight_smoke",
+                        lambda cfg, args, out: ran.append("smoke") or ({"cells": 5}, []))
+
+
+def test_the_short_preflight_keeps_the_checks_and_leaves_out_the_smoke_and_the_variants(
+        tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    ran = []
+    _real_preflight_mocks(monkeypatch, ran)
+    f = S.real_preflight(T64, _later_block(tmp_path, {"mode": "full", "smoke": {"cells": 5}}))
+    assert f["mode"] == "short" and ran == ["libraries", "contract"]
+    assert f["smoke"] is None and f["gpu_variants"] is None
+    # a session that is no later block (b1, or Flex-start's one session) runs them all
+    ran.clear()
+    solo = tmp_path / "solo"
+    solo.mkdir()
+    f = S.real_preflight(T64, Namespace(session=str(solo), out=str(tmp_path / "o2"),
+                                        dry_run=False, banked_at=[], fa3_sha256=None))
+    assert f["mode"] == "full" and ran == ["libraries", "variants", "contract", "smoke"]
+
+
+def test_the_short_preflight_still_stops_on_a_failed_kernel_contract(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    ran = []
+    _real_preflight_mocks(monkeypatch, ran)
+    monkeypatch.setattr(S, "run_kernel_contract", lambda cfg, out: ({}, ["the kernel contract refused"]))
+    with pytest.raises(S.StepFailed, match="the kernel contract refused"):
+        S.real_preflight(T64, _later_block(tmp_path, {"mode": "full", "smoke": {"cells": 5}}))
+
+
+@pytest.mark.parametrize("earlier", [{"mode": "short", "smoke": None},
+                                     {"mode": "full", "smoke": None}, {}])
+def test_a_short_preflight_needs_an_earlier_full_preflight_with_its_smoke_check(tmp_path, earlier):
+    with pytest.raises(S.StepFailed, match="needs an earlier block whose full preflight ran the smoke"):
+        S.preflight_mode(T64, _later_block(tmp_path, earlier))
+
+
+def test_only_p4_runs_the_short_preflight():
+    assert P4.T64.short_later_preflight and not S.T61.short_later_preflight
+    assert not P4.T64_GATE.short_later_preflight

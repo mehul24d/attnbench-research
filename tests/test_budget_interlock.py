@@ -54,14 +54,14 @@ def test_both_on_spot_is_never_allowed_even_with_room():
 def test_a_launch_counts_the_other_pairing_at_its_dearest_allowed_provisioning():
     cs = BI.cases(4000, 250, CAPS)
     # P2 on Flex-start: P4 may still go Spot, so P4 is counted at 6000
-    assert BI.launch_headroom("P2", "FLEX_START", cs) == 14000 - 4250 - 1000 - 6000
+    assert BI.launch_headroom("P2", "FLEX_START", cs) == BI.CEILING_INR - 4250 - 1000 - 6000
     # P2 on Spot: P4 is held to Flex-start, so 2000
-    assert BI.launch_headroom("P2", "SPOT", cs) == 14000 - 4250 - 3000 - 2000
-    assert BI.launch_headroom("P4", "SPOT", cs) == 14000 - 4250 - 1000 - 6000
+    assert BI.launch_headroom("P2", "SPOT", cs) == BI.CEILING_INR - 4250 - 3000 - 2000
+    assert BI.launch_headroom("P4", "SPOT", cs) == BI.CEILING_INR - 4250 - 1000 - 6000
 
 
 def test_a_negative_headroom_refuses_the_launch():
-    cs = BI.cases(7000, 250, CAPS)        # P2 Flex + P4 Spot: 14,250, over by 250
+    cs = BI.cases(8500, 250, CAPS)        # P2 Flex + P4 Spot: 15,750, over the ceiling by 250
     assert BI.launch_headroom("P2", "FLEX_START", cs) == -250
     assert not BI.may_launch("P2", "FLEX_START", cs)
     assert BI.may_launch("P2", "SPOT", cs)
@@ -70,7 +70,7 @@ def test_a_negative_headroom_refuses_the_launch():
 
 def test_the_cli_exits_2_on_a_refused_launch(monkeypatch, capsys):
     monkeypatch.setattr(BI, "RAN", {})       # the mechanics, before P2 ran
-    monkeypatch.setattr(BI, "current", lambda: (7000, (250, 233), CAPS, BI.cases(7000, 250, CAPS)))
+    monkeypatch.setattr(BI, "current", lambda: (8500, (250, 233), CAPS, BI.cases(8500, 250, CAPS)))
     assert BI.main(["--launch", "P2:FLEX_START"]) == 2
     assert "REFUSED" in capsys.readouterr().out
     assert BI.main(["--launch", "P2:SPOT"]) == 0
@@ -109,21 +109,37 @@ def test_a_closed_rehearsal_reserves_nothing_and_its_spend_is_the_ledgers(monkey
 def test_a_ruled_out_provisioning_is_neither_launched_nor_counted():
     cs = BI.cases(4000, 250, CAPS, {("P4", "SPOT"): "x"})
     # P2 on Flex-start: P4 may no longer go Spot, so P4 is counted at Flex-start
-    assert BI.launch_headroom("P2", "FLEX_START", cs) == 14000 - 4250 - 1000 - 2000
+    assert BI.launch_headroom("P2", "FLEX_START", cs) == BI.CEILING_INR - 4250 - 1000 - 2000
     assert not BI.possible("P4", "SPOT", cs) and not BI.may_launch("P4", "SPOT", cs)
     flex_spot = [c for c in cs if c.p2 == "FLEX_START" and c.p4 == "SPOT"][0]
     assert flex_spot.ruled_out and not flex_spot.allowed and flex_spot.headroom > 0
     assert BI.may_launch("P2", "FLEX_START", cs) and BI.may_launch("P4", "FLEX_START", cs)
 
 
-def test_the_real_interlock_rules_out_p4_on_spot():
-    assert set(BI.RULED_OUT) == {("P4", "SPOT")}
-    _, _, _, cs = BI.current()
-    assert not BI.possible("P4", "SPOT", cs) and BI.possible("P4", "FLEX_START", cs)
+def test_the_real_interlock_runs_p4_on_flex_start_and_spot():
+    # the researcher, 15 Nov 2026: both in parallel, the first grant runs; one
+    # case counts one, so the launch reserves Spot's caps, the dearer
+    assert BI.RULED_OUT == {}
+    _, _, caps, cs = BI.current()
+    assert BI.possible("P4", "SPOT", cs) and BI.possible("P4", "FLEX_START", cs)
+    assert caps["P4"]["SPOT"] > caps["P4"]["FLEX_START"]
+    assert min(BI.launch_headroom("P4", p, cs) for p in BI.PROVISIONING) == \
+        BI.launch_headroom("P4", "SPOT", cs)
+
+
+def test_the_ceiling_is_the_budget_and_the_approved_overrun():
+    # "I approve exceeding the ₹14,000 ceiling by at most ₹1,500" (15 Nov 2026)
+    assert (BI.BUDGET_INR, BI.OVERRUN_INR, BI.CEILING_INR) == (14_000, 1_500, 15_500)
+    cs = BI.cases(7272, 0, {"P2": {"FLEX_START": 0, "SPOT": None},
+                            "P4": {"FLEX_START": 3237, "SPOT": 8229}})
+    spot = next(c for c in cs if (c.p2, c.p4) == ("FLEX_START", "SPOT"))
+    assert spot.headroom == -1 and not spot.allowed         # one rupee past ₹8,228 refuses
+    assert "ceiling ₹15,500" in "\n".join(BI.section("P4"))
 
 
 def test_the_cli_refuses_a_ruled_out_launch(monkeypatch, capsys):
     monkeypatch.setattr(BI, "RAN", {})       # the mechanics, before P2 ran
+    monkeypatch.setattr(BI, "RULED_OUT", {("P4", "SPOT"): "x"})
     cs = BI.cases(4000, 0, CAPS, BI.RULED_OUT)
     monkeypatch.setattr(BI, "current", lambda: (4000, (250, 233), CAPS, cs))
     assert BI.main(["--launch", "P4:SPOT"]) == 2
@@ -136,11 +152,11 @@ def test_a_provisioning_a_card_has_no_plan_for_is_never_possible():
     caps = {"P2": {"FLEX_START": 1000, "SPOT": None}, "P4": {"FLEX_START": 3000, "SPOT": None}}
     cs = BI.cases(4000, 0, caps)
     flex = next(c for c in cs if c.p2 == c.p4 == "FLEX_START")
-    assert flex.planned and flex.possible and flex.headroom == 14000 - 8000
+    assert flex.planned and flex.possible and flex.headroom == BI.CEILING_INR - 8000
     assert [c.planned for c in cs if "SPOT" in (c.p2, c.p4)] == [False] * 3
     assert not BI.possible("P2", "SPOT", cs) and not BI.possible("P4", "SPOT", cs)
     assert BI.may_launch("P2", "FLEX_START", cs)
-    assert BI.launch_headroom("P2", "FLEX_START", cs) == 6000
+    assert BI.launch_headroom("P2", "FLEX_START", cs) == BI.CEILING_INR - 8000
 
 
 # --- a pairing that ran (P2, 14 Nov 2026) ------------------------------------------------------
@@ -155,7 +171,7 @@ def test_a_pairing_that_ran_reserves_nothing_and_is_not_launched_again(monkeypat
     flex = next(c for c in cs if (c.p2, c.p4) == ("FLEX_START", "FLEX_START"))
     assert flex.committed == s + CAPS["P4"]["FLEX_START"]       # P2's cap not counted again
     assert not next(c for c in cs if (c.p2, c.p4) == ("SPOT", "FLEX_START")).possible
-    assert BI.launch_headroom("P4", "FLEX_START", cs) == BI.BUDGET_INR - s - CAPS["P4"]["FLEX_START"]
+    assert BI.launch_headroom("P4", "FLEX_START", cs) == BI.CEILING_INR - s - CAPS["P4"]["FLEX_START"]
     text = "\n".join(BI.section("P2"))
     assert "- **P2 ran** (" in text and "may launch" not in text
     assert "| Spot | Flex-start | — | — | no: P2 ran on Flex-start |" in text

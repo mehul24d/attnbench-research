@@ -89,11 +89,38 @@ def test_a_real_start_needs_both_banking_times(monkeypatch, tmp_path):
     assert S.start_refusal(T64, a) is None
 
 
-def _fake_tree(tmp_path, monkeypatch):
+def _fake_tree(tmp_path, monkeypatch, libraries=None):
+    """A deployed tree with the import script and P2's library list, and an
+    instance whose libraries are P2's (or `libraries`)."""
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "fa3_import_check.sh").write_text("exit 0\n")
+    ref = S.ROOT / T64.library_reference
+    (tmp_path / ref.relative_to(S.ROOT)).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / ref.relative_to(S.ROOT)).write_text(ref.read_text())
+    have = json.loads(ref.read_text())["libraries"] if libraries is None else libraries
+    monkeypatch.setattr(S, "session_libraries", lambda: [list(x) for x in have])
     monkeypatch.setattr(S, "ROOT", tmp_path)
     return tmp_path / "scripts" / "fa3_import_check.sh"
+
+
+def test_the_fa3_step_checks_the_libraries_before_the_install(tmp_path, monkeypatch):
+    # the preflight's order, cheapest first (15 Nov 2026): a library P2 did not
+    # have stops the step before the wheel's minutes-long install
+    ref = json.loads((S.ROOT / T64.library_reference).read_text())["libraries"]
+    _fake_tree(tmp_path, monkeypatch, libraries=[*ref, ["numba", "0.60.0"]])
+    monkeypatch.setattr(S, "run", lambda cmd, **kw: pytest.fail("the install ran"))
+    with pytest.raises(S.StepFailed, match="before FA3's install.*numba 0.60.0 is here"):
+        P4.real_fa3_import(T64, args_for(tmp_path))
+
+
+def test_the_fa3_step_stops_when_the_library_check_cannot_run(tmp_path, monkeypatch):
+    _fake_tree(tmp_path, monkeypatch)
+    def broken():
+        raise S.StepFailed("no attnbench")
+    monkeypatch.setattr(S, "session_libraries", broken)
+    monkeypatch.setattr(S, "run", lambda cmd, **kw: pytest.fail("the install ran"))
+    with pytest.raises(S.StepFailed, match="did not run: no attnbench"):
+        P4.real_fa3_import(T64, args_for(tmp_path))
 
 
 def test_the_fa3_check_runs_the_import_script_with_the_hash(tmp_path, monkeypatch):
