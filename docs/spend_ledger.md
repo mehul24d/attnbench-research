@@ -172,7 +172,7 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | Billing console difference, 15 Nov 2026: the researcher's figure is ₹7,272 spent (₹6,728 left of ₹14,000) against the rows above; **not yet attributed to billing lines** (no billing export exists; candidates: GST at 18% on catalogue rates, which alone gives about ₹1,113; custom-image storage, v5 and v6 about ₹170 since 21 Oct; bucket storage, egress and external IPs, none in any row) | 1,090 |
 | **Total** | **~7,272** |
 
-Headroom: ₹14,000 − ₹7,272 = **about ₹6,728** (the researcher's billing figure, 15 Nov 2026; ₹7,818 against the rows alone) (after P2's launch at `lock-2026-11-13-r4`, 14 Nov 2026: `attnbench-a100-p2e-20261114-0546`, `a16ae1a`, 166 min billable at ₹297.47/h, all 15 steps passed, self-halted, deleted, cleanup clean; before it, P2 at `lock-2026-11-13-r2` ₹69, at `lock-2026-11-13` ₹169, P2's relaunch ₹169 and launch 1 ₹109). The interlock below is reprinted after it (14 Nov 2026): P4 on Flex-start leaves ₹4,581.
+Headroom: ₹14,000 − ₹7,272 = **about ₹6,728** (the researcher's billing figure, 15 Nov 2026; ₹7,818 against the rows alone); with the overrun of at most ₹1,500 the researcher approved on 15 Nov 2026, **₹8,228** to the ₹15,500 ceiling (after P2's launch at `lock-2026-11-13-r4`, 14 Nov 2026: `attnbench-a100-p2e-20261114-0546`, `a16ae1a`, 166 min billable at ₹297.47/h, all 15 steps passed, self-halted, deleted, cleanup clean; before it, P2 at `lock-2026-11-13-r2` ₹69, at `lock-2026-11-13` ₹169, P2's relaunch ₹169 and launch 1 ₹109). The interlock below is reprinted after it (14 Nov 2026): P4 on Flex-start leaves ₹4,581.
 
 ### Budget interlock (14 Nov 2026, after P2 ran)
 
