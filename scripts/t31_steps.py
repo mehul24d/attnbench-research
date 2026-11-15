@@ -421,7 +421,25 @@ def load_config(path, *, dry_run: bool, cpu_boundary: bool = False) -> dict:
                     if arms is None]
         if missing:
             raise StepFailed(f"the session config leaves {missing} undecided")
-    return cfg
+    return narrow_to_block(cfg)
+
+
+def narrow_to_block(cfg: dict) -> dict:
+    """A block's config (`t61_session.block_file_config`) names its lengths and
+    batches as `block_grid`, since the grid itself is a T4.1 item the file may
+    not set; they are applied after the lock's values are filled, and only as
+    a subset of the pairing's grid."""
+    g = cfg.get("block_grid")
+    if g is None:
+        return cfg
+    lengths = [int(L) for L in g["lengths"]]
+    batches = {str(k): [int(b) for b in v] for k, v in g["batches"].items()}
+    have = {(int(L), int(b)) for L in cfg["lengths"] for b in cfg["batches"].get(str(L), [1])}
+    want = {(L, b) for L in lengths for b in batches.get(str(L), [1])}
+    if not want or want - have:
+        raise StepFailed(f"the block grid names {sorted(want - have) or 'nothing'}, outside "
+                         f"the pairing's grid")
+    return dict(cfg, lengths=lengths, batches=batches)
 
 
 def nominal_density(d):

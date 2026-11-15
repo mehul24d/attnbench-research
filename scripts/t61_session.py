@@ -1308,6 +1308,19 @@ def block_config(comp: dict, block: dict) -> dict:
     return out
 
 
+def block_file_config(raw: dict, sub: dict) -> dict:
+    """The file a block's ground truth reads, every process of it: the
+    pairing's repository config (`raw`, whose T4.1 items the lock fills) with
+    the block's grid as `block_grid` (`t31_steps.narrow_to_block`) and its
+    `not_measured` cells from `block_config` (`sub`). Written with the grid
+    itself, it was refused by the lock fill on P2 and P4, whose grids are
+    lock values (the CPU pass of 15 Nov 2026)."""
+    out = json.loads(json.dumps(raw))
+    out["block_grid"] = {"lengths": sub["lengths"], "batches": sub["batches"]}
+    out["not_measured"] = sub["not_measured"]
+    return out
+
+
 def t31_row_cell(row: dict) -> list:
     """The grid cell a T3.1 ground-truth row times: its cell arm (not its
     label), the density setting (dense's 1.0, which `density_setting` drops),
@@ -1384,7 +1397,8 @@ def real_harness(cfg, args, block=None, *, step_fn=None) -> dict:
     config = ROOT / cfg.components_config
     if block is not None:
         comp = st.load_config(str(config), dry_run=False)
-        config = write_json(out / "block_config.json", block_config(comp, block))
+        config = write_json(out / "block_config.json", block_file_config(
+            json.loads(config.read_text()), block_config(comp, block)))
     ns = SimpleNamespace(out=str(out), session=args.session, dry_run=False,
                          cpu_boundary=False, config=str(config), step="ground_truth")
     step_fn = step_fn or st.step_ground_truth

@@ -72,3 +72,32 @@ def test_whole_length_batch_groups_go_to_a_block_by_their_share_of_the_minutes()
     import pytest
     with pytest.raises(ValueError, match="not a grid cell"):
         B.assign_cells(blocks, grid, {**B.P4_ANCHOR, "context_length": 1000})
+
+
+def test_each_blocks_file_loads_through_the_real_lock_fill_to_its_own_cells(tmp_path):
+    # the CPU pass of 15 Nov 2026: a block's file that set the grid was refused by the
+    # lock fill in b3's ground truth; the file names the block's grid apart
+    spec = LB.parse(LOCK, "P4")
+    path = ROOT / T64.components_config
+    raw = json.loads(path.read_text())
+    comp = st.load_config(str(path), dry_run=False)
+    for b in spec.blocks:
+        if "ground_truth" not in b.steps:
+            continue
+        run = [list(spec.anchor)] + [list(c) for c in b.cells]
+        f = S.block_file_config(raw, S.block_config(comp, {"id": b.id, "run_cells": run}))
+        assert all(f.get(k) is None for k in st.LOCK_SOURCED)
+        p = tmp_path / f"{b.id}.json"
+        p.write_text(json.dumps(f))
+        got = st.load_config(str(p), dry_run=False)
+        assert sorted(map(tuple, st.cells(got)), key=str) == sorted(map(tuple, run), key=str)
+
+
+def test_a_block_grid_outside_the_pairings_grid_is_refused(tmp_path):
+    import pytest
+    path = ROOT / T64.components_config
+    f = dict(json.loads(path.read_text()), block_grid={"lengths": [1000], "batches": {"1000": [1]}})
+    p = tmp_path / "x.json"
+    p.write_text(json.dumps(f))
+    with pytest.raises(st.StepFailed, match=r"outside the pairing's grid"):
+        st.load_config(str(p), dry_run=False)
