@@ -77,10 +77,10 @@ lists neither; moving them is a timed-path change and a re-cut).
 | Spot rate re-read, cap and headroom | Cloud Billing catalog, 2026-11-15T14:24:56Z | done (above) |
 | Block plan and re-cut | short preflight on later blocks; `lock-2026-11-14-r3`; 17 + 3 mutations killed | done |
 | Spot H100 quota in each zone, global GPU quota | Cloud Quotas, 15 Nov 2026 | 1 in `us-central1`, 1 in `asia-southeast1`; `GPUS_ALL_REGIONS` 1, usage 0 |
-| Image v6 usable; bucket read and write from the zone's service account; staged inputs in the bucket with their sha256 | rehearsal 1, and the combined read/list | owed |
-| CPU pass at the tag with the interruption path | `scripts/prelaunch_cpu_pass.sh p4` with the lock's spec; the driver end to end with gcloud mocked | owed at the tag; the driver's mock passed |
-| Cheap-VM rehearsal 1 (e2 on-demand, cap ₹50, deleted at 30 min) | `p4_run/reh/reh1.sh` | owed |
-| Cheap-VM rehearsal 2 (e2 Spot, cap ₹20, deleted at 30 min) | `p4_run/reh/reh2.sh` | owed |
+| Image v6 usable; bucket read and write from the zone's service account; staged inputs in the bucket with their sha256 | rehearsal 1, and the combined read/list | done, 16 Nov 2026: v6 booted and bootstrapped, the bucket written and read back; the staged inputs' sha256s match the ledger |
+| CPU pass at the tag with the interruption path | `scripts/prelaunch_cpu_pass.sh p4` with the lock's spec; the driver end to end with gcloud mocked | done at `7a24cba` (one session; four blocks, b4 interrupted and rerun, drift passed); the driver's mock passed |
+| Cheap-VM rehearsal 1 (e2 on-demand, cap ₹50, deleted at 30 min) | `p4_run/reh/reh1.sh` | passed, 14 min, about ₹3 |
+| Cheap-VM rehearsal 2 (e2 Spot, cap ₹20, deleted at 30 min) | `p4_run/reh/reh2.sh` | passed on the fourth VM, about ₹5 for four: held mid-step, stopped, restarted, discarded, rerun, classified from the bucket |
 
 ## What it does not do
 
