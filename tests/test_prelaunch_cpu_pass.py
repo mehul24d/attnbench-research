@@ -12,8 +12,11 @@ device components (T3.1's code on synthetic recordings), predict (the real
 training file and the learned fit), the real 65 s hold, ground_truth (T3.1's
 orchestration; only `time_arms` and the profiler are fakes), late_check,
 trace_checks (the real `check_trace.py`) and host_speed_end. With a block
-spec it then runs block B: a reset during ground truth, the resume refused
-and discarded, a new block passing, and the drift script.
+spec it runs every block in order, each on its own boot importing the
+earlier ones; the last block with ground truth is reset during its ground
+truth first, its resume on a new boot refused and discarded, and a new
+attempt of it passes; then the drift between the blocks (the rehearsal's
+script, or the pairing's own `drift` step, from the lock).
 
 Mocked, and only these: the steps that need the GPU (preflight, link,
 launch_queue, probe, the mask recordings, dense_select, host_speed_mid,
@@ -250,6 +253,12 @@ def _attempts(session: Path) -> list:
              "imported_from": a.get("imported_from")} for a in m["attempts"]]
 
 
+def _receipt(cfg, d: Path) -> dict:
+    receipt = json.loads((d / S.RECEIPT).read_text())
+    assert receipt["remote_path"].startswith(f"predictions/{cfg.pairing}/")
+    return receipt
+
+
 def test_the_real_session_passes_on_this_commit_with_only_the_gpu_mocked(tmp_path, monkeypatch):
     cfg, lock = _config()
     out = Path(os.environ["ATTNBENCH_PRELAUNCH_OUT"]) if os.environ.get(
@@ -311,40 +320,64 @@ def test_the_real_session_passes_on_this_commit_with_only_the_gpu_mocked(tmp_pat
         return d, rc
 
     stamp = time.strftime("%Y%m%dT%H%MZ", time.gmtime())
-    monkeypatch.setattr(S, "boot_id", lambda: "boot-A")
-    b1, rc = run(f"{cfg.session_prefix}_{stamp}" + ("_b1" if lock else ""), "b1" if lock else None)
-    assert rc == 0, json.dumps(rec["sessions"], indent=1)
-    receipt = json.loads((b1 / S.RECEIPT).read_text())
-    assert receipt["remote_path"].startswith(f"predictions/{cfg.pairing}/")
-    rec["receipt"] = receipt
+    if not lock:
+        monkeypatch.setattr(S, "boot_id", lambda: "boot-A")
+        b1, rc = run(f"{cfg.session_prefix}_{stamp}", None)
+        assert rc == 0, json.dumps(rec["sessions"], indent=1)
+        rec["receipt"] = _receipt(cfg, b1)
+    else:
+        from attnbench.lock import blocks as LB
+        spec = LB.parse(json.loads(Path(lock).read_text()), cfg.pairing)
+        gt = [b.id for b in spec.blocks if "ground_truth" in b.steps]
+        cut = gt[-1]                       # the block interrupted first
+        done, dirs, x = [], {}, None
+        for bid in spec.ids:
+            if bid == cut:
+                # a reset during ground truth on its first boot
+                class Reset(Exception):
+                    pass
 
-    if lock:
-        # block B: a reset during ground truth on its first boot
-        class Reset(Exception):
-            pass
-
-        def resetting(cmd, log):
-            if cmd[cmd.index("step") + 1] == "ground_truth":
-                raise Reset()
-            return runner(cmd, log)
-        monkeypatch.setattr(S, "boot_id", lambda: "boot-B1")
-        with pytest.raises(Reset):
-            run(f"{cfg.session_prefix}_{stamp}_b2_interrupted", "b2", [b1], runner=resetting)
-        monkeypatch.setattr(S, "boot_id", lambda: "boot-B2")
-        x, rc_x = run(f"{cfg.session_prefix}_{stamp}_b2_interrupted", "b2", [b1],
-                      start="ground_truth")
-        assert rc_x == 2 and (x / S.DISCARD).exists(), "the resumed block was not discarded"
-        y, rc_y = run(f"{cfg.session_prefix}_{stamp}_b2", "b2", [b1])
-        assert rc_y == 0, json.dumps(rec["sessions"], indent=1)
+                def resetting(cmd, log):
+                    if cmd[cmd.index("step") + 1] == "ground_truth":
+                        raise Reset()
+                    return runner(cmd, log)
+                monkeypatch.setattr(S, "boot_id", lambda: f"boot-{bid}-1")
+                with pytest.raises(Reset):
+                    run(f"{cfg.session_prefix}_{stamp}_{bid}_interrupted", bid, done,
+                        runner=resetting)
+                monkeypatch.setattr(S, "boot_id", lambda: f"boot-{bid}-2")
+                x, rc_x = run(f"{cfg.session_prefix}_{stamp}_{bid}_interrupted", bid, done,
+                              start="ground_truth")
+                assert rc_x == 2 and (x / S.DISCARD).exists(), "the resumed block was not discarded"
+            monkeypatch.setattr(S, "boot_id", lambda: f"boot-{bid}")
+            d, rc = run(f"{cfg.session_prefix}_{stamp}_{bid}", bid, done)
+            assert rc == 0, json.dumps(rec["sessions"], indent=1)
+            done.append(d)
+            dirs[bid] = d
+        rec["receipt"] = _receipt(cfg, dirs[spec.predict_block()])
         sh = ROOT / "scripts" / "t61_rehearsal_b.sh"
         if CONFIG == "rehearsal" and sh.exists():
             code = sh.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
-            monkeypatch.setattr(sys, "argv", ["-", str(b1), str(x), str(y)])
+            monkeypatch.setattr(sys, "argv", ["-", str(dirs["b1"]), str(x), str(dirs[cut])])
             exec(compile(code, "drift", "exec"), {"__name__": "__main__"})
-            drift = json.loads((y / "block_drift.json").read_text())
+            drift = json.loads((dirs[cut] / "block_drift.json").read_text())
             assert drift["blocks"] == ["b1", "b2"]
             assert [r["block"] for r in drift["discarded"]] == ["b2"]
             rec["drift"] = {"blocks": drift["blocks"], "discarded": ["b2"]}
+        else:
+            # the pairing's post-session step, from the lock, over every block and the discarded one
+            o = tmp_path / "block_drift.json"
+            rc_d = S.main(["drift", "--lock", lock, *[a for d in [*done, x] for a in
+                                                     ("--block-dir", str(d))], "--out", str(o)],
+                          cfg=cfg)
+            drift = json.loads(o.read_text())
+            assert rc_d == 0, drift
+            assert drift["blocks"] == gt and [r["block"] for r in drift["discarded"]] == [cut]
+            rec["drift"] = {"blocks": drift["blocks"], "discarded": [cut],
+                            "status": drift["drift"]["status"]}
+        rec["preflight_modes"] = {bid: (json.loads((S.step_dir(d, "preflight", cfg) /
+                                                    "result.json").read_text())["findings"]
+                                        .get("mode")) for bid, d in dirs.items()}
     rec["steps_run"] = seen
     rec["passed"] = True
     _record(out, rec)
