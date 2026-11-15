@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))      # `attnbench` from this tree (lock_spec)
 CARDS = {"P4": ROOT / "docs" / "launch_cards" / "t64_p4_h100.md",
          "P2": ROOT / "docs" / "launch_cards" / "t61_p2_a100.md"}
 CARD = CARDS["P4"]
