@@ -59,3 +59,17 @@ are the launcher's output, in UTC.
 | 204 | 2026-11-15T09:23:01Z | us-central1-a | P4's retry loop (researcher's yes, 14 Nov 2026), Flex-start only: **expired** (ZONE_RESOURCE_POOL_EXHAUSTED) | 33 | `attnbench-h100-p4-20261115-1453` | nothing billed |
 | 205 | 2026-11-15T09:53:01Z | us-central1-a | P4's retry loop (researcher's yes, 14 Nov 2026), Flex-start only: **no_capacity** (ZONE_RESOURCE_POOL_EXHAUSTED) | 32 | `attnbench-h100-p4-20261115-1523` | nothing billed |
 | 206 | 2026-11-15T10:23:01Z | us-central1-a | P4's retry loop (researcher's yes, 14 Nov 2026), Flex-start only: **expired** (ZONE_RESOURCE_POOL_EXHAUSTED) | 32 | `attnbench-h100-p4-20261115-1553` | nothing billed |
+
+## P4's second request series (the researcher's yes of 15 Nov 2026)
+
+One Flex-start request at a time, each waiting up to 6,900 s, a RUNNING check after any "grant" (the launcher counts `PROVISIONING` as one; rounds 28 and 44 above were not), until a grant or the end of 25 Nov 2026 IST (18:29:59Z); no new request is submitted after that. Flex-start only, no Spot, no suite record. Plan default, flagged: at least 15 min between one request's submission and the next's, so a quick refusal does not turn into a tight loop.
+
+Zones, named here before use:
+
+| Zone | Why it is used | Rate (₹/h) |
+|---|---|---|
+| `us-central1-a` | the plan's pinned zone; the yes names it | 462.42 |
+| `asia-southeast1-b` | the yes names it | 463.47 |
+| `asia-southeast1-c` | **confirmed for this series (15 Nov 2026):** `a3-highgpu-1g` is offered there (`gcloud compute machine-types list`); its region, `asia-southeast1`, has the quota for one (`PREEMPTIBLE_CPUS` 26, as `us-central1`); and Flex-start requests there were accepted on 31 Oct to 2 Nov 2026 (attempts 2 to 155, three zones), none granted | 463.47 |
+
+Order of requests: `us-central1-a`, `asia-southeast1-b`, `us-central1-a`, `asia-southeast1-c`, and again. **Not used:** `us-central1-b`, `us-central1-c` and the other zones that offer the machine type: only `us-central1` and `asia-southeast1` have the quota for one `a3-highgpu-1g` (every other region's `PREEMPTIBLE_CPUS` is below 26), and no Flex-start request has been accepted in `us-central1-b` or `-c`, so they are not confirmed. The cap is ₹3,245 in every zone, held by the in-guest halt at 419 min (₹3,236 at ₹463.47/h) with the hard delete at 429 min.
