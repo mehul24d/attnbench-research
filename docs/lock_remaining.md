@@ -29,7 +29,7 @@ The researcher's items: 31 = 0; 18 = 0.8867 (re-run on this lock with
 `scripts/hdbi_threshold.py`: unchanged); 28 = P7, then the chunked extension. Scored pairings:
 H0 [P2], H1 [P2, P4], H2 [P2], H3 [P4], H6 [P4], H4 and H5 not scored.
 
-The timed-path pin is `68808a29…` at `161cd95`, and the analysis commit is `161cd95`. They moved
+The timed-path pin is `26e41876…` at `f8ee3d6`, and the analysis commit is `f8ee3d6`. They moved
 from `fb6dca8` to `78349e0` when H6's rule changed, then to `341860c` when `learned.LOCKED_CONFIG`
 was set to config 4 for Gate B, then to `9ddb9ee` when the lock fill's chain-check shape was
 fixed (Appendix A, 12 Nov 2026, the second and third lock-wave rulings), then to `aa02da2` when
@@ -42,21 +42,24 @@ at `lock-2026-11-13-r2` stopped in preflight (Appendix A, 13 Nov 2026, `-r3`), t
 the preflight gained the block-sparse kernel's contract and the smoke check the XAttention arms at
 32768 (the adviser's rulings dated 13 Nov 2026, second set; Appendix A, 13 Nov 2026, `-r4`),
 then to `161cd95` when P4's preflight gained the check of its libraries against P2's (the
-adviser's rulings dated 14 Nov 2026; Appendix A, 14 Nov 2026, `lock-2026-11-14-r2`).
+adviser's rulings dated 14 Nov 2026; Appendix A, 14 Nov 2026, `lock-2026-11-14-r2`), then to `f8ee3d6`
+when later Spot blocks gained the short preflight and P4's block spec entered the lock (the
+researcher's decision of 15 Nov 2026; Appendix A, 15 Nov 2026, `lock-2026-11-14-r3`).
 T4.4 was written Done at `0301fb6`, and the tag `lock-2026-11-14` is on its child `3aa0449`; the
 first re-cut's tag `lock-2026-11-13` is on `5347b73`, the second's, `lock-2026-11-13-r2`, on `886fa28`,
 the third's, `lock-2026-11-13-r3`, on `f38a625` (local only, never pushed), and the fourth's,
-`lock-2026-11-13-r4`, on `a16ae1a`, where P2 ran. The re-cut for P4's lock commit holds this file,
-the plan's Appendix A lines and the new pin; the tag `lock-2026-11-14-r2` goes on its child,
-which carries the suite counts and P4's Flex-start card. Neither the plan nor the pin changes there.
+`lock-2026-11-13-r4`, on `a16ae1a`, where P2 ran, and the fifth's, `lock-2026-11-14-r2`, on
+`804d20f`, where P4's Flex-start requests were submitted. The re-cut for P4 on Spot's lock
+commit holds this file, the plan's Appendix A lines and the new pin; the tag `lock-2026-11-14-r3` goes
+on its child, which carries the suite counts and P4's Spot card. Neither the plan nor the pin changes there.
 No earlier tag is moved.
 
 ## Still to do
 
 1. Tag the re-cut's lock commit (`scripts/tag_lock.py --lock-file docs/lock_values.json --tag
-   lock-2026-11-14-r2`). Pushing the tag needs its own yes.
-2. P4's Flex-start request needs its own yes.
-3. P4's Flex card is built from the lock commit, with the headroom table (`docs/p4_flex_card.md`).
+   lock-2026-11-14-r3`). Pushing the tag needs its own yes.
+2. P4's Flex-start requests at the new tag and its Spot blocks need one yes, on the Spot card.
+3. P4's Spot card is built from the lock commit, with the headroom table (`docs/p4_spot_card.md`).
    Its launch needs its own yes.
 4. If code on the timed path or analysis code changes after the tag, the pin and the analysis
    commit are re-checked, and the lock is re-cut.
