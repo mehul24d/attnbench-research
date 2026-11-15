@@ -192,6 +192,65 @@ def spec(blocks, *, max_hours: float) -> dict:
     return {"max_hours": max_hours, "anchor": None, "blocks": out}
 
 
+# P4's anchor (a plan default, 15 Nov 2026, flagged): dense at 8192, batch 1, as
+# the L4 rehearsal's (`configs/t61/rehearsal_lock.json`) and the docstring of
+# `attnbench.lock.blocks`; measured in every block with ground truth.
+P4_ANCHOR = {"arm": "dense", "density": 1.0, "context_length": 8192, "batch": 1}
+
+
+def group_weight(cells) -> int:
+    """A (length, batch) group's share of the ground truth's time, by the
+    tokens its cells prefill: cells x length x batch (an estimate; nothing
+    is timed per cell on an H100)."""
+    return sum(L * b for _, _, L, b in cells)
+
+
+def assign_cells(blocks, grid, anchor: dict) -> list:
+    """Each ground-truth block's own cells: the grid's (length, batch) groups
+    in grid order, the anchor left out, each block taking whole groups while
+    their weight (`group_weight`) stays within its share of the ground
+    truth's minutes; the last block takes the rest. Whole groups keep each
+    group's dense control with it (`t61_session.block_config`)."""
+    a = (anchor["arm"], anchor["density"], anchor["context_length"], anchor["batch"])
+    if a not in grid:
+        raise ValueError(f"the anchor {a} is not a grid cell")
+    groups: dict = {}
+    for c in grid:
+        if c != a:
+            groups.setdefault((c[2], c[3]), []).append(c)
+    gt = [b for b in blocks if "ground_truth" in b.steps]
+    total_w = sum(group_weight(g) for g in groups.values())
+    total_m = sum(b.ground_truth_min for b in gt)
+    keys, out = list(groups), []
+    for i, b in enumerate(gt):
+        mine, w = [], 0
+        if i == len(gt) - 1:
+            mine, keys = keys, []
+        else:
+            while keys and (w + group_weight(groups[keys[0]])) / total_w <= \
+                    b.ground_truth_min / total_m + 1e-9:
+                w += group_weight(groups[keys[0]])
+                mine.append(keys.pop(0))
+        if not mine:
+            raise ValueError(f"a ground-truth block gets no cell group (share "
+                             f"{b.ground_truth_min:.0f} of {total_m:.0f} min)")
+        out.append([c for k in mine for c in groups[k]])
+    return out
+
+
+def lock_spec(blocks, grid, *, max_hours: float, anchor: dict = P4_ANCHOR) -> dict:
+    """The lock file's complete block spec: `spec` with the anchor and each
+    ground-truth block's cells (`assign_cells`)."""
+    from attnbench.lock.blocks import CELL_FIELDS
+    s = spec(blocks, max_hours=max_hours)
+    s["anchor"] = dict(anchor)
+    cells = iter(assign_cells(blocks, grid, anchor))
+    for e in s["blocks"]:
+        if "ground_truth" in e["steps"]:
+            e["cells"] = [dict(zip(CELL_FIELDS, c)) for c in next(cells)]
+    return s
+
+
 def report(blocks, rate: float) -> str:
     lines = [f"Spot rate Rs {rate}/h; cap = rate x planned hours x {CAP_FACTOR}; halt = "
              f"{HALT_FACTOR} x planned hours (rounded down); hard delete = the halt + "

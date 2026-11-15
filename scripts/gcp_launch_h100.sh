@@ -30,7 +30,9 @@
 # SPOT (researcher, 31 Oct 2026 for the FA3 correctness gate; 7 Nov 2026 for P4):
 # GCP_H100_PROVISIONING=SPOT asks for Spot instead, through the same submit,
 # poll and cancel path, without --request-valid-for-duration (a FLEX_START
-# flag). Declare the rate as GCP_RATE_INR_HR (plan Section 5.2: Rs 668.04/h at
+# flag). Declare the rate as GCP_RATE_INR_HR (plan Section 5.2: Rs 629.94/h in
+# us-central1 and Rs 603.61/h in asia-southeast1, the catalog read 15 Nov 2026;
+# before it Rs 668.04/h at
 # the higher region). t64_session.py takes a Spot row for the gate and for P4
 # (recorded as `spot`), and discards a session whose instance restarted
 # (preempted and started again): no row of it is evidence.
@@ -167,6 +169,8 @@ echo "  boot disk    : $BOOT_DISK_SIZE ($BOOT_DISK_TYPE)"
 # zone says so rather than guessing.
 for Z in $ZONE_FALLBACKS; do
   case "$PROVISIONING:$Z" in
+    SPOT:us-central1-*)           RATE_LINE="Rs ~630/h all-in (us-central1, Spot, catalog 2026-11-15)" ;;
+    SPOT:asia-southeast1-*)       RATE_LINE="Rs ~604/h all-in (asia-southeast1, Spot, catalog 2026-11-15)" ;;
     SPOT:*)                       RATE_LINE="no Spot planning rate on record; the declared rate below is used" ;;
     FLEX_START:asia-southeast1-*) RATE_LINE="Rs ~463/h all-in (asia-southeast1, planning rate 2026-10-20)" ;;
     FLEX_START:us-central1-*)     RATE_LINE="Rs ~462/h all-in (us-central1, planning rate 2026-10-20)" ;;

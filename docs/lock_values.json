@@ -522,5 +522,267 @@
    "kept": "as the sensitivity's file; not overwritten"
   },
   "path_note": "the path t61_session.P1_TRAINING reads; the backups and the bucket copy carry the dated name p1_training_t32dc_20261109.json.gz"
+ },
+ "blocks": {
+  "P4": {
+   "max_hours": 2.3,
+   "anchor": {
+    "arm": "dense",
+    "density": 1.0,
+    "context_length": 8192,
+    "batch": 1
+   },
+   "blocks": [
+    {
+     "id": "b1",
+     "steps": [
+      "link",
+      "launch_queue",
+      "probe",
+      "masks"
+     ],
+     "planned_hours": 2.0
+    },
+    {
+     "id": "b2",
+     "steps": [
+      "host_components"
+     ],
+     "planned_hours": 2.233
+    },
+    {
+     "id": "b3",
+     "steps": [
+      "device_components",
+      "dense_select",
+      "host_speed_mid",
+      "predict",
+      "ground_truth",
+      "late_check",
+      "trace_checks"
+     ],
+     "planned_hours": 2.3,
+     "ground_truth_minutes": 6.0,
+     "cells": [
+      {
+       "arm": "dense",
+       "density": 1.0,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.25,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.5,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.25,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.5,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "xattention",
+       "density": null,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "xattention_noassert",
+       "density": null,
+       "context_length": 2048,
+       "batch": 1
+      },
+      {
+       "arm": "dense",
+       "density": 1.0,
+       "context_length": 4096,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.25,
+       "context_length": 4096,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.5,
+       "context_length": 4096,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.25,
+       "context_length": 4096,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.5,
+       "context_length": 4096,
+       "batch": 1
+      },
+      {
+       "arm": "xattention",
+       "density": null,
+       "context_length": 4096,
+       "batch": 1
+      },
+      {
+       "arm": "xattention_noassert",
+       "density": null,
+       "context_length": 4096,
+       "batch": 1
+      }
+     ]
+    },
+    {
+     "id": "b4",
+     "steps": [
+      "ground_truth",
+      "late_check",
+      "trace_checks"
+     ],
+     "planned_hours": 1.767,
+     "ground_truth_minutes": 43.0,
+     "cells": [
+      {
+       "arm": "oracle",
+       "density": 0.25,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.5,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.25,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.5,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "xattention",
+       "density": null,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "xattention_noassert",
+       "density": null,
+       "context_length": 8192,
+       "batch": 1
+      },
+      {
+       "arm": "dense",
+       "density": 1.0,
+       "context_length": 16384,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.25,
+       "context_length": 16384,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.5,
+       "context_length": 16384,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.25,
+       "context_length": 16384,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.5,
+       "context_length": 16384,
+       "batch": 1
+      },
+      {
+       "arm": "xattention",
+       "density": null,
+       "context_length": 16384,
+       "batch": 1
+      },
+      {
+       "arm": "xattention_noassert",
+       "density": null,
+       "context_length": 16384,
+       "batch": 1
+      },
+      {
+       "arm": "dense",
+       "density": 1.0,
+       "context_length": 16384,
+       "batch": 4
+      },
+      {
+       "arm": "dense",
+       "density": 1.0,
+       "context_length": 32768,
+       "batch": 1
+      },
+      {
+       "arm": "oracle",
+       "density": 0.25,
+       "context_length": 32768,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.25,
+       "context_length": 32768,
+       "batch": 1
+      },
+      {
+       "arm": "meanpool",
+       "density": 0.5,
+       "context_length": 32768,
+       "batch": 1
+      },
+      {
+       "arm": "xattention",
+       "density": null,
+       "context_length": 32768,
+       "batch": 1
+      },
+      {
+       "arm": "xattention_noassert",
+       "density": null,
+       "context_length": 32768,
+       "batch": 1
+      }
+     ]
+    }
+   ]
+  }
  }
 }
