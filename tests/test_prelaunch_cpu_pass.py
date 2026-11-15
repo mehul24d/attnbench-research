@@ -372,8 +372,12 @@ def test_the_real_session_passes_on_this_commit_with_only_the_gpu_mocked(tmp_pat
                           cfg=cfg)
             drift = json.loads(o.read_text())
             assert rc_d == 0, drift
-            assert drift["blocks"] == gt and [r["block"] for r in drift["discarded"]] == [cut]
+            assert drift["blocks"] == list(spec.ids)
+            assert [r["block"] for r in drift["discarded"]] == [cut]
+            assert sorted(drift["drift"]["per_block"]) == sorted(gt)   # the anchor's blocks
+            assert drift["drift"]["status"] == "passed"
             rec["drift"] = {"blocks": drift["blocks"], "discarded": [cut],
+                            "compared": sorted(drift["drift"]["per_block"]),
                             "status": drift["drift"]["status"]}
         rec["preflight_modes"] = {bid: (json.loads((S.step_dir(d, "preflight", cfg) /
                                                     "result.json").read_text())["findings"]
