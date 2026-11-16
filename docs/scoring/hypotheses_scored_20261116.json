@@ -1,0 +1,1111 @@
+{
+ "lock": {
+  "tag": "lock-2026-11-14-r3",
+  "main_differs_at": [
+   "/plan_sha256"
+  ],
+  "plan_sha256_at_tag": "a8f0b6ea2b8610cb97d9af0835592b19b8e768acab940ffd51f4d03748a99e62"
+ },
+ "analysis": {
+  "analysis_commit": "83b2edf983a8a239a535b06602ef0975fa5c5b15",
+  "files_checked": 34
+ },
+ "files": {
+  "P1": {
+   "remote": "predictions/P1-T3.2d/t32d_p1_20261109T0726Z/prediction_P1_20261109T095833754749Z.json",
+   "sha256": "280a34238a0930bca0192fe7ba5db66da34e760672428023d7ba61e4d1fb9cd9",
+   "trained_on": [],
+   "ground_truth_started_at": "2026-11-09T10:01:23+00:00",
+   "ledger_earliest_start": null
+  },
+  "P2": {
+   "remote": "predictions/P2/t61_p2_20261114T0022Z/prediction_P2_20261114T022220275757Z.json",
+   "sha256": "6cdd10b9460bbd07db8b13cfd4731bf3d17a27184c8db6696e24d13968ffe5f7",
+   "trained_on": [
+    "P1"
+   ],
+   "ground_truth_started_at": "2026-11-14T02:28:57+00:00",
+   "ledger_earliest_start": "2026-11-14T02:28:57+00:00"
+  },
+  "P4": {
+   "remote": "predictions/P4/t64_p4_20261116T113724Z_b3/prediction_P4_20261116T120732377724Z.json",
+   "sha256": "f9de9be0afcd89e4bc27bade7b8d19418b19a65c6285f5862b2c8ef25243369c",
+   "trained_on": [
+    "P1",
+    "P2"
+   ],
+   "ground_truth_started_at": "2026-11-16T12:11:10+00:00",
+   "ledger_earliest_start": "2026-11-16T12:11:10+00:00"
+  }
+ },
+ "measured": {
+  "P2": {
+   "blocks": [
+    "t61_p2_20261114T0022Z"
+   ],
+   "cells": 35,
+   "pooled_cells": [],
+   "excluded": [],
+   "unmeasured": [],
+   "discarded": [],
+   "unpassed": []
+  },
+  "P4": {
+   "blocks": [
+    "b3",
+    "b4"
+   ],
+   "cells": 35,
+   "pooled_cells": [
+    [
+     "primary",
+     "NVIDIA H100 80GB HBM3|eager|O0|3761dc918db6",
+     "dense",
+     1.0,
+     8075,
+     1
+    ]
+   ],
+   "excluded": [],
+   "unmeasured": [],
+   "discarded": [],
+   "unpassed": []
+  }
+ },
+ "banked": {
+  "P1": "2026-11-09T11:12:31+00:00",
+  "P2": "2026-11-14T03:33:58+00:00"
+ },
+ "scores": {
+  "H1": {
+   "P2": {
+    "hypothesis": "H1",
+    "pairing": "P2",
+    "tolerance": 0.1,
+    "n_cells": 35,
+    "unmeasured": [],
+    "recursion_median_abs_relative": 0.11831892444759108,
+    "rivals_median_abs_relative": {
+     "fitted_sum": 0.10050914443884686,
+     "sum": 0.6935499613248439,
+     "step_form": 0.08420920271964702,
+     "learned": 1.4465226563040963
+    },
+    "rivals_not_in_file": [],
+    "recursion_below": {
+     "fitted_sum": false,
+     "sum": true,
+     "step_form": false,
+     "learned": true
+    },
+    "primary_comparison": "fitted_sum",
+    "sign": {
+     "agree": 25,
+     "disagree": [],
+     "inside_floor": 4,
+     "marginal": [
+      [
+       "primary",
+       "NVIDIA A100-SXM4-80GB|eager|O0|2409da58a2ea",
+       "meanpool",
+       0.25,
+       16370,
+       1
+      ],
+      [
+       "primary",
+       "NVIDIA A100-SXM4-80GB|xattn:triton|O0|fab497a14e0f",
+       "xattention",
+       0.572542,
+       16370,
+       1
+      ],
+      [
+       "primary",
+       "NVIDIA A100-SXM4-80GB|xattn:triton|O0|fab497a14e0f",
+       "xattention_noassert",
+       0.572542,
+       16370,
+       1
+      ]
+     ],
+     "verdict": "holds"
+    },
+    "xattention_pair": {
+     "rows": [
+      {
+       "cell": [
+        "primary",
+        1951,
+        1
+       ],
+       "predicted_s": 0.006406207912909689,
+       "measured_s": 0.0038841434993628354,
+       "agrees": false
+      },
+      {
+       "cell": [
+        "primary",
+        4068,
+        1
+       ],
+       "predicted_s": 0.004382049360091622,
+       "measured_s": 0.005219782000494888,
+       "why": "the measured difference is inside the floor"
+      },
+      {
+       "cell": [
+        "primary",
+        8075,
+        1
+       ],
+       "predicted_s": 0.003970879864419741,
+       "measured_s": 0.004481083500650129,
+       "why": "the measured difference is inside the floor"
+      },
+      {
+       "cell": [
+        "primary",
+        16370,
+        1
+       ],
+       "predicted_s": 0.007729001641720135,
+       "measured_s": 0.005031180999594653,
+       "why": "the measured difference is inside the floor"
+      },
+      {
+       "cell": [
+        "primary",
+        32700,
+        1
+       ],
+       "predicted_s": 0.03189065102870092,
+       "measured_s": 0.02222581100068055,
+       "why": "the measured difference is inside the floor"
+      }
+     ],
+     "agree": 0,
+     "disagree": 1,
+     "verdict": "fails"
+    },
+    "by_arm_class": {
+     "dense": {
+      "recursion": 0.02889771746538248,
+      "fitted_sum": 0.010263347484614953,
+      "sum": 0.3222210766900108,
+      "step_form": 0.025364562320935848,
+      "learned": 2.206923903500875
+     },
+     "synchronising": {
+      "recursion": 0.12959784976069919,
+      "fitted_sum": 0.22940917184036716,
+      "sum": 0.7297110492886314,
+      "step_form": 0.09877034739525639,
+      "learned": 0.9665357628950869
+     }
+    },
+    "parts": {
+     "tolerance": "fails",
+     "beats_every_rival": "fails",
+     "sign": "holds",
+     "xattention_pair": "fails"
+    },
+    "verdict": "fails"
+   },
+   "P4": {
+    "hypothesis": "H1",
+    "pairing": "P4",
+    "tolerance": 0.1,
+    "n_cells": 35,
+    "unmeasured": [],
+    "recursion_median_abs_relative": 0.24951951895583271,
+    "rivals_median_abs_relative": {
+     "fitted_sum": 0.12159578641549816,
+     "sum": 0.852727664789245,
+     "step_form": 0.24535505479593842,
+     "learned": 0.3169198762559602
+    },
+    "rivals_not_in_file": [],
+    "recursion_below": {
+     "fitted_sum": false,
+     "sum": true,
+     "step_form": false,
+     "learned": true
+    },
+    "primary_comparison": "fitted_sum",
+    "sign": {
+     "agree": 25,
+     "disagree": [
+      [
+       "primary",
+       "NVIDIA H100 80GB HBM3|eager|O0|3761dc918db6",
+       "meanpool",
+       0.25,
+       16370,
+       1
+      ],
+      [
+       "primary",
+       "NVIDIA H100 80GB HBM3|eager|O0|3761dc918db6",
+       "meanpool",
+       0.5,
+       16370,
+       1
+      ]
+     ],
+     "inside_floor": 2,
+     "marginal": [
+      [
+       "primary",
+       "NVIDIA H100 80GB HBM3|eager|O0|3761dc918db6",
+       "meanpool",
+       0.25,
+       16370,
+       1
+      ],
+      [
+       "primary",
+       "NVIDIA H100 80GB HBM3|eager|O0|3761dc918db6",
+       "meanpool",
+       0.5,
+       16370,
+       1
+      ],
+      [
+       "primary",
+       "NVIDIA H100 80GB HBM3|xattn:triton|O0|1704d6c4f452",
+       "xattention",
+       0.572401,
+       16370,
+       1
+      ],
+      [
+       "primary",
+       "NVIDIA H100 80GB HBM3|xattn:triton|O0|1704d6c4f452",
+       "xattention_noassert",
+       0.572401,
+       16370,
+       1
+      ]
+     ],
+     "verdict": "fails"
+    },
+    "xattention_pair": {
+     "rows": [
+      {
+       "cell": [
+        "primary",
+        1951,
+        1
+       ],
+       "predicted_s": 0.0008121541409724653,
+       "measured_s": 0.0019488879997879849,
+       "agrees": false
+      },
+      {
+       "cell": [
+        "primary",
+        4068,
+        1
+       ],
+       "predicted_s": 0.0022671004399885814,
+       "measured_s": 0.0013173039999401226,
+       "why": "the measured difference is inside the floor"
+      },
+      {
+       "cell": [
+        "primary",
+        8075,
+        1
+       ],
+       "predicted_s": 0.004541186904267913,
+       "measured_s": 0.0022034199999438897,
+       "why": "the measured difference is inside the floor"
+      },
+      {
+       "cell": [
+        "primary",
+        16370,
+        1
+       ],
+       "predicted_s": 0.006496947791788915,
+       "measured_s": 0.0020924130000139485,
+       "why": "the measured difference is inside the floor"
+      },
+      {
+       "cell": [
+        "primary",
+        32700,
+        1
+       ],
+       "predicted_s": 0.015493423623631264,
+       "measured_s": 0.01361598400001185,
+       "why": "the measured difference is inside the floor"
+      }
+     ],
+     "agree": 0,
+     "disagree": 1,
+     "verdict": "fails"
+    },
+    "by_arm_class": {
+     "dense": {
+      "recursion": 0.27223642079926225,
+      "fitted_sum": 0.28901760792340075,
+      "sum": 0.6985873088678141,
+      "step_form": 0.26995220315802954,
+      "learned": 0.8030130430896051
+     },
+     "synchronising": {
+      "recursion": 0.22279088973410893,
+      "fitted_sum": 0.0732293679326837,
+      "sum": 0.9152239939919586,
+      "step_form": 0.2091067171847836,
+      "learned": 0.28340185366293996
+     }
+    },
+    "parts": {
+     "tolerance": "fails",
+     "beats_every_rival": "fails",
+     "sign": "fails",
+     "xattention_pair": "fails"
+    },
+    "verdict": "fails"
+   }
+  },
+  "H0": {
+   "P2": {
+    "hypothesis": "H0",
+    "side": "host",
+    "pairings": [
+     "P1",
+     "P2"
+    ],
+    "tolerance": 0.1,
+    "cells_compared": 0,
+    "cells_with_a_different_sequence": [
+     [
+      "primary",
+      "dense",
+      1.0,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.5,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.5,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.5,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.5,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      16370,
+      4
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      32700,
+      1
+     ]
+    ],
+    "cells_unmatched": [
+     [
+      "primary",
+      "xattention",
+      0.837447,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.837447,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.756589,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.756589,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.665913,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.665913,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.572542,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.572542,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.522215,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.522215,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.837995,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.837995,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.757474,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.757474,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.666877,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.666877,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.573257,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.573257,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.52317,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.52317,
+      32700,
+      1
+     ]
+    ],
+    "operations_scored": 0,
+    "operations_unscorable": 0,
+    "coverage_share": null,
+    "verdict": "not scored",
+    "why": "no operation is above its cell's floor on both pairings"
+   }
+  },
+  "H2": {
+   "P2": {
+    "hypothesis": "H2",
+    "pairing": "P2",
+    "source": "P1",
+    "side": "host",
+    "verdict": "not scored",
+    "left_out": [
+     [
+      "primary",
+      "dense",
+      1.0,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.5,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.5,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.5,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.5,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      16370,
+      4
+     ],
+     [
+      "primary",
+      "dense",
+      1.0,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "oracle",
+      0.25,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.25,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "meanpool",
+      0.5,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.837447,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.837447,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.756589,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.756589,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.665913,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.665913,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.572542,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.572542,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.522215,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.522215,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.837995,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.837995,
+      1951,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.757474,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.757474,
+      4068,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.666877,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.666877,
+      8075,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.573257,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.573257,
+      16370,
+      1
+     ],
+     [
+      "primary",
+      "xattention",
+      0.52317,
+      32700,
+      1
+     ],
+     [
+      "primary",
+      "xattention_noassert",
+      0.52317,
+      32700,
+      1
+     ]
+    ],
+    "why": "no transferred cell is measured"
+   }
+  },
+  "H3": {
+   "P4": {
+    "hypothesis": "H3",
+    "pairing": "P4",
+    "estimators": {
+     "meanpool@0.25": {
+      "status": "unresolved",
+      "verdict": "not scored",
+      "why": "a sign is undetermined where it decides the bracket"
+     },
+     "meanpool@0.5": {
+      "status": "unresolved",
+      "verdict": "not scored",
+      "why": "a sign is undetermined where it decides the bracket"
+     },
+     "oracle@0.25": {
+      "status": "both none in range",
+      "verdict": "not scored",
+      "why": "no crossover in range, predicted or measured (reported as such)"
+     },
+     "oracle@0.5": {
+      "status": "both none in range",
+      "verdict": "not scored",
+      "why": "no crossover in range, predicted or measured (reported as such)"
+     },
+     "xattention@calibrated": {
+      "status": "unresolved",
+      "verdict": "not scored",
+      "why": "a sign is undetermined where it decides the bracket"
+     },
+     "xattention_noassert@calibrated": {
+      "status": "unresolved",
+      "verdict": "not scored",
+      "why": "a sign is undetermined where it decides the bracket"
+     }
+    },
+    "verdict": "not scored"
+   }
+  },
+  "H4": {
+   "verdict": "not scored",
+   "reason": "T1.5's pilot, T1.8's recall matching and audit B1's A100 cross-card dense control never ran (the lock-wave rulings of 12 Nov 2026, item 2)",
+   "appendix_a": "Appendix A, 12 Nov 2026"
+  },
+  "H5": {
+   "verdict": "not scored",
+   "reason": "T1.5's pilot, T1.8's recall matching and audit B1's A100 cross-card dense control never ran (the lock-wave rulings of 12 Nov 2026, item 2)",
+   "appendix_a": "Appendix A, 12 Nov 2026"
+  },
+  "H6": {
+   "verdict": "not scored",
+   "reason": "no quality-certified admissible set exists: H4 is not scored, so recall certifies none; XAttention's Triton path fails the mask gate on the card it executes on (P2: Triton against PyTorch beyond \u00b10.01 in 10 of 10 records), so T1.1's certification on the L4's PyTorch path does not transfer; and an all-dense admissible set cannot fail (the adviser's rulings dated 14 Nov 2026, item 2, reversing the 12 Nov 2026 ruling that scored H6 on P4); the dispatcher is reported as exploratory only",
+   "appendix_a": "Appendix A, 14 Nov 2026"
+  },
+  "within_session_spread_ms": {
+   "P2": {
+    "2048x1": 1.9594999006358194,
+    "4096x1": 1.5328131002206644,
+    "8192x1": 2.5859073751462343,
+    "16384x1": 9.105309699680218,
+    "16384x4": 3.360561750832856,
+    "32768x1": 13.612716575880762
+   },
+   "P4": {
+    "2048x1": 2.153729199937969,
+    "4096x1": 2.2550775000013346,
+    "8192x1": 3.44048467495952,
+    "16384x1": 9.808848850019555,
+    "16384x4": 11.836979099973629,
+    "32768x1": 6.188084550046816
+   }
+  }
+ }
+}

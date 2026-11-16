@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6621 passed, 183 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6652 passed, 183 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -52,16 +52,18 @@ the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden)
 the change is the environment's, not the code's (13 Nov 2026). At `lock-2026-11-14-r2` the
 Mac has the RULER data and the tokenizer in `~/.cache`, so the fresh count is measured with
 `HOME` pointed at an empty directory (14 Nov 2026).
-**With `results/` present the suite reads 6711 passed, 93 skipped**, because
+**With `results/` present the suite reads 6742 passed, 93 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6706 passed, 98 skipped). All three
-totals are 6804, which is
+present and those two hidden it reads 6737 passed, 98 skipped). All three
+totals are 6835, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).
 
 **Known flaky test (16 Nov 2026):** `tests/test_shakedown3_cpu.py::test_the_chain_check_holds_the_composites_against_the_isolated_replay`
 can fail in a full-suite run under load and passes when run alone. It is off the scoring path, so it is recorded here and left unchanged (Appendix A, 16 Nov 2026).
+
+On 16 Nov 2026 (scoring wave) the fresh count was re-measured at 6650 passed and 184 skipped, plus one test added afterwards. The run had no `wonderwords`, so the extra skip is its RULER test. The 31 new tests (the scorer's, P4's training file's and the per-script checks of the three new files) all pass. The two with-`results/` counts add them and were not re-measured.
 
 To measure the fresh-clone count on a machine that has the RULER data and the
 tokenizer, point `ATTNBENCH_RULER_DATA` and `HF_HOME` at empty directories. An empty string is not the same

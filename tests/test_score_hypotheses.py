@@ -243,6 +243,32 @@ def test_h2_is_not_tested_when_h0_fails(cps):
     assert out["H2"]["P2"]["verdict"] == HY.NOT_TESTED
 
 
+def test_a_different_sequence_leaves_h0_and_h2_unscored_and_the_report_says_why(cps):
+    ms = {p: measured(cps[p], [20.0] * 3, [10.0] * 3) for p in ("P2", "P4")}
+    for m in ms.values():
+        m["seconds"] = {k: v * 1000 for k, v in m["seconds"].items()}
+    # P1's sequences one operation longer, as the L4's are than the A100's
+    p1 = dataclasses.replace(cps["P1"], cells=tuple(
+        dataclasses.replace(c, priced=dataclasses.replace(
+            c.priced, **{f: tuple(getattr(c.priced, f)) + (getattr(c.priced, f)[-1],)
+                         for f in ("kinds", "mechanisms", "layers", "payload_bytes",
+                                   "host", "device")}))
+        for c in cps["P1"].cells))
+    out = SH.score(LOCK, lk(), {**cps, "P1": p1}, ms, dense_arm="dense")
+    h0, h2 = out["H0"]["P2"], out["H2"]["P2"]
+    assert h0["verdict"] == HY.NOT_SCORED and h0["cells_compared"] == 0
+    assert len(h0["cells_with_a_different_sequence"]) == len(cps["P2"].cells)
+    assert h2["verdict"] == HY.NOT_SCORED and len(h2["left_out"]) == len(cps["P2"].cells)
+    rep = {"lock": {"tag": SH.TAG, "main_differs_at": ["/plan_sha256"]},
+           "analysis": {"analysis_commit": "8" * 40, "files_checked": 1},
+           "files": {}, "measured": {}, "scores": out}
+    md = SH.to_markdown(rep)
+    row = lambda h: next(x for x in md.splitlines() if x.startswith(f"| {h} "))
+    assert "no operation is above" in row("H0") and "0 cells with the same sequence" in row("H0")
+    assert "None" not in row("H0") and "None" not in row("H2")
+    assert "no transferred cell is measured" in row("H2") and "**not scored**" in row("H2")
+
+
 def test_the_driver_refuses_a_lock_that_scores_otherwise(cps):
     ms = {p: measured(cps[p], [20.0] * 3, [10.0] * 3) for p in ("P2", "P4")}
     for bad in ({**SCORED, "H3": ["P2", "P4"]}, {**SCORED, "H6": ["P4"]}):

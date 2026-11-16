@@ -463,9 +463,13 @@ def to_markdown(rep: Mapping) -> str:
          f"lock read from the tag, `main` differing only at {rep['lock']['main_differs_at']}.", ""]
     L += ["| Hypothesis | Pairing | Statistic | Threshold | Verdict |", "|---|---|---|---|---|"]
     h0 = s["H0"]["P2"]
-    L.append(f"| H0 (host, P1→P2) | P2 | median abs. relative difference "
-             f"{_f(h0.get('median_abs_relative_difference'))} over {h0['operations_scored']} "
-             f"operations | ≤ {h0['tolerance']} | **{h0['verdict']}** |")
+    seq = (f"{h0['cells_compared']} cells with the same sequence, "
+           f"{len(h0['cells_with_a_different_sequence'])} with a different one, "
+           f"{len(h0['cells_unmatched'])} unmatched")
+    stat = (f"median abs. relative difference {_f(h0.get('median_abs_relative_difference'))} "
+            f"over {h0['operations_scored']} operations ({seq})" if "why" not in h0 else
+            f"{h0['why']} ({seq})")
+    L.append(f"| H0 (host, P1→P2) | P2 | {stat} | ≤ {h0['tolerance']} | **{h0['verdict']}** |")
     for p, h in s["H1"].items():
         riv = ", ".join(f"{k} {_f(v)}" for k, v in h.get("rivals_median_abs_relative", {}).items())
         L.append(f"| H1 | {p} | recursion median abs. relative error "
@@ -475,9 +479,11 @@ def to_markdown(rep: Mapping) -> str:
                  f"{h['xattention_pair']['disagree']} disagree | ≤ {h['tolerance']}, below every "
                  f"rival, every sign, the pair within {h['tolerance']} | **{h['verdict']}** |")
     h2 = s["H2"]["P2"]
-    L.append(f"| H2 (host from P1) | P2 | median abs. relative error "
-             f"{_f(h2.get('median_abs_relative'))} over {h2.get('n_cells')} cells | "
-             f"≤ {h2.get('tolerance')} and every sign | **{h2['verdict']}** |")
+    stat = (f"median abs. relative error {_f(h2.get('median_abs_relative'))} over "
+            f"{h2.get('n_cells')} cells" if "why" not in h2 else
+            f"{h2['why']} ({len(h2.get('left_out', ()))} cells left out)")
+    L.append(f"| H2 (host from P1) | P2 | {stat} | ≤ {h2.get('tolerance', '—')} and every sign | "
+             f"**{h2['verdict']}** |")
     h3 = s["H3"]["P4"]
     cnt = {}
     for r in h3["estimators"].values():
