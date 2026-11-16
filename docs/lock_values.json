@@ -1,6 +1,6 @@
 {
  "what": "the lock (T4.4; the second and third lock-wave rulings of 12 Nov 2026; re-cut by the adviser's rulings dated 13 Nov 2026, four times, and by those dated 14 Nov 2026 for P4, as lock-2026-11-14-r2, and by the researcher's decision of 15 Nov 2026 for P4 on Spot, as lock-2026-11-14-r3, with P4's block spec): every T4.1 value, typed as attnbench/lock/checklist.SCHEMA requires, checked against the plan at this commit (plan_sha256); the scored pairings and P2's and P4's pairing values. Built from docs/lock_package_draft.json and the dated rulings each value's source names",
- "plan_sha256": "e0b18209dd2063149527f65977fad5d437397cc9c610ed70ce2a68a2251e2984",
+ "plan_sha256": "600cccd412644d21da4202a9e007639123aad2dbad38fe88d7ba2462cd30f03e",
  "values": {
   "h0_to_h3_tolerances": {
    "item": "H0 to H3 tolerances",
