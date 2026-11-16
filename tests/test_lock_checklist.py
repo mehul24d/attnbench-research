@@ -363,3 +363,10 @@ def test_an_unscored_hypothesis_states_why_in_the_typed_form(stated, why):
     r = L.check(_na_lock(scored={"H4": stated}), PLAN_TEXT)
     assert not r.complete and why in r.scored_problems, r.scored_problems
     assert "H4" not in r.not_scored
+
+
+def test_a_tag_name_after_at_is_not_an_at_lock_sentence():
+    # the researcher's yes of 16 Nov 2026, quoted verbatim in Appendix A: "P4 b2 at lock-2026-11-14-r3"
+    assert L.lock_mentions("Run P4 b2 at lock-2026-11-14-r3 in us-central1-a.") == []
+    assert L.lock_mentions("The grid is fixed at lock.") == [(1, "The grid is fixed at lock.")]
+

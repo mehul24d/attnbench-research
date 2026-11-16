@@ -56,7 +56,9 @@ PAIRINGS = ("P2", "P4")
 RULED_OUT: dict = {}
 # pairing -> (the provisioning it ran on, the record): its spend is the ledger's
 RAN = {"P2": ("FLEX_START", "at lock-2026-11-13-r4 on 14 Nov 2026, all 15 steps passed, "
-                            "₹823 in the ledger; banked")}
+                            "₹823 in the ledger; banked"),
+       "P4": ("SPOT", "at lock-2026-11-14-r3 on 15 and 16 Nov 2026, all four blocks passed, "
+                      "₹2,279 in the ledger")}
 _HEAD = "### New-spend headroom against the ₹14,000 budget"
 _ROW = re.compile(r"^\|\s*(?!\*\*Total)(.+?)\s*\|\s*~?([\d,]+)\s*\|\s*$")
 _TOTAL = re.compile(r"^\|\s*\*\*Total\*\*\s*\|\s*\*\*~?([\d,]+)\*\*\s*\|\s*$")
@@ -218,16 +220,20 @@ def section(pairing: str) -> list:
            f"{rehearsal}. "
            + " ".join(f"{pp} ran ({why}), so nothing is reserved for it." for pp, (_, why)
                       in RAN.items())
-           + " " + "; ".join(f"{pp} at its card's caps, the ground truth's worst case of 5 "
-                             f"reruns at every cell: Flex-start {_cap(caps[pp]['FLEX_START'])}, "
-                             f"Spot {_cap(caps[pp]['SPOT'])}" for pp in PAIRINGS if pp not in RAN)
-           + ". Not counted: a Spot block rerun after an interruption, image storage, egress.", "",
+           + "".join(" " + "; ".join(f"{pp} at its card's caps, the ground truth's worst case "
+                                     f"of 5 reruns at every cell: Flex-start "
+                                     f"{_cap(caps[pp]['FLEX_START'])}, Spot {_cap(caps[pp]['SPOT'])}"
+                                     for pp in left) + "." for left in
+                     [[pp for pp in PAIRINGS if pp not in RAN]] if left)
+           + " Not counted: a Spot block rerun after an interruption, image storage, egress.", "",
            "| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |",
            "|---|---|---|---|---|"]
     for c in cs:
         ran = [pp for pp, prov in (("P2", c.p2), ("P4", c.p4)) if pp in RAN and RAN[pp][0] != prov]
+        both = set(RAN) == set(PAIRINGS) and not ran
         why = ("no: both on Spot" if c.p2 == c.p4 == "SPOT" else
                f"no: {ran[0]} ran on {_p(RAN[ran[0]][0])}" if ran else
+               "ran: both pairings" if both else
                "no: no Spot plan" if not c.planned else
                "no: ruled out" if c.ruled_out else
                "no: negative" if c.headroom < 0 else "yes")

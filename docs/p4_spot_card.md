@@ -1,6 +1,22 @@
 # P4 on Flex-start and Spot in parallel at `lock-2026-11-14-r3` (15 Nov 2026)
 
-**Not launched.** The researcher's decision of 15 Nov 2026 (plan Section 5.2, Budget row; Appendix
+**Ran, 15 and 16 Nov 2026: P4 is complete on Spot; the 24 Nov 2026 fallback was not invoked.** Every block passed every step, `late_check` in b3 and b4 among them, and the anchor drift passed. Spent ₹9,569 after it (`docs/spend_ledger.md`, a mixed figure: the researcher's billing figure of 15 Nov 2026 plus planning-rate rows since), ₹5,931 under the ₹15,500 ceiling.
+
+| Block | Instance | Session | Steps | Billed min | ₹ |
+|---|---|---|---|---|---|
+| b1 | `attnbench-h100-p4s-20261116-031147-b1-a2` | `t64_p4_20261115T214415Z_b1` | full preflight, `link`, `launch_queue`, `probe`, `masks`: passed | 24 | 252 |
+| b2 | `attnbench-h100-p4s-20261116-152740-b2-a8` (the probe, 10:00:10Z to 10:40:58Z) | `t64_p4_20261116T100010Z_b2` | short preflight, `host_components`, `host_speed_end`: passed | 44 | 462 |
+| b3 | `attnbench-h100-p4s-20261116-170657-b3-a9` | `t64_p4_20261116T113724Z_b3` | `device_components` to `host_speed_end`, `predict` and ground truth at 2048 and 4096 with the anchor: passed | 40 | 420 |
+| b4 | `attnbench-h100-p4s-20261116-184330-b4-a11` | `t64_p4_20261116T131401Z_b4` | ground truth on the other 20 cells with the anchor, `late_check`, `trace_checks`, `host_speed_end`: passed | 23 | 241 |
+| Discarded or failed | b1-a1 (setup, ₹52); b2-a3, a4, a6, a7 (preempted, ₹357, ₹116, ₹21, ₹179); b2-a5 (setup, ₹105); b4-a10 (preempted in the bootstrap, ₹74) | none banked | no P4 step of these is in the banked data | 86 | 904 |
+| **All** | 11 RUNNING attempts in `us-central1-a`, 14 more granted but never RUNNING (nothing billed) | | | **217** | **2,279** |
+
+- **Order:** P4's prediction was written at 12:07:32Z and synced at 12:08:38Z on 16 Nov 2026 (b3, `predictions/P4/t64_p4_20261116T113724Z_b3/`, sha256 `f9de9be0…`); the first ground truth opened at 12:11:08Z (b3), b4's at 13:24:54Z.
+- **Anchor drift** (dense, 8192, batch 1), in b3 and b4, the two blocks that ran it: medians 62.362 and 62.098 ms, relative differences +0.43% and −0.42% against the bound 6.77%: passed (`block_drift.json`, spec `53e3cae1…`, code `7a24cba`).
+- **Banked results:** `banked/p4_results/p4_results_t64_20261116.tar.gz` in the results bucket (no-clobber, read back byte for byte; 375,219 bytes, sha256 `9670f8c2…`): the four passed sessions as the teardowns pulled them, each block's fetched manifest and ground truth, the drift file and the driver's state and log; a copy in `attnbench_backups/p4_results/`. The full sessions stay in the bucket under their instances' prefixes.
+- **Not done here:** the pairing ledger's banked entry (`predictions/P4/ledger/banked.json`, `scripts/bank_pairing.py`) names a training file's sha256 and is written once; P4 has no training file (no builder exists), so the entry waits for one. Nothing is scored.
+
+*The card as it stood before the launch:* The researcher's decision of 15 Nov 2026 (plan Section 5.2, Budget row; Appendix
 A, 15 Nov 2026): "Run P4 on Flex-start and Spot in parallel, full scope, no reduced cell set; the
 first RUNNING grant wins, cancel every other request at once, delete any second grant unused and
 log it, run P4 once." Spot starts only after every check below passes and only after the
@@ -77,10 +93,10 @@ lists neither; moving them is a timed-path change and a re-cut).
 | Spot rate re-read, cap and headroom | Cloud Billing catalog, 2026-11-15T14:24:56Z | done (above) |
 | Block plan and re-cut | short preflight on later blocks; `lock-2026-11-14-r3`; 17 + 3 mutations killed | done |
 | Spot H100 quota in each zone, global GPU quota | Cloud Quotas, 15 Nov 2026 | 1 in `us-central1`, 1 in `asia-southeast1`; `GPUS_ALL_REGIONS` 1, usage 0 |
-| Image v6 usable; bucket read and write from the zone's service account; staged inputs in the bucket with their sha256 | rehearsal 1, and the combined read/list | owed |
-| CPU pass at the tag with the interruption path | `scripts/prelaunch_cpu_pass.sh p4` with the lock's spec; the driver end to end with gcloud mocked | owed at the tag; the driver's mock passed |
-| Cheap-VM rehearsal 1 (e2 on-demand, cap ₹50, deleted at 30 min) | `p4_run/reh/reh1.sh` | owed |
-| Cheap-VM rehearsal 2 (e2 Spot, cap ₹20, deleted at 30 min) | `p4_run/reh/reh2.sh` | owed |
+| Image v6 usable; bucket read and write from the zone's service account; staged inputs in the bucket with their sha256 | rehearsal 1, and the combined read/list | done, 16 Nov 2026: v6 booted and bootstrapped, the bucket written and read back; the staged inputs' sha256s match the ledger |
+| CPU pass at the tag with the interruption path | `scripts/prelaunch_cpu_pass.sh p4` with the lock's spec; the driver end to end with gcloud mocked | done at `7a24cba` (one session; four blocks, b4 interrupted and rerun, drift passed); the driver's mock passed |
+| Cheap-VM rehearsal 1 (e2 on-demand, cap ₹50, deleted at 30 min) | `p4_run/reh/reh1.sh` | passed, 14 min, about ₹3 |
+| Cheap-VM rehearsal 2 (e2 Spot, cap ₹20, deleted at 30 min) | `p4_run/reh/reh2.sh` | passed on the fourth VM, about ₹5 for four: held mid-step, stopped, restarted, discarded, rerun, classified from the bucket |
 
 ## What it does not do
 
