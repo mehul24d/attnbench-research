@@ -99,6 +99,7 @@ def test_a_closed_rehearsal_reserves_nothing_and_its_spend_is_the_ledgers(monkey
     with pytest.raises(ValueError, match="not what launch 4 A used"):
         BI.rehearsal_closed(text.replace("launch 4 A used", "A used"))
     monkeypatch.setattr(BI, "pairing_caps", lambda: CAPS)
+    monkeypatch.setattr(BI, "RAN", {"P2": BI.RAN["P2"]})     # the mechanics, before P4 ran
     s, _, _, cs = BI.current()
     assert BI.rehearsal_closed(text) <= s
     assert cs[0].committed == s + 0 + 2000      # nothing reserved; P2 ran (RAN)
@@ -116,10 +117,11 @@ def test_a_ruled_out_provisioning_is_neither_launched_nor_counted():
     assert BI.may_launch("P2", "FLEX_START", cs) and BI.may_launch("P4", "FLEX_START", cs)
 
 
-def test_the_real_interlock_runs_p4_on_flex_start_and_spot():
+def test_the_interlock_ran_p4_on_flex_start_and_spot(monkeypatch):
     # the researcher, 15 Nov 2026: both in parallel, the first grant runs; one
     # case counts one, so the launch reserves Spot's caps, the dearer
     assert BI.RULED_OUT == {}
+    monkeypatch.setattr(BI, "RAN", {"P2": BI.RAN["P2"]})     # before P4 ran
     _, _, caps, cs = BI.current()
     assert BI.possible("P4", "SPOT", cs) and BI.possible("P4", "FLEX_START", cs)
     assert caps["P4"]["SPOT"] > caps["P4"]["FLEX_START"]
@@ -165,7 +167,7 @@ def test_a_pairing_that_ran_reserves_nothing_and_is_not_launched_again(monkeypat
     assert BI.ran_caps(CAPS, {}) == CAPS
     got = BI.ran_caps(CAPS, {"P2": ("FLEX_START", "x")})
     assert got["P2"] == {"FLEX_START": 0, "SPOT": None} and got["P4"] == CAPS["P4"]
-    assert set(BI.RAN) == {"P2"} and BI.RAN["P2"][0] == "FLEX_START"
+    monkeypatch.setattr(BI, "RAN", {"P2": BI.RAN["P2"]})     # the mechanics, before P4 ran
     monkeypatch.setattr(BI, "pairing_caps", lambda: CAPS)
     s, _, caps, cs = BI.current()
     flex = next(c for c in cs if (c.p2, c.p4) == ("FLEX_START", "FLEX_START"))
@@ -177,3 +179,19 @@ def test_a_pairing_that_ran_reserves_nothing_and_is_not_launched_again(monkeypat
     assert "| Spot | Flex-start | — | — | no: P2 ran on Flex-start |" in text
     assert BI.main(["--launch", "P2:FLEX_START"]) == 2
     assert "REFUSED: P2 ran" in capsys.readouterr().out
+
+
+# --- both pairings ran (P4 on Spot, 16 Nov 2026) -----------------------------------------------
+
+def test_with_both_pairings_run_nothing_is_reserved_and_neither_launches(capsys):
+    assert BI.RAN["P2"][0] == "FLEX_START" and BI.RAN["P4"][0] == "SPOT"
+    s, _, _, cs = BI.current()
+    ran = next(c for c in cs if (c.p2, c.p4) == ("FLEX_START", "SPOT"))
+    assert ran.committed == s and ran.headroom == BI.CEILING_INR - s
+    text = "\n".join(BI.section("P4"))
+    assert "| Flex-start | Spot | " in text and "ran: both pairings |" in text
+    assert ". ." not in text and "- **P4 ran** (" in text and "may launch" not in text
+    for pp in BI.PAIRINGS:
+        for prov in BI.PROVISIONING:
+            assert BI.main(["--launch", f"{pp}:{prov}"]) == 2
+    assert "REFUSED: P4 ran" in capsys.readouterr().out
