@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import sys
 from pathlib import Path
@@ -248,8 +249,15 @@ def _keys_for(sentence: str) -> set:
     return {k for phrase, keys in AT_LOCK if phrase in s for k in keys}
 
 
+def _names_a_tag_only(sentence: str) -> bool:
+    """A sentence `lock_mentions` lists only because "at lock" begins a tag's
+    name ("at lock-2026-11-14-r3", quoted verbatim in Appendix A, 16 Nov 2026).
+    The checker is in the timed-path pin, so the tag is excluded here, not there."""
+    return not re.search(r"\bat lock\b(?!-)|\[lock\]", sentence, re.I)
+
+
 def test_every_at_lock_sentence_in_the_plan_maps_to_a_lock_value():
-    mentions = L.lock_mentions(PLAN_TEXT)
+    mentions = [(n, s) for n, s in L.lock_mentions(PLAN_TEXT) if not _names_a_tag_only(s)]
     unmapped = [(n, s[:160]) for n, s in mentions if not _keys_for(s)]
     assert not unmapped, ("sentences that fix a value at lock with no T4.1 item in the "
                           f"map: {unmapped}")
@@ -365,8 +373,11 @@ def test_an_unscored_hypothesis_states_why_in_the_typed_form(stated, why):
     assert "H4" not in r.not_scored
 
 
-def test_a_tag_name_after_at_is_not_an_at_lock_sentence():
+def test_a_tag_name_after_at_is_set_aside_and_an_at_lock_sentence_is_not():
     # the researcher's yes of 16 Nov 2026, quoted verbatim in Appendix A: "P4 b2 at lock-2026-11-14-r3"
-    assert L.lock_mentions("Run P4 b2 at lock-2026-11-14-r3 in us-central1-a.") == []
-    assert L.lock_mentions("The grid is fixed at lock.") == [(1, "The grid is fixed at lock.")]
+    tag = "Run P4 b2 at lock-2026-11-14-r3 in us-central1-a."
+    assert [s for _, s in L.lock_mentions(tag)] == [tag] and _names_a_tag_only(tag)
+    for s in ("The grid is fixed at lock.", f"{tag} The grid is fixed at lock.",
+              "It carries **[lock]**."):
+        assert not _names_a_tag_only(s), s
 

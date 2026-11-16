@@ -1,0 +1,200 @@
+{
+ "what": "the lock fields read while scoring H0-H3 (an offline rerun from the mirror, every lock read recorded with its reader); docs/scoring/lock_reader_check.py",
+ "tag": "lock-2026-11-14-r3",
+ "tag_commit": "7a24cba2",
+ "lock_file_sha256_at_tag": "e1addec549b4cebd\u2026",
+ "rerun_equals_committed_report": true,
+ "null_fields_in_tag": [
+  "admissibility_holm_family",
+  "cross_card_dense_task_score_bound",
+  "head_type_criterion",
+  "power_target_and_n",
+  "primary_cell_n_and_admissibility_n"
+ ],
+ "null_fields_read_by_scoring": [],
+ "power_target_and_n_readers": [
+  "score_hypotheses.py:differing_paths"
+ ],
+ "fields_used_by_scoring": [
+  {
+   "path": "/p1_training/file_sha256",
+   "read_by": [
+    "score_hypotheses.py:training_inputs"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/plan_sha256",
+   "read_by": [
+    "score_hypotheses.py:run"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/scored_pairings/H0",
+   "read_by": [
+    "score_hypotheses.py:locked_from",
+    "score_hypotheses.py:score"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/scored_pairings/H1",
+   "read_by": [
+    "score_hypotheses.py:locked_from",
+    "score_hypotheses.py:score"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/scored_pairings/H2",
+   "read_by": [
+    "score_hypotheses.py:locked_from",
+    "score_hypotheses.py:score"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/scored_pairings/H3",
+   "read_by": [
+    "score_hypotheses.py:locked_from",
+    "score_hypotheses.py:score"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/analysis_commit/value",
+   "read_by": [
+    "score_hypotheses.py:value"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/bootstrap_settings/value/level",
+   "read_by": [
+    "intervals.py:settings_from_lock"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/bootstrap_settings/value/n_boot",
+   "read_by": [
+    "intervals.py:settings_from_lock"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/bootstrap_settings/value/seed",
+   "read_by": [
+    "intervals.py:settings_from_lock"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/floors_quantile/value",
+   "read_by": [
+    "score_hypotheses.py:score"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/h0_to_h3_tolerances/value/H0",
+   "read_by": [
+    "score_hypotheses.py:locked_from"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/h0_to_h3_tolerances/value/H1",
+   "read_by": [
+    "score_hypotheses.py:locked_from"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/h0_to_h3_tolerances/value/H2",
+   "read_by": [
+    "score_hypotheses.py:locked_from"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/marginal_label_s_sensitivity_floors/value/16384x1",
+   "read_by": [
+    "score_hypotheses.py:locked_from"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/marginal_label_s_sensitivity_floors/value/16384x4",
+   "read_by": [
+    "score_hypotheses.py:locked_from"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/rerun_budget/value/min_clean_rounds",
+   "read_by": [
+    "score_hypotheses.py:run"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/resolution_and_noise_floors/value/pairing",
+   "read_by": [
+    "floors.py:from_lock"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/resolution_and_noise_floors/value/resolution_floor_ms/16384x1",
+   "read_by": [
+    "floors.py:from_ms"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/resolution_and_noise_floors/value/resolution_floor_ms/16384x4",
+   "read_by": [
+    "floors.py:from_ms"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/resolution_and_noise_floors/value/resolution_floor_ms/2048x1",
+   "read_by": [
+    "floors.py:from_ms"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/resolution_and_noise_floors/value/resolution_floor_ms/32768x1",
+   "read_by": [
+    "floors.py:from_ms"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/resolution_and_noise_floors/value/resolution_floor_ms/4096x1",
+   "read_by": [
+    "floors.py:from_ms"
+   ],
+   "equals_tag": true
+  },
+  {
+   "path": "/values/resolution_and_noise_floors/value/resolution_floor_ms/8192x1",
+   "read_by": [
+    "floors.py:from_ms"
+   ],
+   "equals_tag": true
+  }
+ ],
+ "locked_from_equals_from_lock_on_placeholder": {
+  "tolerances": true,
+  "floors": true,
+  "bootstrap": true,
+  "scored": true,
+  "sensitivity_s": true,
+  "analysis_commit": true
+ }
+}

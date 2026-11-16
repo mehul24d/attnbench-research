@@ -1,0 +1,56 @@
+annotated-doc==0.0.5
+antlr4-python3-runtime==4.9.3
+anyio==4.14.2
+# Editable Git install with no remote (attnbench==0.1.0)
+-e /home/mehuldahiya/attnbench_scaffold
+block_sparse_attn @ file:///home/mehuldahiya/bsa_src
+click==8.5.0
+cloudpickle==3.1.2
+contourpy==1.3.2
+cycler==0.12.1
+einops==0.8.2
+exceptiongroup==1.3.1
+fla-core==0.5.2
+flash-linear-attention==0.5.2
+flash_attn @ file:///home/mehuldahiya/fa/flash_attn-2.8.3.post1
+fonttools==4.64.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==0.36.2
+hydra-core==1.3.6
+iniconfig==2.3.0
+joblib==1.6.0
+kiwisolver==1.5.1
+markdown-it-py==4.2.0
+matplotlib==3.10.9
+mdurl==0.1.2
+ninja==1.13.2
+nvidia-ml-py==13.610.43
+omegaconf==2.3.1
+pandas==2.3.3
+pluggy==1.6.0
+psutil==7.2.2
+pyarrow==25.0.1
+Pygments==2.21.0
+pyparsing==3.3.2
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+regex==2026.9.3
+rich==15.0.0
+safetensors==0.8.0
+sageattention==1.0.6
+scikit-learn==1.7.2
+scipy==1.15.3
+seaborn==0.13.2
+shellingham==1.5.4
+threadpoolctl==3.6.0
+tokenizers==0.20.3
+tomli==2.4.1
+torchaudio==2.11.0+cu129
+transformers==4.46.0
+typer==0.27.2
+tzdata==2026.3
+xformers==0.0.33+5d4b92a5.d20251029
