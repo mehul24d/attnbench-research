@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6762 passed, 184 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6768 passed, 184 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -52,16 +52,19 @@ the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden)
 the change is the environment's, not the code's (13 Nov 2026). At `lock-2026-11-14-r2` the
 Mac has the RULER data and the tokenizer in `~/.cache`, so the fresh count is measured with
 `HOME` pointed at an empty directory (14 Nov 2026).
-**With `results/` present the suite reads 6852 passed, 94 skipped**, because
+**With `results/` present the suite reads 6858 passed, 94 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6847 passed, 99 skipped). All three
-totals are 6946 (the exploratory wave adds 47 that pass with no data: its 37 and 10 file-parametrized checks, 17 Nov 2026; the H100 diagnostic adds 64: its 59, one of which skips without P4's local data, and 5 file-parametrized checks, 17 Nov 2026), which is
+present and those two hidden it reads 6853 passed, 99 skipped). All three
+totals are 6952 (the exploratory wave adds 47 that pass with no data: its 37 and 10 file-parametrized checks, 17 Nov 2026; the H100 diagnostic adds 70: its 65, one of which skips without P4's local data, and 5 file-parametrized checks, 17 Nov 2026, six of the 65 added with the card's 17 Nov rule edits), which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).
 
 **Known flaky test (16 Nov 2026):** `tests/test_shakedown3_cpu.py::test_the_chain_check_holds_the_composites_against_the_isolated_replay`
 can fail in a full-suite run under load and passes when run alone. It is off the scoring path, so it is recorded here and left unchanged (Appendix A, 16 Nov 2026).
+
+**Known flaky test (17 Nov 2026):** `tests/test_session_exit.py::test_a_hang_up_stops_the_session_then_syncs_and_halts`
+timed out once (its 60 s wait) in a full-suite run. Rerun alone five times under artificial CPU load (one busy loop per core, load average 61 to 131), all ten of the file's tests passed every time (adviser's rulings of 17 Nov 2026, item 2). It is recorded here and left unchanged.
 
 On 16 Nov 2026 (scoring wave) the fresh count was re-measured at 6650 passed and 184 skipped, plus one test added afterwards. The run had no `wonderwords`, so the extra skip is its RULER test. The 31 new tests (the scorer's, P4's training file's and the per-script checks of the three new files) all pass. The two with-`results/` counts add them and were not re-measured.
 
