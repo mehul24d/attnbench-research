@@ -60,6 +60,9 @@ totals are 6804, which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).
 
+**Known flaky test (16 Nov 2026):** `tests/test_shakedown3_cpu.py::test_the_chain_check_holds_the_composites_against_the_isolated_replay`
+can fail in a full-suite run under load and passes when run alone. It is off the scoring path, so it is recorded here and left unchanged (Appendix A, 16 Nov 2026).
+
 To measure the fresh-clone count on a machine that has the RULER data and the
 tokenizer, point `ATTNBENCH_RULER_DATA` and `HF_HOME` at empty directories. An empty string is not the same
 as unset.

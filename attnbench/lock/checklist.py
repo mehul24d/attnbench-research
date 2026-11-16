@@ -144,8 +144,8 @@ def lock_items(plan_text: str) -> dict[str, str]:
 
 def lock_mentions(plan_text: str) -> list[tuple[int, str]]:
     """(line, sentence) for every sentence outside the T4.1 row that says
-    "at lock" or carries **[lock]**; "at lock-2026-11-14-r3" names a tag, not the phrase."""
-    pat = re.compile(r"\bat lock\b(?!-)|\[lock\]", re.I)
+    "at lock" or carries **[lock]**."""
+    pat = re.compile(r"\bat lock\b|\[lock\]", re.I)
     out = []
     for n, line in enumerate(plan_text.splitlines(), 1):
         if line.startswith(ROW_PREFIX):
