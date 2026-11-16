@@ -1,0 +1,14 @@
+{
+ "schema": "h100-diag-cells-1",
+ "label": "EXPLORATORY: the H100 diagnostic session's cells (adviser's rulings of 17 Nov 2026, item 2b); proposed, not approved; run in this order",
+ "cells": [
+  {"id": "D16_fa3", "arm": "dense", "backend": "fa3", "length": 16384, "batch": 1, "mode": "eager"},
+  {"id": "D16_off", "arm": "dense", "backend": "sdpa_flash", "length": 16384, "batch": 1, "mode": "eager"},
+  {"id": "D16_fa3_graph", "arm": "dense", "backend": "fa3", "length": 16384, "batch": 1, "mode": "graph"},
+  {"id": "X8", "arm": "xattention", "backend": null, "length": 8192, "batch": 1, "mode": "eager"},
+  {"id": "X16", "arm": "xattention", "backend": null, "length": 16384, "batch": 1, "mode": "eager"},
+  {"id": "X32", "arm": "xattention", "backend": null, "length": 32768, "batch": 1, "mode": "eager"},
+  {"id": "D8_fa3", "arm": "dense", "backend": "fa3", "length": 8192, "batch": 1, "mode": "eager"},
+  {"id": "D32_fa3", "arm": "dense", "backend": "fa3", "length": 32768, "batch": 1, "mode": "eager"}
+ ]
+}
