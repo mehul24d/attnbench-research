@@ -2,7 +2,7 @@
 
 **EXPLORATORY. Nothing here scores a hypothesis. H0–H3, 83b2edf and the timed-path pin `0e0fb012` are unchanged.** This session explains P4's miss and nothing else. No ground-truth row is written.
 
-## Cells (proposed; approval wanted)
+## Cells (approved by the researcher, 17 Nov 2026)
 
 These run in this order: `configs/exploratory/h100_diag_cells.json`, sha256 `52c576b2959285c8f321b24c473c9676381ce2ec42d0077a62075f87fe4c0a79`. The driver refuses any other list. All cells are batch 1, on P4's prompts (8075 / 16370 / 32700 tokens).
 
@@ -30,13 +30,15 @@ Eager cells run 30 untraced prefills, one torch.profiler prefill (the P4 tracer)
   - Q1 confirmed with Q2 faithful: the misprice is the backend mismatch alone.
   - Q1 not confirmed with Q2 ≥ 2.0: the misprice is the replay path.
   - Any other combination is reported without an inference.
-- **Q3. Is this P4's device?** Nine pairs: dense FA3 attention and wall at each length, and XAttention wall at each length, each against P4's. If any pair is not the same, Q1 and Q4 are reported as not comparable and only Q2 is read.
-- **Q4. Is the residual host cost?** P4's median |rel err| with all device time traced is **0.208**. Its median cell is XAttention at 8075 (+0.208); 16370 gives +0.080 and 32700 gives +0.156. Every residual is an overprediction. The recursion is re-run with each priced host cost scaled by measured / priced host (measured with Nsight; torch.profiler only as a flagged fallback). φ is the share of the residual this removes:
+- **Q3. Is this P4's device?** Nine pairs: dense FA3 attention and wall at each length, and XAttention wall at each length, each against P4's. Q3 is read **per length** (ruling of 17 Nov). The pairs at a length gate Q1 and Q4 at that length only. If any pair at a length is not the same, or that length has no pair because its cells did not pass, Q1 (read at 16370) or Q4 at that length is reported as not comparable. Q2 is within this session and is never gated.
+- **Q4. Is the residual host cost?** P4's median |rel err| with all device time traced is **0.208**. Its median cell is XAttention at 8075 (+0.208); 16370 gives +0.080 and 32700 gives +0.156. Every residual is an overprediction. The recursion is re-run with each priced host cost scaled by measured / priced host (measured with Nsight; torch.profiler only as a flagged fallback).
+  - **Tracing overhead** (ruling of 17 Nov): at each length, overhead = the traced median wall per prefill minus P4's untraced wall at that length, taken as zero if negative. It is subtracted from the traced median host before the thresholds below. If the traced wall is above 1.10× P4's, Q4 is **not comparable** at that length.
+  - **φ, in full:** φ = (R_all − R_host) / (R_all − M). R_all is the recursion with every priced device time replaced by P4's traced one, R_host is the same with each priced host cost multiplied by h / H, and M is P4's measured wall. Here h is the measured host per prefill after the overhead is taken off, and H is the cell's summed priced host. R_all − M is the residual above.
   - φ ≥ 0.5: the host costs are **overstated**.
   - φ ≤ 0.2: the residual is **not host**; it is overlap, queue or sync.
   - In between: **partly** host.
 
-  The thresholds in measured host seconds per prefill, from P4's data:
+  The thresholds in measured host seconds per prefill (h, after the overhead is taken off), from P4's data. Each is φ above, solved for 0.5 and 0.2 by bisection on P4's recursion. Re-derived on 17 Nov, they agree to four decimals, and φ falls monotonically as h rises:
 
   | tokens | priced host | φ ≥ 0.5 if host ≤ | φ ≤ 0.2 if host ≥ |
   |---|---|---|---|
@@ -52,18 +54,23 @@ Eager cells run 30 untraced prefills, one torch.profiler prefill (the P4 tracer)
 - **Request window:** requests are sent only inside 06:00–14:00Z; one is refused outside the window and within 5 minutes of its end.
 - **Limits:** halt at 110 billed minutes, delete at 120 minutes.
 - **On reclaim:** stop at the first reclaim; nothing reruns.
-- **Cost:** ₹629.94/h, so ₹1,155 at the halt and ₹1,260 at the delete, against a cap of ₹1,300.
+- **Projected billed minutes:** about 14.5 to boot, plus about 20 for the 8 cells traced, plus about 3 to pull and delete, so **about 38**. With a 50% margin on the cells it is **about 48**, inside the ~80 the ruling allows, so no cell is dropped and the sha is unchanged.
+  - The per-cell estimate comes from P4's b4 ground-truth step, which traced 21 arm-length cells in 400 s.
+  - An eager cell is taken at about 2.5 min: 41 in-process prefills, each under 0.5 s; one torch.profiler trace; and a fresh Nsight child that reloads the model and exports.
+  - The graph cell is taken at about 2 min.
+  - The 55-minute cell budget still skips any cell not started in time.
+- **Cost:** ₹629.94/h, so about ₹400 to ₹504 at the projection, ₹1,155 at the halt and ₹1,260 at the delete, against a cap of ₹1,300.
 - **Money gate:** spent ≈ ₹9,580 + ₹1,300 ≤ ₹15,500. Spend is booked on billed minutes, from create to delete or reclaim.
 
 ## Plan defaults (flagged)
 
 1. FA3 on/off applies to dense only; XAttention runs its own block-sparse kernel.
 2. The graph cell is FA3, the backend a fix would record, rather than `sdpa_flash`, which would reproduce P4's price directly. Q1 reads `sdpa_flash` eager instead.
-3. Q4 is read on XAttention cells only, because the dense residuals are already within 0.03 of zero after the FA3 substitution. Nsight's tracing overhead counts as host time, which biases φ down.
+3. Q4 is read on XAttention cells only, because the dense residuals are already within 0.03 of zero after the FA3 substitution. Nsight's tracing overhead is taken off the host as in Q4's overhead rule. Any overhead not visible in the wall still counts as host time and biases φ down.
 4. A no-capacity answer is retried inside the window, but there is at most one running session. A request made near 14:00Z may run past it.
 5. The CPU pass ran the dense, graph and Nsight paths, using a stand-in Nsight. XAttention has no local checkout, so its cells fail behind the CPU boundary; their logic is covered by unit tests.
 6. The chain is P4's, unchanged since 7a24cba, so there is no e2 rehearsal.
 
-## Decision needed
+## Approval
 
-Approve this cell list (sha above), or name changes to it.
+The researcher approved this cell list (sha above) on 17 Nov 2026, and launched one session on these terms, after the card's 17 Nov rule edits were committed, the load reruns of `tests/test_session_exit.py` passed and the projected minutes fit.

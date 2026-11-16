@@ -350,27 +350,43 @@ def _read(rule, *xs):
         return f"not read: {e}"
 
 
+def _gate(res, why):
+    """A rule read against P4's numbers, marked not comparable for `why`;
+    the ungated reading is kept beside it."""
+    if not isinstance(res, dict) or why is None:
+        return res
+    return {**res, "comparable": False, "verdict": f"not comparable: {why}",
+            "ungated_verdict": res.get("verdict")}
+
+
 def verdict(man: dict, ref: dict, q4_inputs=None) -> dict:
     """The four rules over the pulled cell manifests (card, "What each
-    outcome means"); a rule whose cells did not pass is "not read"."""
+    outcome means"); a rule whose cells did not pass is "not read". Q3 is
+    read per length and gates Q1 (16370 tokens) and Q4 at its own length."""
     out = {"label": "EXPLORATORY"}
+    pairs = {L: {} for L in TOKENS}
+    for L, n in TOKENS.items():
+        d = _find(man, "dense", "fa3", L, "eager")
+        if d:
+            pairs[L][f"dense_fa3_{L}_attention"] = (_att(d), ref[("dense", n)]["attention_traced_s"])
+            pairs[L][f"dense_fa3_{L}_wall"] = (d["untraced"]["median_s"], ref[("dense", n)]["measured_s"])
+        x = _find(man, "xattention", None, L, "eager")
+        if x:
+            pairs[L][f"xattention_{L}_wall"] = (x["untraced"]["median_s"],
+                                                ref[("xattention", n)]["measured_s"])
+    out["Q3"] = {str(L): HD.q3_comparable(p) for L, p in pairs.items()}
+    q3_why = {L: None if out["Q3"][str(L)]["comparable"] else f"Q3 failed at {n} tokens"
+              for L, n in TOKENS.items()}
     off = _find(man, "dense", "sdpa_flash", 16384, "eager")
-    out["Q1"] = (_read(HD.q1_priced_kernel, _att(off), ref[("dense", 16370)]["attention_priced_s"])
-                 if off else "not read")
+    q1 = (_read(HD.q1_priced_kernel, _att(off), ref[("dense", 16370)]["attention_priced_s"])
+          if off else "not read")
+    out["Q1"] = _gate(q1, q3_why[16384])
+    if isinstance(out["Q1"], dict) and q3_why[16384]:
+        out["Q1"]["confirmed"] = None
     g = _find(man, "dense", "fa3", 16384, "graph")
     e = _find(man, "dense", "fa3", 16384, "eager")
     out["Q2"] = (_read(HD.q2_graph, g["graph_components_s"]["attention"], _att(e))
                  if g and e else "not read")
-    pairs = {}
-    for L, n in TOKENS.items():
-        d = _find(man, "dense", "fa3", L, "eager")
-        if d:
-            pairs[f"dense_fa3_{L}_attention"] = (_att(d), ref[("dense", n)]["attention_traced_s"])
-            pairs[f"dense_fa3_{L}_wall"] = (d["untraced"]["median_s"], ref[("dense", n)]["measured_s"])
-        x = _find(man, "xattention", None, L, "eager")
-        if x:
-            pairs[f"xattention_{L}_wall"] = (x["untraced"]["median_s"], ref[("xattention", n)]["measured_s"])
-    out["Q3"] = HD.q3_comparable(pairs) if pairs else "not read"
     q4 = {}
     for L, n in TOKENS.items():
         x = _find(man, "xattention", None, L, "eager")
@@ -379,14 +395,19 @@ def verdict(man: dict, ref: dict, q4_inputs=None) -> dict:
             continue
         ns = x.get("nsys", {})
         src = "nsys" if "median" in ns else "torch.profiler (inflated by its overhead)"
-        host = ns["median"]["host_s"] if "median" in ns else x["torch_profiler"]["host"]["host_s"]
+        tr = ns["median"] if "median" in ns else x["torch_profiler"]["host"]
         try:
-            q4[str(L)] = {"host_source": src, "host_measured_s": host, **q4_inputs[n](host)}
+            hc = HD.q4_host(tr["wall_s"], ref[("xattention", n)]["measured_s"], tr["host_s"])
+            res = {"host_source": src, **hc, "host_measured_s": hc["host_s"],
+                   **q4_inputs[n](hc["host_s"])}
         except HD.DiagError as e:
             q4[str(L)] = f"not read: {e}"
+            continue
+        why = [w for w in (q3_why[L], None if hc["comparable"] else
+                           f"the traced wall is {hc['wall_ratio']:.3f}x P4's, above "
+                           f"{HD.TRACED_WALL_MAX:.2f}x") if w]
+        q4[str(L)] = _gate(res, "; ".join(why) or None)
     out["Q4"] = q4
-    if isinstance(out["Q3"], dict) and not out["Q3"]["comparable"]:
-        out["note"] = "Q3 failed: Q1 and Q4 compare with P4 and are read as not comparable"
     return out
 
 

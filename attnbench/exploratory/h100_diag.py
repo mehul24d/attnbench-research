@@ -39,6 +39,7 @@ SAME = 0.10            # Q1, Q2, Q3: "the same" is within 10%
 GRAPH_EXPLAINS = 2.0   # Q2: the graph alone explains most of P4's 2.52x at 16370
 MOST = 0.5             # Q4: at least half of the residual explained
 LITTLE = 0.2           # Q4: at most a fifth explained
+TRACED_WALL_MAX = 1.0 + SAME   # Q4: a traced wall above 1.10x P4's untraced one is not comparable
 
 LAUNCHES = ("cudaLaunchKernel", "cuLaunchKernel", "cudaLaunchKernelExC", "cudaMemcpyAsync",
             "cudaMemsetAsync", "cudaGraphLaunch")
@@ -265,20 +266,37 @@ def q2_graph(graph_attention_s: float, eager_attention_s: float) -> dict:
 
 
 def q3_comparable(pairs: Mapping[str, tuple[float, float]]) -> dict:
-    """Q3. Is this session P4's device? name -> (this session, P4). Each
-    within 10%; otherwise Q1 and Q4, which use P4's numbers, are read as not
-    comparable and only Q2 (within this session) is read."""
+    """Q3 at one length. Is this session P4's device? name -> (this session,
+    P4). Each within 10%; otherwise Q1 (16370 tokens) or Q4 at this length,
+    which use P4's numbers, are read as not comparable. Q2 (within this
+    session) is not gated. No pairs (the cells did not pass) is not comparable."""
     rows = {k: {"this": a, "p4": b, "ratio": a / b, "within": abs(a / b - 1.0) <= SAME}
             for k, (a, b) in pairs.items()}
     return {"rows": rows, "comparable": bool(rows) and all(r["within"] for r in rows.values())}
 
 
+def q4_host(traced_wall_s: float, p4_wall_s: float, traced_host_s: float) -> dict:
+    """Q4's measured host at one length. The tracer's overhead is the traced
+    wall minus P4's untraced wall (at least zero), taken off the traced host
+    before the thresholds; a traced wall above 1.10x P4's is not comparable."""
+    if traced_wall_s <= 0 or p4_wall_s <= 0:
+        raise DiagError("Q4: no wall to take the tracing overhead from")
+    over = max(0.0, traced_wall_s - p4_wall_s)
+    return {"traced_wall_s": traced_wall_s, "p4_wall_s": p4_wall_s,
+            "wall_ratio": traced_wall_s / p4_wall_s, "overhead_s": over,
+            "host_traced_s": traced_host_s, "host_s": traced_host_s - over,
+            "comparable": traced_wall_s <= TRACED_WALL_MAX * p4_wall_s}
+
+
 def q4_fraction(predicted_all_replaced: float, predicted_host_scaled: float,
                 measured: float) -> dict:
-    """Q4. How much of an XAttention cell's residual (the recursion with every
-    device time traced, against the measurement) the measured host time
-    explains: the recursion again with each priced host cost scaled by the
-    measured-to-priced host ratio."""
+    """Q4. How much of an XAttention cell's residual the measured host time
+    explains: phi = (R_all - R_host) / (R_all - M), where R_all is the
+    recursion with every priced device time replaced by P4's traced one,
+    R_host the same with each priced host cost scaled by h / H (h the measured
+    host per prefill after `q4_host`, H the cell's summed priced host) and M
+    P4's measured wall. The card's host thresholds are this phi solved for
+    0.5 and 0.2 on P4's data."""
     resid = predicted_all_replaced - measured
     if resid == 0:
         raise DiagError("no residual to explain")

@@ -255,13 +255,16 @@ def test_p4_reference_holds_the_wave_numbers():
     assert REF[("xattention", 32700)]["measured_s"] == pytest.approx(0.4961, abs=5e-5)
 
 
-def eager(arm, backend, L, att, wall, host=None, nsys_host=None, status="passed"):
+def eager(arm, backend, L, att, wall, host=None, nsys_host=None, status="passed",
+          nsys_wall=None, tp_wall=None):
+    """A cell manifest; the traced walls default to the untraced one (no overhead)."""
     m = {"status": status, "cell": vars(cell(f"{arm}{backend}{L}", arm, backend, L)),
          "untraced": {"median_s": wall},
-         "torch_profiler": {"components_s": {"attention": att}, "host": {"host_s": host}},
+         "torch_profiler": {"components_s": {"attention": att},
+                            "host": {"host_s": host, "wall_s": tp_wall or wall}},
          "nsys": {"available": True}}
     if nsys_host is not None:
-        m["nsys"]["median"] = {"host_s": nsys_host}
+        m["nsys"]["median"] = {"host_s": nsys_host, "wall_s": nsys_wall or wall}
     return m
 
 
@@ -286,21 +289,96 @@ def test_verdict_reads_every_rule():
     q4 = {n: (lambda h, n=n: seen.append((n, h)) or {"fraction": 0.6}) for n in D.TOKENS.values()}
     v = D.verdict(manifests(), REF, q4)
     assert v["Q1"]["confirmed"] and v["Q1"]["ratio"] == pytest.approx(1.0)
+    assert "comparable" not in v["Q1"]
     assert v["Q2"]["ratio"] == pytest.approx(1.5)
-    assert v["Q3"]["comparable"] and len(v["Q3"]["rows"]) == 9 and "note" not in v
+    assert set(v["Q3"]) == {"8192", "16384", "32768"}
+    assert all(v["Q3"][L]["comparable"] and len(v["Q3"][L]["rows"]) == 3 for L in v["Q3"])
     assert sorted(seen) == [(8075, 0.1), (16370, 0.1), (32700, 0.1)]
     assert v["Q4"]["16384"]["host_source"] == "nsys" and v["Q4"]["16384"]["fraction"] == 0.6
+    assert v["Q4"]["16384"]["comparable"] and v["Q4"]["16384"]["overhead_s"] == 0.0
 
 
-def test_verdict_falls_back_to_the_profiler_host_and_flags_q3():
+def test_verdict_falls_back_to_the_profiler_host_and_gates_q4_by_q3_at_its_length():
     m = manifests()
-    m["x16384"] = eager("xattention", None, 16384, 0.01, 0.5, host=0.2)   # 0.5 vs P4 0.2078
+    m["x16384"] = eager("xattention", None, 16384, 0.01, 0.5, host=0.2,
+                        tp_wall=REF[("xattention", 16370)]["measured_s"])   # 0.5 vs P4 0.2078
     q4 = {n: (lambda h: {"h": h}) for n in D.TOKENS.values()}
     v = D.verdict(m, REF, q4)
-    assert v["Q4"]["16384"]["host_measured_s"] == 0.2
-    assert v["Q4"]["16384"]["host_source"].startswith("torch.profiler")
-    assert not v["Q3"]["rows"]["xattention_16384_wall"]["within"]
-    assert not v["Q3"]["comparable"] and "Q3 failed" in v["note"]
+    x = v["Q4"]["16384"]
+    assert x["host_measured_s"] == 0.2 and x["h"] == 0.2
+    assert x["host_source"].startswith("torch.profiler")
+    assert not v["Q3"]["16384"]["rows"]["xattention_16384_wall"]["within"]
+    assert not v["Q3"]["16384"]["comparable"]
+    assert v["Q3"]["8192"]["comparable"] and v["Q3"]["32768"]["comparable"]
+    assert not x["comparable"] and x["verdict"] == "not comparable: Q3 failed at 16370 tokens"
+    # only 16384 is gated: Q4 elsewhere and Q2 are read as before; Q1 (16370) is gated
+    assert v["Q4"]["8192"]["comparable"] and v["Q4"]["32768"]["comparable"]
+    assert v["Q1"]["verdict"] == "not comparable: Q3 failed at 16370 tokens"
+    assert v["Q1"]["confirmed"] is None and v["Q1"]["ungated_verdict"].startswith("confirmed")
+    assert v["Q2"]["faithful"] is False and "comparable" not in v["Q2"]
+
+
+@pytest.mark.parametrize("L", [8192, 32768])
+def test_q3_failing_at_another_length_leaves_q1_read(L):
+    n = D.TOKENS[L]
+    m = manifests(**{f"d{L}": eager("dense", "fa3", L, REF[("dense", n)]["attention_traced_s"],
+                                    1.5 * REF[("dense", n)]["measured_s"])})
+    q4 = {k: (lambda h: {"fraction": 0.3, "verdict": "partly"}) for k in D.TOKENS.values()}
+    v = D.verdict(m, REF, q4)
+    assert not v["Q3"][str(L)]["comparable"]
+    assert v["Q1"]["confirmed"] is True and "comparable" not in v["Q1"]
+    assert v["Q4"][str(L)]["verdict"] == f"not comparable: Q3 failed at {n} tokens"
+    others = [k for k in ("8192", "16384", "32768") if k != str(L)]
+    assert all(v["Q4"][k]["verdict"] == "partly" for k in others)
+
+
+def test_q3_with_no_pairs_at_a_length_gates_that_length():
+    m = manifests()
+    del m["d32768"], m["x32768"]
+    v = D.verdict(m, REF, {k: (lambda h: {"verdict": "x"}) for k in D.TOKENS.values()})
+    assert not v["Q3"]["32768"]["comparable"] and v["Q3"]["32768"]["rows"] == {}
+    assert v["Q4"]["32768"] == "not read"
+    assert v["Q1"]["confirmed"] is True
+
+
+def test_q4_host_takes_the_tracing_overhead_off():
+    r = HD.q4_host(0.12, 0.10, 0.09)
+    assert r["overhead_s"] == pytest.approx(0.02) and r["host_s"] == pytest.approx(0.07)
+    assert r["wall_ratio"] == pytest.approx(1.2) and not r["comparable"]
+    r = HD.q4_host(0.55, 0.5, 0.45)           # exactly 1.10x (exact in binary): still comparable
+    assert 0.55 == HD.TRACED_WALL_MAX * 0.5 and r["comparable"] and r["host_s"] == pytest.approx(0.4)
+    r = HD.q4_host(0.095, 0.10, 0.09)         # traced faster than P4: no overhead
+    assert r["overhead_s"] == 0.0 and r["host_s"] == 0.09 and r["comparable"]
+    with pytest.raises(HD.DiagError):
+        HD.q4_host(0.0, 0.1, 0.09)
+
+
+def test_verdict_subtracts_the_nsys_overhead_per_length():
+    seen = {}
+    q4 = {n: (lambda h, n=n: seen.setdefault(n, h) and {"verdict": "read"}) for n in D.TOKENS.values()}
+    m = manifests()
+    p8, p32 = REF[("xattention", 8075)]["measured_s"], REF[("xattention", 32700)]["measured_s"]
+    m["x8192"] = eager("xattention", None, 8192, 0.01, p8, host=0.2, nsys_host=0.1,
+                       nsys_wall=p8 + 0.005)                  # 1.046x: comparable
+    m["x32768"] = eager("xattention", None, 32768, 0.01, p32, host=0.2, nsys_host=0.25,
+                        nsys_wall=1.2 * p32)                  # 1.2x: not comparable
+    v = D.verdict(m, REF, q4)
+    assert seen[8075] == pytest.approx(0.095) and seen[16370] == pytest.approx(0.1)
+    assert v["Q4"]["8192"]["overhead_s"] == pytest.approx(0.005)
+    assert v["Q4"]["8192"]["host_traced_s"] == 0.1 and v["Q4"]["8192"]["verdict"] == "read"
+    x = v["Q4"]["32768"]
+    assert x["comparable"] is False and x["overhead_s"] == pytest.approx(0.2 * p32)
+    assert x["verdict"] == "not comparable: the traced wall is 1.200x P4's, above 1.10x"
+    assert seen[32700] == pytest.approx(0.25 - 0.2 * p32)    # the ungated reading is kept
+    assert v["Q3"]["32768"]["comparable"]                     # the untraced wall is P4's
+
+
+def test_the_card_states_phi_the_overhead_rule_and_the_projection():
+    t = CARD.read_text()
+    assert "φ = (R_all − R_host) / (R_all − M)" in t
+    assert "1.10× P4's" in t and "Q3 is read **per length**" in t
+    assert re.search(r"Projected billed minutes:\*\* about 14\.5 to boot", t)
+    assert "about 48" in t and HD.TRACED_WALL_MAX == pytest.approx(1.10)
 
 
 def test_verdict_leaves_failed_or_missing_cells_unread():
@@ -447,5 +525,7 @@ def test_q4_recursion_reproduces_p4_and_the_card_thresholds():
     assert at["residual_rel"] == pytest.approx(0.208, abs=5e-4)        # P4's residual
     assert f(0.0985)["fraction"] == pytest.approx(0.5, abs=0.01)       # the card's thresholds
     assert f(0.1164)["fraction"] == pytest.approx(0.2, abs=0.01)
-    assert fs[32700](0.2029)["fraction"] == pytest.approx(0.5, abs=0.01)
+    for n, h5, h2 in ((16370, 0.1045, 0.1179), (32700, 0.2029, 0.2374)):   # every card threshold
+        assert fs[n](h5)["fraction"] == pytest.approx(0.5, abs=0.01)
+        assert fs[n](h2)["fraction"] == pytest.approx(0.2, abs=0.01)
     assert re.search(r"0\.0985", CARD.read_text())
