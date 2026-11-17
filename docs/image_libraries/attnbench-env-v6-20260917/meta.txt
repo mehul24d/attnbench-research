@@ -1,0 +1,12 @@
+image attnbench-env-v6-20260917
+2026-11-17T02:30:51Z
+Linux attnbench-v6libs-20261117-0227 6.8.0-1066-gcp #74~22.04.1-Ubuntu SMP Fri Aug  7 21:51:15 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+--- users
+ubuntu /home/ubuntu
+mehuldahiya /home/mehuldahiya
+--- site dirs
+/home/mehuldahiya/.local/lib/python3.10/site-packages
+/usr/lib/python2.7/dist-packages
+/usr/lib/python3/dist-packages
+/usr/local/lib/python3.10/dist-packages
+--- pyvenv.cfg
