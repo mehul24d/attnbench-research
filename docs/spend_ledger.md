@@ -187,9 +187,12 @@ Plan Section 5.2 (21 Oct 2026): new spend through 30 Nov 2026 has one budget of 
 | P4 on Spot at `lock-2026-11-14-r3` (H100; 11 RUNNING attempts, 217 min; all four blocks passed) | 2,279 |
 | H100 diagnostic on Spot (`attnbench-h100-diag-20261117-072424-a1`, 17 Nov 2026; EXPLORATORY, nothing scored; 16 billed min at ₹629.94/h from its `session_cost.txt`, create to self-halt; 7 of 8 cells passed) | 168 |
 | H100 diagnostic rerun on Spot (`attnbench-h100-diag-20261117-115658-a1`, 17 Nov 2026; EXPLORATORY, Q2 only, nothing scored; 12 billed min at ₹629.94/h from its `session_cost.txt`, create to self-halt; both cells passed) | 126 |
-| **Total** | **~9,863** |
+| Read-only bucket inventory download (17 Nov 2026; 14,844 objects with no local copy, 8.043 GiB of internet egress from `us-central1` to India at the billing catalog's $0.12 per GiB, at ₹91.92 per dollar; MD5-checked, sha256 recorded; cap ₹100) | 89 |
+| **Total** | **~9,952** |
 
-Headroom (17 Nov 2026, after the H100 diagnostic's rerun): ₹15,500 − ₹9,863 = **about ₹5,637** to the ceiling. The rerun is booked at its billed minutes (boot 06:27:04Z, self-halt 06:38:22Z; deleted, teardown rc=0; the session exited rc=0 and synced on its first try). Its driver counted from ₹9,737, this table's total before the row. Image v6 (`attnbench-env-v6-20260917`) was deleted at 06:44:59Z after the rerun's results synced and read back as gone; the project now stores no custom image, so image storage stops accruing. The `e2-micro` that recorded v6's package list (about ₹0.2) and the first diagnostic's bucket download (about ₹1.5 of egress) are under ₹2 together, so the total is not changed.
+Headroom (17 Nov 2026, after the bucket inventory): ₹15,500 − ₹9,952 = **about ₹5,548** to the ceiling. The download is booked at its bytes (8,635,727,875 bytes = 8.043 GiB) at the billing catalog's list price for Premium Tier internet egress from the Americas to India ($0.12 per GiB, read 17 Nov 2026), not at a billing figure; the month's first free GiB is not subtracted. Nothing else was spent: the bucket listing, the catalog and quota reads and the new-pairing scope created nothing, and no GPU ran.
+
+*17 Nov 2026 (after the H100 diagnostic's rerun), superseded 17 Nov 2026 (after the bucket inventory):* Headroom (17 Nov 2026, after the H100 diagnostic's rerun): ₹15,500 − ₹9,863 = **about ₹5,637** to the ceiling. The rerun is booked at its billed minutes (boot 06:27:04Z, self-halt 06:38:22Z; deleted, teardown rc=0; the session exited rc=0 and synced on its first try). Its driver counted from ₹9,737, this table's total before the row. Image v6 (`attnbench-env-v6-20260917`) was deleted at 06:44:59Z after the rerun's results synced and read back as gone; the project now stores no custom image, so image storage stops accruing. The `e2-micro` that recorded v6's package list (about ₹0.2) and the first diagnostic's bucket download (about ₹1.5 of egress) are under ₹2 together, so the total is not changed.
 
 *17 Nov 2026 (after the H100 diagnostic), superseded 17 Nov 2026 (after its rerun):* Headroom (17 Nov 2026, after the H100 diagnostic): ₹15,500 − ₹9,737 = **about ₹5,763** to the ceiling. The diagnostic is booked at its billed minutes (boot 01:54:28Z, self-halt 02:09:44Z; deleted, teardown rc=0). Its driver and card counted from ₹9,580, ₹11 above this table; that ₹11 is the scoring wave's trace egress estimate (16 Nov 2026), which this table never added, so the driver's "₹9,748" is ₹11 above the rows' total. The session itself exited rc=1 (one cell failed); the driver's lock line `finished rc=0` is the driver's exit, not the session's.
 
@@ -197,7 +200,22 @@ Headroom (17 Nov 2026, after the H100 diagnostic's rerun): ₹15,500 − ₹9,86
 
 *15 Nov 2026, superseded 16 Nov 2026:* Headroom: ₹14,000 − ₹7,272 = **about ₹6,728** (the researcher's billing figure, 15 Nov 2026; ₹7,818 against the rows alone); with the overrun of at most ₹1,500 the researcher approved on 15 Nov 2026, **₹8,228** to the ₹15,500 ceiling (after P2's launch at `lock-2026-11-13-r4`, 14 Nov 2026: `attnbench-a100-p2e-20261114-0546`, `a16ae1a`, 166 min billable at ₹297.47/h, all 15 steps passed, self-halted, deleted, cleanup clean; before it, P2 at `lock-2026-11-13-r2` ₹69, at `lock-2026-11-13` ₹169, P2's relaunch ₹169 and launch 1 ₹109). The interlock below is reprinted after it (14 Nov 2026): P4 on Flex-start leaves ₹4,581.
 
-### Budget interlock (17 Nov 2026, after the H100 diagnostic's rerun)
+### Budget interlock (17 Nov 2026, after the bucket inventory)
+
+Reprinted from `scripts/budget_interlock.py` after the bucket inventory's row. The download is outside the P2/P4 pairings, so it reserves nothing; its ₹89 is in the spent figure.
+
+Adviser's ruling 1g dated 10 Nov 2026 (`scripts/budget_interlock.py`): **at most one of P2 and P4 on Spot**, and no launch if the headroom left after the caps of all still-planned sessions is negative. Budget ₹14,000 (plan Section 5.2) and the overrun of at most ₹1,500 the researcher approved on 15 Nov 2026: ceiling ₹15,500; spent ₹9,952 (the ledger's new-spend table, the L4 rehearsal's ₹304 in it); the rehearsal closed, so nothing more is reserved for it. P2 ran (at lock-2026-11-13-r4 on 14 Nov 2026, all 15 steps passed, ₹823 in the ledger; banked), so nothing is reserved for it. P4 ran (at lock-2026-11-14-r3 on 15 and 16 Nov 2026, all four blocks passed, ₹2,279 in the ledger), so nothing is reserved for it. Not counted: a Spot block rerun after an interruption, image storage, egress.
+
+| P2 | P4 | Spent + caps ₹ | Headroom ₹ | Allowed |
+|---|---|---|---|---|
+| Flex-start | Flex-start | — | — | no: P4 ran on Spot |
+| Flex-start | Spot | 9,952 | 5,548 | ran: both pairings |
+| Spot | Flex-start | — | — | no: P2 ran on Flex-start |
+| Spot | Spot | — | — | no: both on Spot |
+
+- **P4 ran** (at lock-2026-11-14-r3 on 15 and 16 Nov 2026, all four blocks passed, ₹2,279 in the ledger); it is not launched again.
+
+### Budget interlock (17 Nov 2026, after the H100 diagnostic's rerun; superseded 17 Nov 2026)
 
 Reprinted from `scripts/budget_interlock.py` after the rerun's row. The rerun is exploratory and outside the P2/P4 pairings, so it reserves nothing; its ₹126 is in the spent figure.
 
