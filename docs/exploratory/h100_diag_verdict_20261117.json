@@ -1,0 +1,131 @@
+{
+ "label": "EXPLORATORY",
+ "Q3": {
+  "8192": {
+   "rows": {
+    "dense_fa3_8192_attention": {
+     "this": 0.007849178710937498,
+     "p4": 0.0076455034179687496,
+     "ratio": 1.0266398799181835,
+     "within": true
+    },
+    "dense_fa3_8192_wall": {
+     "this": 0.06414738600000192,
+     "p4": 0.06221879899999294,
+     "ratio": 1.030996853539542,
+     "within": true
+    },
+    "xattention_8192_wall": {
+     "this": 0.11420740250002837,
+     "p4": 0.10840990799994188,
+     "ratio": 1.0534775336225688,
+     "within": true
+    }
+   },
+   "comparable": true
+  },
+  "16384": {
+   "rows": {
+    "dense_fa3_16384_attention": {
+     "this": 0.029976075683593745,
+     "p4": 0.029428827148437496,
+     "ratio": 1.018595662422969,
+     "within": true
+    },
+    "dense_fa3_16384_wall": {
+     "this": 0.1435460505000492,
+     "p4": 0.13868152949999057,
+     "ratio": 1.0350769206079384,
+     "within": true
+    },
+    "xattention_16384_wall": {
+     "this": 0.2113301065000428,
+     "p4": 0.20778465850003158,
+     "ratio": 1.0170630884185836,
+     "within": true
+    }
+   },
+   "comparable": true
+  },
+  "32768": {
+   "rows": {
+    "dense_fa3_32768_attention": {
+     "this": 0.12717076416015624,
+     "p4": 0.12059632812499997,
+     "ratio": 1.0545160548200254,
+     "within": true
+    },
+    "dense_fa3_32768_wall": {
+     "this": 0.34797563000000764,
+     "p4": 0.33619949549995454,
+     "ratio": 1.0350272224012147,
+     "within": true
+    },
+    "xattention_32768_wall": {
+     "this": 0.5052633904999766,
+     "p4": 0.49609304049994307,
+     "ratio": 1.018485141397654,
+     "within": true
+    }
+   },
+   "comparable": true
+  }
+ },
+ "Q1": {
+  "ratio": 1.016036899465123,
+  "verdict": "confirmed: P4 priced the sdpa_flash kernel; the ground truth ran FA3",
+  "confirmed": true
+ },
+ "Q2": "not read",
+ "Q4": {
+  "8192": {
+   "host_source": "nsys",
+   "traced_wall_s": 0.12033825100000001,
+   "p4_wall_s": 0.10840990799994188,
+   "wall_ratio": 1.1100300075899383,
+   "overhead_s": 0.011928343000058128,
+   "host_traced_s": 0.08820815600000001,
+   "host_s": 0.07627981299994188,
+   "comparable": false,
+   "host_measured_s": 0.07627981299994188,
+   "host_priced_s": 0.12591406780615225,
+   "host_ratio": 0.6058085036008566,
+   "residual_rel": 0.20834037528776378,
+   "fraction": 0.8733338487832607,
+   "verdict": "not comparable: the traced wall is 1.110x P4's, above 1.10x",
+   "ungated_verdict": "the host costs are overstated: they explain at least half of the residual"
+  },
+  "16384": {
+   "host_source": "nsys",
+   "traced_wall_s": 0.216540637,
+   "p4_wall_s": 0.20778465850003158,
+   "wall_ratio": 1.0421396775063982,
+   "overhead_s": 0.008755978499968425,
+   "host_traced_s": 0.091398528,
+   "host_s": 0.08264254950003158,
+   "comparable": true,
+   "host_measured_s": 0.08264254950003158,
+   "host_priced_s": 0.1267415923800681,
+   "host_ratio": 0.6520554771965157,
+   "residual_rel": 0.08018892345748066,
+   "fraction": 0.97178207510336,
+   "verdict": "the host costs are overstated: they explain at least half of the residual"
+  },
+  "32768": {
+   "host_source": "nsys",
+   "traced_wall_s": 0.520299136,
+   "p4_wall_s": 0.49609304049994307,
+   "wall_ratio": 1.04879345913755,
+   "overhead_s": 0.024206095500056923,
+   "host_traced_s": 0.179410639,
+   "host_s": 0.1552045434999431,
+   "comparable": true,
+   "host_measured_s": 0.1552045434999431,
+   "host_priced_s": 0.260326752036319,
+   "host_ratio": 0.5961912953083286,
+   "residual_rel": 0.15587417929436884,
+   "fraction": 0.9098027358548529,
+   "verdict": "the host costs are overstated: they explain at least half of the residual"
+  }
+ }
+}
