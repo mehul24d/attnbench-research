@@ -1,0 +1,5 @@
+#!/bin/bash
+rc=$(head -1 $M/launch_rcs); sed -i '' 1d $M/launch_rcs
+echo "$(date -u -r $(cat $M/clock) +%H:%MZ) $1 rc=$rc $GCP_H100_PROVISIONING zone=$GCP_ZONE fb=$GCP_ZONE_FALLBACKS rate=$GCP_RATE_INR_HR halt=$GCP_HALT_MINUTES max=$GCP_MAX_RUN image=${GCP_IMAGE:-pinned}" >> $M/launches
+(( rc == 0 )) && echo "$1" >> $M/launched
+exit $rc

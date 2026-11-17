@@ -1,0 +1,19 @@
+#!/bin/bash
+# mock gcloud for diag_spot.sh; state in $M
+a="$*"
+# $M/preempted empty: every session preempted; holding N: only the first N granted sessions
+pre() { [[ -e $M/preempted ]] || return 1; local n; n=$(cat $M/preempted); [[ -z "$n" ]] && return 0; (( $(wc -l < $M/launched) <= n )); }
+name() { for x in "$@"; do case $x in compute|instances|describe|delete|ssh) ;; -*) ;; *) echo "$x"; return;; esac; done; }
+case "$a" in
+  "compute instances list"*"name~^attnbench-h100-diag-"*) [[ -e $M/existing_vms ]] && cat $M/existing_vms; [[ -e $M/list_fails ]] && exit 1; exit 0 ;;
+  "compute instances describe"*)
+    n=$(name "${@:4}"); grep -qx "$n" $M/deleted 2>/dev/null && exit 0
+    s=$(head -1 $M/statuses); [[ $(wc -l < $M/statuses) -gt 1 ]] && sed -i '' 1d $M/statuses; echo "$s" ;;
+  "compute instances list"*"zone.basename()"*) [[ -s $M/launched ]] && cat $M/grant_zone ;;
+  "compute instances list"*"value(status)"*) n=$(tail -1 $M/launched); grep -qx "$n" $M/deleted 2>/dev/null || echo TERMINATED ;;
+  "compute instances delete"*) echo "$4" >> $M/deleted ;;
+  "compute operations list"*"operationType=compute.instances.preempted"*) pre && echo op-preempt ;;
+  "compute operations list"*) pre && printf 'insert\t2026-11-17T08:00:30+00:00\t2026-11-17T08:00:40+00:00\ncompute.instances.preempted\t2026-11-17T08:40:00+00:00\t%s\n' "$(cat $M/preempt_end 2>/dev/null || echo 2026-11-17T08:41:10+00:00)" ;;
+  "compute ssh"*) echo "$a" >> $M/started ;;
+  *) echo "mock gcloud: unhandled: $a" >&2; exit 9 ;;
+esac

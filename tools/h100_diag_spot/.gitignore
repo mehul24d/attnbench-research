@@ -1,0 +1,4 @@
+live/
+live_rerun/
+test/m_*/
+test/c_*/

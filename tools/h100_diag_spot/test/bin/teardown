@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "$1 $2 $3 home=[$TEARDOWN_DELETE_WITHOUT_HOME_LOGS] sync=[$TEARDOWN_DELETE_WITHOUT_BUCKET_SYNC] rate=$GCP_RATE_INR_HR" >> $M/teardowns
+mkdir -p "$3"; [[ -e $M/no_cost ]] || printf 'minutes: 61\nrate_inr_hr: 629.94\nest_inr: 641\n' > "$3/session_cost.txt"
+echo "$1" >> $M/deleted
