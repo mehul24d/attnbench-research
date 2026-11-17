@@ -1,0 +1,2 @@
+#!/bin/bash
+echo $(( $(cat $M/clock) + $1 )) > $M/clock

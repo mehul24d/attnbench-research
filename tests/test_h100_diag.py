@@ -529,3 +529,56 @@ def test_q4_recursion_reproduces_p4_and_the_card_thresholds():
         assert fs[n](h5)["fraction"] == pytest.approx(0.5, abs=0.01)
         assert fs[n](h2)["fraction"] == pytest.approx(0.2, abs=0.01)
     assert re.search(r"0\.0985", CARD.read_text())
+
+
+# --- the launch_check fix for FA3's forward (17 Nov 2026) --------------------------------
+
+RERUN = CELLS.with_name("h100_diag_rerun_cells.json")
+RERUN_CARD = CARD.with_name("h100_diag_rerun_card.md")
+
+
+def _fa3_trace():
+    op = lambda name, ts, dur, dims: {"ph": "X", "cat": "cpu_op", "name": name, "pid": 1,
+                                      "tid": 1, "ts": ts, "dur": dur, "args": {"Input Dims": dims}}
+    launch = lambda ts: {"ph": "X", "cat": "cuda_runtime", "name": "cudaLaunchKernel", "pid": 1,
+                         "tid": 1, "ts": ts, "dur": 1, "args": {"correlation": ts * 10}}
+    return {"traceEvents": [
+        {"ph": "X", "cat": "user_annotation", "name": "attnbench::prefill", "pid": 1, "tid": 1,
+         "ts": 0, "dur": 100, "args": {}},
+        op("flash_attn_3::fwd", 1, 40, [[1, 4, 2, 8]] * 3),
+        op("aten::empty", 2, 2, [[]]), op("aten::empty", 5, 2, [[]]), op("aten::empty", 8, 2, [[]]),
+        op("aten::zero_", 11, 6, [[1, 2, 4]]), op("aten::fill_", 12, 4, [[1, 2, 4], []]),
+        launch(13), launch(25)]}
+
+
+def test_fa3_s_forward_is_a_kernel_only_inside_the_script_s_table():
+    from attnbench import cpu_boundary as cb
+    before = cb.GPU_CUSTOM_KERNELS
+    assert cb.launch_check(_fa3_trace())["by_operator"] == {
+        "flash_attn_3::fwd: predicted nothing, recorded 1 call(s)": 1}
+    with D.fa3_launch_table():
+        r = cb.launch_check(_fa3_trace())
+    assert r["passed"] and r["checked_calls"] == 1
+    assert cb.GPU_CUSTOM_KERNELS == before
+
+
+def test_the_graph_cell_records_under_the_fa3_table(monkeypatch, tmp_path):
+    from attnbench import cpu_boundary as cb
+    from attnbench.components import recorder
+    seen = []
+
+    def record(*a, **k):
+        seen.append(cb.GPU_CUSTOM_KERNELS)
+        raise RuntimeError("stop")
+    monkeypatch.setattr(recorder, "record_arm_prefill", record)
+    a = SimpleNamespace(run_prefill=None, code_path=None, length=16370, prompt_id="p", layers=())
+    with pytest.raises(RuntimeError, match="stop"):
+        D.graph_cell(None, cell(mode="graph"), a, tmp_path, SimpleNamespace(cpu_boundary=False))
+    assert seen and D.FA3_FWD in seen[0] and D.FA3_FWD not in cb.GPU_CUSTOM_KERNELS
+
+
+def test_the_rerun_list_passes_and_its_card_names_its_sha():
+    cells, sha = HD.load_cells(RERUN)
+    assert [c.id for c in cells] == ["D16_fa3", "D16_fa3_graph"]
+    assert sha in RERUN_CARD.read_text()
+

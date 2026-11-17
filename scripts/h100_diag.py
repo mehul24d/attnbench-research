@@ -29,6 +29,7 @@ not started by `--budget-min` are recorded as skipped.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
 import json
 import os
@@ -176,6 +177,26 @@ def _nsys():
     return tc.nsys_available()
 
 
+# FA3's forward, which the stand-in's table of GPU custom kernels lacks: it
+# launches its kernel itself beside the `zero_` that clears its accumulator,
+# and the stand-in took that `zero_` for its device work (the diagnostic of
+# 17 Nov 2026, D16_fa3_graph: 28 of 4175 calls). `cpu_boundary.py` is in the
+# timed-path pin, so the table is widened here, for this script's recording
+# only.
+FA3_FWD = "flash_attn_3::fwd"
+
+
+@contextlib.contextmanager
+def fa3_launch_table():
+    from attnbench import cpu_boundary
+    old = cpu_boundary.GPU_CUSTOM_KERNELS
+    cpu_boundary.GPU_CUSTOM_KERNELS = old + (FA3_FWD,)
+    try:
+        yield
+    finally:
+        cpu_boundary.GPU_CUSTOM_KERNELS = old
+
+
 def graph_backend(boundary: bool):
     from attnbench.components import replay
     if boundary:
@@ -190,9 +211,10 @@ def graph_cell(h, c, a, out: Path, args) -> dict:
     from attnbench.components import op_sequence as ops
     from attnbench.components import recorder, replay
     dev = "cpu" if args.cpu_boundary else "cuda"
-    rec = recorder.record_arm_prefill(a.run_prefill, out / f"rec_{c.id}", code_path=a.code_path,
-                                      context_length=a.length, batch=c.batch,
-                                      prompt_id=a.prompt_id, layers=a.layers)
+    with fa3_launch_table():
+        rec = recorder.record_arm_prefill(a.run_prefill, out / f"rec_{c.id}", code_path=a.code_path,
+                                          context_length=a.length, batch=c.batch,
+                                          prompt_id=a.prompt_id, layers=a.layers)
     fam = [ops.operation_family(o) for o in rec.sequence.ops]
     etj = ops.load_trace(rec.directory / "trace.json")
     eager = HD.component_seconds(fam, ops.device_durations(etj, rec.sequence))
