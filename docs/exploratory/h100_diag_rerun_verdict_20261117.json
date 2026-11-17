@@ -1,0 +1,41 @@
+{
+ "label": "EXPLORATORY",
+ "Q3": {
+  "8192": {
+   "rows": {},
+   "comparable": false
+  },
+  "16384": {
+   "rows": {
+    "dense_fa3_16384_attention": {
+     "this": 0.030534639648437494,
+     "p4": 0.029428827148437496,
+     "ratio": 1.0375758263971016,
+     "within": true
+    },
+    "dense_fa3_16384_wall": {
+     "this": 0.1420600879999938,
+     "p4": 0.13868152949999057,
+     "ratio": 1.0243619933540138,
+     "within": true
+    }
+   },
+   "comparable": true
+  },
+  "32768": {
+   "rows": {},
+   "comparable": false
+  }
+ },
+ "Q1": "not read",
+ "Q2": {
+  "ratio": 1.0191531000380556,
+  "verdict": "faithful: the graph replay prices FA3 as it runs eager",
+  "faithful": true
+ },
+ "Q4": {
+  "8192": "not read",
+  "16384": "not read",
+  "32768": "not read"
+ }
+}
