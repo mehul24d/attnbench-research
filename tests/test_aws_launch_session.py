@@ -81,7 +81,7 @@ def test_the_halt_must_come_before_the_hard_delete(tmp_path, halt):
 
 
 def test_an_unknown_pairing_is_refused(tmp_path):
-    for pairing in ("P1", "P2", "P4", "p3", ""):
+    for pairing in ("P1", "P2", "P4", "p3", "env", "ENV2", ""):
         p, calls = _launch(tmp_path, pairing)
         assert p.returncode != 0 and calls == [], pairing
 
@@ -99,7 +99,8 @@ def test_a_type_not_offered_in_the_region_is_refused(tmp_path):
 
 
 @pytest.mark.parametrize("pairing,itype", [("P3", "g6.2xlarge"), ("P5", "g6e.2xlarge"),
-                                           ("P6", "p5.4xlarge"), ("P7", "g5.2xlarge")])
+                                           ("P6", "p5.4xlarge"), ("P7", "g5.2xlarge"),
+                                           ("ENV", "m7a.xlarge")])
 def test_the_create_request_carries_every_guarantee(tmp_path, pairing, itype):
     p, calls = _launch(tmp_path, pairing)
     assert p.returncode == 0, p.stderr

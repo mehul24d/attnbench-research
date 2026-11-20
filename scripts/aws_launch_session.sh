@@ -4,6 +4,11 @@
 #
 #   bash scripts/aws_launch_session.sh PAIRING [NAME]
 #
+# PAIRING is P3, P5, P6 or P7, or ENV: the CPU-only environment build on
+# m7a.xlarge that makes the AMI the GPU sessions boot from (adviser's
+# rulings dated 21 Nov 2026; card docs/launch_cards/aws_env_build_m7a.md).
+# ENV takes every guarantee below; it times nothing.
+#
 # The AWS counterpart of the gcp_launch_*.sh scripts, with the same
 # guarantees, each checked before anything is created:
 #   - launch policy (scripts/_aws_launch_policy.sh): no launch while the last
@@ -80,7 +85,7 @@
 set -euo pipefail
 
 HERE="$(dirname "${BASH_SOURCE[0]}")"
-PAIRING="${1:?usage: aws_launch_session.sh PAIRING [NAME]   (PAIRING: P3, P5, P6 or P7)}"
+PAIRING="${1:?usage: aws_launch_session.sh PAIRING [NAME]   (PAIRING: P3, P5, P6, P7 or ENV)}"
 
 # One GPU each, 8 vCPUs where the family allows, to match P1's
 # g2-standard-8; p5.4xlarge is the plan's own pin. Accepted 28 Oct 2026.
@@ -89,7 +94,8 @@ case "$PAIRING" in
   P5) INSTANCE_TYPE="g6e.2xlarge"; GPU="1x L40S 48GB" ;;
   P6) INSTANCE_TYPE="p5.4xlarge";  GPU="1x H100 80GB" ;;
   P7) INSTANCE_TYPE="g5.2xlarge";  GPU="1x A10G 24GB" ;;
-  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7." >&2
+  ENV) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: environment build only" ;;
+  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, and ENV is the environment build." >&2
      exit 1 ;;
 esac
 PAIR_LC="$(echo "$PAIRING" | tr 'A-Z' 'a-z')"
