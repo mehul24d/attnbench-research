@@ -8,9 +8,11 @@
 #   - every launch while LAST_AWS_LAUNCH_DATE is UNDECIDED;
 #   - any launch after that date (India time, the researcher's time zone;
 #     the date itself is inclusive);
-#   - any region or zone in Australia: ap-southeast-2 (Sydney, with its
-#     Local Zones such as ap-southeast-2-per-1) and ap-southeast-4
-#     (Melbourne).
+#   - any Australia region but Sydney: ap-southeast-2 and its availability
+#     zones (ap-southeast-2a, -2b, ...) are allowed (rule 12 lifted for AWS
+#     Sydney only, the researcher's decision of 21 Nov 2026, plan Appendix
+#     A); ap-southeast-4 (Melbourne) and Sydney's Local Zones (such as
+#     ap-southeast-2-per-1a, Perth) stay refused.
 #
 # A launch is a submitted `ec2 run-instances` request, as a GCP launch is a
 # submitted create (plan T0.17). A script that tries more than once calls
@@ -57,9 +59,12 @@ aws_launch_policy_check() {
   local p
   for p in $places; do
     case "$p" in
+      ap-southeast-2|ap-southeast-2[a-z])
+        ;;  # Sydney and its availability zones: allowed (rule 12, 21 Nov 2026)
       ap-southeast-2*|ap-southeast-4*)
-        echo "REFUSING TO LAUNCH -- '$p' is in an Australia region, which the plan" >&2
-        echo "forbids (docs/RESEARCH_PLAN.md, Section 6)." >&2
+        echo "REFUSING TO LAUNCH -- '$p' is an Australia region other than Sydney, or a" >&2
+        echo "Sydney Local Zone, which the plan forbids (docs/RESEARCH_PLAN.md, Section 6," >&2
+        echo "rule 12; only ap-southeast-2 and its availability zones are allowed)." >&2
         exit 1 ;;
     esac
   done
