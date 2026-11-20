@@ -1,6 +1,8 @@
 """The AWS launch policy (task T5.1): no launch while the last AWS launch date
-is undecided or past (India time, the date itself allowed), never an
-Australia region, and the date checked again before the create request.
+is undecided or past (India time, the date itself allowed), no Australia
+region but Sydney (rule 12 lifted for AWS `ap-southeast-2` and its
+availability zones only, the researcher's decision of 21 Nov 2026), and the
+date checked again before the create request.
 
 The committed date is PROVISIONAL (20 Dec 2026 proposed, not confirmed), so
 the date tests read whatever value the policy file holds and test against
@@ -82,11 +84,25 @@ def test_an_unreadable_date_refuses(tmp_path):
     assert p.returncode == 1 and "cannot read today's date" in p.stderr
 
 
-@pytest.mark.parametrize("place", ["ap-southeast-2", "ap-southeast-2a",
-                                   "ap-southeast-2-per-1a", "ap-southeast-4",
+@pytest.mark.parametrize("place", ["ap-southeast-2-per-1a", "ap-southeast-2-per-1",
+                                   "ap-southeast-2-akl-1a", "ap-southeast-4",
                                    "ap-southeast-4b"])
-def test_australia_is_refused(tmp_path, place):
+def test_australia_outside_the_sydney_region_is_refused(tmp_path, place):
     p = _check(tmp_path, f"us-east-1 {place}", last="2026-12-31", today="2026-10-28")
+    assert p.returncode == 1 and "Australia" in p.stderr
+
+
+@pytest.mark.parametrize("places", ["ap-southeast-2", "ap-southeast-2 ap-southeast-2a",
+                                    "ap-southeast-2 ap-southeast-2b",
+                                    "ap-southeast-2 ap-southeast-2c"])
+def test_the_sydney_region_and_its_zones_pass(tmp_path, places):
+    p = _check(tmp_path, places, last="2026-12-31", today="2026-10-28")
+    assert p.returncode == 0 and "PASSED" in p.stdout, p.stderr
+
+
+def test_a_refused_place_after_sydney_still_refuses(tmp_path):
+    p = _check(tmp_path, "ap-southeast-2 ap-southeast-4a", last="2026-12-31",
+               today="2026-10-28")
     assert p.returncode == 1 and "Australia" in p.stderr
 
 
@@ -97,12 +113,26 @@ def test_other_regions_pass(tmp_path, place):
     assert p.returncode == 0, p.stderr
 
 
-def test_an_australia_session_never_reaches_aws(tmp_path):
+@pytest.mark.parametrize("region,az", [("ap-southeast-4", ""),
+                                       ("ap-southeast-4", "ap-southeast-4a"),
+                                       ("ap-southeast-2", "ap-southeast-2-per-1a")])
+def test_an_australia_session_outside_sydney_never_reaches_aws(tmp_path, region, az):
     d = scripts_copy(tmp_path, "2026-12-31")
     p, calls = run(d / "aws_launch_session.sh", ["P3", "s"], tmp_path,
-                   extra={**launch_env(), "AWS_SESSION_REGION": "ap-southeast-2"})
+                   extra={**launch_env(), "AWS_SESSION_REGION": region,
+                          "AWS_SESSION_AZ": az})
     assert p.returncode == 1 and "Australia" in p.stderr
     assert calls == []
+
+
+def test_a_sydney_session_launches(tmp_path):
+    d = scripts_copy(tmp_path, "2026-12-31")
+    p, calls = run(d / "aws_launch_session.sh", ["P3", "s"], tmp_path,
+                   extra={**launch_env(), "AWS_SESSION_REGION": "ap-southeast-2",
+                          "AWS_SESSION_AZ": "ap-southeast-2a"},
+                   today="2026-12-31")
+    assert p.returncode == 0, p.stderr
+    assert sum("run-instances" in c for c in calls) == 1
 
 
 def test_a_launch_confirmed_after_the_last_date_is_refused(tmp_path):

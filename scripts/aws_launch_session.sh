@@ -7,7 +7,7 @@
 # The AWS counterpart of the gcp_launch_*.sh scripts, with the same
 # guarantees, each checked before anything is created:
 #   - launch policy (scripts/_aws_launch_policy.sh): no launch while the last
-#     AWS launch date is undecided or past, never an Australia region;
+#     AWS launch date is undecided or past, no Australia region but Sydney;
 #     checked again immediately before the create request;
 #   - account and profile pinned (scripts/_aws_account.sh), never printed;
 #   - a declared planning rate (AWS_RATE_INR_HR, Rs/h all-in), required, not
