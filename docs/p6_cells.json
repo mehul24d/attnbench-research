@@ -1,0 +1,222 @@
+{
+ "what": "P6's contrast cells (Appendix A, 21 Nov 2026; EXPLORATORY): P4's 35 cells at lock-2026-11-14-r3 (its block spec's ground-truth cells in block order, with the anchor at its context-length position), so that P4 against P6 is cell for cell, same GPU, other host",
+ "source": "git show lock-2026-11-14-r3:docs/lock_values.json, blocks.P4 (blocks b3 and b4 cells, and the anchor)",
+ "planned_hours": 4.0,
+ "rate_inr_per_hour": 990.2,
+ "cap_inr": 5940,
+ "halt_minutes": 312,
+ "hard_delete_minutes": 359,
+ "drop_rule": "if P6's projection (recomputed before its card is offered) exceeds 4.0 planned hours, cells are dropped from the end of this list until it fits; this file and its sha256 in Appendix A are updated in a dated line before the launch yes",
+ "cells": [
+  {
+   "arm": "dense",
+   "density": 1.0,
+   "context_length": 2048,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.25,
+   "context_length": 2048,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.5,
+   "context_length": 2048,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.25,
+   "context_length": 2048,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.5,
+   "context_length": 2048,
+   "batch": 1
+  },
+  {
+   "arm": "xattention",
+   "density": null,
+   "context_length": 2048,
+   "batch": 1
+  },
+  {
+   "arm": "xattention_noassert",
+   "density": null,
+   "context_length": 2048,
+   "batch": 1
+  },
+  {
+   "arm": "dense",
+   "density": 1.0,
+   "context_length": 4096,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.25,
+   "context_length": 4096,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.5,
+   "context_length": 4096,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.25,
+   "context_length": 4096,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.5,
+   "context_length": 4096,
+   "batch": 1
+  },
+  {
+   "arm": "xattention",
+   "density": null,
+   "context_length": 4096,
+   "batch": 1
+  },
+  {
+   "arm": "xattention_noassert",
+   "density": null,
+   "context_length": 4096,
+   "batch": 1
+  },
+  {
+   "arm": "dense",
+   "density": 1.0,
+   "context_length": 8192,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.25,
+   "context_length": 8192,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.5,
+   "context_length": 8192,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.25,
+   "context_length": 8192,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.5,
+   "context_length": 8192,
+   "batch": 1
+  },
+  {
+   "arm": "xattention",
+   "density": null,
+   "context_length": 8192,
+   "batch": 1
+  },
+  {
+   "arm": "xattention_noassert",
+   "density": null,
+   "context_length": 8192,
+   "batch": 1
+  },
+  {
+   "arm": "dense",
+   "density": 1.0,
+   "context_length": 16384,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.25,
+   "context_length": 16384,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.5,
+   "context_length": 16384,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.25,
+   "context_length": 16384,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.5,
+   "context_length": 16384,
+   "batch": 1
+  },
+  {
+   "arm": "xattention",
+   "density": null,
+   "context_length": 16384,
+   "batch": 1
+  },
+  {
+   "arm": "xattention_noassert",
+   "density": null,
+   "context_length": 16384,
+   "batch": 1
+  },
+  {
+   "arm": "dense",
+   "density": 1.0,
+   "context_length": 16384,
+   "batch": 4
+  },
+  {
+   "arm": "dense",
+   "density": 1.0,
+   "context_length": 32768,
+   "batch": 1
+  },
+  {
+   "arm": "oracle",
+   "density": 0.25,
+   "context_length": 32768,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.25,
+   "context_length": 32768,
+   "batch": 1
+  },
+  {
+   "arm": "meanpool",
+   "density": 0.5,
+   "context_length": 32768,
+   "batch": 1
+  },
+  {
+   "arm": "xattention",
+   "density": null,
+   "context_length": 32768,
+   "batch": 1
+  },
+  {
+   "arm": "xattention_noassert",
+   "density": null,
+   "context_length": 32768,
+   "batch": 1
+  }
+ ]
+}
