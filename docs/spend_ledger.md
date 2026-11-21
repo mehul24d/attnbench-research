@@ -203,6 +203,21 @@ Headroom (21 Nov 2026, after the Tier A download): ₹15,500 − ₹10,020 = **a
 
 *15 Nov 2026, superseded 16 Nov 2026:* Headroom: ₹14,000 − ₹7,272 = **about ₹6,728** (the researcher's billing figure, 15 Nov 2026; ₹7,818 against the rows alone); with the overrun of at most ₹1,500 the researcher approved on 15 Nov 2026, **₹8,228** to the ₹15,500 ceiling (after P2's launch at `lock-2026-11-13-r4`, 14 Nov 2026: `attnbench-a100-p2e-20261114-0546`, `a16ae1a`, 166 min billable at ₹297.47/h, all 15 steps passed, self-halted, deleted, cleanup clean; before it, P2 at `lock-2026-11-13-r2` ₹69, at `lock-2026-11-13` ₹169, P2's relaunch ₹169 and launch 1 ₹109). The interlock below is reprinted after it (14 Nov 2026): P4 on Flex-start leaves ₹4,581.
 
+### AWS budget list (separate cap of about ₹10,400; 21 Nov 2026)
+
+The AWS sessions are outside the GCP ceiling above. They have their own cap of about ₹10,400 for P3 and P6 (plan Appendix A, 17 Nov 2026), and the environment build and the rehearsal that P3 and P6 depend on are charged to it. Nothing has been spent on AWS. The amounts below are each session's cap from its card, not its expected cost.
+
+| Item | Cap or cost (₹) | Status | Cleanup |
+|---|---|---|---|
+| Environment build, `m7a.xlarge` (`docs/launch_cards/aws_env_build_m7a.md`), at most two attempts | 80 per attempt, 160 for two | not launched; launch yes owed | instance terminated, no volume left (`scripts/aws_cleanup_check.sh`) |
+| AMI snapshot from the build (about 60 GB at an assumed $0.055/GB-month, not checked) | about 320 a month | not created | **deregister the AMI and delete its snapshot after P6, or after the host-effect rule skips P6**; a read-back must show neither |
+| `g6.xlarge` rehearsal | 266 | not launched | instance terminated, no volume left |
+| P3, `g6.xlarge` | 1,353 | not launched | instance terminated, no volume left |
+| P6, `p5.4xlarge`, only if the host-effect rule runs it (Appendix A, 21 Nov 2026) | 5,940 | gated | instance terminated, no volume left |
+| **Caps in all**, one build attempt, the snapshot for one month | **about 7,959** | | |
+
+Headroom against the AWS cap: about ₹2,441 with every cap spent in full, one build attempt and one month of snapshot. A second build attempt (₹80) and a second month of snapshot (about ₹320) would leave about ₹2,041.
+
 ### Budget interlock (17 Nov 2026, after the bucket inventory)
 
 Reprinted from `scripts/budget_interlock.py` after the bucket inventory's row. The download is outside the P2/P4 pairings, so it reserves nothing; its ₹89 is in the spent figure.
