@@ -143,8 +143,8 @@ def test_the_hard_delete_is_a_schedule_at_launch_plus_the_limit(tmp_path):
     calls = aws_calls(calls)
     expect = dt.datetime.fromtimestamp(NOW + 120 * 60, dt.timezone.utc)
     stamp = expect.strftime("%Y-%m-%dT%H:%M:%S")
-    sched = _one(calls, "scheduler create-schedule")
-    assert f"--name attnbench-hard-delete-{INSTANCE}" in sched
+    sched = _one(calls, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert sched.startswith("scheduler create-schedule")
     assert f"--schedule-expression at({stamp})" in sched
     assert "--schedule-expression-timezone UTC" in sched
     assert "--action-after-completion DELETE" in sched
@@ -156,8 +156,8 @@ def test_the_hard_delete_is_a_schedule_at_launch_plus_the_limit(tmp_path):
     assert f"HARD_DELETE_AT={stamp}Z" in p.stdout
     # order: create, then schedule, then read the schedule back
     i = [k for k, c in enumerate(calls) if "run-instances" in c][0]
-    j = [k for k, c in enumerate(calls) if "create-schedule" in c][0]
-    k = [k for k, c in enumerate(calls) if "get-schedule" in c][0]
+    j = [k for k, c in enumerate(calls) if "create-schedule" in c and "hard-delete-i-" in c][0]
+    k = [k for k, c in enumerate(calls) if "get-schedule" in c and "hard-delete-i-" in c][0]
     assert i < j < k
     assert not any("terminate-instances" in c for c in calls)
 
@@ -194,7 +194,7 @@ def test_a_failed_create_points_at_the_cleanup_check(tmp_path):
     p, calls = _launch(tmp_path, env={"FAKE_RUN_FAIL": "1"})
     assert p.returncode == 1
     assert "aws_cleanup_check.sh" in p.stderr
-    assert not any("create-schedule" in c for c in calls)
+    assert not any("create-schedule" in c and "hard-delete-i-" in c for c in calls)
 
 
 def test_the_account_never_appears_in_the_output(tmp_path):
@@ -243,7 +243,7 @@ def test_the_environment_build_cards_settings(tmp_path):
     create = _one(calls, "ec2 run-instances")
     assert "--instance-type m7a.xlarge" in create and "AvailabilityZone=ap-southeast-2a" in create
     stamp = dt.datetime.fromtimestamp(NOW + 375 * 60, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    assert f"--schedule-expression at({stamp})" in _one(calls, "scheduler create-schedule")
+    assert f"--schedule-expression at({stamp})" in _one(calls, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
     assert "+360 min from boot" in p.stdout
     card = (Path(__file__).resolve().parents[1] / "docs" / "launch_cards"
             / "aws_env_build_m7a.md").read_text()
@@ -344,3 +344,76 @@ def test_the_launcher_notes_list_the_allowed_services():
                  "IAM (the hard-delete role)", "EventBridge Scheduler", "Service Quotas",
                  "no S3, Lambda, Bedrock, RDS, DynamoDB", "stop before P3"):
         assert said in text, said
+
+
+# --- the hard-delete role (adviser's rulings dated 22 Nov 2026, role fix) ----
+
+GOOD_TRUST = ("1\\tAllow\\tscheduler.amazonaws.com\\tsts:AssumeRole\\tStringEquals\\t"
+              "aws:SourceAccount,aws:SourceArn\\t{arn}\\t111122223333")
+
+
+def _dry(calls):
+    return [c for c in aws_calls(calls) if "attnbench-dryreg-" in c]
+
+
+def test_the_trust_policy_is_read_before_the_prompt(tmp_path):
+    p, calls = _launch(tmp_path, stdin="no\n")
+    assert p.returncode == 1
+    get = _one(aws_calls(calls), "iam get-role")
+    assert "--profile pinned-profile" in get and "--role-name attnbench-hard-delete" in get
+    assert 'Condition.StringEquals."aws:SourceArn"' in get
+    assert "role trust   : attnbench-hard-delete, aws:SourceArn = schedule-group/default" in p.stdout
+    assert _dry(calls) == []                      # an abort registers nothing
+
+
+@pytest.mark.parametrize("env,why", [
+    # the role as made on 21 Nov 2026: the condition named the schedule
+    ({"FAKE_TRUST_ARN": "arn:aws:scheduler:us-east-1:111122223333:schedule/default/attnbench-hard-delete-*"},
+     "schedule/default/attnbench-hard-delete-*"),
+    ({"FAKE_TRUST": "1\\tAllow\\tscheduler.amazonaws.com\\tsts:AssumeRole\\tArnLike,StringEquals\\t"
+                    "aws:SourceAccount\\tNone\\t111122223333"}, "ArnLike"),
+    ({"FAKE_TRUST_ARN": "arn:aws:scheduler:us-west-2:111122223333:schedule-group/default"}, "us-west-2"),
+    ({"FAKE_TRUST_ARN": "arn:aws:scheduler:us-east-1:444455556666:schedule-group/default"}, "444455556666"),
+    ({"FAKE_TRUST": GOOD_TRUST.format(arn="x").replace("1\\t", "2\\t", 1)}, "read: '2"),
+    ({"FAKE_TRUST": GOOD_TRUST.format(arn="arn:aws:scheduler:us-east-1:111122223333:schedule-group/default")
+                    .replace("scheduler.amazonaws.com", "ec2.amazonaws.com")}, "ec2.amazonaws.com"),
+    ({"FAKE_ROLE_FAIL": "1"}, "read: ''"),
+])
+def test_a_trust_policy_not_in_the_documented_form_is_refused(tmp_path, env, why):
+    p, calls = _launch(tmp_path, env=env)
+    assert p.returncode == 1 and "not the documented form" in p.stderr, p.stderr
+    assert why in p.stderr
+    assert "111122223333" not in p.stdout + p.stderr
+    assert _no_create(calls) and not _record(tmp_path).exists()
+
+
+def test_the_dry_registration_comes_after_the_prompt_and_before_the_create(tmp_path):
+    p, calls = _launch(tmp_path)
+    assert p.returncode == 0, p.stderr
+    calls = aws_calls(calls)
+    create, get, delete = _dry(calls)
+    assert create.startswith("scheduler create-schedule") and "--state DISABLED" in create
+    thirty = dt.datetime.fromtimestamp(NOW + 30 * 86400, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({thirty})" in create
+    assert '\\"InstanceIds\\":[\\"i-00000000000000000\\"]' in create
+    assert ":role/attnbench-hard-delete" in create and "--region us-east-1" in create
+    assert get.startswith("scheduler get-schedule") and delete.startswith("scheduler delete-schedule")
+    name = re.search(r"--name (attnbench-dryreg-\S+)", create).group(1)
+    assert f"--name {name}" in get and f"--name {name}" in delete
+    order = [k for k, c in enumerate(calls) if c in (create, delete) or "run-instances" in c]
+    assert [calls[k].split()[1] for k in order] == ["create-schedule", "delete-schedule", "run-instances"]
+    assert "Dry registration accepted" in p.stdout
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"FAKE_DRYREG_FAIL": "1"}, "refused the dry registration"),
+    ({"FAKE_DRYREG_DELETE_FAIL": "1"}, "could not be deleted"),
+    ({"FAKE_DRYREG_STATE": "ENABLED"}, "read back as 'ENABLED', not DISABLED"),
+])
+def test_a_failed_dry_registration_creates_no_instance(tmp_path, env, said):
+    p, calls = _launch(tmp_path, env=env)
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert not any("run-instances" in c for c in aws_calls(calls))
+    assert not _record(tmp_path).exists()
+    if "FAKE_DRYREG_DELETE_FAIL" not in env:     # whatever the read, it is deleted
+        assert any(c.startswith("scheduler delete-schedule") for c in _dry(calls)) or "FAKE_DRYREG_FAIL" in env

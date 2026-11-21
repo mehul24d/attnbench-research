@@ -49,6 +49,20 @@
 #     credits section below). The Free plan admits only Free Tier instance
 #     types: the environment build's first attempt (22 Nov 2026) was refused
 #     at run-instances for that reason;
+#   - the hard-delete role checked twice (adviser's rulings dated 22 Nov 2026,
+#     role fix): its trust policy is read back and must be the documented
+#     form, one statement letting scheduler.amazonaws.com assume the role on
+#     the conditions aws:SourceAccount = the pinned account and
+#     aws:SourceArn = this region's schedule group
+#     (arn:aws:scheduler:<region>:<account>:schedule-group/default), not a
+#     schedule; and, after the typed confirmation and before run-instances, a
+#     dry registration: a throwaway DISABLED schedule thirty days out, using
+#     the role, for a non-existent instance, which AWS must accept and which
+#     is deleted at once. The environment build's attempt of 21 Nov 2026
+#     (21:15 UTC) created its instance and then had the hard-delete schedule
+#     refused, because the trust condition named the schedule; the launcher
+#     terminated it about 3 s later. AWS validates the role at create time,
+#     a disabled schedule included (checked 21 Nov 2026 against that role);
 #   - typed confirmation ("launch") after the summary.
 #
 # AWS services allowed (adviser's rulings dated 22 Nov 2026, credits): EC2,
@@ -261,6 +275,24 @@ if [[ ! "$ROOT_DEVICE" =~ ^/dev/[a-z0-9]+$ ]]; then
   echo "REFUSING TO LAUNCH -- cannot read the root device of $AMI in $REGION. Nothing was created." >&2
   exit 1
 fi
+# The hard-delete role's trust policy, read back and compared with the
+# documented form field by field. The aws wrapper redacts the pinned account
+# ID in everything it returns, so the read is compared with the wanted form
+# redacted the same way; any other account ID would still show as digits.
+GROUP_ARN="arn:aws:scheduler:${REGION}:${ACCOUNT}:schedule-group/default"
+ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/${ROLE_NAME}"
+TRUST="$(aws iam get-role "${P[@]}" --role-name "$ROLE_NAME" \
+  --query 'Role.AssumeRolePolicyDocument.[length(Statement), Statement[0].Effect, Statement[0].Principal.Service, Statement[0].Action, join(`,`, sort(keys(Statement[0].Condition))), join(`,`, sort(keys(Statement[0].Condition.StringEquals))), Statement[0].Condition.StringEquals."aws:SourceArn", Statement[0].Condition.StringEquals."aws:SourceAccount"]' \
+  --output text 2>/dev/null)" || TRUST=""
+TRUST_WANT="$(printf '1\tAllow\tscheduler.amazonaws.com\tsts:AssumeRole\tStringEquals\taws:SourceAccount,aws:SourceArn\t%s\t%s' "$GROUP_ARN" "$ACCOUNT")"
+TRUST_WANT="${TRUST_WANT//$ACCOUNT/<account>}"
+if [[ -z "$TRUST" || "$TRUST" != "$TRUST_WANT" ]]; then
+  echo "REFUSING TO LAUNCH -- the trust policy of role $ROLE_NAME is not the documented form." >&2
+  echo "  read: '${TRUST//$ACCOUNT/<account>}'" >&2
+  echo "  want: '${TRUST_WANT}'" >&2
+  echo "  (aws:SourceArn must name the schedule group, not a schedule.) Nothing was created." >&2
+  exit 1
+fi
 
 # Epoch seconds to an ISO UTC time, on GNU (the instance, CI) and BSD (the
 # researcher's Mac) date alike.
@@ -291,6 +323,7 @@ echo "  provisioning : $MODEL"
 echo "  rate         : Rs ${RATE_INR_HR}/h (AWS_RATE_INR_HR, planning rate, all-in)"
 echo "  in-guest halt: +${HALT_MINUTES} min, STOPS the instance (GPU billing stops, disk survives)"
 echo "  hard delete  : +${MAX_RUN_MINUTES} min, ec2:TerminateInstances by EventBridge Scheduler"
+echo "  role trust   : ${ROLE_NAME}, aws:SourceArn = schedule-group/default (read back)"
 echo "  worst case   : Rs ${WORST_INR}, cost cap Rs ${COST_CAP_INR}"
 echo "  credits      : \$${CREDITS_USD} left (Rs ${CREDITS_INR}) > Rs ${PLANNED_INR} planned so far + Rs ${COST_CAP_INR} cap"
 echo
@@ -302,6 +335,37 @@ fi
 
 # The prompt may have waited past midnight: the launch is the request.
 aws_launch_policy_check "$REGION" $AZ
+
+# Dry registration: AWS must accept a schedule using the role before any
+# instance exists. A throwaway, DISABLED, thirty days out, for an instance
+# id that cannot exist; read back, then deleted.
+DRY="attnbench-dryreg-$(command date -u +%s)-$$"
+DRY_AT="$(iso_utc $(( $(command date -u +%s) + 30 * 86400 )))"
+DRY_TARGET="{\"Arn\":\"arn:aws:scheduler:::aws-sdk:ec2:terminateInstances\",\"RoleArn\":\"${ROLE_ARN}\",\"Input\":\"{\\\"InstanceIds\\\":[\\\"i-00000000000000000\\\"]}\"}"
+if ! aws scheduler create-schedule "${P[@]}" \
+     --name "$DRY" \
+     --state DISABLED \
+     --schedule-expression "at(${DRY_AT})" \
+     --schedule-expression-timezone UTC \
+     --flexible-time-window Mode=OFF \
+     --action-after-completion DELETE \
+     --target "$DRY_TARGET" >/dev/null; then
+  echo "REFUSING TO LAUNCH -- AWS refused the dry registration of a schedule using role" >&2
+  echo "$ROLE_NAME (above). Nothing was created." >&2
+  exit 1
+fi
+DRY_STATE="$(aws scheduler get-schedule "${P[@]}" --name "$DRY" --query State --output text || true)"
+if ! aws scheduler delete-schedule "${P[@]}" --name "$DRY" >/dev/null; then
+  echo "REFUSING TO LAUNCH -- the throwaway schedule $DRY could not be deleted; delete it" >&2
+  echo "by hand (it is disabled and targets no real instance). Nothing was created." >&2
+  exit 1
+fi
+if [[ "$DRY_STATE" != "DISABLED" ]]; then
+  echo "REFUSING TO LAUNCH -- the throwaway schedule read back as '$DRY_STATE', not DISABLED" >&2
+  echo "(it has been deleted). Nothing was created." >&2
+  exit 1
+fi
+echo "Dry registration accepted (schedule $DRY, deleted)."
 
 PLACEMENT=()
 if [[ -n "$SUBNET" ]]; then
@@ -352,7 +416,7 @@ terminate_now() {
 }
 
 SCHEDULE="attnbench-hard-delete-$INSTANCE_ID"
-TARGET="{\"Arn\":\"arn:aws:scheduler:::aws-sdk:ec2:terminateInstances\",\"RoleArn\":\"arn:aws:iam::${ACCOUNT}:role/${ROLE_NAME}\",\"Input\":\"{\\\"InstanceIds\\\":[\\\"${INSTANCE_ID}\\\"]}\"}"
+TARGET="{\"Arn\":\"arn:aws:scheduler:::aws-sdk:ec2:terminateInstances\",\"RoleArn\":\"${ROLE_ARN}\",\"Input\":\"{\\\"InstanceIds\\\":[\\\"${INSTANCE_ID}\\\"]}\"}"
 if ! aws scheduler create-schedule "${P[@]}" \
      --name "$SCHEDULE" \
      --schedule-expression "at(${DELETE_AT})" \

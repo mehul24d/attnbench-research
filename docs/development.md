@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6866 passed, 184 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6878 passed, 184 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -52,10 +52,10 @@ the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden)
 the change is the environment's, not the code's (13 Nov 2026). At `lock-2026-11-14-r2` the
 Mac has the RULER data and the tokenizer in `~/.cache`, so the fresh count is measured with
 `HOME` pointed at an empty directory (14 Nov 2026).
-**With `results/` present the suite reads 6956 passed, 94 skipped**, because
+**With `results/` present the suite reads 6968 passed, 94 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6951 passed, 99 skipped). All three
+present and those two hidden it reads 6963 passed, 99 skipped). All three
 totals are 7036 (the environment build's fifth wave adds 7 that pass with no data: 5 for the script's FA3 manifest, nvcc, cubin and import checks and 2 for the card's launcher settings, 21 Nov 2026; the AWS environment build adds 44 that pass with no data: 39 for its script and list helper, 4 script-parametrized checks of the helper and 1 launcher-tag check of the script, 21 Nov 2026; the P6 host-effect rule adds 21 that pass with no data: its 17 and 4 script-parametrized checks, 21 Nov 2026; the AWS launch-policy and launcher tests add 9 that pass with no data: 8 for rule 12's Sydney lift, PR #91, and 1 for the ENV build target, 21 Nov 2026; the exploratory wave adds 47 that pass with no data: its 37 and 10 file-parametrized checks, 17 Nov 2026; the H100 diagnostic adds 73: its 68, one of which skips without P4's local data, and 5 file-parametrized checks, 17 Nov 2026, six of the 68 added with the card's 17 Nov rule edits and three with the rerun's launch-table fix), which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).
