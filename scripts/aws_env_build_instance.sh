@@ -14,9 +14,19 @@
 #   0. guards: a clean tree, Python 3.10.12, a new output directory, the FA3
 #      wheel and its recorded sha256, the FA3 build's manifest (committed,
 #      configs/t64/fa3_manifest_49774b31.json, the bucket's copy read 21 Nov
-#      2026) at its recorded sha256, nvcc 12.x and cuobjdump, and
-#      flash-attn's memory guard at MAX_JOBS, so a build the instance cannot
-#      hold is refused in seconds, not after the installs;
+#      2026) at its recorded sha256, nvcc 12.x, and flash-attn's memory
+#      guard at MAX_JOBS, so a build the instance cannot hold is refused in
+#      seconds, not after the installs; then cuobjdump, found in this order
+#      (adviser's rulings dated 22 Nov 2026, probe): the toolkit nvcc came
+#      from, then any toolkit under /usr/local at or above nvcc's version
+#      (lowest first: plan default, flagged), then `apt-get install
+#      cuda-cuobjdump-<major>-<minor>` for nvcc's version (once more after an
+#      `apt-get update` if the shipped cache fails), else a refusal. The
+#      probe of 21 Nov 2026 22:16 UTC (docs/launch_cards/
+#      aws_env_build_probe_20261121.txt) found nvcc in all four toolkits of
+#      the base image and cuobjdump in none, and the NVIDIA repository's
+#      cuda-cuobjdump-12-9 (12.9.82) in apt's cache. Any refusal or failure
+#      prints the full tool inventory;
 #   2. v6's packages from an index, exact versions, --no-deps: the system list
 #      as root, less the 69 packages apt installed on v6 (they come with the
 #      base image), --ignore-installed so v6's version shadows an apt copy at
@@ -78,8 +88,10 @@ export BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;90"
 WANT_SM="sm_80 sm_90"
 # v6's toolkit was CUDA 12.9 (the FA3 manifest's stack); the newest 12.x
 # otherwise. CUDA_HOME is what torch's extension builder reads.
+# ENV_BUILD_CUDA_ROOT exists for the fake-command test; it is /usr/local.
+CUDA_ROOT="${ENV_BUILD_CUDA_ROOT:-/usr/local}"
 if [[ -z "${CUDA_HOME:-}" ]]; then
-  if [[ -d /usr/local/cuda-12.9 ]]; then CUDA_HOME=/usr/local/cuda-12.9; else CUDA_HOME=/usr/local/cuda; fi
+  if [[ -d "$CUDA_ROOT/cuda-12.9" ]]; then CUDA_HOME="$CUDA_ROOT/cuda-12.9"; else CUDA_HOME="$CUDA_ROOT/cuda"; fi
 fi
 export CUDA_HOME
 export PATH="$CUDA_HOME/bin:$HOME/.local/bin:$PATH"
@@ -91,8 +103,43 @@ BSA_URL="https://github.com/mit-han-lab/Block-Sparse-Attention.git"
 XATTN_DIR="${XATTN_DIR:-$HOME/x-attention}"
 HELPER=(scripts/env_build_lists.py)
 
-refuse() { echo "REFUSING: $*. Nothing was installed." >&2; exit 1; }
-fail() { echo "FAILED at step $STEP: $*" >&2; exit 1; }
+NVCC_REL=""
+CUOBJDUMP=""
+tool_inventory() {   # every CUDA tool the build could use, to stderr
+  {
+    echo "-- tool inventory --"
+    echo "CUDA_HOME=$CUDA_HOME nvcc=${NVCC_REL:-none} cuobjdump=${CUOBJDUMP:-none}"
+    echo "on PATH: nvcc=$(command -v nvcc || echo none) cuobjdump=$(command -v cuobjdump || echo none)"
+    local d
+    for d in "$CUDA_ROOT"/cuda*; do
+      [[ -e "$d" ]] || continue
+      if [[ -L "$d" ]]; then echo "$d -> $(readlink "$d")"; continue; fi
+      echo "$d: nvcc $("$d/bin/nvcc" --version 2>/dev/null | sed -nE 's/.*release ([0-9]+\.[0-9]+).*/\1/p' || true)," \
+        "cuobjdump $([[ -x "$d/bin/cuobjdump" ]] && echo present || echo absent)"
+      echo "  bin: $(ls "$d/bin" 2>/dev/null | tr '\n' ' ')"
+    done
+    echo "cuobjdump files: $(find "$CUDA_ROOT" /usr/bin /opt -maxdepth 4 -name cuobjdump 2>/dev/null | tr '\n' ' ')"
+    if [[ "$NVCC_REL" =~ ^[0-9]+\.[0-9]+$ ]]; then
+      echo "apt: $(apt-cache policy "cuda-cuobjdump-${NVCC_REL/./-}" 2>/dev/null | tr -s ' \n' ' ' || true)"
+    fi
+    echo "-- end of tool inventory --"
+  } >&2
+}
+refuse() { echo "REFUSING: $*. Nothing was installed." >&2; tool_inventory; exit 1; }
+fail() { echo "FAILED at step $STEP: $*" >&2; tool_inventory; exit 1; }
+find_cuobjdump() {   # the search order (header, step 0); prints the path
+  local maj="${NVCC_REL%%.*}" min="${NVCC_REL#*.}" d v
+  [[ -x "$CUDA_HOME/bin/cuobjdump" ]] && { echo "$CUDA_HOME/bin/cuobjdump"; return 0; }
+  for d in "$CUDA_ROOT"/cuda-*; do
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    v="${d##*/cuda-}"
+    [[ "$v" =~ ^[0-9]+\.[0-9]+$ ]] && echo "${v%%.*} ${v#*.} $d"
+  done | sort -n -k1,1 -k2,2 | while read -r a b d; do
+    if (( a > maj || (a == maj && b >= min) )) && [[ -x "$d/bin/cuobjdump" ]]; then
+      echo "$d/bin/cuobjdump"; break
+    fi
+  done
+}
 pin_of() {   # pin_of FILE NAME: the 40-hex constant NAME = "..." in FILE
   local v
   v="$(sed -nE "s/^$2 = \"([0-9a-f]{40})\".*/\1/p" "$1")"
@@ -114,8 +161,7 @@ echo "== 0/6 guards"
 [[ "$("$HELPER_PY" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$MANIFEST")" == "$MANIFEST_SHA256" ]] \
   || refuse "the FA3 manifest $MANIFEST is not the recorded one (sha256 ${MANIFEST_SHA256:0:12}...)"
 NVCC_REL="$(nvcc --version 2>/dev/null | sed -nE 's/.*release ([0-9]+\.[0-9]+).*/\1/p')"
-[[ "$NVCC_REL" == 12.* ]] || refuse "no nvcc 12.x under CUDA_HOME=$CUDA_HOME (found '${NVCC_REL:-none}')"
-command -v cuobjdump >/dev/null || refuse "no cuobjdump under CUDA_HOME=$CUDA_HOME"
+[[ "$NVCC_REL" =~ ^12\.[0-9]+$ ]] || refuse "no nvcc 12.x under CUDA_HOME=$CUDA_HOME (found '${NVCC_REL:-none}')"
 [[ -z "$(git status --porcelain)" ]] || refuse "the tree is not clean"
 [[ ! -e "$OUT" ]] || refuse "$OUT exists; an attempt's record is never overwritten"
 case "$(cd "$(dirname "$XATTN_DIR")" 2>/dev/null && pwd)/" in
@@ -130,7 +176,20 @@ XATTN_COMMIT="$(pin_of attnbench/backends/xattention.py XATTN_COMMIT)"
 XATTN_REPO="$(sed -nE 's/^XATTN_REPO = "(https:[^"]+)".*/\1/p' attnbench/backends/xattention.py)"
 [[ -n "$XATTN_REPO" ]] || refuse "no XATTN_REPO in attnbench/backends/xattention.py"
 mkdir -p "$OUT/logs"
-echo "   commit $(git rev-parse HEAD), Python $PYVER, nvcc $NVCC_REL ($CUDA_HOME), MAX_JOBS=$MAX_JOBS, out $OUT"
+# cuobjdump last among the guards: the apt install is the one thing step 0
+# may install, so every free check has passed before it.
+CUOBJDUMP="$(find_cuobjdump)"
+if [[ -z "$CUOBJDUMP" ]]; then
+  CUOBJ_PKG="cuda-cuobjdump-${NVCC_REL/./-}"
+  echo "   no cuobjdump in $CUDA_HOME or a toolkit at or above $NVCC_REL; apt-get install $CUOBJ_PKG"
+  logged apt_cuobjdump sudo apt-get install -y --no-install-recommends "$CUOBJ_PKG" \
+    || { logged apt_update sudo apt-get update -q && logged apt_cuobjdump_retry sudo apt-get install -y --no-install-recommends "$CUOBJ_PKG"; } \
+    || { echo "REFUSING: apt-get could not install $CUOBJ_PKG (logs/apt_*.log). Nothing else was installed." >&2; tool_inventory; exit 1; }
+  CUOBJDUMP="$(find_cuobjdump)"
+  [[ -n "$CUOBJDUMP" ]] || { echo "REFUSING: no cuobjdump in $CUDA_HOME or a toolkit at or above $NVCC_REL after installing $CUOBJ_PKG. Nothing else was installed." >&2; tool_inventory; exit 1; }
+fi
+"$CUOBJDUMP" --version >/dev/null 2>&1 || refuse "$CUOBJDUMP does not run"
+echo "   commit $(git rev-parse HEAD), Python $PYVER, nvcc $NVCC_REL ($CUDA_HOME), cuobjdump $CUOBJDUMP, MAX_JOBS=$MAX_JOBS, out $OUT"
 
 STEP=2
 echo "== 2/6 image v6's packages from an index (exact, --no-deps)"
@@ -169,7 +228,7 @@ USERSITE="$("$PY" -c 'import site; print(site.getusersitepackages())')"
 for lib in flash_attn_2_cuda block_sparse_attn_cuda; do
   so="$(find "$USERSITE" -maxdepth 1 -name "${lib}*.so" | head -1)"
   [[ -n "$so" ]] || fail "no ${lib}*.so in the user site"
-  got_sm="$(cuobjdump --list-elf "$so" | grep -oE 'sm_[0-9]+' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  got_sm="$("$CUOBJDUMP" --list-elf "$so" | grep -oE 'sm_[0-9]+' | sort -u | tr '\n' ' ' | sed 's/ $//')"
   echo "$lib $got_sm" >>"$OUT/cuda_archs.txt"
   [[ "$got_sm" == "$WANT_SM" ]] || fail "$lib's cubins are '$got_sm', not '$WANT_SM'"
 done

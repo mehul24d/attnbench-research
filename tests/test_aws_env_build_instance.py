@@ -221,10 +221,128 @@ def test_missing_pip_is_installed_from_apt(env, tmp_path):
     assert any(c == "apt-get install -y python3-pip" for c in calls)
 
 
-def test_no_cuobjdump_is_refused_before_any_install(env):
+def test_no_cuobjdump_anywhere_is_refused_before_any_pip_install(env):
     (env[0] / "cuda" / "bin" / "cuobjdump").unlink()
-    r, calls = run(env)
+    r, calls = run(env, ENV_BUILD_CUDA_ROOT=str(env[0] / "empty"))
     assert r.returncode != 0 and "no cuobjdump" in r.stderr and _installs(calls) == []
+    assert "-- tool inventory --" in r.stderr
+
+
+# --- cuobjdump's search order, on the base image as the probe found it ------
+# (adviser's rulings dated 22 Nov 2026, probe). The fixture is built from the
+# committed inventory: every toolkit, its nvcc release and its bin listing.
+PROBE = ROOT / "docs" / "launch_cards" / "aws_env_build_probe_20261121.txt"
+
+FAKE_APT = r'''printf "apt-get %s\n" "$*" >> "$CALL_LOG"
+[[ "$1" == install ]] || exit 0
+n=$(cat @COUNTER@); if (( n > 0 )); then echo $((n-1)) > @COUNTER@; exit 100; fi
+[[ -n "@NOOP@" ]] && exit 0
+pkg="${@: -1}"; v="${pkg#cuda-cuobjdump-}"; v="${v/-/.}"
+cp @CUOBJ@ @ROOT@/cuda-$v/bin/cuobjdump'''
+
+
+def _probe_toolkits():
+    """{'12.8': [bin names], ...} and the /usr/local/cuda link target."""
+    import re
+    text = PROBE.read_text()
+    kits = {}
+    for m in re.finditer(r"^### /usr/local/cuda-([0-9.]+)\nnvcc: release ([0-9.]+) .*\n"
+                         r"cuobjdump: (\w+)\n.*\nbin: (.*)$", text, re.M):
+        assert m.group(1) == m.group(2) and m.group(3) == "absent"
+        kits[m.group(1)] = m.group(4).split()
+    link = re.search(r"^/usr/local/cuda -> /usr/local/cuda-([0-9.]+)$", text, re.M).group(1)
+    return kits, link
+
+
+def _image(env, with_cuobjdump=(), apt_installs=True, apt_fails=0):
+    """A /usr/local laid out as the probe read it, cuobjdump added only to the
+    toolkits named (each logs under its own name). apt-get install of
+    cuda-cuobjdump-X-Y puts one in cuda-X.Y, as the NVIDIA package does,
+    after apt_fails failed install calls."""
+    tmp = env[0]
+    root = tmp / "usrlocal"
+    kits, link = _probe_toolkits()
+    for v, names in kits.items():
+        b = root / f"cuda-{v}" / "bin"
+        b.mkdir(parents=True)
+        for n in names:
+            (b / n).write_text("")
+        _exe(b / "nvcc", f'echo "Cuda compilation tools, release {v}, V{v}.0"')
+        if v in with_cuobjdump:
+            _exe(b / "cuobjdump", CUDA_FAKES["cuobjdump"].replace("'cuobjdump %s", f"'cuobjdump-{v} %s"))
+    (root / "cuda").symlink_to(root / f"cuda-{link}")
+    apt_cuobj = _exe(tmp / "apt_cuobjdump", CUDA_FAKES["cuobjdump"].replace("'cuobjdump %s", "'cuobjdump-apt %s"))
+    counter = tmp / "apt_fail_count"
+    counter.write_text(str(apt_fails))
+    _exe(tmp / "bin" / "apt-get", FAKE_APT.replace("@COUNTER@", str(counter)).replace(
+        "@NOOP@", "" if apt_installs else "1").replace("@CUOBJ@", str(apt_cuobj)).replace("@ROOT@", str(root)))
+    return {"ENV_BUILD_CUDA_ROOT": str(root), "CUDA_HOME": ""}
+
+
+def test_the_probe_fixture_is_the_captured_image():
+    kits, link = _probe_toolkits()
+    assert sorted(kits) == ["12.8", "12.9", "13.0", "13.2"] and link == "13.2"
+    assert all("nvcc" in b and "cuobjdump" not in b for b in kits.values())
+
+
+def test_on_the_probed_image_apt_installs_the_matching_cuobjdump(env):
+    r, calls = run(env, **_image(env))
+    assert r.returncode == 0, r.stderr
+    assert [c for c in calls if c.startswith("apt-get")] == [
+        "apt-get install -y --no-install-recommends cuda-cuobjdump-12-9"]
+    assert "nvcc 12.9 (" in r.stdout and "cuda-12.9/bin/cuobjdump" in r.stdout
+    assert sum(c.startswith("cuobjdump-apt --list-elf") for c in calls) == 2
+    first_pip = next(i for i, c in enumerate(calls) if " pip install" in c)
+    assert next(i for i, c in enumerate(calls) if c.startswith("apt-get")) < first_pip
+
+
+def test_a_stale_apt_cache_is_updated_once_and_retried(env):
+    r, calls = run(env, **_image(env, apt_fails=1))
+    assert r.returncode == 0, r.stderr
+    assert [c for c in calls if c.startswith("apt-get")] == [
+        "apt-get install -y --no-install-recommends cuda-cuobjdump-12-9", "apt-get update -q",
+        "apt-get install -y --no-install-recommends cuda-cuobjdump-12-9"]
+
+
+def test_apt_failing_twice_refuses_with_the_inventory(env):
+    r, calls = run(env, **_image(env, apt_fails=2))
+    assert r.returncode != 0 and "could not install cuda-cuobjdump-12-9" in r.stderr
+    assert _installs(calls) == [] and "ENV_BUILD_OK" not in r.stdout
+    inv = r.stderr.split("-- tool inventory --", 1)[1]
+    for v in ("12.8", "12.9", "13.0", "13.2"):
+        assert f"cuda-{v}: nvcc {v}, cuobjdump absent" in inv, inv
+    assert "cuda -> " in inv and "bin2c" in inv and "nvcc=12.9" in inv
+
+
+def test_an_apt_install_that_leaves_no_cuobjdump_refuses(env):
+    r, calls = run(env, **_image(env, apt_installs=False))
+    assert r.returncode != 0 and "after installing cuda-cuobjdump-12-9" in r.stderr
+    assert _installs(calls) == [] and "-- tool inventory --" in r.stderr
+
+
+@pytest.mark.parametrize("present,used", [
+    (("12.9",), "12.9"),                 # nvcc's own toolkit first
+    (("12.9", "13.0"), "12.9"),
+    (("13.2",), "13.2"),                 # then a toolkit at or above nvcc's version
+    (("13.0", "13.2"), "13.0"),          # the lowest of those
+])
+def test_a_toolkit_cuobjdump_is_used_without_apt(env, present, used):
+    r, calls = run(env, **_image(env, with_cuobjdump=present))
+    assert r.returncode == 0, r.stderr
+    assert not any(c.startswith("apt-get") for c in calls)
+    assert sum(c.startswith(f"cuobjdump-{used} --list-elf") for c in calls) == 2
+
+
+def test_a_toolkit_below_nvcc_is_not_used(env):
+    r, calls = run(env, **_image(env, with_cuobjdump=("12.8",)))
+    assert r.returncode == 0, r.stderr
+    assert any(c.startswith("apt-get install") for c in calls)
+    assert not any(c.startswith("cuobjdump-12.8 --list-elf") for c in calls)
+
+
+def test_a_failure_after_the_guards_prints_the_inventory(env):
+    r, _ = run(env, FAKE_PYTEST_RC="1")
+    assert "FAILED at step 5" in r.stderr and "-- tool inventory --" in r.stderr
 
 
 def test_committed_fa3_manifest_is_the_recorded_one():

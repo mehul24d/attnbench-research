@@ -1,0 +1,125 @@
+# Image probe inventory: AWS Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04),
+# release 20261113 (ami-0db4f29a6aa4336c4), m7a.xlarge, ap-southeast-2a, 21 Nov 2026 22:16 UTC.
+# Output of scripts/aws_env_probe_inventory.sh at commit 41aefa6, verbatim; no hostname,
+# address, account or instance id (checked). Adviser's rulings dated 22 Nov 2026, probe.
+
+## os
+Ubuntu 22.04.5 LTS
+6.8.0-1069-aws
+
+## cpu memory disk
+nproc 4
+               total        used        free      shared  buff/cache   available
+Mem:           15620         415       14692           2         511       14920
+Mounted on  Size  Used Avail
+/           194G   50G  144G
+
+## cuda toolkits
+/usr/local/cuda-13.2/ -> /usr/local/cuda
+/usr/local/cuda-12.8 01:38 13
+/usr/local/cuda-12.9 01:57 13
+/usr/local/cuda-13.0 01:46 13
+/usr/local/cuda-13.2 02:07 13
+/usr/local/cuda -> /usr/local/cuda-13.2
+### /usr/local/cuda-12.8
+nvcc: release 12.8 (V12.8.93)
+cuobjdump: absent
+version.json cuda: 
+bin: __nvcc_device_query bin2c compute-sanitizer computeprof crt cu++filt cuda-gdb cuda-gdb-minimal cuda-gdb-python3.10-tui cuda-gdb-python3.11-tui cuda-gdb-python3.12-tui cuda-gdb-python3.8-tui cuda-gdb-python3.9-tui cuda-gdbserver cuda-uninstaller cudafe++ fatbinary ncclras ncu ncu-ui nsight_ee_plugins_manage.sh nvcc nvcc.profile nvlink nvprof nvprune nvvp ptxas 
+### /usr/local/cuda-12.9
+nvcc: release 12.9 (V12.9.86)
+cuobjdump: absent
+version.json cuda: 
+bin: __nvcc_device_query bin2c compute-sanitizer computeprof crt cu++filt cuda-gdb cuda-gdb-minimal cuda-gdb-python3.10-tui cuda-gdb-python3.11-tui cuda-gdb-python3.12-tui cuda-gdb-python3.8-tui cuda-gdb-python3.9-tui cuda-gdbserver cuda-uninstaller cudafe++ fatbinary ncclras ncu ncu-ui nsight_ee_plugins_manage.sh nvcc nvcc.profile nvlink nvprof nvprune nvvp ptxas 
+### /usr/local/cuda-13.0
+nvcc: release 13.0 (V13.0.88)
+cuobjdump: absent
+version.json cuda: 
+bin: __nvcc_device_query bin2c compute-sanitizer crt ctadvisor cu++filt cuda-gdb cuda-gdb-minimal cuda-gdb-python3.10-tui cuda-gdb-python3.11-tui cuda-gdb-python3.12-tui cuda-gdb-python3.8-tui cuda-gdb-python3.9-tui cuda-gdbserver cuda-uninstaller cudafe++ fatbinary ncclras ncu ncu-ui nsight_ee_plugins_manage.sh nvcc nvcc.profile nvlink nvprune ptxas 
+### /usr/local/cuda-13.2
+nvcc: release 13.2 (V13.2.51)
+cuobjdump: absent
+version.json cuda: 
+bin: __nvcc_device_query bin2c compute-sanitizer crt ctadvisor cu++filt cuda-gdb cuda-gdb-minimal cuda-gdb-python3.10-tui cuda-gdb-python3.11-tui cuda-gdb-python3.12-tui cuda-gdb-python3.8-tui cuda-gdb-python3.9-tui cuda-gdbserver cuda-uninstaller cudafe++ fatbinary ncclras ncu ncu-ui nsight_ee_plugins_manage.sh nvcc nvcc.profile nvlink nvprune ptxas tileiras 
+
+## every cuobjdump and nvcc on the system
+/usr/local/cuda-12.8/bin/nvcc
+/usr/local/cuda-12.9/bin/nvcc
+/usr/local/cuda-13.0/bin/nvcc
+/usr/local/cuda-13.2/bin/nvcc
+on PATH: cuobjdump=none nvcc=/usr/local/cuda-13.2/bin/nvcc
+
+## python and torch
+/usr/bin/python3: 3.10.12
+  torch: ModuleNotFoundError: No module named 'torch'
+  pip: pip 26.3
+/opt/amazon/ /opt/aws/ /opt/cni/ /opt/containerd/ /opt/nvidia/ 
+
+## apt sources
+deb http://ap-southeast-2.ec2.archive.ubuntu.com/ubuntu/ jammy main restricted
+deb http://ap-southeast-2.ec2.archive.ubuntu.com/ubuntu/ jammy-updates main restricted
+deb http://ap-southeast-2.ec2.archive.ubuntu.com/ubuntu/ jammy universe
+deb http://ap-southeast-2.ec2.archive.ubuntu.com/ubuntu/ jammy-updates universe
+deb http://ap-southeast-2.ec2.archive.ubuntu.com/ubuntu/ jammy multiverse
+deb http://ap-southeast-2.ec2.archive.ubuntu.com/ubuntu/ jammy-updates multiverse
+deb http://ap-southeast-2.ec2.archive.ubuntu.com/ubuntu/ jammy-backports main restricted universe multiverse
+deb http://security.ubuntu.com/ubuntu jammy-security main restricted
+deb http://security.ubuntu.com/ubuntu jammy-security universe
+deb http://security.ubuntu.com/ubuntu jammy-security multiverse
+deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /
+deb [signed-by=/usr/share/keyrings/corretto-keyring.gpg] https://apt.corretto.aws stable main
+deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /
+deb https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu/ jammy main
+deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu jammy stable
+deb [signed-by=/usr/share/keyrings/fsx-ubuntu-public-key.gpg] https://fsx-lustre-client-repo.s3.amazonaws.com/ubuntu jammy main
+deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /
+
+## cuda packages installed
+
+## cuda cuobjdump packages apt offers (cache as shipped, not updated)
+cuda-cuobjdump-12-0:
+  Installed: (none)
+  Candidate: 12.0.140-1
+cuda-cuobjdump-12-1:
+  Installed: (none)
+  Candidate: 12.1.111-1
+cuda-cuobjdump-12-2:
+  Installed: (none)
+  Candidate: 12.2.140-1
+cuda-cuobjdump-12-3:
+  Installed: (none)
+  Candidate: 12.3.101-1
+cuda-cuobjdump-12-4:
+  Installed: (none)
+  Candidate: 12.4.127-1
+cuda-cuobjdump-12-5:
+  Installed: (none)
+  Candidate: 12.5.39-1
+cuda-cuobjdump-12-6:
+  Installed: (none)
+  Candidate: 12.6.77-1
+cuda-cuobjdump-12-8:
+  Installed: (none)
+  Candidate: 12.8.90-1
+cuda-cuobjdump-12-9:
+  Installed: (none)
+  Candidate: 12.9.82-1
+cuda-cuobjdump-13-0:
+  Installed: (none)
+  Candidate: 13.0.85-1
+cuda-cuobjdump-13-1:
+  Installed: (none)
+  Candidate: 13.1.115-1
+cuda-cuobjdump-13-2:
+  Installed: (none)
+  Candidate: 13.2.86-1
+cuda-cuobjdump-13-3:
+  Installed: (none)
+  Candidate: 13.3.73-1
+cuda-cuobjdump-13-4:
+  Installed: (none)
+  Candidate: 13.4.92-1
+cuda-cuobjdump-13-5:
+  Installed: (none)
+  Candidate: 13.5.37-1
+PROBE_INVENTORY_DONE
