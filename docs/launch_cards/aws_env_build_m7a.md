@@ -20,7 +20,7 @@ gp3 root deleted with the instance, IMDSv2, session tags.
 |---|---|
 | Region / zone | `ap-southeast-2` / `ap-southeast-2a` |
 | Type | `m7a.xlarge` (4 vCPU, 16 GiB, AMD EPYC 4th gen; no GPU, so no G or P quota is drawn) |
-| Base image | the AWS Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04), latest in Sydney; its id read with a read-only `describe-images` at launch and named on the yes. **Plan default, flagged** |
+| Base image | the AWS Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04), latest in Sydney: `ami-0db4f29a6aa4336c4` (release 20261113, root `/dev/sda1`), read with `describe-images` on 22 Nov 2026. Its description lists no CUDA toolkits and the release-notes page did not load, so the toolkit is checked by step 0 (nvcc 12.x) on the instance. **Plan default, flagged** |
 | Rate (`AWS_RATE_INR_HR`) | ₹34.90/h: (instance $0.2898/h, Sydney public price file published 20 Nov 2026, + 200 GB gp3 at an assumed $0.096/GB-month, not checked) × 1.15 × ₹95.99/$ (the method of plan Section 5.2) |
 | Planned hours | 4.5 (the build estimate below) |
 | Halt (`AWS_HALT_MINUTES`) | 360 min (the ruling), instance stops |
@@ -77,5 +77,6 @@ bucket, nothing to the GCP bucket.
 
 ## Risks
 
+- **A changed home IP breaks driver contact** (22 Nov 2026, item 3). The security group `attnbench-ssh` admits SSH only from this Mac's IP at the time it was made (/32). If the home connection's address changes mid-build, the Mac can no longer reach the instance: no record comes back and no AMI is made from the Mac. The build itself runs on, detached; the instance halts itself at 360 min and the hard delete ends it at 375 min, so the worst case stays ₹219. The rule can be re-pointed to the new address by hand.
 - A base AMI whose driver does not suit the L4 or H100 shows only on a GPU: the `g6.xlarge` rehearsal (about ₹180) checks it before P3.
 - `m7a` is AMD EPYC 4th gen, not P3's and P6's 7R13. The image is portable across x86-64; no host-specific build flag is set.
