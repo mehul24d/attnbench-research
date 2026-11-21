@@ -218,6 +218,8 @@ The AWS sessions are outside the GCP ceiling above. They have their own cap of a
 
 Headroom against the AWS cap: about ₹2,271 with every cap spent in full and one month of snapshot; a second month of snapshot (about ₹320) would leave about ₹1,951. There is one build attempt: a second needs a new ruling.
 
+**AWS credits and alerts (22 Nov 2026).** Read from the Free Tier API: the account's plan is `PAID`, `ACTIVE`, with **$140 of credits left** (about ₹13,439 at ₹95.99/$). The API gives no credit expiry for an account on the paid plan. The caps above, about ₹8,129 in all, fit inside the credits. Two AWS Budgets alerts, both free (no actions): `ATTENBENCH`, $1 a month **net of credits** (credits and refunds counted), alerting by email above $0.01, which the researcher had made on 16 Nov 2026; and `attnbench-gross-6000inr`, made 22 Nov 2026, **$62.51 gross** (₹6,000 at ₹95.99/$; credits and refunds not counted; AWS Budgets accepts only USD), over the calendar year, alerting at 25, 50, 80 and 100% actual and 100% forecast, to the same address. Billing data lags by up to a day, so an alert can come a day after the spend. The launcher refuses a launch unless the credits exceed the planned AWS spend so far plus that block's cap (`scripts/aws_launch_session.sh`). After the first AWS usage, the next day's bill must show the credits applied to the EC2 line; if not, stop before P3.
+
 ### Budget interlock (17 Nov 2026, after the bucket inventory)
 
 Reprinted from `scripts/budget_interlock.py` after the bucket inventory's row. The download is outside the P2/P4 pairings, so it reserves nothing; its ₹89 is in the spent figure.

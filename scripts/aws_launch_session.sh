@@ -43,7 +43,25 @@
 #     -provisioning-model (STANDARD, the vocabulary of
 #     attnbench/provenance.py), -hard-delete-at. The teardown refuses an
 #     instance without attnbench-session;
+#   - a credit gate (adviser's rulings dated 22 Nov 2026, credits): no launch
+#     unless the account is on AWS's paid plan and its remaining credits
+#     exceed the planned AWS spend so far plus this block's cap (see the
+#     credits section below). The Free plan admits only Free Tier instance
+#     types: the environment build's first attempt (22 Nov 2026) was refused
+#     at run-instances for that reason;
 #   - typed confirmation ("launch") after the summary.
+#
+# AWS services allowed (adviser's rulings dated 22 Nov 2026, credits): EC2,
+# EBS volumes, EBS snapshots and AMIs, networking (the VPC, security group,
+# key pair and public address the instance uses), IAM (the hard-delete role),
+# EventBridge Scheduler (the hard delete) and Service Quotas (quota reads).
+# Nothing else is used for the work: no S3, Lambda, Bedrock, RDS, DynamoDB,
+# SageMaker or Marketplace image. The account's own administration is not
+# work: the Free Tier API read of the plan and credits, and AWS Budgets
+# alerts (about Rs 6,000 gross; about $1 net of credits). Billing data lags
+# by up to a day, so a budget alert can arrive a day after the spend.
+# After the first AWS usage, check the next day that the credits were
+# applied to the EC2 line of the bill; if they were not, stop before P3.
 #
 # The machine types below were accepted by the researcher on 28 Oct 2026.
 # Nothing has a default region, AMI, key pair, security group, rate or cap:
@@ -82,6 +100,8 @@
 #   AWS_HARD_DELETE_ROLE   IAM role the scheduler assumes (default
 #                          attnbench-hard-delete); it needs only
 #                          ec2:TerminateInstances
+#   AWS_LAUNCH_RECORD      the launch record the credit gate sums (default
+#                          ~/.attnbench/aws_launches.tsv, off-repo)
 set -euo pipefail
 
 HERE="$(dirname "${BASH_SOURCE[0]}")"
@@ -179,6 +199,53 @@ source "$HERE/_aws_account.sh"
 aws_account_pin
 P=(--profile "$AWS_PIN_PROFILE" --region "$REGION")
 
+# --- credits: the remaining credits must cover everything planned -----------
+# Refused unless the account is on the paid plan (the Free plan admits only
+# Free Tier instance types) and its remaining credits, read from the Free
+# Tier API, exceed the planned AWS spend so far plus this block's cap. The
+# planned spend so far is the sum of the caps in the launch record: one line
+# per create request this launcher has submitted, written at the block's cap
+# whatever it later cost, because the credit balance lags the bill by up to
+# a day. A line is struck by hand, with a leading '#', only once the bill
+# shows what the block cost (or that it created nothing). Credits are in
+# USD; caps are converted at Rs 95.99 per USD, the rate every AWS planning
+# rate in this repository was built at (plan Section 5.2).
+INR_PER_USD="95.99"
+LAUNCH_RECORD="${AWS_LAUNCH_RECORD:-$HOME/.attnbench/aws_launches.tsv}"
+PLAN_STATE="$(aws freetier get-account-plan-state --profile "$AWS_PIN_PROFILE" --region us-east-1 \
+  --query '[accountPlanType,accountPlanStatus,accountPlanRemainingCredits.amount,accountPlanRemainingCredits.unit]' \
+  --output text 2>/dev/null)" || PLAN_STATE=""
+read -r PLAN_TYPE PLAN_STATUS CREDITS_USD CREDIT_UNIT _ <<<"$PLAN_STATE" || true
+if [[ "${PLAN_TYPE:-}" != "PAID" || "${PLAN_STATUS:-}" != "ACTIVE" ]]; then
+  echo "REFUSING TO LAUNCH -- the account's plan reads '${PLAN_TYPE:-unreadable} ${PLAN_STATUS:-}', not" >&2
+  echo "'PAID ACTIVE'. AWS's Free plan admits only Free Tier instance types. Nothing was created." >&2
+  exit 1
+fi
+if [[ "${CREDIT_UNIT:-}" != "USD" || ! "${CREDITS_USD:-}" =~ $NUM ]]; then
+  echo "REFUSING TO LAUNCH -- cannot read the remaining credits in USD ('${CREDITS_USD:-} ${CREDIT_UNIT:-}')." >&2
+  echo "Nothing was created." >&2
+  exit 1
+fi
+PLANNED_INR=0
+if [[ -e "$LAUNCH_RECORD" ]]; then
+  PLANNED_INR="$(awk -F'\t' '/^[[:space:]]*(#|$)/ {next}
+    NF != 4 || $4 !~ /^[0-9]+([.][0-9]+)?$/ {bad = 1; exit}
+    {s += $4} END {if (bad) print "BAD"; else printf "%.2f\n", s + 0}' "$LAUNCH_RECORD")"
+  if [[ ! "$PLANNED_INR" =~ $NUM ]]; then
+    echo "REFUSING TO LAUNCH -- the launch record $LAUNCH_RECORD has a line that is not" >&2
+    echo "'UTC<tab>PAIRING<tab>INSTANCE<tab>CAP_INR' (strike lines with a leading '#'). Nothing was created." >&2
+    exit 1
+  fi
+fi
+CREDITS_INR="$(awk -v c="$CREDITS_USD" -v r="$INR_PER_USD" 'BEGIN{printf "%.2f\n", c * r}')"
+NEED_INR="$(awk -v p="$PLANNED_INR" -v k="$COST_CAP_INR" 'BEGIN{printf "%.2f\n", p + k}')"
+if ! awk -v c="$CREDITS_INR" -v n="$NEED_INR" 'BEGIN{exit !(c > n)}'; then
+  echo "REFUSING TO LAUNCH -- the remaining credits, \$${CREDITS_USD} (Rs ${CREDITS_INR} at Rs ${INR_PER_USD}/\$)," >&2
+  echo "do not exceed the planned AWS spend so far, Rs ${PLANNED_INR}, plus this block's cap," >&2
+  echo "Rs ${COST_CAP_INR} (Rs ${NEED_INR} in all). Nothing was created." >&2
+  exit 1
+fi
+
 # --- read-only checks against the account ------------------------------------
 OFFERED="$(aws ec2 describe-instance-type-offerings "${P[@]}" \
   --location-type "$([[ -n "$AZ" ]] && echo availability-zone || echo region)" \
@@ -225,6 +292,7 @@ echo "  rate         : Rs ${RATE_INR_HR}/h (AWS_RATE_INR_HR, planning rate, all-
 echo "  in-guest halt: +${HALT_MINUTES} min, STOPS the instance (GPU billing stops, disk survives)"
 echo "  hard delete  : +${MAX_RUN_MINUTES} min, ec2:TerminateInstances by EventBridge Scheduler"
 echo "  worst case   : Rs ${WORST_INR}, cost cap Rs ${COST_CAP_INR}"
+echo "  credits      : \$${CREDITS_USD} left (Rs ${CREDITS_INR}) > Rs ${PLANNED_INR} planned so far + Rs ${COST_CAP_INR} cap"
 echo
 read -r -p "Type 'launch' to proceed, anything else to abort: " CONFIRM
 if [[ "$CONFIRM" != "launch" ]]; then
@@ -260,6 +328,11 @@ INSTANCE_ID="$(aws ec2 run-instances "${P[@]}" \
   --tag-specifications "ResourceType=instance,Tags=[$TAGS]" "ResourceType=volume,Tags=[$TAGS]" \
   --user-data "file://$STARTUP_SCRIPT" \
   --query 'Instances[0].InstanceId' --output text)" || INSTANCE_ID=""
+# Every submitted create request goes into the launch record at its cap,
+# created or not: an instance may exist even when no id came back.
+mkdir -p "$(dirname "$LAUNCH_RECORD")"
+printf '%s\t%s\t%s\t%s\n' "$(command date -u +%Y-%m-%dT%H:%M:%SZ)" "$PAIRING" \
+  "${INSTANCE_ID:-no-id}" "$COST_CAP_INR" >> "$LAUNCH_RECORD"
 if [[ ! "$INSTANCE_ID" =~ ^i-[0-9a-f]{8,17}$ ]]; then
   echo "ERROR -- run-instances returned no instance id ('$INSTANCE_ID'). An instance may" >&2
   echo "still exist: run scripts/aws_cleanup_check.sh now." >&2

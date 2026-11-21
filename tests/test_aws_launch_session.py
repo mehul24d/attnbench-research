@@ -255,3 +255,92 @@ def test_the_environment_build_cards_settings(tmp_path):
 def test_a_cap_short_of_the_env_cards_worst_case_is_refused(tmp_path):
     p, calls = _launch(tmp_path, "ENV", env={**ENV_CARD, "AWS_COST_CAP_INR": "218"})
     assert p.returncode == 1 and "exceeds the cost cap" in p.stderr and calls == []
+
+
+# --- the credit gate (adviser's rulings dated 22 Nov 2026, credits) ----------
+
+def _record(tmp_path):
+    return tmp_path / ".attnbench" / "aws_launches.tsv"
+
+
+def _no_create(calls):
+    return not any(w in c for c in aws_calls(calls) for w in ("run-instances", "create-schedule"))
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"FAKE_PLAN_TYPE": "FREE"}, "'FREE ACTIVE'"),
+    ({"FAKE_PLAN_STATUS": "NOT_STARTED"}, "'PAID NOT_STARTED'"),
+    ({"FAKE_PLAN_FAIL": "1"}, "'unreadable"),
+    ({"FAKE_CREDIT_UNIT": "INR"}, "cannot read the remaining credits"),
+    ({"FAKE_CREDITS": "None"}, "cannot read the remaining credits"),
+])
+def test_a_launch_needs_the_paid_plan_and_readable_credits(tmp_path, env, said):
+    p, calls = _launch(tmp_path, env=env)
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert _no_create(calls) and not _record(tmp_path).exists()
+
+
+def test_the_plan_is_read_with_the_pinned_profile_before_the_prompt(tmp_path):
+    p, calls = _launch(tmp_path, stdin="no\n")
+    plan = _one(aws_calls(calls), "freetier get-account-plan-state")
+    assert "--profile pinned-profile" in plan and "--region us-east-1" in plan
+    assert "credits      : $140.0 left (Rs 13438.60) > Rs 0 planned so far + Rs 1200 cap" in p.stdout
+
+
+@pytest.mark.parametrize("planned,ok", [
+    ("719.79", True),    # Rs 719.79 + Rs 1,200 = Rs 1,919.79 < $20 x 95.99 = Rs 1,919.80
+    ("719.80", False),   # equal is refused: the credits must exceed
+    ("719.81", False),
+])
+def test_the_credits_must_exceed_the_planned_spend_plus_this_cap(tmp_path, planned, ok):
+    rec = _record(tmp_path)
+    rec.parent.mkdir()
+    rec.write_text(f"2026-11-23T00:00:00Z\tENV\ti-0aaa\t500\n# struck: refused, created nothing\n"
+                   f"2026-11-23T08:00:00Z\tP3\ti-0bbb\t{float(planned) - 500:.2f}\n\n")
+    p, calls = _launch(tmp_path, env={"FAKE_CREDITS": "20.00"})
+    assert (p.returncode == 0) == ok, p.stderr
+    if not ok:
+        assert "do not exceed the planned AWS spend so far" in p.stderr
+        assert f"Rs {planned}, plus this block's cap" in p.stderr and _no_create(calls)
+
+
+def test_the_cap_alone_must_fit_under_the_credits(tmp_path):
+    p, calls = _launch(tmp_path, env={"FAKE_CREDITS": "12.50"})   # Rs 1,199.88 < Rs 1,200
+    assert p.returncode == 1 and "Rs 0, plus this block's cap" in p.stderr and _no_create(calls)
+
+
+def test_a_malformed_record_line_refuses(tmp_path):
+    rec = _record(tmp_path)
+    rec.parent.mkdir()
+    rec.write_text("2026-11-23T00:00:00Z\tP3\ti-0bbb\tabout 500\n")
+    p, calls = _launch(tmp_path)
+    assert p.returncode == 1 and "has a line that is not" in p.stderr and _no_create(calls)
+
+
+def test_each_create_request_is_recorded_at_its_cap_and_counted_next_time(tmp_path):
+    p, _ = _launch(tmp_path)
+    assert p.returncode == 0, p.stderr
+    p, _ = _launch(tmp_path, env={"FAKE_RUN_FAIL": "1", "AWS_COST_CAP_INR": "1300"})
+    assert p.returncode == 1
+    lines = [ln.split("\t") for ln in _record(tmp_path).read_text().splitlines()]
+    assert [ln[1:] for ln in lines] == [["P3", INSTANCE, "1200"], ["P3", "no-id", "1300"]]
+    assert all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", ln[0]) for ln in lines)
+    p, _ = _launch(tmp_path, stdin="no\n")
+    assert "> Rs 2500.00 planned so far + Rs 1200 cap" in p.stdout
+    # and the record decides: Rs 2,500 + Rs 1,200 needs more than $38.55
+    p, calls = _launch(tmp_path, env={"FAKE_CREDITS": "38.54"})
+    assert p.returncode == 1 and _no_create(calls)
+
+
+def test_an_abort_or_a_refusal_records_nothing(tmp_path):
+    _launch(tmp_path, stdin="no\n")
+    _launch(tmp_path, env={"FAKE_PLAN_TYPE": "FREE"})
+    assert not _record(tmp_path).exists()
+
+
+def test_the_launcher_notes_list_the_allowed_services():
+    text = (scripts_copy.__globals__["SCRIPTS"] / "aws_launch_session.sh").read_text()
+    for said in ("AWS services allowed", "EC2,", "EBS volumes, EBS snapshots and AMIs", "networking",
+                 "IAM (the hard-delete role)", "EventBridge Scheduler", "Service Quotas",
+                 "no S3, Lambda, Bedrock, RDS, DynamoDB", "stop before P3"):
+        assert said in text, said

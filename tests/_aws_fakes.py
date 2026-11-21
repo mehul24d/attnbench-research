@@ -40,6 +40,11 @@ case "$1 $2" in
     if [[ -n "$profile" ]]; then echo "${FAKE_PROFILE_ACCOUNT:-$FAKE_ACCOUNT}"
     else echo "${FAKE_ACTIVE_ACCOUNT:-$FAKE_ACCOUNT}"; fi
     exit 0 ;;
+  "freetier get-account-plan-state")
+    [[ -n "${FAKE_PLAN_FAIL:-}" ]] && { echo "AccessDenied" >&2; exit 254; }
+    printf '%s\t%s\t%s\t%s\n' "${FAKE_PLAN_TYPE:-PAID}" "${FAKE_PLAN_STATUS:-ACTIVE}" \
+      "${FAKE_CREDITS:-140.0}" "${FAKE_CREDIT_UNIT:-USD}"
+    exit 0 ;;
   "ec2 describe-regions") printf '%b\n' "$FAKE_REGIONS"; exit 0 ;;
   "ec2 describe-instance-type-offerings")
     [[ -n "${FAKE_NOT_OFFERED:-}" ]] && { echo None; exit 0; }
