@@ -62,14 +62,29 @@
 #      diffed against v6's list, SHA256SUMS; the tree still clean.
 # ENV_BUILD_OK is printed last, only when every step passed.
 #
-# ENV_BUILD_HELPER_PYTHON and ENV_BUILD_FA_SCRIPT exist for the fake-command
+# --stop-before-compile (adviser's task of 22 Nov 2026, the dry run): steps
+# 0, 2 and 3 in full, then step 4 up to its first compile: x-attention cloned
+# and checked out, cuobjdump --list-elf read on the installed FA3 wheel's
+# library (its cubins are already built), attnbench imported. It then prints
+# ENV_BUILD_DRY_RUN_OK and stops; nothing is compiled, steps 5 and 6 do not
+# run, and ENV_BUILD_OK is never printed. Not a build attempt.
+#
+# Failures (same task): the memory guard reads /proc/meminfo (no psutil);
+# whatever fails, its own error is printed (the guard's output, the last 30
+# lines of a step's log, or the command and line an unexpected exit came
+# from), then the full tool inventory. Step 0 also records the image's own
+# pip list before anything is installed (image_pip_before.txt).
+#
+# ENV_BUILD_HELPER_PYTHON, ENV_BUILD_FA_SCRIPT and ENV_BUILD_MEMINFO exist for the fake-command
 # test (tests/test_aws_env_build_instance.py); they are never set in real use.
 set -euo pipefail
 
-USAGE="usage: FA3_WHEEL_SHA256=<sha256> bash scripts/aws_env_build_instance.sh FA3_WHEEL"
+USAGE="usage: FA3_WHEEL_SHA256=<sha256> bash scripts/aws_env_build_instance.sh [--stop-before-compile] FA3_WHEEL"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+DRY=0
+if [[ "${1:-}" == --stop-before-compile ]]; then DRY=1; shift; fi
 WHEEL="${1:-}"
 MANIFEST="configs/t64/fa3_manifest_49774b31.json"
 MANIFEST_SHA256="3c2f965784d8ae9e3df81048c5ac579d309554b8ce9472783d894837e7bade87"
@@ -125,8 +140,11 @@ tool_inventory() {   # every CUDA tool the build could use, to stderr
     echo "-- end of tool inventory --"
   } >&2
 }
-refuse() { echo "REFUSING: $*. Nothing was installed." >&2; tool_inventory; exit 1; }
-fail() { echo "FAILED at step $STEP: $*" >&2; tool_inventory; exit 1; }
+refuse() { trap - ERR; echo "REFUSING: $*. Nothing was installed." >&2; tool_inventory; exit 1; }
+fail() { trap - ERR; echo "FAILED at step $STEP: $*" >&2; tool_inventory; exit 1; }
+# Anything set -e would end silently: the command, its line and its status.
+STEP=0
+trap 'rc=$?; trap - ERR; echo "FAILED at step $STEP: line $LINENO exited $rc: $BASH_COMMAND" >&2; tool_inventory; exit "$rc"' ERR
 find_cuobjdump() {   # the search order (header, step 0); prints the path
   local maj="${NVCC_REL%%.*}" min="${NVCC_REL#*.}" d v
   [[ -x "$CUDA_HOME/bin/cuobjdump" ]] && { echo "$CUDA_HOME/bin/cuobjdump"; return 0; }
@@ -139,6 +157,7 @@ find_cuobjdump() {   # the search order (header, step 0); prints the path
       echo "$d/bin/cuobjdump"; break
     fi
   done
+  return 0   # an empty result is the caller's to judge, not a failure here
 }
 pin_of() {   # pin_of FILE NAME: the 40-hex constant NAME = "..." in FILE
   local v
@@ -149,11 +168,13 @@ pin_of() {   # pin_of FILE NAME: the 40-hex constant NAME = "..." in FILE
 logged() {   # logged NAME CMD...: run CMD, output to $OUT/logs/NAME.log
   local log="$OUT/logs/$1.log"; shift
   echo "   \$ $* (log: logs/$(basename "$log"))"
-  "$@" >"$log" 2>&1
+  "$@" >"$log" 2>&1 && return 0
+  local rc=$?
+  { echo "   logs/$(basename "$log") (exit $rc), its last 30 lines:"; tail -n 30 "$log" | sed 's/^/   | /'; } >&2
+  return "$rc"
 }
 
-STEP=0
-echo "== 0/6 guards"
+echo "== 0/6 guards$( ((DRY)) && echo ' (--stop-before-compile: a dry run, nothing will be compiled)')"
 [[ -n "$WHEEL" ]] || refuse "$USAGE"
 [[ "$FA3_SHA" =~ ^[0-9a-f]{64}$ ]] || refuse "FA3_WHEEL_SHA256 is not a sha256 (64 lowercase hex)"
 [[ -f "$WHEEL" ]] || refuse "no FA3 wheel at $WHEEL"
@@ -169,13 +190,21 @@ case "$(cd "$(dirname "$XATTN_DIR")" 2>/dev/null && pwd)/" in
 esac
 PYVER="$("$PY" -c 'import platform; print(platform.python_version())')" || refuse "$PY does not run"
 [[ "$PYVER" == "3.10.12" ]] || refuse "$PY is Python $PYVER; image v6's is 3.10.12"
-PYTHONPATH="$ROOT" "$HELPER_PY" -m attnbench.build_guards --max-jobs "$MAX_JOBS" \
-  --nvcc-threads "$NVCC_THREADS" || refuse "flash-attn's memory guard: MAX_JOBS=$MAX_JOBS does not fit here"
+GUARD_RC=0
+GUARD_OUT="$(PYTHONPATH="$ROOT" "$HELPER_PY" -m attnbench.build_guards --max-jobs "$MAX_JOBS" \
+  --nvcc-threads "$NVCC_THREADS" ${ENV_BUILD_MEMINFO:+--meminfo "$ENV_BUILD_MEMINFO"} 2>&1)" || GUARD_RC=$?
+case "$GUARD_RC" in
+  0) echo "   $GUARD_OUT" ;;
+  1) refuse "flash-attn's memory guard: MAX_JOBS=$MAX_JOBS does not fit here; the guard said: $GUARD_OUT" ;;
+  *) refuse "flash-attn's memory guard did not run (exit $GUARD_RC; not a memory verdict); its output: $GUARD_OUT" ;;
+esac
 BSA_COMMIT="$(pin_of attnbench/bsa_contract.py BSA_COMMIT)"
 XATTN_COMMIT="$(pin_of attnbench/backends/xattention.py XATTN_COMMIT)"
 XATTN_REPO="$(sed -nE 's/^XATTN_REPO = "(https:[^"]+)".*/\1/p' attnbench/backends/xattention.py)"
 [[ -n "$XATTN_REPO" ]] || refuse "no XATTN_REPO in attnbench/backends/xattention.py"
 mkdir -p "$OUT/logs"
+# The image's own packages, before anything is installed (header).
+"$PY" -m pip list --format=freeze >"$OUT/image_pip_before.txt" 2>&1 || echo "(pip list failed)" >>"$OUT/image_pip_before.txt"
 # cuobjdump last among the guards: the apt install is the one thing step 0
 # may install, so every free check has passed before it.
 CUOBJDUMP="$(find_cuobjdump)"
@@ -217,6 +246,27 @@ echo "== 3/6 FA3 wheel: checked against its manifest, installed, not imported"
   --manifest "$MANIFEST" || fail "the FA3 wheel does not check"
 logged fa3_install "$PY" -m pip install --user --no-deps "$WHEEL" || fail "installing the FA3 wheel"
 
+if ((DRY)); then
+  STEP=4
+  echo "== 4/6 up to the first compile (--stop-before-compile)"
+  [[ -d "$XATTN_DIR/.git" ]] || logged xattn_clone git clone -q "$XATTN_REPO" "$XATTN_DIR" \
+    || fail "cloning x-attention"
+  git -C "$XATTN_DIR" checkout -q --detach "$XATTN_COMMIT" || fail "checking out x-attention $XATTN_COMMIT"
+  USERSITE="$("$PY" -c 'import site; print(site.getusersitepackages())')" || fail "no user site"
+  so="$(find "$USERSITE/flash_attn_3" -maxdepth 1 -name '_C*.so' 2>/dev/null | head -1 || true)"
+  [[ -n "$so" ]] || fail "no flash_attn_3/_C*.so in the user site after the FA3 install"
+  got_sm="$("$CUOBJDUMP" --list-elf "$so" | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ' | sed 's/ $//')" \
+    || fail "$CUOBJDUMP --list-elf does not read $so"
+  [[ -n "$got_sm" ]] || fail "$CUOBJDUMP --list-elf lists no cubin in $so"
+  echo "flash_attn_3 $got_sm" >"$OUT/cuda_archs_fa3.txt"
+  echo "   cuobjdump --list-elf reads the FA3 library: $got_sm"
+  "$PY" -c 'import attnbench, attnbench.components.shakedown_arms' || fail "attnbench does not import"
+  echo "   attnbench imports; stopping before flash-attn's compile"
+  [[ -z "$(git status --porcelain)" ]] || fail "the dry run left the tree dirty"
+  echo "ENV_BUILD_DRY_RUN_OK"
+  exit 0
+fi
+
 STEP=4
 echo "== 4/6 from source: flash-attn $FA2_VERSION, block-sparse-attention, x-attention"
 logged fa_build bash "$FA_BUILD" "$FA2_VERSION" || fail "building flash-attn $FA2_VERSION"
@@ -229,7 +279,7 @@ logged xattn_install "$PY" -m pip install --user --no-deps -e "$XATTN_DIR" || fa
 # The built cubins: sm_80 (what the L4 runs) and sm_90, nothing else.
 USERSITE="$("$PY" -c 'import site; print(site.getusersitepackages())')"
 for lib in flash_attn_2_cuda block_sparse_attn_cuda; do
-  so="$(find "$USERSITE" -maxdepth 1 -name "${lib}*.so" | head -1)"
+  so="$(find "$USERSITE" -maxdepth 1 -name "${lib}*.so" 2>/dev/null | head -1 || true)"
   [[ -n "$so" ]] || fail "no ${lib}*.so in the user site"
   got_sm="$("$CUOBJDUMP" --list-elf "$so" | grep -oE 'sm_[0-9]+' | sort -u | tr '\n' ' ' | sed 's/ $//')"
   echo "$lib $got_sm" >>"$OUT/cuda_archs.txt"

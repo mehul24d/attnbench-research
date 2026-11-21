@@ -1,0 +1,10 @@
+# The environment-build base image's /usr/bin/python3, as far as the probe of
+# 21 Nov 2026 22:16 UTC read it (aws_env_build_probe_20261121.txt, "python
+# and torch"): Python 3.10.12, pip present (pip 26.3), torch absent. Nothing
+# else outside the standard library was listed, so nothing else is assumed:
+# a pre-compile step that imports any other non-stdlib module before step 2
+# has installed it fails tests/test_env_build_clean_python.py (adviser's task
+# of 22 Nov 2026, item 2). The dry run records the image's full pip list
+# (image_pip_before.txt); a module is added here only from such a record.
+python: 3.10.12
+module: pip

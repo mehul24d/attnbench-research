@@ -29,8 +29,12 @@ if [[ "$1" == "-c" ]]; then
   exit 0
 fi
 if [[ "$1 $2" == "-m pip" ]]; then
-  [[ -n "${FAKE_PIP_FAIL:-}" && "$*" == *"$FAKE_PIP_FAIL"* ]] && exit 1
+  [[ -n "${FAKE_PIP_FAIL:-}" && "$*" == *"$FAKE_PIP_FAIL"* ]] && { echo "ERROR: fake pip refused $FAKE_PIP_FAIL"; exit 1; }
+  [[ "$3" == freeze && -n "${FAKE_FREEZE_FAIL:-}" ]] && exit 3
   [[ "$3" == freeze ]] && echo "torch==2.9.1+cu129"
+  if [[ "$*" == *"--user --no-deps "*flash_attn_3-*.whl ]]; then
+    mkdir -p "$FAKE_USERSITE/flash_attn_3"; : > "$FAKE_USERSITE/flash_attn_3/_C.abi3.so"
+  fi
   exit 0
 fi
 [[ "$1 $2" == "-m pytest" ]] && exit "${FAKE_PYTEST_RC:-0}"
@@ -41,6 +45,7 @@ FAKE_HELPER = r"""#!/usr/bin/env bash
 printf 'helper %s\n' "$*" >> "$CALL_LOG"
 [[ "$1" == "-c" ]] && exec "$REAL_PY" "$@"
 if [[ "$1 $2" == "-m attnbench.build_guards" ]]; then
+  [[ -n "${ENV_BUILD_MEMINFO:-}" ]] && exec "$REAL_PY" "$@"
   exec "$REAL_PY" "$@" --free-gb "${FAKE_FREE_GB:-60}"
 fi
 case "$2" in
@@ -357,3 +362,236 @@ def test_committed_fa3_manifest_is_the_recorded_one():
     assert d["sha256"] == "1676ef0b86c377ae911a7de238c2a1f6b58a7666f1a6eef919d4dc7b0973b64a"
     assert d["wheel"] == WHEEL_NAME and d["commit"].startswith("49774b31")
     assert d["stack"]["python"] == "3.10.12" and d["stack"]["torch"] == "2.9.1+cu129"
+
+
+
+# --- the dry-run wave (adviser's task of 22 Nov 2026, item 2) ---------------
+# MemAvailable as the probe's `free -m` read it on m7a.xlarge: 14920 MiB.
+PROBE_MEMINFO = "MemTotal:       15994880 kB\nMemFree:        15044608 kB\nMemAvailable:   15278080 kB\n"
+
+
+def test_the_guard_reads_meminfo_and_two_jobs_fit_the_probed_instance(env):
+    mi = env[0] / "meminfo"
+    mi.write_text(PROBE_MEMINFO)
+    r, _ = run(env, ENV_BUILD_MEMINFO=str(mi), MAX_JOBS="2")
+    assert r.returncode == 0, r.stderr
+    assert "memory check ok: 2 concurrent cicc" in r.stdout and "14.6 GiB available" in r.stdout
+
+
+def test_a_real_memory_refusal_carries_the_guards_own_words(env):
+    mi = env[0] / "meminfo"
+    mi.write_text(PROBE_MEMINFO)
+    r, calls = run(env, ENV_BUILD_MEMINFO=str(mi), MAX_JOBS="4")
+    assert r.returncode != 0 and "does not fit here; the guard said: FATAL: MAX_JOBS=4" in r.stderr
+    assert "lower MAX_JOBS to 2" in r.stderr and _installs(calls) == []
+
+
+def test_a_guard_that_cannot_run_is_not_reported_as_memory(env):
+    r, calls = run(env, ENV_BUILD_MEMINFO=str(env[0] / "no_such_meminfo"), MAX_JOBS="2")
+    assert r.returncode != 0 and "did not run (exit 2; not a memory verdict)" in r.stderr
+    assert "FileNotFoundError" in r.stderr and "does not fit" not in r.stderr
+    assert "-- tool inventory --" in r.stderr and _installs(calls) == []
+
+
+def test_a_failed_step_prints_its_own_log(env):
+    r, _ = run(env, FAKE_PIP_FAIL="req_usersite")
+    assert "FAILED at step 2: installing the user-site list" in r.stderr
+    assert "| ERROR: fake pip refused req_usersite" in r.stderr and "-- tool inventory --" in r.stderr
+
+
+def test_an_unguarded_command_names_its_line(env):
+    r, _ = run(env, FAKE_FREEZE_FAIL="1")
+    assert r.returncode == 3 and "ENV_BUILD_OK" not in r.stdout
+    assert "FAILED at step 6: line " in r.stderr and "pip freeze --all" in r.stderr
+    assert "-- tool inventory --" in r.stderr
+
+
+def test_stop_before_compile_runs_every_step_up_to_the_first_compile(env):
+    r, calls = run(env, "--stop-before-compile", str(env[2]), **_image(env))
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.rstrip().endswith("ENV_BUILD_DRY_RUN_OK") and "ENV_BUILD_OK" not in r.stdout
+    assert any("-r " in c and "req_system" in c for c in calls)            # step 2
+    assert any(f"--user --no-deps {env[2]}" in c for c in calls)           # step 3
+    assert any(c.startswith("git clone -q") for c in calls)                # step 4, no compile
+    assert sum(c.startswith("cuobjdump-apt --list-elf") and "flash_attn_3/_C.abi3.so" in c
+               for c in calls) == 1
+    for word in ("fa_build", "block-sparse-attn @", "-e " + str(env[0] / "x-attention"),
+                 "-m pytest", "pip freeze"):
+        assert not any(word in c for c in calls), word
+    out = env[0] / "out"
+    assert (out / "cuda_archs_fa3.txt").read_text() == "flash_attn_3 sm_80 sm_90\n"
+    assert (out / "image_pip_before.txt").exists() and not (out / "SHA256SUMS").exists()
+
+
+def test_stop_before_compile_fails_without_the_fa3_library(env):
+    py = Path(env[1]["ATTNBENCH_PYTHON"])
+    py.write_text(FAKE_PY.replace('mkdir -p "$FAKE_USERSITE/flash_attn_3"', "true"))
+    r, calls = run(env, "--stop-before-compile", str(env[2]))
+    assert r.returncode != 0 and "FAILED at step 4: no flash_attn_3/_C*.so" in r.stderr, r.stderr[-1500:]
+    assert "ENV_BUILD_DRY_RUN_OK" not in r.stdout and not any("fa_build" in c for c in calls)
+
+
+# --- the pre-compile steps on a clean Python 3.10.12 (same task, item 2) ----
+# No Docker on this Mac, so a clean venv (pip only, as the probe found the
+# image's python) stands in for python:3.10. Every repository helper runs on
+# it for real, with an import recorder (sitecustomize) that writes each
+# process's non-stdlib imports into the call log; the CUDA pieces, sudo, git
+# and the installs are faked: step 2's install drops a stand-in torch and
+# triton into the venv, step 3's drops the FA3 library into the user site.
+# A pre-compile step that imports a non-stdlib module the image lacks
+# (docs/launch_cards/aws_env_build_image_modules.txt; after step 2, also the
+# v6 lists) fails here.
+IMAGE_MODULES = ROOT / "docs" / "launch_cards" / "aws_env_build_image_modules.txt"
+V6 = ROOT / "docs" / "image_libraries" / "attnbench-env-v6-20260917"
+RECORDED_FA3_SHA = "1676ef0b86c377ae911a7de238c2a1f6b58a7666f1a6eef919d4dc7b0973b64a"
+
+RECORDER = r'''import atexit, json, os, sys, sysconfig
+_BASE = set(sys.modules)
+_STD = os.path.realpath(sysconfig.get_paths()["stdlib"])
+def _stdlib_file(f):   # e.g. _sysconfigdata_*, not in stdlib_module_names
+    f = os.path.realpath(f) if f else ""
+    return f.startswith(_STD + os.sep) and "site-packages" not in f
+def _dump():
+    log = os.environ.get("CALL_LOG")
+    if not log:
+        return
+    new = {n: getattr(m, "__file__", None) for n, m in list(sys.modules.items())
+           if n not in _BASE and "." not in n and n not in sys.stdlib_module_names
+           and not _stdlib_file(getattr(m, "__file__", None))}
+    with open(log, "a") as f:
+        f.write("imports " + json.dumps({"argv": sys.argv[:3], "nonstd": new}) + "\n")
+atexit.register(_dump)
+'''
+
+# The image's python: real for -c and pip list, faked for installs.
+CLEAN_PY = r'''#!/usr/bin/env bash
+printf 'py %s\n' "$*" >> "$CALL_LOG"
+if [[ "$1" == -c ]]; then
+  [[ "$2" == *shakedown_arms* ]] && exit 0   # needs the real torch; the dry run imports it
+  exec "$CLEAN" "$@"
+fi
+if [[ "$1 $2" == "-m pip" ]]; then
+  case "$*" in
+    *" list "*) exec "$CLEAN" "$@" ;;
+    *req_system*) cp -R "$FAKE_PKGS"/. "$CLEAN_SITE"/ ;;
+    *flash_attn_3-*.whl*) us="$("$CLEAN" -c 'import site; print(site.getusersitepackages())')"
+       mkdir -p "$us/flash_attn_3"; : > "$us/flash_attn_3/_C.abi3.so" ;;
+  esac
+  exit 0
+fi
+echo "UNHANDLED $*" >&2; exit 97
+'''
+
+# The helper python: the clean interpreter itself; the FA3 check with only
+# the wheel's hash and this Mac's platform tag faked (the wheel is a stand-in).
+CLEAN_HELPER = r'''#!/usr/bin/env bash
+printf 'helper %s\n' "$*" >> "$CALL_LOG"
+[[ "${2:-}" == fa3-wheel ]] && exec "$CLEAN" -c "$SHIM" "$@"
+exec "$CLEAN" "$@"
+'''
+SHIM = r'''import runpy, sys
+sys.argv = sys.argv[1:]
+from attnbench import fa3_wheel as fw
+fw.sha256 = lambda p: "@SHA@"
+_real = fw._sys_tags
+def _tags():
+    t = _real()
+    return t | {type(next(iter(t)))("cp39", "abi3", "linux_x86_64")}
+fw._sys_tags = _tags
+runpy.run_path(sys.argv[0], run_name="__main__")
+'''.replace("@SHA@", RECORDED_FA3_SHA)
+
+
+def _clean_python():
+    p = os.environ.get("ATTNBENCH_CLEAN_PY310")
+    if not p and shutil.which("uv"):
+        r = subprocess.run(["uv", "python", "find", "--no-project", "3.10.12"],
+                           capture_output=True, text=True)
+        p = r.stdout.strip() if r.returncode == 0 else None
+    if not p or not Path(p).exists():
+        pytest.skip("no Python 3.10.12 (set ATTNBENCH_CLEAN_PY310 or `uv python install 3.10.12`)")
+    return p
+
+
+def _image_modules():
+    text = IMAGE_MODULES.read_text()
+    import re
+    assert re.search(r"^python: 3\.10\.12$", text, re.M)
+    return set(re.findall(r"^module: (\S+)$", text, re.M))
+
+
+def _v6_modules():
+    names = set()
+    for f in V6.glob("pip_freeze_*.txt"):
+        for line in f.read_text().splitlines():
+            n = line.split("==")[0].split(" @ ")[0].strip()
+            if n and not n.startswith(("-", "#")):
+                names.add(n.lower().replace("-", "_"))
+    return names
+
+
+@pytest.fixture
+def clean_env(env, tmp_path):
+    base = _clean_python()
+    venv = tmp_path / "clean310"
+    subprocess.run([base, "-m", "venv", str(venv)], check=True, capture_output=True)
+    py = venv / "bin" / "python"
+    site_dir = Path(subprocess.run([str(py), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                                   capture_output=True, text=True, check=True).stdout.strip())
+    (site_dir / "sitecustomize.py").write_text(RECORDER)
+    pkgs = tmp_path / "fake_pkgs"
+    (pkgs / "torch").mkdir(parents=True)
+    (pkgs / "torch" / "__init__.py").write_text('__version__ = "2.9.1+cu129"\nclass version:\n    cuda = "12.9"\n')
+    (pkgs / "triton").mkdir()
+    (pkgs / "triton" / "__init__.py").write_text('__version__ = "3.5.1"\n')
+    tmp, e, wheel = env
+    _exe(Path(e["ATTNBENCH_PYTHON"]), CLEAN_PY)
+    _exe(Path(e["ENV_BUILD_HELPER_PYTHON"]), CLEAN_HELPER)
+    mi = tmp / "meminfo"
+    mi.write_text(PROBE_MEMINFO)
+    e.update({"CLEAN": str(py), "CLEAN_SITE": str(site_dir), "FAKE_PKGS": str(pkgs), "SHIM": SHIM,
+              "ENV_BUILD_MEMINFO": str(mi), "MAX_JOBS": "2", "FA3_WHEEL_SHA256": RECORDED_FA3_SHA})
+    e.pop("REAL_PY", None)
+    return env
+
+
+def _imports_by_phase(calls):
+    """[(phase, argv, {module: file})] in call order; phase 'after' once step
+    2's system install has run."""
+    import json
+    phase, out = "before", []
+    for c in calls:
+        if c.startswith("py -m pip install") and "req_system" in c:
+            phase = "after"
+        if c.startswith("imports "):
+            d = json.loads(c[len("imports "):])
+            out.append((phase, d["argv"], d["nonstd"]))
+    return out
+
+
+def test_the_pre_compile_steps_run_on_a_clean_python_310(clean_env):
+    r, calls = run(clean_env, "--stop-before-compile", str(clean_env[2]), **_image(clean_env))
+    assert r.returncode == 0, r.stderr[-3000:]
+    assert r.stdout.rstrip().endswith("ENV_BUILD_DRY_RUN_OK")
+    assert "memory check ok: 2 concurrent cicc" in r.stdout
+    assert "FA3 wheel flash_attn_3" in r.stdout and "sha256 and tags checked" in r.stdout
+    recs = _imports_by_phase(calls)
+    seen = " ".join(" ".join(a) for _, a, _ in recs)
+    # Not vacuous: the guard, both list reads and the FA3 check were recorded.
+    for what in ("attnbench/build_guards.py", "requirements", "fa3-wheel"):
+        assert what in seen, (what, [a for _, a, _ in recs])
+
+
+def test_no_pre_compile_step_imports_what_the_image_lacks(clean_env):
+    r, calls = run(clean_env, "--stop-before-compile", str(clean_env[2]), **_image(clean_env))
+    assert r.returncode == 0, r.stderr[-3000:]
+    image, v6 = _image_modules(), _v6_modules()
+    bad = []
+    for phase, argv, mods in _imports_by_phase(calls):
+        allowed = image | (v6 if phase == "after" else set())
+        for name, f in mods.items():
+            if f and str(Path(f).resolve()).startswith(str(ROOT)):
+                continue   # the repository's own modules
+            if name.lower() not in allowed:
+                bad.append((phase, argv, name))
+    assert bad == [], bad

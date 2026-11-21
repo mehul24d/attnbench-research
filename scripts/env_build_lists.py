@@ -214,7 +214,12 @@ def main(argv=None) -> int:
     except Exception as e:  # noqa: BLE001  (every refusal is one line and exit 2)
         if isinstance(e, SystemExit):
             raise
-        print(f"REFUSING: {e}", file=sys.stderr)
+        if not isinstance(e, Refused):
+            # Not a verdict: the real exception, in full (adviser's task of
+            # 22 Nov 2026), so a missing module is never read as a mismatch.
+            import traceback
+            traceback.print_exc()
+        print(f"REFUSING: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
     return 0
 
