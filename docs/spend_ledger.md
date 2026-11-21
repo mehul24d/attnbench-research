@@ -209,7 +209,7 @@ The AWS sessions are outside the GCP ceiling above. They have their own cap of a
 
 | Item | Cap or cost (₹) | Status | Cleanup |
 |---|---|---|---|
-| Environment build, `m7a.xlarge` (`docs/launch_cards/aws_env_build_m7a.md`), one attempt (adviser's rulings dated 21 Nov 2026, fifth wave, item 5: halt at 360 min, delete at 375 min; worst case ₹219) | 250 | launch yes given 21 Nov 2026, after the pre-launch pass; not launched | instance terminated, no volume left (`scripts/aws_cleanup_check.sh`) |
+| Environment build, `m7a.xlarge` (`docs/launch_cards/aws_env_build_m7a.md`), one attempt (adviser's rulings dated 21 Nov 2026, fifth wave, item 5: halt at 360 min, delete at 375 min; worst case ₹219) | 250 | launch yes given 21 Nov 2026; the attempt of 22 Nov 2026 (20:12 UTC) was refused by AWS at `run-instances`: the account is on AWS's Free plan, which admits only Free Tier instance types. Nothing created, ₹0 | instance terminated, no volume left (`scripts/aws_cleanup_check.sh`) |
 | AMI snapshot from the build (about 60 GB at an assumed $0.055/GB-month, not checked) | about 320 a month | not created | **deregister the AMI and delete its snapshot after P6, or after the host-effect rule skips P6**; a read-back must show neither |
 | `g6.xlarge` rehearsal | 266 | not launched | instance terminated, no volume left |
 | P3, `g6.xlarge` | 1,353 | not launched | instance terminated, no volume left |

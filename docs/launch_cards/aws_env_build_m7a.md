@@ -55,6 +55,8 @@ gp3 root deleted with the instance, IMDSv2, session tags.
 
 **One attempt on `m7a`** (fifth wave, item 5; replaces the two of the fourth wave): cap ₹250, halt at 360 min, delete at 375 min. If it does not end in `ENV_BUILD_OK` and an available AMI, stop and report; a second attempt needs a new ruling.
 
+**22 Nov 2026, 20:12 UTC (from commit `cb7c6fa`):** every check before the create request passed: the Standard-family quota is 32 vCPU, the key pair, security group and hard-delete role were made, and the base image was read. AWS refused the create request with `InvalidParameterCombination`: "The specified instance type is not eligible for Free Tier." The account is on AWS's Free plan, which admits only Free Tier types: in Sydney, at most 2 vCPU and 8 GiB (`m7i-flex.large`, `c7i-flex.large`, `t3`/`t4g`/`t8i`/`t9g` micro and small). It admits no `m7a`, no `g6` and no `p5`. No instance, volume, schedule, image or snapshot exists (read back in Sydney); ₹0. No build ran. Stopped and reported, as the attempt rule requires. Whether this spent the one attempt is the researcher's call.
+
 ## Results: small files only
 
 Only step 6's lists and logs and step 7's AMI id come back, each under 20 MB, by
