@@ -7,7 +7,11 @@
 # PAIRING is P3, P5, P6 or P7, or ENV: the CPU-only environment build on
 # m7a.xlarge that makes the AMI the GPU sessions boot from (adviser's
 # rulings dated 21 Nov 2026; card docs/launch_cards/aws_env_build_m7a.md).
-# ENV takes every guarantee below; it times nothing.
+# ENV takes every guarantee below; it times nothing. PROBE is a short
+# inspection of the same image on the same type, with no build (adviser's
+# rulings dated 22 Nov 2026, probe): every guarantee below, but its hard
+# delete may be 5 to 15 minutes and its halt from 3 minutes (the ruling's
+# 8 and 6), where every other pairing needs 30 and 20.
 #
 # The AWS counterpart of the gcp_launch_*.sh scripts, with the same
 # guarantees, each checked before anything is created:
@@ -129,7 +133,8 @@ case "$PAIRING" in
   P6) INSTANCE_TYPE="p5.4xlarge";  GPU="1x H100 80GB" ;;
   P7) INSTANCE_TYPE="g5.2xlarge";  GPU="1x A10G 24GB" ;;
   ENV) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: environment build only" ;;
-  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, and ENV is the environment build." >&2
+  PROBE) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: image inspection only, no build" ;;
+  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, ENV is the environment build and PROBE its image inspection." >&2
      exit 1 ;;
 esac
 PAIR_LC="$(echo "$PAIRING" | tr 'A-Z' 'a-z')"
@@ -167,15 +172,17 @@ if [[ ! "$COST_CAP_INR" =~ $NUM ]]; then
   echo "REFUSING TO LAUNCH -- declare the session cost cap as AWS_COST_CAP_INR (Rs)." >&2
   exit 1
 fi
-if [[ ! "$MAX_RUN_MINUTES" =~ ^[0-9]+$ ]] || (( MAX_RUN_MINUTES < 30 || MAX_RUN_MINUTES > 1440 )); then
+if [[ "$PAIRING" == PROBE ]]; then MIN_RUN=5; MAX_RUN=15; MIN_HALT=3; else MIN_RUN=30; MAX_RUN=1440; MIN_HALT=20; fi
+if [[ ! "$MAX_RUN_MINUTES" =~ ^[0-9]+$ ]] || (( MAX_RUN_MINUTES < MIN_RUN || MAX_RUN_MINUTES > MAX_RUN )); then
   echo "REFUSING TO LAUNCH -- declare the hard-delete limit as AWS_MAX_RUN_MINUTES, whole" >&2
-  echo "minutes from 30 to 1440, sized to the work (no default)." >&2
+  echo "minutes from $MIN_RUN to $MAX_RUN for $PAIRING, sized to the work (no default)." >&2
   exit 1
 fi
-HALT_MINUTES="${AWS_HALT_MINUTES:-$(( MAX_RUN_MINUTES - 60 ))}"
-if [[ ! "$HALT_MINUTES" =~ ^[0-9]+$ ]] || (( HALT_MINUTES < 20 || HALT_MINUTES >= MAX_RUN_MINUTES )); then
+if [[ "$PAIRING" == PROBE ]]; then HALT_DEFAULT=$(( MAX_RUN_MINUTES - 2 )); else HALT_DEFAULT=$(( MAX_RUN_MINUTES - 60 )); fi
+HALT_MINUTES="${AWS_HALT_MINUTES:-$HALT_DEFAULT}"
+if [[ ! "$HALT_MINUTES" =~ ^[0-9]+$ ]] || (( HALT_MINUTES < MIN_HALT || HALT_MINUTES >= MAX_RUN_MINUTES )); then
   echo "REFUSING TO LAUNCH -- the in-guest halt (AWS_HALT_MINUTES=$HALT_MINUTES) must be at" >&2
-  echo "least 20 minutes and earlier than the hard delete ($MAX_RUN_MINUTES minutes)." >&2
+  echo "least $MIN_HALT minutes and earlier than the hard delete ($MAX_RUN_MINUTES minutes)." >&2
   exit 1
 fi
 # Worst case: the full rate until the hard delete. Rs, rounded up.

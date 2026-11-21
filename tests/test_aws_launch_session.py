@@ -417,3 +417,34 @@ def test_a_failed_dry_registration_creates_no_instance(tmp_path, env, said):
     assert not _record(tmp_path).exists()
     if "FAKE_DRYREG_DELETE_FAIL" not in env:     # whatever the read, it is deleted
         assert any(c.startswith("scheduler delete-schedule") for c in _dry(calls)) or "FAKE_DRYREG_FAIL" in env
+
+
+# --- the image probe (adviser's rulings dated 22 Nov 2026, probe) ------------
+PROBE_CARD = {**ENV_CARD, "AWS_COST_CAP_INR": "15", "AWS_HALT_MINUTES": "6",
+              "AWS_MAX_RUN_MINUTES": "8"}
+
+
+def test_the_probe_cards_settings(tmp_path):
+    """One m7a.xlarge, halt at 6 min, hard delete at 8, cap Rs 15: worst case
+    Rs 34.90 x 8 min = Rs 4.65, rounded up to Rs 5."""
+    p, calls = _launch(tmp_path, "PROBE", env=PROBE_CARD)
+    assert p.returncode == 0, p.stderr
+    assert "worst case   : Rs 5, cost cap Rs 15" in p.stdout
+    calls = aws_calls(calls)
+    assert "--instance-type m7a.xlarge" in _one(calls, "ec2 run-instances")
+    stamp = dt.datetime.fromtimestamp(NOW + 8 * 60, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({stamp})" in _one(calls, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert "+6 min from boot" in p.stdout
+
+
+@pytest.mark.parametrize("pairing,minutes,halt,ok", [
+    ("PROBE", "4", "3", False), ("PROBE", "16", "6", False), ("PROBE", "8", "2", False),
+    ("PROBE", "8", "8", False), ("PROBE", "5", "3", True), ("PROBE", "15", "13", True),
+    ("ENV", "8", "6", False),    # the short limits are the probe's alone
+])
+def test_the_short_limits_are_the_probes_alone(tmp_path, pairing, minutes, halt, ok):
+    p, calls = _launch(tmp_path, pairing, env={**PROBE_CARD, "AWS_MAX_RUN_MINUTES": minutes,
+                                               "AWS_HALT_MINUTES": halt})
+    assert (p.returncode == 0) == ok, p.stderr
+    if not ok:
+        assert calls == []
