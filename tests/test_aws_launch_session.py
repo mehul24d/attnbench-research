@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from pathlib import Path
 
 import pytest
 
@@ -220,3 +221,37 @@ def test_a_zone_outside_the_region_is_refused(tmp_path):
 def test_the_iso_helper_has_a_bsd_fallback():
     text = (scripts_copy.__globals__["SCRIPTS"] / "aws_launch_session.sh").read_text()
     assert re.search(r'date -u -d "@\$1".*\n.*date -u -r "\$1"', text)
+
+
+ENV_CARD = {"AWS_SESSION_REGION": "ap-southeast-2", "AWS_SESSION_AZ": "ap-southeast-2a",
+            "AWS_RATE_INR_HR": "34.90", "AWS_COST_CAP_INR": "250",
+            "AWS_HALT_MINUTES": "360", "AWS_MAX_RUN_MINUTES": "375"}
+
+
+def test_the_environment_build_cards_settings(tmp_path):
+    """docs/launch_cards/aws_env_build_m7a.md (adviser's rulings dated 21 Nov
+    2026, fifth wave, item 5): one m7a.xlarge, halt at 360 min, hard delete
+    at 375, worst case Rs 219 under the Rs 250 cap; an abort creates nothing."""
+    p, calls = _launch(tmp_path, "ENV", env=ENV_CARD, stdin="no\n")
+    assert p.returncode == 1 and "no instance created" in p.stdout
+    assert "worst case   : Rs 219, cost cap Rs 250" in p.stdout
+    assert not any(w in c for c in aws_calls(calls) for w in ("run-instances", "create-schedule"))
+    (tmp_path / "go").mkdir()
+    p, calls = _launch(tmp_path / "go", "ENV", env=ENV_CARD)
+    assert p.returncode == 0, p.stderr
+    calls = aws_calls(calls)
+    create = _one(calls, "ec2 run-instances")
+    assert "--instance-type m7a.xlarge" in create and "AvailabilityZone=ap-southeast-2a" in create
+    stamp = dt.datetime.fromtimestamp(NOW + 375 * 60, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({stamp})" in _one(calls, "scheduler create-schedule")
+    assert "+360 min from boot" in p.stdout
+    card = (Path(__file__).resolve().parents[1] / "docs" / "launch_cards"
+            / "aws_env_build_m7a.md").read_text()
+    for said in ("₹34.90/h", "| 360 min (the ruling)", "| 375 min (the ruling)",
+                 "₹250 (the ruling); worst case ₹34.90 × 375 min = ₹219", "`ap-southeast-2a`"):
+        assert said in card, said
+
+
+def test_a_cap_short_of_the_env_cards_worst_case_is_refused(tmp_path):
+    p, calls = _launch(tmp_path, "ENV", env={**ENV_CARD, "AWS_COST_CAP_INR": "218"})
+    assert p.returncode == 1 and "exceeds the cost cap" in p.stderr and calls == []

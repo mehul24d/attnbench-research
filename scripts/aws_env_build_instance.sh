@@ -5,16 +5,18 @@
 # repository's root, after the deploy (card step 1); the Mac then stops the
 # instance and makes the AMI (card step 7). It times nothing.
 #
-#   FA3_WHEEL_SHA256=<64 hex> bash scripts/aws_env_build_instance.sh FA3_WHEEL [FA3_MANIFEST]
+#   FA3_WHEEL_SHA256=<64 hex> bash scripts/aws_env_build_instance.sh FA3_WHEEL
 #
 # The environment is image v6's (docs/image_libraries/attnbench-env-v6-20260917/),
 # the one P1, P2 and P4 ran: the system Python 3.10.12, its packages as root
 # and the session user's site, no venv. In order, stopping at the first
 # failure, every step logged under ENV_BUILD_OUT:
 #   0. guards: a clean tree, Python 3.10.12, a new output directory, the FA3
-#      wheel and its recorded sha256, and flash-attn's memory guard at
-#      MAX_JOBS, so a build the instance cannot hold is refused in seconds,
-#      not after the installs;
+#      wheel and its recorded sha256, the FA3 build's manifest (committed,
+#      configs/t64/fa3_manifest_49774b31.json, the bucket's copy read 21 Nov
+#      2026) at its recorded sha256, nvcc 12.x and cuobjdump, and
+#      flash-attn's memory guard at MAX_JOBS, so a build the instance cannot
+#      hold is refused in seconds, not after the installs;
 #   2. v6's packages from an index, exact versions, --no-deps: the system list
 #      as root, less the 69 packages apt installed on v6 (they come with the
 #      base image), --ignore-installed so v6's version shadows an apt copy at
@@ -24,14 +26,26 @@
 #      0.0.33 stands in (xformers is no arm and is not in the library check:
 #      plan default, flagged). torch and triton must then read 2.9.1+cu129
 #      and 3.5.1;
-#   3. the FA3 wheel: its sha256 and tags checked, installed, NOT imported (no
-#      GPU here; P6's fa3_import step imports it);
+#   3. the FA3 wheel: attnbench.fa3_wheel.check_wheel in full against the
+#      manifest (sha256, name, the build's Python and torch, tags), installed,
+#      NOT imported (no GPU here; P6's fa3_import step imports it);
 #   4. from source: flash-attn 2.8.3.post1 (scripts/build_flash_attn.sh, its
-#      memory guard, archs 80;90 as v6's), block-sparse-attention at
-#      bsa_contract.BSA_COMMIT, and x-attention at xattention.XATTN_COMMIT
-#      (editable, outside the tree, as scripts/install_xattention.sh does;
-#      its import is left to the GPU rehearsal);
-#   5. CPU smoke: attnbench imports, and this environment's libraries equal
+#      memory guard), block-sparse-attention at bsa_contract.BSA_COMMIT, and
+#      x-attention at xattention.XATTN_COMMIT (editable, outside the tree, as
+#      scripts/install_xattention.sh does; its import is left to the GPU
+#      rehearsal). No official flash-attn 2.8.3.post1 wheel is built for
+#      torch 2.9 (its GitHub release has torch 2.4 to 2.8 only, read 21 Nov
+#      2026), so it is compiled. Architectures: TORCH_CUDA_ARCH_LIST covers
+#      the L4 (8.9) and the H100 (9.0), for any extension that reads it.
+#      flash-attn and block-sparse-attention ignore it: their setup.py read
+#      FLASH_ATTN_CUDA_ARCHS and BLOCK_SPARSE_ATTN_CUDA_ARCHS and accept 80,
+#      90, 100, 110, 120, never 89 (an 89 is dropped without a word). The
+#      L4 runs their sm_80 code by Ampere minor-version binary compatibility,
+#      so both are 80;90, v6's archs; block-sparse-attention's default would
+#      add three Blackwell archs. Each built library's cubins are then read
+#      with cuobjdump and must be sm_80 and sm_90 exactly;
+#   5. CPU smoke: attnbench, flash_attn and block_sparse_attn import (no GPU,
+#      no driver: the import error is logged), and this environment's libraries equal
 #      P2's (configs/t64/p2_libraries.json, FA3 the one allowed difference);
 #      then a CPU test subset;
 #   6. the record: pip freeze (user, user site, root), dpkg -l, uname, each
@@ -42,12 +56,13 @@
 # test (tests/test_aws_env_build_instance.py); they are never set in real use.
 set -euo pipefail
 
-USAGE="usage: FA3_WHEEL_SHA256=<sha256> bash scripts/aws_env_build_instance.sh FA3_WHEEL [FA3_MANIFEST]"
+USAGE="usage: FA3_WHEEL_SHA256=<sha256> bash scripts/aws_env_build_instance.sh FA3_WHEEL"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 WHEEL="${1:-}"
-MANIFEST="${2:-}"
+MANIFEST="configs/t64/fa3_manifest_49774b31.json"
+MANIFEST_SHA256="3c2f965784d8ae9e3df81048c5ac579d309554b8ce9472783d894837e7bade87"
 FA3_SHA="${FA3_WHEEL_SHA256:-}"
 PY="${ATTNBENCH_PYTHON:-/usr/bin/python3}"
 HELPER_PY="${ENV_BUILD_HELPER_PYTHON:-$PY}"
@@ -55,6 +70,19 @@ FA_BUILD="${ENV_BUILD_FA_SCRIPT:-scripts/build_flash_attn.sh}"
 OUT="${ENV_BUILD_OUT:-$HOME/env_build_$(date -u +%Y%m%dT%H%MZ)}"
 export MAX_JOBS="${MAX_JOBS:-4}"
 export NVCC_THREADS="${NVCC_THREADS:-1}"
+# The architectures (header, step 4). TORCH_CUDA_ARCH_LIST for the ruling's
+# L4 and H100; the two packages' own variables are what they read.
+export TORCH_CUDA_ARCH_LIST="8.9;9.0"
+export FLASH_ATTN_CUDA_ARCHS="80;90"
+export BLOCK_SPARSE_ATTN_CUDA_ARCHS="80;90"
+WANT_SM="sm_80 sm_90"
+# v6's toolkit was CUDA 12.9 (the FA3 manifest's stack); the newest 12.x
+# otherwise. CUDA_HOME is what torch's extension builder reads.
+if [[ -z "${CUDA_HOME:-}" ]]; then
+  if [[ -d /usr/local/cuda-12.9 ]]; then CUDA_HOME=/usr/local/cuda-12.9; else CUDA_HOME=/usr/local/cuda; fi
+fi
+export CUDA_HOME
+export PATH="$CUDA_HOME/bin:$HOME/.local/bin:$PATH"
 LIBS="docs/image_libraries/attnbench-env-v6-20260917"
 TORCH_INDEX="https://download.pytorch.org/whl/cu129"
 XFORMERS_STANDIN="xformers==0.0.33"
@@ -82,7 +110,12 @@ echo "== 0/6 guards"
 [[ -n "$WHEEL" ]] || refuse "$USAGE"
 [[ "$FA3_SHA" =~ ^[0-9a-f]{64}$ ]] || refuse "FA3_WHEEL_SHA256 is not a sha256 (64 lowercase hex)"
 [[ -f "$WHEEL" ]] || refuse "no FA3 wheel at $WHEEL"
-[[ -z "$MANIFEST" || -f "$MANIFEST" ]] || refuse "no FA3 manifest at $MANIFEST"
+[[ -f "$MANIFEST" ]] || refuse "no FA3 manifest at $MANIFEST"
+[[ "$("$HELPER_PY" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$MANIFEST")" == "$MANIFEST_SHA256" ]] \
+  || refuse "the FA3 manifest $MANIFEST is not the recorded one (sha256 ${MANIFEST_SHA256:0:12}...)"
+NVCC_REL="$(nvcc --version 2>/dev/null | sed -nE 's/.*release ([0-9]+\.[0-9]+).*/\1/p')"
+[[ "$NVCC_REL" == 12.* ]] || refuse "no nvcc 12.x under CUDA_HOME=$CUDA_HOME (found '${NVCC_REL:-none}')"
+command -v cuobjdump >/dev/null || refuse "no cuobjdump under CUDA_HOME=$CUDA_HOME"
 [[ -z "$(git status --porcelain)" ]] || refuse "the tree is not clean"
 [[ ! -e "$OUT" ]] || refuse "$OUT exists; an attempt's record is never overwritten"
 case "$(cd "$(dirname "$XATTN_DIR")" 2>/dev/null && pwd)/" in
@@ -97,7 +130,7 @@ XATTN_COMMIT="$(pin_of attnbench/backends/xattention.py XATTN_COMMIT)"
 XATTN_REPO="$(sed -nE 's/^XATTN_REPO = "(https:[^"]+)".*/\1/p' attnbench/backends/xattention.py)"
 [[ -n "$XATTN_REPO" ]] || refuse "no XATTN_REPO in attnbench/backends/xattention.py"
 mkdir -p "$OUT/logs"
-echo "   commit $(git rev-parse HEAD), Python $PYVER, MAX_JOBS=$MAX_JOBS, out $OUT"
+echo "   commit $(git rev-parse HEAD), Python $PYVER, nvcc $NVCC_REL ($CUDA_HOME), MAX_JOBS=$MAX_JOBS, out $OUT"
 
 STEP=2
 echo "== 2/6 image v6's packages from an index (exact, --no-deps)"
@@ -117,9 +150,9 @@ GOT="$("$PY" -c 'import torch, triton; print(torch.__version__, triton.__version
 echo "   torch and triton: $GOT"
 
 STEP=3
-echo "== 3/6 FA3 wheel: checked, installed, not imported"
+echo "== 3/6 FA3 wheel: checked against its manifest, installed, not imported"
 "$HELPER_PY" "${HELPER[@]}" fa3-wheel "$WHEEL" --sha256 "$FA3_SHA" \
-  ${MANIFEST:+--manifest "$MANIFEST"} || fail "the FA3 wheel does not check"
+  --manifest "$MANIFEST" || fail "the FA3 wheel does not check"
 logged fa3_install "$PY" -m pip install --user --no-deps "$WHEEL" || fail "installing the FA3 wheel"
 
 STEP=4
@@ -131,10 +164,22 @@ logged bsa_build "$PY" -m pip install --user --no-build-isolation \
   || fail "cloning x-attention"
 git -C "$XATTN_DIR" checkout -q --detach "$XATTN_COMMIT" || fail "checking out x-attention $XATTN_COMMIT"
 logged xattn_install "$PY" -m pip install --user --no-deps -e "$XATTN_DIR" || fail "installing x-attention"
+# The built cubins: sm_80 (what the L4 runs) and sm_90, nothing else.
+USERSITE="$("$PY" -c 'import site; print(site.getusersitepackages())')"
+for lib in flash_attn_2_cuda block_sparse_attn_cuda; do
+  so="$(find "$USERSITE" -maxdepth 1 -name "${lib}*.so" | head -1)"
+  [[ -n "$so" ]] || fail "no ${lib}*.so in the user site"
+  got_sm="$(cuobjdump --list-elf "$so" | grep -oE 'sm_[0-9]+' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  echo "$lib $got_sm" >>"$OUT/cuda_archs.txt"
+  [[ "$got_sm" == "$WANT_SM" ]] || fail "$lib's cubins are '$got_sm', not '$WANT_SM'"
+done
+echo "   cubins: $(tr '\n' ';' <"$OUT/cuda_archs.txt")"
 
 STEP=5
 echo "== 5/6 CPU smoke: imports, P2's libraries, a CPU test subset"
 "$PY" -c 'import attnbench, attnbench.components.shakedown_arms' || fail "attnbench does not import"
+logged imports "$PY" -c 'import flash_attn, block_sparse_attn; print(flash_attn.__version__)' \
+  || { tail -5 "$OUT/logs/imports.log" >&2; fail "flash_attn or block_sparse_attn does not import without a GPU"; }
 "$HELPER_PY" "${HELPER[@]}" libraries >"$OUT/libraries.json" \
   || { cat "$OUT/libraries.json" >&2; fail "the libraries differ from P2's"; }
 PYTHONDONTWRITEBYTECODE=1 logged cpu_tests "$PY" -m pytest -q -p no:cacheprovider \

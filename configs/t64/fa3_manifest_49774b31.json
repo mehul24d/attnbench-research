@@ -1,0 +1,44 @@
+{
+  "build_flags": [
+    "FLASH_ATTENTION_FORCE_BUILD=TRUE",
+    "FLASH_ATTENTION_DISABLE_BACKWARD=TRUE",
+    "FLASH_ATTENTION_DISABLE_FP8=TRUE",
+    "FLASH_ATTENTION_DISABLE_SM80=TRUE",
+    "FLASH_ATTENTION_DISABLE_HDIM64=TRUE",
+    "FLASH_ATTENTION_DISABLE_HDIM96=TRUE",
+    "FLASH_ATTENTION_DISABLE_HDIM192=TRUE",
+    "FLASH_ATTENTION_DISABLE_HDIM256=TRUE",
+    "FLASH_ATTENTION_DISABLE_PAGEDKV=TRUE",
+    "FLASH_ATTENTION_DISABLE_APPENDKV=TRUE",
+    "FLASH_ATTENTION_DISABLE_SPLIT=TRUE",
+    "FLASH_ATTENTION_DISABLE_SOFTCAP=TRUE",
+    "FLASH_ATTENTION_DISABLE_LOCAL=TRUE"
+  ],
+  "built_head_dims": [
+    128
+  ],
+  "commit": "49774b31c8d1172a5b28f72e9aed0f322bf4ccba",
+  "cutlass_commit": "dc4817921edda44a549197ff3a9dcf5df0636e7b",
+  "gb_per_job": 15,
+  "max_cicc_processes": 3,
+  "max_cicc_rss_kb": 5147328,
+  "max_jobs": 3,
+  "memory_sample_s": 1,
+  "min_mem_available_kb": 55241156,
+  "nvcc_threads": 1,
+  "repo": "https://github.com/Dao-AILab/flash-attention.git",
+  "schema": "attnbench.fa3_wheel/1",
+  "sha256": "1676ef0b86c377ae911a7de238c2a1f6b58a7666f1a6eef919d4dc7b0973b64a",
+  "stack": {
+    "machine": "x86_64",
+    "nvcc": "12.9",
+    "python": "3.10.12",
+    "torch": "2.9.1+cu129",
+    "torch_cuda": "12.9"
+  },
+  "started_utc": "2026-10-28T17:16:54Z",
+  "tag": "v2.8.3.post2",
+  "toolchain": "upstream download (nvcc 12.6.85, ptxas 12.8.93); local CUDA 12.9",
+  "wall_s": 197,
+  "wheel": "flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl"
+}

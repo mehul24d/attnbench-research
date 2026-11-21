@@ -1,7 +1,9 @@
 # Launch card: AWS environment build on `m7a.xlarge` (Sydney)
 
-Prepared 21 Nov 2026 (adviser's rulings dated 21 Nov 2026, third wave, item 4).
-**Not approved: no instance, no AWS spend until the researcher's launch yes.**
+Prepared 21 Nov 2026 (adviser's rulings dated 21 Nov 2026, third wave, item 4);
+revised the same day (fifth wave, items 1 to 5).
+**Launch yes given 21 Nov 2026 for one attempt, after the pre-launch pass**
+(`docs/permission_log.md`): cap ₹250, halt at 360 min, delete at 375 min.
 It times nothing and produces no reported number. It makes the AMI that P3's
 rehearsal, P3 and P6 boot from.
 
@@ -20,29 +22,29 @@ gp3 root deleted with the instance, IMDSv2, session tags.
 | Type | `m7a.xlarge` (4 vCPU, 16 GiB, AMD EPYC 4th gen; no GPU, so no G or P quota is drawn) |
 | Base image | the AWS Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04), latest in Sydney; its id read with a read-only `describe-images` at launch and named on the yes. **Plan default, flagged** |
 | Rate (`AWS_RATE_INR_HR`) | ₹34.90/h: (instance $0.2898/h, Sydney public price file published 20 Nov 2026, + 200 GB gp3 at an assumed $0.096/GB-month, not checked) × 1.15 × ₹95.99/$ (the method of plan Section 5.2) |
-| Planned hours | 1.5 |
-| Halt (`AWS_HALT_MINUTES`) | 117 min (1.3 × planned), instance stops |
-| Hard delete (`AWS_MAX_RUN_MINUTES`) | 135 min |
-| Cap (`AWS_COST_CAP_INR`) | ₹80; worst case ₹34.90 × 135 min = ₹79 |
-| Expected | about ₹52 |
+| Planned hours | 4.5 (the build estimate below) |
+| Halt (`AWS_HALT_MINUTES`) | 360 min (the ruling), instance stops |
+| Hard delete (`AWS_MAX_RUN_MINUTES`) | 375 min (the ruling) |
+| Cap (`AWS_COST_CAP_INR`) | ₹250 (the ruling); worst case ₹34.90 × 375 min = ₹219 |
+| Expected | about ₹157 (4.5 h) |
 
 ## Steps on the instance
 
 1. Deploy the committed HEAD as a git bundle (as on GCP); a clean tree is required. Copy up the FA3 wheel (`flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl`, sha256 `1676ef0b86c377ae…`, local in `attnbench_backups`).
-2. to 6. One script, `FA3_WHEEL_SHA256=1676ef0b86c377ae911a7de238c2a1f6b58a7666f1a6eef919d4dc7b0973b64a MAX_JOBS=2 bash scripts/aws_env_build_instance.sh ~/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl` (added 21 Nov 2026, fourth wave, item 3). It stops at the first failure and prints `ENV_BUILD_OK` only when every step passed:
-   - **0, guards:** a clean tree, Python 3.10.12, a new record directory (`~/env_build_<UTC>`, never overwritten), the wheel and its sha256, and flash-attn's memory guard at `MAX_JOBS`. 16 GiB admits 2 jobs, not 4, so 4 is refused in seconds.
+2. to 6. One script, run detached (`nohup`, so a dropped SSH session does not end it): `FA3_WHEEL_SHA256=1676ef0b86c377ae911a7de238c2a1f6b58a7666f1a6eef919d4dc7b0973b64a MAX_JOBS=2 bash scripts/aws_env_build_instance.sh ~/flash_attn_3-3.0.0b1-cp39-abi3-linux_x86_64.whl` (added 21 Nov 2026, fourth wave, item 3). It stops at the first failure and prints `ENV_BUILD_OK` only when every step passed:
+   - **0, guards:** a clean tree, Python 3.10.12, a new record directory (`~/env_build_<UTC>`, never overwritten), the wheel and its sha256, the FA3 manifest at its recorded sha256, nvcc 12.x (`/usr/local/cuda-12.9` when present, v6's) and `cuobjdump`, and flash-attn's memory guard at `MAX_JOBS`. 16 GiB admits 2 jobs, not 4, so 4 is refused in seconds.
    - **2, v6's packages** (`docs/image_libraries/attnbench-env-v6-20260917/`, the environment P1, P2 and P4 ran), from an index at exact versions with `--no-deps`. First the system list as root: less the 69 packages apt installed on v6 (they come with the base image), and with `--ignore-installed`, so v6's version shadows an apt copy at another version. Then the session user's site. torch and triton must then read `2.9.1+cu129` and `3.5.1`. **Plan defaults, flagged:**
      - The system Python and the user site, as v6, not a venv.
      - xformers' local build (`0.0.33+5d4b92a5.d20251029`) has no index copy, so PyPI's `0.0.33` stands in. xformers is no arm and is not in the library check.
-   - **3, FA3:** its sha256 and tags are checked, then it is installed. It is **not imported** here (no GPU); P6's `fa3_import` step does that. The build's `manifest.json` (1.4 KB) is only in the GCP bucket; with it, the full `fa3_wheel.check_wheel` runs. Without it, the Python and torch are checked against the stack the wheel was built on.
+   - **3, FA3:** the full `fa3_wheel.check_wheel` against the build's manifest (sha256, wheel name, the build's Python 3.10.12 and torch 2.9.1+cu129, tags), then it is installed. It is **not imported** here (no GPU); P6's `fa3_import` step does that. The manifest (1,462 bytes) was read from the GCP bucket on 21 Nov 2026 (fifth wave, item 3), is byte-identical to the build's local copy, and is committed as `configs/t64/fa3_manifest_49774b31.json` (sha256 `3c2f9657…`). The real wheel passes the check on the Mac with v6's stack and cp310 Linux tags; another torch is refused.
    - **4, from source:**
-     - flash-attn `2.8.3.post1` (`scripts/build_flash_attn.sh`);
+     - flash-attn `2.8.3.post1` (`scripts/build_flash_attn.sh`), compiled with 2 jobs: no official wheel exists for torch 2.9. The `v2.8.3.post1` GitHub release has cp310 wheels for torch 2.4 to 2.8 only (read 21 Nov 2026), and torch's C++ ABI differs between minor versions;
      - block-sparse-attention at `bsa_contract.BSA_COMMIT`;
      - x-attention at `XATTN_COMMIT`, editable and outside the tree.
 
-     The architectures are v6's, `80;90` (flash-attn and block-sparse-attention read `FLASH_ATTN_CUDA_ARCHS`, not `TORCH_CUDA_ARCH_LIST`; corrected from this card's `8.9;9.0`). x-attention's import is left to the GPU rehearsal.
+     **Architectures** (fifth wave, item 2). Two arms import `flash_attn` on the L4: the `fa2` arm (`impls.FlashAttention2`) and XAttention's threshold profiler, whose pinned module imports it at load (`xattention._official_profiler`). So the L4 must be covered. `TORCH_CUDA_ARCH_LIST=8.9;9.0` is set as ruled, for any extension that reads it. flash-attn and block-sparse-attention do not read it. Their pinned `setup.py` read `FLASH_ATTN_CUDA_ARCHS` and `BLOCK_SPARSE_ATTN_CUDA_ARCHS` and know only 80, 90, 100, 110 and 120; an `89` is dropped without a word. The L4 (sm_89) runs their sm_80 code by Ampere minor-version binary compatibility, which is how P1 ran on v6. So both are set to `80;90`. That is v6's setting, and here it is what covers the L4, so it is not a revert. **Flagged against the ruling's wording.** Block-sparse-attention's default would also compile 100, 110 and 120. After the builds, `cuobjdump --list-elf` must show exactly sm_80 and sm_90 in each library (`cuda_archs.txt` in the record). x-attention's import is left to the GPU rehearsal.
    - **5, CPU smoke:**
-     - `attnbench` imports;
+     - `attnbench` imports, and so do `flash_attn` and `block_sparse_attn` without a GPU or driver (they link the CUDA runtime, not the driver; unchecked until the instance runs it, and the error is logged if not);
      - this environment's libraries equal P2's (`configs/t64/p2_libraries.json`), with FA3 the one allowed difference, as P4's preflight requires;
      - `tests/test_build_guards.py` and `tests/test_env_build_lists.py` pass.
    - **6, the record:** `pip freeze` (user, user site, root), `dpkg -l`, `uname`, each list diffed against v6's, and `SHA256SUMS`. The tree must still be clean.
@@ -51,7 +53,7 @@ gp3 root deleted with the instance, IMDSv2, session tags.
 
 ## Attempts
 
-At most **two attempts on `m7a`**, each its own launch under this card: cap ₹80, halt at 117 min, delete at 135 min, each with its own record directory. If the second does not end in `ENV_BUILD_OK` and an available AMI, stop and report; there is no third attempt without a new ruling.
+**One attempt on `m7a`** (fifth wave, item 5; replaces the two of the fourth wave): cap ₹250, halt at 360 min, delete at 375 min. If it does not end in `ENV_BUILD_OK` and an available AMI, stop and report; a second attempt needs a new ruling.
 
 ## Results: small files only
 
@@ -67,9 +69,10 @@ bucket, nothing to the GCP bucket.
 
 ## Before the yes is asked
 
-- **CPU pre-launch pass (fake AWS CLI), 21 Nov 2026:** with this card's settings the launcher passes every gate. An abort at the prompt makes no create call (calls made: `sts get-caller-identity` ×2, `describe-instance-type-offerings`, `describe-images`). A typed `launch` makes exactly one `run-instances` call, then `create-schedule` and `get-schedule`, with worst case ₹79 under the ₹80 cap.
+- **CPU pre-launch pass (fake AWS CLI), 21 Nov 2026, rerun at the fifth wave's settings** (`tests/test_aws_launch_session.py::test_the_environment_build_cards_settings`): the launcher passes every gate. An abort at the prompt makes no create call. A typed `launch` makes exactly one `run-instances` call (`m7a.xlarge`, `ap-southeast-2a`), then `create-schedule` at launch + 375 min and `get-schedule`, with the halt at +360 min and worst case ₹219 under the ₹250 cap; a ₹218 cap is refused before any AWS call.
+- **Pre-launch pass against the account (read-only, at launch time):** `aws login` live; the Standard-family vCPU quota in Sydney at least 4; the key pair, the security group (SSH from this Mac only) and the hard-delete role exist; the base image's id and its CUDA toolkit versions from `describe-images`; no `attnbench-session` instance already running.
 - **Steps 2 to 6 scripted, 21 Nov 2026:** `scripts/aws_env_build_instance.sh`, with a fake-command pass on the Mac (`tests/test_aws_env_build_instance.py`: order, refusals before any install, a stop at each step's failure; `tests/test_env_build_lists.py`: the lists, the wheel check, the library check). Step 7 is still by hand.
-- **The build time is the risk.** v6's own builds, with 4 jobs on a VM with about 27 GB usable (`attnbench_backups/diag_rerun_20261117/home_logs/`), took 51 min (block-sparse-attention) and 2 h 13 min (flash-attn). On `m7a.xlarge`, 16 GiB admits 2 jobs and there are 4 vCPUs, so flash-attn alone is likely to run past the 117-minute halt. That is unmeasured. At the halt the instance stops, nothing is lost but the time and an attempt, and the hard delete ends it.
+- **The build time is the risk.** v6's own builds, with 4 jobs on a VM with about 27 GB usable (`attnbench_backups/diag_rerun_20261117/home_logs/`), took 51 min (block-sparse-attention) and 2 h 13 min (flash-attn), both at archs `80;90`. On `m7a.xlarge`, 16 GiB admits 2 jobs. Half the jobs alone would double those times to about 4 h 8 min. `m7a`'s vCPUs are whole Zen 4 cores, not hyperthreads, which should shorten that by an unmeasured amount. With the installs, the estimate is 3.5 to 4.5 h against the 360-minute halt. At the halt the instance stops and the hard delete ends it; the attempt is spent.
 - The researcher's launch yes, logged in `docs/permission_log.md` before the launch.
 
 ## Risks
