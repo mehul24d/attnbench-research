@@ -34,7 +34,7 @@ torch the check refuses the variant, so it fails closed (Appendix A, 12 Nov
 2026). The counts below were measured with torch 2.13.0 and the `[eval]`
 extra's `wonderwords`, which one RULER test needs.
 
-The 184 skips are the honest part, and they split nine ways: **56** need CUDA
+The 186 skips are the honest part, and they split ten ways: **56** need CUDA
 or the GPU image's x-attention and block-sparse-attn, or the pinned x-attention clone
 (`$ATTNBENCH_XATTN_DIR`, for the tests behind the CPU boundary), **86** read banked result
 files that `results/` keeps out of git, **17** are scripts
@@ -44,7 +44,7 @@ from `attnbench`, **17** are the same scripts skipped again by
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
 `~/.cache/attnbench/ruler_data`; one of them wants a pinned build; a fourth
 skips without `wonderwords`, which the `[eval]` extra installs), **2** need the pinned Llama tokenizer in the local Hugging
-Face cache, **1** needs the primary model's pinned `config.json` there, and **1** is the pre-launch CPU pass (`tests/test_prelaunch_cpu_pass.py`), which runs only from `scripts/prelaunch_cpu_pass.sh`, and **1** needs P4's local scoring data (the H100 diagnostic's Q4 recursion test, through the `H100_DIAG_Q4_*` variables). Each skip names the file or device it wanted.
+Face cache, **1** needs the primary model's pinned `config.json` there, and **1** is the pre-launch CPU pass (`tests/test_prelaunch_cpu_pass.py`), which runs only from `scripts/prelaunch_cpu_pass.sh`, **1** needs P4's local scoring data (the H100 diagnostic's Q4 recursion test, through the `H100_DIAG_Q4_*` variables), and **2** need a clean Python 3.10.12 (the environment build's pre-compile steps, through `$ATTNBENCH_CLEAN_PY310` or `uv python find 3.10.12`). Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden):
