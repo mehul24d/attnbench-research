@@ -234,7 +234,7 @@ def test_no_cuobjdump_anywhere_is_refused_before_any_pip_install(env):
 PROBE = ROOT / "docs" / "launch_cards" / "aws_env_build_probe_20261121.txt"
 
 FAKE_APT = r'''printf "apt-get %s\n" "$*" >> "$CALL_LOG"
-[[ "$1" == install ]] || exit 0
+[[ " $* " == *" install "* ]] || exit 0
 n=$(cat @COUNTER@); if (( n > 0 )); then echo $((n-1)) > @COUNTER@; exit 100; fi
 [[ -n "@NOOP@" ]] && exit 0
 pkg="${@: -1}"; v="${pkg#cuda-cuobjdump-}"; v="${v/-/.}"
@@ -289,7 +289,7 @@ def test_on_the_probed_image_apt_installs_the_matching_cuobjdump(env):
     r, calls = run(env, **_image(env))
     assert r.returncode == 0, r.stderr
     assert [c for c in calls if c.startswith("apt-get")] == [
-        "apt-get install -y --no-install-recommends cuda-cuobjdump-12-9"]
+        "apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends cuda-cuobjdump-12-9"]
     assert "nvcc 12.9 (" in r.stdout and "cuda-12.9/bin/cuobjdump" in r.stdout
     assert sum(c.startswith("cuobjdump-apt --list-elf") for c in calls) == 2
     first_pip = next(i for i, c in enumerate(calls) if " pip install" in c)
@@ -300,8 +300,8 @@ def test_a_stale_apt_cache_is_updated_once_and_retried(env):
     r, calls = run(env, **_image(env, apt_fails=1))
     assert r.returncode == 0, r.stderr
     assert [c for c in calls if c.startswith("apt-get")] == [
-        "apt-get install -y --no-install-recommends cuda-cuobjdump-12-9", "apt-get update -q",
-        "apt-get install -y --no-install-recommends cuda-cuobjdump-12-9"]
+        "apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends cuda-cuobjdump-12-9", "apt-get -o DPkg::Lock::Timeout=600 update -q",
+        "apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends cuda-cuobjdump-12-9"]
 
 
 def test_apt_failing_twice_refuses_with_the_inventory(env):
@@ -336,7 +336,7 @@ def test_a_toolkit_cuobjdump_is_used_without_apt(env, present, used):
 def test_a_toolkit_below_nvcc_is_not_used(env):
     r, calls = run(env, **_image(env, with_cuobjdump=("12.8",)))
     assert r.returncode == 0, r.stderr
-    assert any(c.startswith("apt-get install") for c in calls)
+    assert any(c.startswith("apt-get") and " install " in c for c in calls)
     assert not any(c.startswith("cuobjdump-12.8 --list-elf") for c in calls)
 
 

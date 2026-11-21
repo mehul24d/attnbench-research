@@ -182,8 +182,11 @@ CUOBJDUMP="$(find_cuobjdump)"
 if [[ -z "$CUOBJDUMP" ]]; then
   CUOBJ_PKG="cuda-cuobjdump-${NVCC_REL/./-}"
   echo "   no cuobjdump in $CUDA_HOME or a toolkit at or above $NVCC_REL; apt-get install $CUOBJ_PKG"
-  logged apt_cuobjdump sudo apt-get install -y --no-install-recommends "$CUOBJ_PKG" \
-    || { logged apt_update sudo apt-get update -q && logged apt_cuobjdump_retry sudo apt-get install -y --no-install-recommends "$CUOBJ_PKG"; } \
+  # A fresh Ubuntu boot's unattended-upgrades can hold the dpkg lock for
+  # minutes: wait up to 10 for it rather than fail the attempt.
+  APT=(sudo apt-get -o DPkg::Lock::Timeout=600)
+  logged apt_cuobjdump "${APT[@]}" install -y --no-install-recommends "$CUOBJ_PKG" \
+    || { logged apt_update "${APT[@]}" update -q && logged apt_cuobjdump_retry "${APT[@]}" install -y --no-install-recommends "$CUOBJ_PKG"; } \
     || { echo "REFUSING: apt-get could not install $CUOBJ_PKG (logs/apt_*.log). Nothing else was installed." >&2; tool_inventory; exit 1; }
   CUOBJDUMP="$(find_cuobjdump)"
   [[ -n "$CUOBJDUMP" ]] || { echo "REFUSING: no cuobjdump in $CUDA_HOME or a toolkit at or above $NVCC_REL after installing $CUOBJ_PKG. Nothing else was installed." >&2; tool_inventory; exit 1; }
