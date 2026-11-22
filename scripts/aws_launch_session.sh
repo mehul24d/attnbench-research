@@ -7,7 +7,11 @@
 # PAIRING is P3, P5, P6 or P7, or ENV: the CPU-only environment build on
 # m7a.xlarge that makes the AMI the GPU sessions boot from (adviser's
 # rulings dated 21 Nov 2026; card docs/launch_cards/aws_env_build_m7a.md).
-# ENV takes every guarantee below; it times nothing.
+# ENV takes every guarantee below; it times nothing. PROBE is a short
+# inspection of the same image on the same type, with no build (adviser's
+# rulings dated 22 Nov 2026, probe): every guarantee below, but its hard
+# delete may be 5 to 15 minutes and its halt from 3 minutes (the ruling's
+# 8 and 6), where every other pairing needs 30 and 20.
 #
 # The AWS counterpart of the gcp_launch_*.sh scripts, with the same
 # guarantees, each checked before anything is created:
@@ -43,7 +47,39 @@
 #     -provisioning-model (STANDARD, the vocabulary of
 #     attnbench/provenance.py), -hard-delete-at. The teardown refuses an
 #     instance without attnbench-session;
+#   - a credit gate (adviser's rulings dated 22 Nov 2026, credits): no launch
+#     unless the account is on AWS's paid plan and its remaining credits
+#     exceed the planned AWS spend so far plus this block's cap (see the
+#     credits section below). The Free plan admits only Free Tier instance
+#     types: the environment build's first attempt (22 Nov 2026) was refused
+#     at run-instances for that reason;
+#   - the hard-delete role checked twice (adviser's rulings dated 22 Nov 2026,
+#     role fix): its trust policy is read back and must be the documented
+#     form, one statement letting scheduler.amazonaws.com assume the role on
+#     the conditions aws:SourceAccount = the pinned account and
+#     aws:SourceArn = this region's schedule group
+#     (arn:aws:scheduler:<region>:<account>:schedule-group/default), not a
+#     schedule; and, after the typed confirmation and before run-instances, a
+#     dry registration: a throwaway DISABLED schedule thirty days out, using
+#     the role, for a non-existent instance, which AWS must accept and which
+#     is deleted at once. The environment build's attempt of 21 Nov 2026
+#     (21:15 UTC) created its instance and then had the hard-delete schedule
+#     refused, because the trust condition named the schedule; the launcher
+#     terminated it about 3 s later. AWS validates the role at create time,
+#     a disabled schedule included (checked 21 Nov 2026 against that role);
 #   - typed confirmation ("launch") after the summary.
+#
+# AWS services allowed (adviser's rulings dated 22 Nov 2026, credits): EC2,
+# EBS volumes, EBS snapshots and AMIs, networking (the VPC, security group,
+# key pair and public address the instance uses), IAM (the hard-delete role),
+# EventBridge Scheduler (the hard delete) and Service Quotas (quota reads).
+# Nothing else is used for the work: no S3, Lambda, Bedrock, RDS, DynamoDB,
+# SageMaker or Marketplace image. The account's own administration is not
+# work: the Free Tier API read of the plan and credits, and AWS Budgets
+# alerts (about Rs 6,000 gross; about $1 net of credits). Billing data lags
+# by up to a day, so a budget alert can arrive a day after the spend.
+# After the first AWS usage, check the next day that the credits were
+# applied to the EC2 line of the bill; if they were not, stop before P3.
 #
 # The machine types below were accepted by the researcher on 28 Oct 2026.
 # Nothing has a default region, AMI, key pair, security group, rate or cap:
@@ -82,6 +118,8 @@
 #   AWS_HARD_DELETE_ROLE   IAM role the scheduler assumes (default
 #                          attnbench-hard-delete); it needs only
 #                          ec2:TerminateInstances
+#   AWS_LAUNCH_RECORD      the launch record the credit gate sums (default
+#                          ~/.attnbench/aws_launches.tsv, off-repo)
 set -euo pipefail
 
 HERE="$(dirname "${BASH_SOURCE[0]}")"
@@ -95,7 +133,8 @@ case "$PAIRING" in
   P6) INSTANCE_TYPE="p5.4xlarge";  GPU="1x H100 80GB" ;;
   P7) INSTANCE_TYPE="g5.2xlarge";  GPU="1x A10G 24GB" ;;
   ENV) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: environment build only" ;;
-  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, and ENV is the environment build." >&2
+  PROBE) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: image inspection only, no build" ;;
+  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, ENV is the environment build and PROBE its image inspection." >&2
      exit 1 ;;
 esac
 PAIR_LC="$(echo "$PAIRING" | tr 'A-Z' 'a-z')"
@@ -133,15 +172,17 @@ if [[ ! "$COST_CAP_INR" =~ $NUM ]]; then
   echo "REFUSING TO LAUNCH -- declare the session cost cap as AWS_COST_CAP_INR (Rs)." >&2
   exit 1
 fi
-if [[ ! "$MAX_RUN_MINUTES" =~ ^[0-9]+$ ]] || (( MAX_RUN_MINUTES < 30 || MAX_RUN_MINUTES > 1440 )); then
+if [[ "$PAIRING" == PROBE ]]; then MIN_RUN=5; MAX_RUN=15; MIN_HALT=3; else MIN_RUN=30; MAX_RUN=1440; MIN_HALT=20; fi
+if [[ ! "$MAX_RUN_MINUTES" =~ ^[0-9]+$ ]] || (( MAX_RUN_MINUTES < MIN_RUN || MAX_RUN_MINUTES > MAX_RUN )); then
   echo "REFUSING TO LAUNCH -- declare the hard-delete limit as AWS_MAX_RUN_MINUTES, whole" >&2
-  echo "minutes from 30 to 1440, sized to the work (no default)." >&2
+  echo "minutes from $MIN_RUN to $MAX_RUN for $PAIRING, sized to the work (no default)." >&2
   exit 1
 fi
-HALT_MINUTES="${AWS_HALT_MINUTES:-$(( MAX_RUN_MINUTES - 60 ))}"
-if [[ ! "$HALT_MINUTES" =~ ^[0-9]+$ ]] || (( HALT_MINUTES < 20 || HALT_MINUTES >= MAX_RUN_MINUTES )); then
+if [[ "$PAIRING" == PROBE ]]; then HALT_DEFAULT=$(( MAX_RUN_MINUTES - 2 )); else HALT_DEFAULT=$(( MAX_RUN_MINUTES - 60 )); fi
+HALT_MINUTES="${AWS_HALT_MINUTES:-$HALT_DEFAULT}"
+if [[ ! "$HALT_MINUTES" =~ ^[0-9]+$ ]] || (( HALT_MINUTES < MIN_HALT || HALT_MINUTES >= MAX_RUN_MINUTES )); then
   echo "REFUSING TO LAUNCH -- the in-guest halt (AWS_HALT_MINUTES=$HALT_MINUTES) must be at" >&2
-  echo "least 20 minutes and earlier than the hard delete ($MAX_RUN_MINUTES minutes)." >&2
+  echo "least $MIN_HALT minutes and earlier than the hard delete ($MAX_RUN_MINUTES minutes)." >&2
   exit 1
 fi
 # Worst case: the full rate until the hard delete. Rs, rounded up.
@@ -179,6 +220,53 @@ source "$HERE/_aws_account.sh"
 aws_account_pin
 P=(--profile "$AWS_PIN_PROFILE" --region "$REGION")
 
+# --- credits: the remaining credits must cover everything planned -----------
+# Refused unless the account is on the paid plan (the Free plan admits only
+# Free Tier instance types) and its remaining credits, read from the Free
+# Tier API, exceed the planned AWS spend so far plus this block's cap. The
+# planned spend so far is the sum of the caps in the launch record: one line
+# per create request this launcher has submitted, written at the block's cap
+# whatever it later cost, because the credit balance lags the bill by up to
+# a day. A line is struck by hand, with a leading '#', only once the bill
+# shows what the block cost (or that it created nothing). Credits are in
+# USD; caps are converted at Rs 95.99 per USD, the rate every AWS planning
+# rate in this repository was built at (plan Section 5.2).
+INR_PER_USD="95.99"
+LAUNCH_RECORD="${AWS_LAUNCH_RECORD:-$HOME/.attnbench/aws_launches.tsv}"
+PLAN_STATE="$(aws freetier get-account-plan-state --profile "$AWS_PIN_PROFILE" --region us-east-1 \
+  --query '[accountPlanType,accountPlanStatus,accountPlanRemainingCredits.amount,accountPlanRemainingCredits.unit]' \
+  --output text 2>/dev/null)" || PLAN_STATE=""
+read -r PLAN_TYPE PLAN_STATUS CREDITS_USD CREDIT_UNIT _ <<<"$PLAN_STATE" || true
+if [[ "${PLAN_TYPE:-}" != "PAID" || "${PLAN_STATUS:-}" != "ACTIVE" ]]; then
+  echo "REFUSING TO LAUNCH -- the account's plan reads '${PLAN_TYPE:-unreadable} ${PLAN_STATUS:-}', not" >&2
+  echo "'PAID ACTIVE'. AWS's Free plan admits only Free Tier instance types. Nothing was created." >&2
+  exit 1
+fi
+if [[ "${CREDIT_UNIT:-}" != "USD" || ! "${CREDITS_USD:-}" =~ $NUM ]]; then
+  echo "REFUSING TO LAUNCH -- cannot read the remaining credits in USD ('${CREDITS_USD:-} ${CREDIT_UNIT:-}')." >&2
+  echo "Nothing was created." >&2
+  exit 1
+fi
+PLANNED_INR=0
+if [[ -e "$LAUNCH_RECORD" ]]; then
+  PLANNED_INR="$(awk -F'\t' '/^[[:space:]]*(#|$)/ {next}
+    NF != 4 || $4 !~ /^[0-9]+([.][0-9]+)?$/ {bad = 1; exit}
+    {s += $4} END {if (bad) print "BAD"; else printf "%.2f\n", s + 0}' "$LAUNCH_RECORD")"
+  if [[ ! "$PLANNED_INR" =~ $NUM ]]; then
+    echo "REFUSING TO LAUNCH -- the launch record $LAUNCH_RECORD has a line that is not" >&2
+    echo "'UTC<tab>PAIRING<tab>INSTANCE<tab>CAP_INR' (strike lines with a leading '#'). Nothing was created." >&2
+    exit 1
+  fi
+fi
+CREDITS_INR="$(awk -v c="$CREDITS_USD" -v r="$INR_PER_USD" 'BEGIN{printf "%.2f\n", c * r}')"
+NEED_INR="$(awk -v p="$PLANNED_INR" -v k="$COST_CAP_INR" 'BEGIN{printf "%.2f\n", p + k}')"
+if ! awk -v c="$CREDITS_INR" -v n="$NEED_INR" 'BEGIN{exit !(c > n)}'; then
+  echo "REFUSING TO LAUNCH -- the remaining credits, \$${CREDITS_USD} (Rs ${CREDITS_INR} at Rs ${INR_PER_USD}/\$)," >&2
+  echo "do not exceed the planned AWS spend so far, Rs ${PLANNED_INR}, plus this block's cap," >&2
+  echo "Rs ${COST_CAP_INR} (Rs ${NEED_INR} in all). Nothing was created." >&2
+  exit 1
+fi
+
 # --- read-only checks against the account ------------------------------------
 OFFERED="$(aws ec2 describe-instance-type-offerings "${P[@]}" \
   --location-type "$([[ -n "$AZ" ]] && echo availability-zone || echo region)" \
@@ -192,6 +280,24 @@ ROOT_DEVICE="$(aws ec2 describe-images "${P[@]}" --image-ids "$AMI" \
   --query 'Images[0].RootDeviceName' --output text)"
 if [[ ! "$ROOT_DEVICE" =~ ^/dev/[a-z0-9]+$ ]]; then
   echo "REFUSING TO LAUNCH -- cannot read the root device of $AMI in $REGION. Nothing was created." >&2
+  exit 1
+fi
+# The hard-delete role's trust policy, read back and compared with the
+# documented form field by field. The aws wrapper redacts the pinned account
+# ID in everything it returns, so the read is compared with the wanted form
+# redacted the same way; any other account ID would still show as digits.
+GROUP_ARN="arn:aws:scheduler:${REGION}:${ACCOUNT}:schedule-group/default"
+ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/${ROLE_NAME}"
+TRUST="$(aws iam get-role "${P[@]}" --role-name "$ROLE_NAME" \
+  --query 'Role.AssumeRolePolicyDocument.[length(Statement), Statement[0].Effect, Statement[0].Principal.Service, Statement[0].Action, join(`,`, sort(keys(Statement[0].Condition))), join(`,`, sort(keys(Statement[0].Condition.StringEquals))), Statement[0].Condition.StringEquals."aws:SourceArn", Statement[0].Condition.StringEquals."aws:SourceAccount"]' \
+  --output text 2>/dev/null)" || TRUST=""
+TRUST_WANT="$(printf '1\tAllow\tscheduler.amazonaws.com\tsts:AssumeRole\tStringEquals\taws:SourceAccount,aws:SourceArn\t%s\t%s' "$GROUP_ARN" "$ACCOUNT")"
+TRUST_WANT="${TRUST_WANT//$ACCOUNT/<account>}"
+if [[ -z "$TRUST" || "$TRUST" != "$TRUST_WANT" ]]; then
+  echo "REFUSING TO LAUNCH -- the trust policy of role $ROLE_NAME is not the documented form." >&2
+  echo "  read: '${TRUST//$ACCOUNT/<account>}'" >&2
+  echo "  want: '${TRUST_WANT}'" >&2
+  echo "  (aws:SourceArn must name the schedule group, not a schedule.) Nothing was created." >&2
   exit 1
 fi
 
@@ -224,7 +330,9 @@ echo "  provisioning : $MODEL"
 echo "  rate         : Rs ${RATE_INR_HR}/h (AWS_RATE_INR_HR, planning rate, all-in)"
 echo "  in-guest halt: +${HALT_MINUTES} min, STOPS the instance (GPU billing stops, disk survives)"
 echo "  hard delete  : +${MAX_RUN_MINUTES} min, ec2:TerminateInstances by EventBridge Scheduler"
+echo "  role trust   : ${ROLE_NAME}, aws:SourceArn = schedule-group/default (read back)"
 echo "  worst case   : Rs ${WORST_INR}, cost cap Rs ${COST_CAP_INR}"
+echo "  credits      : \$${CREDITS_USD} left (Rs ${CREDITS_INR}) > Rs ${PLANNED_INR} planned so far + Rs ${COST_CAP_INR} cap"
 echo
 read -r -p "Type 'launch' to proceed, anything else to abort: " CONFIRM
 if [[ "$CONFIRM" != "launch" ]]; then
@@ -234,6 +342,37 @@ fi
 
 # The prompt may have waited past midnight: the launch is the request.
 aws_launch_policy_check "$REGION" $AZ
+
+# Dry registration: AWS must accept a schedule using the role before any
+# instance exists. A throwaway, DISABLED, thirty days out, for an instance
+# id that cannot exist; read back, then deleted.
+DRY="attnbench-dryreg-$(command date -u +%s)-$$"
+DRY_AT="$(iso_utc $(( $(command date -u +%s) + 30 * 86400 )))"
+DRY_TARGET="{\"Arn\":\"arn:aws:scheduler:::aws-sdk:ec2:terminateInstances\",\"RoleArn\":\"${ROLE_ARN}\",\"Input\":\"{\\\"InstanceIds\\\":[\\\"i-00000000000000000\\\"]}\"}"
+if ! aws scheduler create-schedule "${P[@]}" \
+     --name "$DRY" \
+     --state DISABLED \
+     --schedule-expression "at(${DRY_AT})" \
+     --schedule-expression-timezone UTC \
+     --flexible-time-window Mode=OFF \
+     --action-after-completion DELETE \
+     --target "$DRY_TARGET" >/dev/null; then
+  echo "REFUSING TO LAUNCH -- AWS refused the dry registration of a schedule using role" >&2
+  echo "$ROLE_NAME (above). Nothing was created." >&2
+  exit 1
+fi
+DRY_STATE="$(aws scheduler get-schedule "${P[@]}" --name "$DRY" --query State --output text || true)"
+if ! aws scheduler delete-schedule "${P[@]}" --name "$DRY" >/dev/null; then
+  echo "REFUSING TO LAUNCH -- the throwaway schedule $DRY could not be deleted; delete it" >&2
+  echo "by hand (it is disabled and targets no real instance). Nothing was created." >&2
+  exit 1
+fi
+if [[ "$DRY_STATE" != "DISABLED" ]]; then
+  echo "REFUSING TO LAUNCH -- the throwaway schedule read back as '$DRY_STATE', not DISABLED" >&2
+  echo "(it has been deleted). Nothing was created." >&2
+  exit 1
+fi
+echo "Dry registration accepted (schedule $DRY, deleted)."
 
 PLACEMENT=()
 if [[ -n "$SUBNET" ]]; then
@@ -260,6 +399,11 @@ INSTANCE_ID="$(aws ec2 run-instances "${P[@]}" \
   --tag-specifications "ResourceType=instance,Tags=[$TAGS]" "ResourceType=volume,Tags=[$TAGS]" \
   --user-data "file://$STARTUP_SCRIPT" \
   --query 'Instances[0].InstanceId' --output text)" || INSTANCE_ID=""
+# Every submitted create request goes into the launch record at its cap,
+# created or not: an instance may exist even when no id came back.
+mkdir -p "$(dirname "$LAUNCH_RECORD")"
+printf '%s\t%s\t%s\t%s\n' "$(command date -u +%Y-%m-%dT%H:%M:%SZ)" "$PAIRING" \
+  "${INSTANCE_ID:-no-id}" "$COST_CAP_INR" >> "$LAUNCH_RECORD"
 if [[ ! "$INSTANCE_ID" =~ ^i-[0-9a-f]{8,17}$ ]]; then
   echo "ERROR -- run-instances returned no instance id ('$INSTANCE_ID'). An instance may" >&2
   echo "still exist: run scripts/aws_cleanup_check.sh now." >&2
@@ -279,7 +423,7 @@ terminate_now() {
 }
 
 SCHEDULE="attnbench-hard-delete-$INSTANCE_ID"
-TARGET="{\"Arn\":\"arn:aws:scheduler:::aws-sdk:ec2:terminateInstances\",\"RoleArn\":\"arn:aws:iam::${ACCOUNT}:role/${ROLE_NAME}\",\"Input\":\"{\\\"InstanceIds\\\":[\\\"${INSTANCE_ID}\\\"]}\"}"
+TARGET="{\"Arn\":\"arn:aws:scheduler:::aws-sdk:ec2:terminateInstances\",\"RoleArn\":\"${ROLE_ARN}\",\"Input\":\"{\\\"InstanceIds\\\":[\\\"${INSTANCE_ID}\\\"]}\"}"
 if ! aws scheduler create-schedule "${P[@]}" \
      --name "$SCHEDULE" \
      --schedule-expression "at(${DELETE_AT})" \

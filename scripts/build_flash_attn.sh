@@ -7,10 +7,28 @@
 # specific silent failure.
 #
 # Usage:
-#   bash scripts/build_flash_attn.sh [version]
+#   bash scripts/build_flash_attn.sh [--metadata-only] [version]
+#
+# One interpreter (adviser's task of 22 Nov 2026, the interpreter wave): every
+# Python call and every install goes through "$PY" (`"$PY" -m pip`), never a
+# bare `pip` or `python3`. The AWS base image has two: /usr/bin/python3
+# (3.10.12, where the environment build installs torch) and a Python 3.11 whose
+# `pip` comes first on PATH; the third environment-build attempt's bare `pip`
+# ran flash-attn's setup.py under 3.11, which has no torch. The caller sets
+# ATTNBENCH_PYTHON (scripts/aws_env_build_instance.sh passes its own); the
+# default is python3. tests/test_build_interpreter.py fails on any bare use.
+#
+# --metadata-only (same task): every step below, then the build's own pip
+# command with --dry-run: pip runs flash-attn's metadata hook (its setup.py's
+# top level, torch import included) in "$PY" and stops before building.
+# METADATA_OK, then exit. Nothing is compiled; nothing is installed beyond
+# setup.py's build dependency (psutil), if the interpreter lacks it.
 set -euo pipefail
 
+META_ONLY=0
+if [[ "${1:-}" == --metadata-only ]]; then META_ONLY=1; shift; fi
 VERSION="${1:-2.8.3.post1}"
+PY="${ATTNBENCH_PYTHON:-python3}"
 SRC_DIR="${FA_SRC_DIR:-$HOME/fa}"
 
 # Concurrency settings are set here, at the top, so the memory guard in
@@ -54,7 +72,13 @@ fi
 # `-m` has no `__file__` to derive from until after the resolution it needs.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-  python3 -m attnbench.build_guards "${GUARD_ARGS[@]}" || exit 1
+  "$PY" -m attnbench.build_guards "${GUARD_ARGS[@]}" || exit 1
+# The interpreter, and torch in it: setup.py imports torch at its top level.
+echo "python: $PY -> $(command -v "$PY" || echo none), $("$PY" -c 'import platform; print(platform.python_version())' 2>&1)"
+"$PY" -c 'import torch' || {
+  echo "FATAL: torch does not import in $PY; flash-attn's setup.py would fail on it." >&2
+  exit 1
+}
 
 # ---------------------------------------------------------------------------
 # 2. ninja must be on PATH, or torch silently compiles serially.
@@ -68,10 +92,10 @@ PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
 export PATH="$HOME/.local/bin:$PATH"
 command -v ninja >/dev/null || {
   echo "FATAL: ninja not on PATH -- the build would silently go serial." >&2
-  echo "  pip install --user ninja" >&2
+  echo "  $PY -m pip install --user ninja" >&2
   exit 1
 }
-python3 -c 'from torch.utils.cpp_extension import is_ninja_available
+"$PY" -c 'from torch.utils.cpp_extension import is_ninja_available
 assert is_ninja_available(), "torch cannot see ninja despite it being on PATH"' || exit 1
 
 # ---------------------------------------------------------------------------
@@ -130,7 +154,7 @@ if [[ ! -d "flash_attn-${VERSION}" ]]; then
   # `pip download --no-binary :all:` runs the build-requirements hook, which
   # fails here for the same reason the build needs --no-build-isolation.
   # Fetch the sdist directly instead.
-  URL=$(python3 -c "
+  URL=$("$PY" -c "
 import json, urllib.request
 d = json.load(urllib.request.urlopen('https://pypi.org/pypi/flash-attn/${VERSION}/json'))
 print([u['url'] for u in d['urls'] if u['packagetype'] == 'sdist'][0])")
@@ -145,6 +169,12 @@ echo "START $(date -u +%H:%M:%SZ)  archs=${FLASH_ATTN_CUDA_ARCHS}  jobs=${MAX_JO
 # torch, and the build dies in get_requires_for_build_wheel without it. That
 # in turn means build deps are NOT provided for you -- psutil in particular
 # is imported by setup.py itself and must already be present.
-python3 -c 'import psutil' 2>/dev/null || pip install --user -q psutil
-pip install --user --no-build-isolation .
+"$PY" -c 'import psutil' 2>/dev/null || "$PY" -m pip install --user -q psutil
+BUILD=("$PY" -m pip install --user --no-build-isolation .)
+if ((META_ONLY)); then
+  "${BUILD[@]}" --dry-run
+  echo "METADATA_OK flash-attn ${VERSION} ($PY)"
+  exit 0
+fi
+"${BUILD[@]}"
 echo "END $(date -u +%H:%M:%SZ) rc=$?"

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from pathlib import Path
 
 import pytest
 
@@ -142,8 +143,8 @@ def test_the_hard_delete_is_a_schedule_at_launch_plus_the_limit(tmp_path):
     calls = aws_calls(calls)
     expect = dt.datetime.fromtimestamp(NOW + 120 * 60, dt.timezone.utc)
     stamp = expect.strftime("%Y-%m-%dT%H:%M:%S")
-    sched = _one(calls, "scheduler create-schedule")
-    assert f"--name attnbench-hard-delete-{INSTANCE}" in sched
+    sched = _one(calls, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert sched.startswith("scheduler create-schedule")
     assert f"--schedule-expression at({stamp})" in sched
     assert "--schedule-expression-timezone UTC" in sched
     assert "--action-after-completion DELETE" in sched
@@ -155,8 +156,8 @@ def test_the_hard_delete_is_a_schedule_at_launch_plus_the_limit(tmp_path):
     assert f"HARD_DELETE_AT={stamp}Z" in p.stdout
     # order: create, then schedule, then read the schedule back
     i = [k for k, c in enumerate(calls) if "run-instances" in c][0]
-    j = [k for k, c in enumerate(calls) if "create-schedule" in c][0]
-    k = [k for k, c in enumerate(calls) if "get-schedule" in c][0]
+    j = [k for k, c in enumerate(calls) if "create-schedule" in c and "hard-delete-i-" in c][0]
+    k = [k for k, c in enumerate(calls) if "get-schedule" in c and "hard-delete-i-" in c][0]
     assert i < j < k
     assert not any("terminate-instances" in c for c in calls)
 
@@ -193,7 +194,7 @@ def test_a_failed_create_points_at_the_cleanup_check(tmp_path):
     p, calls = _launch(tmp_path, env={"FAKE_RUN_FAIL": "1"})
     assert p.returncode == 1
     assert "aws_cleanup_check.sh" in p.stderr
-    assert not any("create-schedule" in c for c in calls)
+    assert not any("create-schedule" in c and "hard-delete-i-" in c for c in calls)
 
 
 def test_the_account_never_appears_in_the_output(tmp_path):
@@ -220,3 +221,230 @@ def test_a_zone_outside_the_region_is_refused(tmp_path):
 def test_the_iso_helper_has_a_bsd_fallback():
     text = (scripts_copy.__globals__["SCRIPTS"] / "aws_launch_session.sh").read_text()
     assert re.search(r'date -u -d "@\$1".*\n.*date -u -r "\$1"', text)
+
+
+ENV_CARD = {"AWS_SESSION_REGION": "ap-southeast-2", "AWS_SESSION_AZ": "ap-southeast-2a",
+            "AWS_RATE_INR_HR": "34.90", "AWS_COST_CAP_INR": "250",
+            "AWS_HALT_MINUTES": "360", "AWS_MAX_RUN_MINUTES": "375"}
+
+
+def test_the_environment_build_cards_settings(tmp_path):
+    """docs/launch_cards/aws_env_build_m7a.md (adviser's rulings dated 21 Nov
+    2026, fifth wave, item 5): one m7a.xlarge, halt at 360 min, hard delete
+    at 375, worst case Rs 219 under the Rs 250 cap; an abort creates nothing."""
+    p, calls = _launch(tmp_path, "ENV", env=ENV_CARD, stdin="no\n")
+    assert p.returncode == 1 and "no instance created" in p.stdout
+    assert "worst case   : Rs 219, cost cap Rs 250" in p.stdout
+    assert not any(w in c for c in aws_calls(calls) for w in ("run-instances", "create-schedule"))
+    (tmp_path / "go").mkdir()
+    p, calls = _launch(tmp_path / "go", "ENV", env=ENV_CARD)
+    assert p.returncode == 0, p.stderr
+    calls = aws_calls(calls)
+    create = _one(calls, "ec2 run-instances")
+    assert "--instance-type m7a.xlarge" in create and "AvailabilityZone=ap-southeast-2a" in create
+    stamp = dt.datetime.fromtimestamp(NOW + 375 * 60, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({stamp})" in _one(calls, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert "+360 min from boot" in p.stdout
+    card = (Path(__file__).resolve().parents[1] / "docs" / "launch_cards"
+            / "aws_env_build_m7a.md").read_text()
+    for said in ("₹34.90/h", "| 360 min (the ruling)", "| 375 min (the ruling)",
+                 "₹250 (the ruling); worst case ₹34.90 × 375 min = ₹219", "`ap-southeast-2a`"):
+        assert said in card, said
+
+
+def test_a_cap_short_of_the_env_cards_worst_case_is_refused(tmp_path):
+    p, calls = _launch(tmp_path, "ENV", env={**ENV_CARD, "AWS_COST_CAP_INR": "218"})
+    assert p.returncode == 1 and "exceeds the cost cap" in p.stderr and calls == []
+
+
+# --- the credit gate (adviser's rulings dated 22 Nov 2026, credits) ----------
+
+def _record(tmp_path):
+    return tmp_path / ".attnbench" / "aws_launches.tsv"
+
+
+def _no_create(calls):
+    return not any(w in c for c in aws_calls(calls) for w in ("run-instances", "create-schedule"))
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"FAKE_PLAN_TYPE": "FREE"}, "'FREE ACTIVE'"),
+    ({"FAKE_PLAN_STATUS": "NOT_STARTED"}, "'PAID NOT_STARTED'"),
+    ({"FAKE_PLAN_FAIL": "1"}, "'unreadable"),
+    ({"FAKE_CREDIT_UNIT": "INR"}, "cannot read the remaining credits"),
+    ({"FAKE_CREDITS": "None"}, "cannot read the remaining credits"),
+])
+def test_a_launch_needs_the_paid_plan_and_readable_credits(tmp_path, env, said):
+    p, calls = _launch(tmp_path, env=env)
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert _no_create(calls) and not _record(tmp_path).exists()
+
+
+def test_the_plan_is_read_with_the_pinned_profile_before_the_prompt(tmp_path):
+    p, calls = _launch(tmp_path, stdin="no\n")
+    plan = _one(aws_calls(calls), "freetier get-account-plan-state")
+    assert "--profile pinned-profile" in plan and "--region us-east-1" in plan
+    assert "credits      : $140.0 left (Rs 13438.60) > Rs 0 planned so far + Rs 1200 cap" in p.stdout
+
+
+@pytest.mark.parametrize("planned,ok", [
+    ("719.79", True),    # Rs 719.79 + Rs 1,200 = Rs 1,919.79 < $20 x 95.99 = Rs 1,919.80
+    ("719.80", False),   # equal is refused: the credits must exceed
+    ("719.81", False),
+])
+def test_the_credits_must_exceed_the_planned_spend_plus_this_cap(tmp_path, planned, ok):
+    rec = _record(tmp_path)
+    rec.parent.mkdir()
+    rec.write_text(f"2026-11-23T00:00:00Z\tENV\ti-0aaa\t500\n# struck: refused, created nothing\n"
+                   f"2026-11-23T08:00:00Z\tP3\ti-0bbb\t{float(planned) - 500:.2f}\n\n")
+    p, calls = _launch(tmp_path, env={"FAKE_CREDITS": "20.00"})
+    assert (p.returncode == 0) == ok, p.stderr
+    if not ok:
+        assert "do not exceed the planned AWS spend so far" in p.stderr
+        assert f"Rs {planned}, plus this block's cap" in p.stderr and _no_create(calls)
+
+
+def test_the_cap_alone_must_fit_under_the_credits(tmp_path):
+    p, calls = _launch(tmp_path, env={"FAKE_CREDITS": "12.50"})   # Rs 1,199.88 < Rs 1,200
+    assert p.returncode == 1 and "Rs 0, plus this block's cap" in p.stderr and _no_create(calls)
+
+
+def test_a_malformed_record_line_refuses(tmp_path):
+    rec = _record(tmp_path)
+    rec.parent.mkdir()
+    rec.write_text("2026-11-23T00:00:00Z\tP3\ti-0bbb\tabout 500\n")
+    p, calls = _launch(tmp_path)
+    assert p.returncode == 1 and "has a line that is not" in p.stderr and _no_create(calls)
+
+
+def test_each_create_request_is_recorded_at_its_cap_and_counted_next_time(tmp_path):
+    p, _ = _launch(tmp_path)
+    assert p.returncode == 0, p.stderr
+    p, _ = _launch(tmp_path, env={"FAKE_RUN_FAIL": "1", "AWS_COST_CAP_INR": "1300"})
+    assert p.returncode == 1
+    lines = [ln.split("\t") for ln in _record(tmp_path).read_text().splitlines()]
+    assert [ln[1:] for ln in lines] == [["P3", INSTANCE, "1200"], ["P3", "no-id", "1300"]]
+    assert all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", ln[0]) for ln in lines)
+    p, _ = _launch(tmp_path, stdin="no\n")
+    assert "> Rs 2500.00 planned so far + Rs 1200 cap" in p.stdout
+    # and the record decides: Rs 2,500 + Rs 1,200 needs more than $38.55
+    p, calls = _launch(tmp_path, env={"FAKE_CREDITS": "38.54"})
+    assert p.returncode == 1 and _no_create(calls)
+
+
+def test_an_abort_or_a_refusal_records_nothing(tmp_path):
+    _launch(tmp_path, stdin="no\n")
+    _launch(tmp_path, env={"FAKE_PLAN_TYPE": "FREE"})
+    assert not _record(tmp_path).exists()
+
+
+def test_the_launcher_notes_list_the_allowed_services():
+    text = (scripts_copy.__globals__["SCRIPTS"] / "aws_launch_session.sh").read_text()
+    for said in ("AWS services allowed", "EC2,", "EBS volumes, EBS snapshots and AMIs", "networking",
+                 "IAM (the hard-delete role)", "EventBridge Scheduler", "Service Quotas",
+                 "no S3, Lambda, Bedrock, RDS, DynamoDB", "stop before P3"):
+        assert said in text, said
+
+
+# --- the hard-delete role (adviser's rulings dated 22 Nov 2026, role fix) ----
+
+GOOD_TRUST = ("1\\tAllow\\tscheduler.amazonaws.com\\tsts:AssumeRole\\tStringEquals\\t"
+              "aws:SourceAccount,aws:SourceArn\\t{arn}\\t111122223333")
+
+
+def _dry(calls):
+    return [c for c in aws_calls(calls) if "attnbench-dryreg-" in c]
+
+
+def test_the_trust_policy_is_read_before_the_prompt(tmp_path):
+    p, calls = _launch(tmp_path, stdin="no\n")
+    assert p.returncode == 1
+    get = _one(aws_calls(calls), "iam get-role")
+    assert "--profile pinned-profile" in get and "--role-name attnbench-hard-delete" in get
+    assert 'Condition.StringEquals."aws:SourceArn"' in get
+    assert "role trust   : attnbench-hard-delete, aws:SourceArn = schedule-group/default" in p.stdout
+    assert _dry(calls) == []                      # an abort registers nothing
+
+
+@pytest.mark.parametrize("env,why", [
+    # the role as made on 21 Nov 2026: the condition named the schedule
+    ({"FAKE_TRUST_ARN": "arn:aws:scheduler:us-east-1:111122223333:schedule/default/attnbench-hard-delete-*"},
+     "schedule/default/attnbench-hard-delete-*"),
+    ({"FAKE_TRUST": "1\\tAllow\\tscheduler.amazonaws.com\\tsts:AssumeRole\\tArnLike,StringEquals\\t"
+                    "aws:SourceAccount\\tNone\\t111122223333"}, "ArnLike"),
+    ({"FAKE_TRUST_ARN": "arn:aws:scheduler:us-west-2:111122223333:schedule-group/default"}, "us-west-2"),
+    ({"FAKE_TRUST_ARN": "arn:aws:scheduler:us-east-1:444455556666:schedule-group/default"}, "444455556666"),
+    ({"FAKE_TRUST": GOOD_TRUST.format(arn="x").replace("1\\t", "2\\t", 1)}, "read: '2"),
+    ({"FAKE_TRUST": GOOD_TRUST.format(arn="arn:aws:scheduler:us-east-1:111122223333:schedule-group/default")
+                    .replace("scheduler.amazonaws.com", "ec2.amazonaws.com")}, "ec2.amazonaws.com"),
+    ({"FAKE_ROLE_FAIL": "1"}, "read: ''"),
+])
+def test_a_trust_policy_not_in_the_documented_form_is_refused(tmp_path, env, why):
+    p, calls = _launch(tmp_path, env=env)
+    assert p.returncode == 1 and "not the documented form" in p.stderr, p.stderr
+    assert why in p.stderr
+    assert "111122223333" not in p.stdout + p.stderr
+    assert _no_create(calls) and not _record(tmp_path).exists()
+
+
+def test_the_dry_registration_comes_after_the_prompt_and_before_the_create(tmp_path):
+    p, calls = _launch(tmp_path)
+    assert p.returncode == 0, p.stderr
+    calls = aws_calls(calls)
+    create, get, delete = _dry(calls)
+    assert create.startswith("scheduler create-schedule") and "--state DISABLED" in create
+    thirty = dt.datetime.fromtimestamp(NOW + 30 * 86400, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({thirty})" in create
+    assert '\\"InstanceIds\\":[\\"i-00000000000000000\\"]' in create
+    assert ":role/attnbench-hard-delete" in create and "--region us-east-1" in create
+    assert get.startswith("scheduler get-schedule") and delete.startswith("scheduler delete-schedule")
+    name = re.search(r"--name (attnbench-dryreg-\S+)", create).group(1)
+    assert f"--name {name}" in get and f"--name {name}" in delete
+    order = [k for k, c in enumerate(calls) if c in (create, delete) or "run-instances" in c]
+    assert [calls[k].split()[1] for k in order] == ["create-schedule", "delete-schedule", "run-instances"]
+    assert "Dry registration accepted" in p.stdout
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"FAKE_DRYREG_FAIL": "1"}, "refused the dry registration"),
+    ({"FAKE_DRYREG_DELETE_FAIL": "1"}, "could not be deleted"),
+    ({"FAKE_DRYREG_STATE": "ENABLED"}, "read back as 'ENABLED', not DISABLED"),
+])
+def test_a_failed_dry_registration_creates_no_instance(tmp_path, env, said):
+    p, calls = _launch(tmp_path, env=env)
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert not any("run-instances" in c for c in aws_calls(calls))
+    assert not _record(tmp_path).exists()
+    if "FAKE_DRYREG_DELETE_FAIL" not in env:     # whatever the read, it is deleted
+        assert any(c.startswith("scheduler delete-schedule") for c in _dry(calls)) or "FAKE_DRYREG_FAIL" in env
+
+
+# --- the image probe (adviser's rulings dated 22 Nov 2026, probe) ------------
+PROBE_CARD = {**ENV_CARD, "AWS_COST_CAP_INR": "15", "AWS_HALT_MINUTES": "6",
+              "AWS_MAX_RUN_MINUTES": "8"}
+
+
+def test_the_probe_cards_settings(tmp_path):
+    """One m7a.xlarge, halt at 6 min, hard delete at 8, cap Rs 15: worst case
+    Rs 34.90 x 8 min = Rs 4.65, rounded up to Rs 5."""
+    p, calls = _launch(tmp_path, "PROBE", env=PROBE_CARD)
+    assert p.returncode == 0, p.stderr
+    assert "worst case   : Rs 5, cost cap Rs 15" in p.stdout
+    calls = aws_calls(calls)
+    assert "--instance-type m7a.xlarge" in _one(calls, "ec2 run-instances")
+    stamp = dt.datetime.fromtimestamp(NOW + 8 * 60, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({stamp})" in _one(calls, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert "+6 min from boot" in p.stdout
+
+
+@pytest.mark.parametrize("pairing,minutes,halt,ok", [
+    ("PROBE", "4", "3", False), ("PROBE", "16", "6", False), ("PROBE", "8", "2", False),
+    ("PROBE", "8", "8", False), ("PROBE", "5", "3", True), ("PROBE", "15", "13", True),
+    ("ENV", "8", "6", False),    # the short limits are the probe's alone
+])
+def test_the_short_limits_are_the_probes_alone(tmp_path, pairing, minutes, halt, ok):
+    p, calls = _launch(tmp_path, pairing, env={**PROBE_CARD, "AWS_MAX_RUN_MINUTES": minutes,
+                                               "AWS_HALT_MINUTES": halt})
+    assert (p.returncode == 0) == ok, p.stderr
+    if not ok:
+        assert calls == []

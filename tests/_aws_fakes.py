@@ -40,6 +40,11 @@ case "$1 $2" in
     if [[ -n "$profile" ]]; then echo "${FAKE_PROFILE_ACCOUNT:-$FAKE_ACCOUNT}"
     else echo "${FAKE_ACTIVE_ACCOUNT:-$FAKE_ACCOUNT}"; fi
     exit 0 ;;
+  "freetier get-account-plan-state")
+    [[ -n "${FAKE_PLAN_FAIL:-}" ]] && { echo "AccessDenied" >&2; exit 254; }
+    printf '%s\t%s\t%s\t%s\n' "${FAKE_PLAN_TYPE:-PAID}" "${FAKE_PLAN_STATUS:-ACTIVE}" \
+      "${FAKE_CREDITS:-140.0}" "${FAKE_CREDIT_UNIT:-USD}"
+    exit 0 ;;
   "ec2 describe-regions") printf '%b\n' "$FAKE_REGIONS"; exit 0 ;;
   "ec2 describe-instance-type-offerings")
     [[ -n "${FAKE_NOT_OFFERED:-}" ]] && { echo None; exit 0; }
@@ -55,12 +60,27 @@ case "$1 $2" in
     [[ -n "${FAKE_RUN_FAIL:-}" ]] && { echo "An error occurred (InsufficientInstanceCapacity)" >&2; exit 254; }
     echo "arn:aws:ec2:$region:$FAKE_ACCOUNT:instance/$FAKE_INSTANCE" >&2
     echo "$FAKE_INSTANCE"; exit 0 ;;
+  "iam get-role")
+    [[ -n "${FAKE_ROLE_FAIL:-}" ]] && { echo "NoSuchEntity" >&2; exit 254; }
+    if [[ -n "${FAKE_TRUST:-}" ]]; then printf '%b\n' "$FAKE_TRUST"; exit 0; fi
+    printf '1\tAllow\tscheduler.amazonaws.com\tsts:AssumeRole\tStringEquals\taws:SourceAccount,aws:SourceArn\t%s\t%s\n' \
+      "${FAKE_TRUST_ARN:-arn:aws:scheduler:$region:$FAKE_ACCOUNT:schedule-group/default}" "$FAKE_ACCOUNT"
+    exit 0 ;;
   "scheduler create-schedule")
-    [[ -n "${FAKE_SCHED_FAIL:-}" ]] && { echo "AccessDenied for arn:aws:iam::$FAKE_ACCOUNT:role/x" >&2; exit 254; }
+    if [[ "$*" == *"--name attnbench-dryreg-"* ]]; then
+      [[ -n "${FAKE_DRYREG_FAIL:-}" ]] && { echo "ValidationException: The execution role you provide must allow AWS EventBridge Scheduler to assume the role." >&2; exit 254; }
+    else
+      [[ -n "${FAKE_SCHED_FAIL:-}" ]] && { echo "AccessDenied for arn:aws:iam::$FAKE_ACCOUNT:role/x" >&2; exit 254; }
+    fi
     echo "{\"ScheduleArn\": \"arn:aws:scheduler:$region:$FAKE_ACCOUNT:schedule/default/x\"}"; exit 0 ;;
-  "scheduler get-schedule") echo "${FAKE_SCHED_STATE:-ENABLED}"; exit 0 ;;
+  "scheduler get-schedule")
+    if [[ "$*" == *"--name attnbench-dryreg-"* ]]; then echo "${FAKE_DRYREG_STATE:-DISABLED}"
+    else echo "${FAKE_SCHED_STATE:-ENABLED}"; fi
+    exit 0 ;;
   "scheduler list-schedules") exit 0 ;;
-  "scheduler delete-schedule") exit 0 ;;
+  "scheduler delete-schedule")
+    [[ "$*" == *"--name attnbench-dryreg-"* && -n "${FAKE_DRYREG_DELETE_FAIL:-}" ]] && exit 254
+    exit 0 ;;
   "ec2 terminate-instances") exit "${FAKE_TERMINATE_RC:-0}" ;;
   "ec2 wait") exit 0 ;;
   "ec2 get-console-output")

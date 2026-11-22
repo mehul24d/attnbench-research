@@ -11,7 +11,7 @@ rewritten for a public reader.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev,eval,learned]"
-.venv/bin/python -m pytest tests/ -q     # 6816 passed, 184 skipped, no GPU
+.venv/bin/python -m pytest tests/ -q     # 6956 passed, 186 skipped, no GPU
 ```
 
 The `[dev,eval]` extras are required: four test modules import `transformers`
@@ -34,7 +34,7 @@ torch the check refuses the variant, so it fails closed (Appendix A, 12 Nov
 2026). The counts below were measured with torch 2.13.0 and the `[eval]`
 extra's `wonderwords`, which one RULER test needs.
 
-The 184 skips are the honest part, and they split nine ways: **56** need CUDA
+The 186 skips are the honest part, and they split ten ways: **56** need CUDA
 or the GPU image's x-attention and block-sparse-attn, or the pinned x-attention clone
 (`$ATTNBENCH_XATTN_DIR`, for the tests behind the CPU boundary), **86** read banked result
 files that `results/` keeps out of git, **17** are scripts
@@ -44,7 +44,7 @@ from `attnbench`, **17** are the same scripts skipped again by
 (`scripts/fetch_ruler_data.py`, found through `$ATTNBENCH_RULER_DATA` or
 `~/.cache/attnbench/ruler_data`; one of them wants a pinned build; a fourth
 skips without `wonderwords`, which the `[eval]` extra installs), **2** need the pinned Llama tokenizer in the local Hugging
-Face cache, **1** needs the primary model's pinned `config.json` there, and **1** is the pre-launch CPU pass (`tests/test_prelaunch_cpu_pass.py`), which runs only from `scripts/prelaunch_cpu_pass.sh`, and **1** needs P4's local scoring data (the H100 diagnostic's Q4 recursion test, through the `H100_DIAG_Q4_*` variables). Each skip names the file or device it wanted.
+Face cache, **1** needs the primary model's pinned `config.json` there, and **1** is the pre-launch CPU pass (`tests/test_prelaunch_cpu_pass.py`), which runs only from `scripts/prelaunch_cpu_pass.sh`, **1** needs P4's local scoring data (the H100 diagnostic's Q4 recursion test, through the `H100_DIAG_Q4_*` variables), and **2** need a clean Python 3.10.12 (the environment build's pre-compile steps, through `$ATTNBENCH_CLEAN_PY310` or `uv python find 3.10.12`). Each skip names the file or device it wanted.
 
 Those counts are for a fresh clone on a machine without the RULER data or
 the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden):
@@ -52,11 +52,11 @@ the tokenizer. Three more skip than the `-r3` counts said (182 fresh, 97 hidden)
 the change is the environment's, not the code's (13 Nov 2026). At `lock-2026-11-14-r2` the
 Mac has the RULER data and the tokenizer in `~/.cache`, so the fresh count is measured with
 `HOME` pointed at an empty directory (14 Nov 2026).
-**With `results/` present the suite reads 6906 passed, 94 skipped**, because
+**With `results/` present the suite reads 7046 passed, 96 skipped**, because
 the 86 banked-file tests run instead of skipping (all but three do: the third, `test_script_usage_paths`, skips while the Mac's `results/` has no `p1_training/`) and, on a machine with the
 RULER data directory and the tokenizer, those tests run too (with `results/`
-present and those two hidden it reads 6901 passed, 99 skipped). All three
-totals are 7000 (the 22 Nov 2026 residual split adds 15 that pass with no data: its 10 and 5 file-parametrized checks; the P6 host-effect rule adds 21 that pass with no data: its 17 and 4 script-parametrized checks, 21 Nov 2026; the AWS launch-policy and launcher tests add 9 that pass with no data: 8 for rule 12's Sydney lift, PR #91, and 1 for the ENV build target, 21 Nov 2026; the exploratory wave adds 47 that pass with no data: its 37 and 10 file-parametrized checks, 17 Nov 2026; the H100 diagnostic adds 73: its 68, one of which skips without P4's local data, and 5 file-parametrized checks, 17 Nov 2026, six of the 68 added with the card's 17 Nov rule edits and three with the rerun's launch-table fix), which is
+present and those two hidden it reads 7005 passed, 101 skipped). All three
+totals are 7142 (the env-build merge with main, 23 Nov 2026, adds main's 15 below; the interpreter wave adds 36 that pass with no data, derived from the collection, not re-measured on a fresh clone: 32 for the bare-interpreter scan of the build and instance scripts and 4 for the dry run's metadata steps and the two-interpreter image list, 22 Nov 2026; the dry-run wave adds 9, derived from the collection, not re-measured on a fresh clone: 7 that pass with no data for the memory guard's /proc/meminfo read, the real-error reporting and --stop-before-compile, and 2 that run the pre-compile steps on a clean Python 3.10.12 and skip without one, counted here as skipped, 22 Nov 2026; the image probe adds 20 that pass with no data, derived from the collection, not re-measured on a fresh clone: 8 for the launcher's PROBE pairing, 11 net for the build script's cuobjdump search on fixtures from the probe's inventory and 1 script-parametrized check of the inventory script, 22 Nov 2026; the environment build's fifth wave adds 7 that pass with no data: 5 for the script's FA3 manifest, nvcc, cubin and import checks and 2 for the card's launcher settings, 21 Nov 2026; the AWS environment build adds 44 that pass with no data: 39 for its script and list helper, 4 script-parametrized checks of the helper and 1 launcher-tag check of the script, 21 Nov 2026; the 22 Nov 2026 residual split adds 15 that pass with no data: its 10 and 5 file-parametrized checks; the P6 host-effect rule adds 21 that pass with no data: its 17 and 4 script-parametrized checks, 21 Nov 2026; the AWS launch-policy and launcher tests add 9 that pass with no data: 8 for rule 12's Sydney lift, PR #91, and 1 for the ENV build target, 21 Nov 2026; the exploratory wave adds 47 that pass with no data: its 37 and 10 file-parametrized checks, 17 Nov 2026; the H100 diagnostic adds 73: its 68, one of which skips without P4's local data, and 5 file-parametrized checks, 17 Nov 2026, six of the 68 added with the card's 17 Nov rule edits and three with the rerun's launch-table fix), which is
 what `pytest --collect-only` reports, and
 `test_the_suite_counts_match_the_collected_suite` asserts it. T4.3's 36 reproduction tests all pass, none marked (`docs/t43/import_edits.md`).
 

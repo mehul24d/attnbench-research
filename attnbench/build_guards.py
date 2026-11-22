@@ -24,6 +24,7 @@ time, and the cost of proceeding is the whole session.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 # Measured from the 2026-09-02 OOM log: killed `cicc` processes reported
@@ -115,8 +116,24 @@ def check_build_memory(max_jobs: int, nvcc_threads: int, free_gb: float,
     return plan
 
 
+def available_gb(meminfo: str = "/proc/meminfo") -> float:
+    """MemAvailable from /proc/meminfo, in GiB. Standard library only: the
+    environment-build image's Python has no psutil, and step 0 runs before
+    anything is installed (21 Nov 2026 22:33 UTC, the second attempt)."""
+    with open(meminfo) as f:
+        for line in f:
+            key, _, rest = line.partition(":")
+            if key == "MemAvailable":
+                value, unit = rest.split()[:2]
+                if unit != "kB":
+                    raise ValueError(f"{meminfo}: MemAvailable in {unit!r}, expected kB")
+                return int(value) / 2**20
+    raise ValueError(f"no MemAvailable line in {meminfo}")
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    import traceback
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--max-jobs", type=int, required=True)
     ap.add_argument("--nvcc-threads", type=int, required=True)
@@ -124,21 +141,25 @@ def main(argv: list[str] | None = None) -> int:
                     help="memory per concurrent frontend (default: FA2's measured figure)")
     ap.add_argument("--free-gb", type=float, default=None,
                     help="override measured free memory (for testing the guard)")
+    ap.add_argument("--meminfo", default="/proc/meminfo",
+                    help="where MemAvailable is read when --free-gb is not given")
     args = ap.parse_args(argv)
 
-    if args.free_gb is not None:
-        free_gb = args.free_gb
-    else:
-        import psutil
-        free_gb = psutil.virtual_memory().available / 2**30
-
     try:
+        free_gb = args.free_gb if args.free_gb is not None else available_gb(args.meminfo)
         plan = check_build_memory(args.max_jobs, args.nvcc_threads, free_gb, args.gb_per_job)
-    except (BuildResourceError, ValueError) as e:
+    except BuildResourceError as e:
         print(f"FATAL: {e}", flush=True)
         return 1
+    except Exception:  # noqa: BLE001 -- the real error, never a memory verdict
+        print("FATAL: the memory guard could not run (this is not a memory "
+              "verdict):", flush=True)
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
+        return 2
     print(f"memory check ok: {plan.concurrent_frontends} concurrent cicc, "
-          f"~{plan.required_gb:.0f} GB needed, ~{plan.usable_gb:.0f} GB usable",
+          f"~{plan.required_gb:.0f} GB needed, ~{plan.usable_gb:.0f} GB usable "
+          f"({free_gb:.1f} GiB available)",
           flush=True)
     return 0
 
