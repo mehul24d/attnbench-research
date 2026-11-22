@@ -103,7 +103,7 @@ instance keeps running and keeps its results; nothing is lost until the hard del
 
 ## The prediction committed before any measurement
 
-`docs/p3_prediction/prediction_P3_exploratory_from_P1_<UTC>.json` with its sha256 sidecar,
+`docs/p3_prediction/prediction_P3_exploratory_from_P1_20261122T211249520458Z.json` (sha256 `72b907cf4605336bba91ef3f04f8503945e49dabef207d4e3c4fc7b26183e1b2`, written 22 Nov 2026 21:12 UTC from `5b20daa`, 35 cells) with its sha256 sidecar,
 written by `scripts/p3_prediction_from_p1.py` from P1's committed T3.2d prediction
 (`prediction_P1_20261109T095833754749Z.json`, sha256 `280a3423…`, checked against its
 sidecar before it is read), and committed to this repository before any P3 session. It is
