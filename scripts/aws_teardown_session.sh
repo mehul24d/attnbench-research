@@ -51,10 +51,16 @@ source "$(dirname "${BASH_SOURCE[0]}")/_aws_account.sh"
 aws_account_pin
 P=(--profile "$AWS_PIN_PROFILE" --region "$REGION")
 
-describe() {   # state, session tag, public DNS, launch time; tab-separated
+# One field per call (23 Nov 2026). A single tab-separated query shifted the
+# fields: a stopped instance's PublicDnsName is the empty string, `read`
+# collapses the two tabs around it, and LaunchTime landed in DNS, so a
+# stopped instance got no session_cost.txt (the 22 Nov env build).
+field() {      # field REGION QUERY: one field of the instance, text output
   aws ec2 describe-instances --profile "$AWS_PIN_PROFILE" --region "$1" --instance-ids "$ID" \
-    --query 'Reservations[0].Instances[0].[State.Name,Tags[?Key==`attnbench-session`]|[0].Value,PublicDnsName,LaunchTime]' \
-    --output text 2>/dev/null
+    --query "Reservations[0].Instances[0].$2" --output text 2>/dev/null
+}
+describe() {   # the instance's state in REGION; fails if it is not there
+  field "$1" 'State.Name'
 }
 
 FOUND=1
@@ -76,7 +82,10 @@ fi
 
 STATE="" SESSION="" DNS="" LAUNCH=""
 if [[ "$FOUND" -eq 1 ]]; then
-  IFS=$'\t' read -r STATE SESSION DNS LAUNCH <<<"$INFO"
+  STATE="$INFO"
+  SESSION="$(field "$REGION" 'Tags[?Key==`attnbench-session`]|[0].Value')"
+  DNS="$(field "$REGION" 'PublicDnsName')"
+  LAUNCH="$(field "$REGION" 'LaunchTime')"
   if [[ -z "$SESSION" || "$SESSION" == "None" ]]; then
     echo "REFUSING: $ID has no attnbench-session tag, so aws_launch_session.sh did not" >&2
     echo "create it. This script deletes only the study's own instances. Nothing was" >&2

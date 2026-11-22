@@ -128,6 +128,22 @@ def test_a_stopped_instance_is_still_terminated_without_ssh(tmp_path):
     assert any("terminate-instances" in c for c in calls)
 
 
+def test_a_stopped_instance_with_an_empty_public_dns_still_gets_its_cost_record(tmp_path):
+    """The 22 Nov 2026 env build: the instance had halted itself, so its
+    PublicDnsName was the empty string. Read in one tab-separated query, the
+    empty field collapsed and LaunchTime fell into the DNS slot, so no
+    session_cost.txt was written. Each field is now its own query: the
+    record is written from LaunchTime (06:00:00Z, 60 minutes, Rs 120)."""
+    p, calls, out = _teardown(tmp_path, env={"FAKE_STATE": "stopped", "FAKE_DNS": ""})
+    assert p.returncode == 0, p.stdout + p.stderr
+    cost = dict(line.split(": ", 1) for line in (out / "session_cost.txt").read_text().splitlines())
+    assert cost["boot"] == "2026-10-28T06:00:00Z"
+    assert cost["minutes"] == "60" and cost["est_inr"] == "120"
+    assert cost["basis"].startswith("EC2 LaunchTime")
+    assert "state stopped" in p.stdout and "public DNS 'none'" in p.stdout
+    assert any("terminate-instances" in c for c in calls)
+
+
 def test_a_failed_terminate_is_loud(tmp_path):
     p, _, _ = _teardown(tmp_path, env={"FAKE_TERMINATE_RC": "1"})
     assert "TERMINATE FAILED" in p.stdout

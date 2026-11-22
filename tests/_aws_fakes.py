@@ -89,8 +89,20 @@ case "$1 $2" in
   "ec2 describe-instances")
     if [[ "$*" == *"--instance-ids"* ]]; then
       if [[ "$region" == "${FAKE_INSTANCE_REGION:-}" ]]; then
-        printf '%s\t%s\t%s\t%s\n' "${FAKE_STATE:-running}" "${FAKE_SESSION_TAG:-None}" \
-          "ec2-1-2-3-4.compute-1.amazonaws.com" "${FAKE_LAUNCH:-2026-10-28T06:00:00+00:00}"
+        # Text output as the real CLI gives it: an empty string prints as
+        # nothing (a stopped instance's PublicDnsName), None as "None".
+        # FAKE_DNS="" is a stopped instance's empty public DNS.
+        st="${FAKE_STATE:-running}" tag="${FAKE_SESSION_TAG:-None}"
+        dns="${FAKE_DNS-ec2-1-2-3-4.compute-1.amazonaws.com}"
+        lt="${FAKE_LAUNCH:-2026-10-28T06:00:00+00:00}"
+        case "$*" in
+          *"PublicDnsName,LaunchTime]"*) printf '%s\t%s\t%s\t%s\n' "$st" "$tag" "$dns" "$lt" ;;
+          *"attnbench-session"*) printf '%s\n' "$tag" ;;
+          *PublicDnsName*) printf '%s\n' "$dns" ;;
+          *LaunchTime*) printf '%s\n' "$lt" ;;
+          *State.Name*) printf '%s\n' "$st" ;;
+          *) echo "UNHANDLED query $*" >> "$AWS_LOG"; exit 1 ;;
+        esac
         exit 0
       fi
       echo "An error occurred (InvalidInstanceID.NotFound)" >&2; exit 254
