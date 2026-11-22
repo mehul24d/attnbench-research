@@ -1,10 +1,102 @@
-# The environment-build base image's /usr/bin/python3, as far as the probe of
-# 21 Nov 2026 22:16 UTC read it (aws_env_build_probe_20261121.txt, "python
-# and torch"): Python 3.10.12, pip present (pip 26.3), torch absent. Nothing
-# else outside the standard library was listed, so nothing else is assumed:
-# a pre-compile step that imports any other non-stdlib module before step 2
-# has installed it fails tests/test_env_build_clean_python.py (adviser's task
-# of 22 Nov 2026, item 2). The dry run records the image's full pip list
-# (image_pip_before.txt); a module is added here only from such a record.
-python: 3.10.12
+# The environment-build base image's two Pythons, for the import gate in
+# tests/test_aws_env_build_instance.py (adviser's tasks of 22 Nov 2026: item 2
+# of the dry-run wave, and the interpreter wave's "cover both interpreters").
+# A pre-compile step that imports a non-stdlib module the interpreter it ran
+# in lacks fails that test; a step that reaches the 3.11 at all fails it too.
+# Names are distribution names, lower case, "-" as "_" (as the test reads the
+# v6 lists). A module is added only from a record:
+#
+# /usr/bin/python3, 3.10.12, the one the build uses ("$PY"): the image's own
+# `pip list` before anything was installed (aws_env_build_image_pip_20261121.txt,
+# the dry run's and the third attempt's image_pip_before.txt), 80
+# distributions, no torch.
+#
+# The 3.11 whose `pip` is first on PATH: only what the third attempt's
+# logs/fa_build.log shows of it (pip and setuptools under
+# /usr/local/lib/python3.11/dist-packages, no torch); its patch version and
+# the rest of its packages are unrecorded. The next dry run's interpreters.txt
+# lists every pip and python3* on PATH.
+python: 3.10.12 /usr/bin/python3
+module: attrs
+module: automat
+module: awscli
+module: babel
+module: bcrypt
+module: blinker
+module: certifi
+module: chardet
+module: click
+module: cloud_init
+module: colorama
+module: command_not_found
+module: configobj
+module: constantly
+module: cryptography
+module: dbus_python
+module: devscripts
+module: distro
+module: distro_info
+module: docutils
+module: ec2_hibinit_agent
+module: gpg
+module: hibagent
+module: httplib2
+module: hyperlink
+module: idna
+module: importlib_metadata
+module: incremental
+module: jeepney
+module: jinja2
+module: jmespath
+module: jsonpatch
+module: jsonpointer
+module: jsonschema
+module: keyring
+module: launchpadlib
+module: lazr.restfulclient
+module: lazr.uri
+module: markupsafe
+module: more_itertools
+module: netifaces
+module: oauthlib
+module: packaging
+module: pexpect
 module: pip
+module: ptyprocess
+module: pyasn1
+module: pyasn1_modules
+module: pygobject
+module: pyhamcrest
+module: pyjwt
+module: pyopenssl
+module: pyparsing
+module: pyrsistent
+module: pyserial
+module: python_apt
+module: python_dateutil
+module: python_debian
+module: python_magic
+module: pytz
+module: pyxdg
+module: pyyaml
+module: requests
+module: rsa
+module: secretstorage
+module: service_identity
+module: setuptools
+module: six
+module: sos
+module: ssh_import_id
+module: systemd_python
+module: ubuntu_pro_client
+module: ufw
+module: unattended_upgrades
+module: unidiff
+module: urllib3
+module: wadllib
+module: wheel
+module: xdg
+module: zipp
+python: 3.11 /usr/local/lib/python3.11/dist-packages (pip first on PATH)
+module: pip
+module: setuptools

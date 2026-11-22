@@ -8,7 +8,7 @@
 #
 # Sections: each CUDA toolkit under /usr/local (its bin listing, nvcc's
 # release, whether cuobjdump is there and runs), every cuobjdump on the
-# system, Python and torch, CPU/memory/disk, apt sources and the CUDA
+# system, every pip and python3* on PATH with torch in each, CPU/memory/disk, apt sources and the CUDA
 # packages apt knows of.
 set -u
 sec() { printf '\n## %s\n' "$*"; }
@@ -42,12 +42,32 @@ find /usr /opt -xdev \( -name cuobjdump -o -name nvcc \) -type f 2>/dev/null | s
 echo "on PATH: cuobjdump=$(command -v cuobjdump || echo none) nvcc=$(command -v nvcc || echo none)"
 
 sec "python and torch"
-for py in /usr/bin/python3 $(command -v python3) /opt/conda/bin/python /opt/pytorch/bin/python; do
-  [[ -x "$py" ]] || continue
-  echo "$py: $("$py" -c 'import platform; print(platform.python_version())' 2>&1)"
-  echo "  torch: $("$py" -c 'import torch; print(torch.__version__, torch.version.cuda)' 2>&1 | tail -1)"
-  echo "  pip: $("$py" -m pip --version 2>&1 | cut -d' ' -f1,2)"
-done | awk '!seen[$0]++'
+# Every pip and python3* on PATH, then the fixed candidates (adviser's task of
+# 22 Nov 2026, the interpreter wave: the image's bare `pip` was a second
+# Python's, 3.11, which the first probe never listed). No bare pip or python
+# (tests/test_build_interpreter.py).
+{
+  IFS=: read -ra dirs <<<"$PATH"
+  for d in "${dirs[@]}"; do
+    for f in "$d"/pip "$d"/pip3 "$d"/pip3.[0-9]*; do
+      [[ -x "$f" && ! -d "$f" ]] && echo "PIP $f"
+    done
+    for f in "$d"/python3 "$d"/python3.[0-9]*; do
+      [[ -x "$f" && ! -d "$f" && "$f" != *-config ]] && echo "PY $f"
+    done
+  done
+  for f in /usr/bin/python3 /opt/conda/bin/python /opt/pytorch/bin/python; do
+    [[ -x "$f" ]] && echo "PY $f"
+  done
+} | awk '!seen[$0]++' | while read -r kind f; do
+  if [[ "$kind" == PIP ]]; then
+    echo "$f -> $(readlink -f "$f"): $("$f" --version 2>&1 | head -1)"
+    continue
+  fi
+  echo "$f -> $(readlink -f "$f"): $("$f" -c 'import platform; print(platform.python_version())' 2>&1)"
+  echo "  torch: $("$f" -c 'import torch; print(torch.__version__, torch.version.cuda)' 2>&1 | tail -1 | cut -c1-200)"
+  echo "  pip: $("$f" -m pip --version 2>&1 | cut -d' ' -f1,2)"
+done
 ls -d /opt/*/ 2>/dev/null | tr '\n' ' '; echo
 
 sec "apt sources"

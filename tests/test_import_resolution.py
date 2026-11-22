@@ -125,7 +125,9 @@ def test_the_ordering_check_catches_an_import_before_the_insert(tmp_path):
 
 
 SH_SCRIPTS = sorted(SCRIPTS.glob("*.sh"))
-MODULE_CALL = re.compile(r"python3?\s+-m\s+attnbench\.")
+# A bare python or python3, or the build scripts' one interpreter variable
+# ("$PY", "${ATTNBENCH_PYTHON:-python3}"; the interpreter wave of 22 Nov 2026).
+MODULE_CALL = re.compile(r"""(?:python3?|"\$\{?(?:PY|ATTNBENCH_PYTHON)\b[^"]*")\s+-m\s+attnbench\.""")
 
 
 # A PYTHONPATH that is derived from the script's own location. `$0` is
@@ -214,6 +216,9 @@ def test_the_shell_check_can_see_a_module_call():
     assert MODULE_CALL.search("python3 -m attnbench.build_guards --x 1")
     assert MODULE_CALL.search("  python -m attnbench.foo")
     assert not MODULE_CALL.search("python3 -m pytest tests/")
+    assert MODULE_CALL.search('  "$PY" -m attnbench.build_guards "${GUARD_ARGS[@]}"')
+    assert MODULE_CALL.search('"${ATTNBENCH_PYTHON:-python3}" -m attnbench."$mod" "$@"')
+    assert not MODULE_CALL.search('"$PY" -m pip install --user .')
     assert any(MODULE_CALL.search(sh.read_text()) for sh in SH_SCRIPTS), (
         "no shell script invokes `-m attnbench.…` any more. If that is "
         "deliberate, delete this check rather than leaving it to pass on "

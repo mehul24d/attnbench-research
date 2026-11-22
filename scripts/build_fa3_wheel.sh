@@ -21,6 +21,9 @@
 # build; 2 the build failed or hit its deadline (logs are stored); 3 the
 # stored wheel did not read back with the same hash; 4 no bucket.
 set -euo pipefail
+# One interpreter, "$PY" (adviser's task of 22 Nov 2026, the interpreter wave;
+# tests/test_build_interpreter.py): never a bare pip or python3.
+PY="${ATTNBENCH_PYTHON:-python3}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/_fa3_pin.sh"
@@ -59,8 +62,8 @@ fa3_module build_guards --max-jobs "$MAX_JOBS" --nvcc-threads "$NVCC_THREADS" \
 
 # 3. ninja on PATH, or torch compiles serially with no warning.
 export PATH="$HOME/.local/bin:$PATH"
-command -v ninja >/dev/null || { echo "FATAL: ninja not on PATH (pip install --user ninja)" >&2; exit 1; }
-python3 -c 'from torch.utils.cpp_extension import is_ninja_available
+command -v ninja >/dev/null || { echo "FATAL: ninja not on PATH ($PY -m pip install --user ninja)" >&2; exit 1; }
+"$PY" -c 'from torch.utils.cpp_extension import is_ninja_available
 assert is_ninja_available(), "torch cannot see ninja"' || exit 1
 
 # 4. Toolchain and stack against the H100 image.
@@ -160,7 +163,7 @@ T0="$(date +%s)"
 echo "START $(date -u +%H:%M:%SZ) jobs=$MAX_JOBS nvcc_threads=$NVCC_THREADS gb_per_job=$GB_PER_JOB deadline=${BUILD_TIMEOUT_MIN}m"
 set +e
 ( cd "$SRC/hopper" && env "${BUILD_FLAGS[@]}" \
-    timeout "${BUILD_TIMEOUT_MIN}m" python3 setup.py bdist_wheel --dist-dir "$DIST" ) > "$LOG" 2>&1
+    timeout "${BUILD_TIMEOUT_MIN}m" "$PY" setup.py bdist_wheel --dist-dir "$DIST" ) > "$LOG" 2>&1
 RC=$?
 set -e
 WALL_S=$(( $(date +%s) - T0 ))
@@ -181,7 +184,7 @@ WHEEL="${WHEELS[0]}"
 # 8. Manifest: the hash, the pin, the stack, the flags, the measured cost.
 TOOLCHAIN="local CUDA $NVCC_VERSION"
 [[ -x "$SRC/third_party/nvidia/backend/bin/nvcc" ]] && TOOLCHAIN="upstream download (nvcc 12.6.85, ptxas 12.8.93); local CUDA $NVCC_VERSION"
-FIELDS="$(python3 - "$OUT/stack.json" "$MEMLOG" "${BUILD_FLAGS[@]}" <<EOF
+FIELDS="$("$PY" - "$OUT/stack.json" "$MEMLOG" "${BUILD_FLAGS[@]}" <<EOF
 import json, os, sys
 from attnbench.backends.fa3 import BUILT_HEAD_DIMS
 mem = [l.split("\t") for l in open(sys.argv[2]).read().split("\n") if l] if os.path.exists(sys.argv[2]) else []
@@ -211,7 +214,7 @@ gcloud storage cp "$OUT/SHA256SUMS" "$DEST/SHA256SUMS" 2>&1 | fa3_redact
 store_logs "$DEST"
 mkdir -p "$OUT/readback"
 gcloud storage cp "$DEST/$(basename "$WHEEL")" "$OUT/readback/" 2>&1 | fa3_redact
-BACK="$(python3 -c 'import sys; from attnbench.fa3_wheel import sha256; print(sha256(sys.argv[1]))' \
+BACK="$("$PY" -c 'import sys; from attnbench.fa3_wheel import sha256; print(sha256(sys.argv[1]))' \
         "$OUT/readback/$(basename "$WHEEL")" 2>/dev/null || true)"
 if [[ "$BACK" != "$SHA" ]]; then
   echo "FATAL: the stored wheel reads back as '${BACK}', not $SHA" >&2

@@ -68,6 +68,23 @@
 # library (its cubins are already built), attnbench imported. It then prints
 # ENV_BUILD_DRY_RUN_OK and stops; nothing is compiled, steps 5 and 6 do not
 # run, and ENV_BUILD_OK is never printed. Not a build attempt.
+# Since the interpreter wave (same date) the dry run also runs each source
+# build's metadata step: the build's own pip command with --dry-run, which
+# has pip fetch the source, run its metadata hook (setup.py's top level) in
+# "$PY" and stop before building. flash-attn through
+# scripts/build_flash_attn.sh --metadata-only (its guard, torch check, ninja
+# check and sdist fetch as the build runs them), block-sparse-attention from
+# its git URL (pip clones it at BSA_COMMIT), and x-attention's editable
+# install. An import-time failure in a setup.py (the third attempt's: no
+# torch in the interpreter pip belonged to) surfaces there, before any compile.
+#
+# One interpreter (same wave): every Python call and install is "$PY" or
+# "$HELPER_PY", never a bare pip or python3 (tests/test_build_interpreter.py);
+# "$PY" is exported to scripts/build_flash_attn.sh as ATTNBENCH_PYTHON. The
+# base image has two Pythons, and the bare `pip` first on PATH is its 3.11's.
+# Step 0 lists every pip and python3* on PATH (interpreters.txt), with torch
+# in each; torch is absent from the image's own Python at step 0, so the gate
+# that it imports in "$PY" is step 2's (and build_flash_attn.sh's own).
 #
 # Failures (same task): the memory guard reads /proc/meminfo (no psutil);
 # whatever fails, its own error is printed (the guard's output, the last 30
@@ -90,6 +107,7 @@ MANIFEST="configs/t64/fa3_manifest_49774b31.json"
 MANIFEST_SHA256="3c2f965784d8ae9e3df81048c5ac579d309554b8ce9472783d894837e7bade87"
 FA3_SHA="${FA3_WHEEL_SHA256:-}"
 PY="${ATTNBENCH_PYTHON:-/usr/bin/python3}"
+export ATTNBENCH_PYTHON="$PY"   # scripts/build_flash_attn.sh's interpreter (header)
 HELPER_PY="${ENV_BUILD_HELPER_PYTHON:-$PY}"
 FA_BUILD="${ENV_BUILD_FA_SCRIPT:-scripts/build_flash_attn.sh}"
 OUT="${ENV_BUILD_OUT:-$HOME/env_build_$(date -u +%Y%m%dT%H%MZ)}"
@@ -120,6 +138,21 @@ HELPER=(scripts/env_build_lists.py)
 
 NVCC_REL=""
 CUOBJDUMP=""
+# The inventory's one Python line; its first line marks it for the tests.
+INV_PY=$'# interpreter inventory\nimport platform, sys\ntry:\n    import torch\n    t = torch.__version__\nexcept Exception as e:\n    t = "absent (%s)" % type(e).__name__\nprint(platform.python_version(), sys.executable, "torch", t)'
+interpreters() {   # every pip and python3* on PATH: where it resolves, what it is
+  local d f IFS=:
+  for d in $PATH; do
+    for f in "$d"/pip "$d"/pip3 "$d"/pip3.[0-9]* "$d"/python3 "$d"/python3.[0-9]*; do
+      [[ -x "$f" && ! -d "$f" && "$f" != *-config ]] || continue
+      case "${f##*/}" in
+        pip*) echo "$f -> $(readlink -f "$f" 2>/dev/null || echo "$f"): $("$f" --version 2>&1 | head -1)" ;;
+        *) echo "$f -> $(readlink -f "$f" 2>/dev/null || echo "$f"): $("$f" -c "$INV_PY" 2>&1 | tail -1)" ;;
+      esac
+    done
+  done
+  echo "chosen: PY=$PY: $("$PY" -c "$INV_PY" 2>&1 | tail -1)"
+}
 tool_inventory() {   # every CUDA tool the build could use, to stderr
   {
     echo "-- tool inventory --"
@@ -137,6 +170,8 @@ tool_inventory() {   # every CUDA tool the build could use, to stderr
     if [[ "$NVCC_REL" =~ ^[0-9]+\.[0-9]+$ ]]; then
       echo "apt: $(apt-cache policy "cuda-cuobjdump-${NVCC_REL/./-}" 2>/dev/null | tr -s ' \n' ' ' || true)"
     fi
+    echo "-- interpreters (every pip and python3* on PATH) --"
+    interpreters || true
     echo "-- end of tool inventory --"
   } >&2
 }
@@ -202,7 +237,14 @@ BSA_COMMIT="$(pin_of attnbench/bsa_contract.py BSA_COMMIT)"
 XATTN_COMMIT="$(pin_of attnbench/backends/xattention.py XATTN_COMMIT)"
 XATTN_REPO="$(sed -nE 's/^XATTN_REPO = "(https:[^"]+)".*/\1/p' attnbench/backends/xattention.py)"
 [[ -n "$XATTN_REPO" ]] || refuse "no XATTN_REPO in attnbench/backends/xattention.py"
+# Step 4's two pip builds, one command each for the build and the dry run's
+# --dry-run (header).
+BSA_INSTALL=("$PY" -m pip install --user --no-build-isolation "block-sparse-attn @ git+$BSA_URL@$BSA_COMMIT")
+XATTN_INSTALL=("$PY" -m pip install --user --no-deps -e "$XATTN_DIR")
 mkdir -p "$OUT/logs"
+# Every interpreter on PATH, and torch in each (header).
+interpreters >"$OUT/interpreters.txt" 2>&1 || true
+sed 's/^/   /' "$OUT/interpreters.txt"
 # The image's own packages, before anything is installed (header).
 "$PY" -m pip list --format=freeze >"$OUT/image_pip_before.txt" 2>&1 || echo "(pip list failed)" >>"$OUT/image_pip_before.txt"
 # cuobjdump last among the guards: the apt install is the one thing step 0
@@ -248,10 +290,15 @@ logged fa3_install "$PY" -m pip install --user --no-deps "$WHEEL" || fail "insta
 
 if ((DRY)); then
   STEP=4
-  echo "== 4/6 up to the first compile (--stop-before-compile)"
+  echo "== 4/6 up to the first compile (--stop-before-compile), each setup.py's metadata step"
+  logged fa_metadata bash "$FA_BUILD" --metadata-only "$FA2_VERSION" \
+    || fail "flash-attn $FA2_VERSION's metadata step (scripts/build_flash_attn.sh --metadata-only)"
+  logged bsa_metadata "${BSA_INSTALL[@]}" --dry-run || fail "block-sparse-attention's metadata step, pip's --dry-run"
   [[ -d "$XATTN_DIR/.git" ]] || logged xattn_clone git clone -q "$XATTN_REPO" "$XATTN_DIR" \
     || fail "cloning x-attention"
   git -C "$XATTN_DIR" checkout -q --detach "$XATTN_COMMIT" || fail "checking out x-attention $XATTN_COMMIT"
+  logged xattn_metadata "${XATTN_INSTALL[@]}" --dry-run || fail "x-attention's metadata step, pip's --dry-run"
+  echo "   metadata steps passed: flash-attn, block-sparse-attention, x-attention (under $PY)"
   USERSITE="$("$PY" -c 'import site; print(site.getusersitepackages())')" || fail "no user site"
   so="$(find "$USERSITE/flash_attn_3" -maxdepth 1 -name '_C*.so' 2>/dev/null | head -1 || true)"
   [[ -n "$so" ]] || fail "no flash_attn_3/_C*.so in the user site after the FA3 install"
@@ -270,12 +317,11 @@ fi
 STEP=4
 echo "== 4/6 from source: flash-attn $FA2_VERSION, block-sparse-attention, x-attention"
 logged fa_build bash "$FA_BUILD" "$FA2_VERSION" || fail "building flash-attn $FA2_VERSION"
-logged bsa_build "$PY" -m pip install --user --no-build-isolation \
-  "block-sparse-attn @ git+$BSA_URL@$BSA_COMMIT" || fail "building block-sparse-attention $BSA_COMMIT"
+logged bsa_build "${BSA_INSTALL[@]}" || fail "building block-sparse-attention $BSA_COMMIT"
 [[ -d "$XATTN_DIR/.git" ]] || logged xattn_clone git clone -q "$XATTN_REPO" "$XATTN_DIR" \
   || fail "cloning x-attention"
 git -C "$XATTN_DIR" checkout -q --detach "$XATTN_COMMIT" || fail "checking out x-attention $XATTN_COMMIT"
-logged xattn_install "$PY" -m pip install --user --no-deps -e "$XATTN_DIR" || fail "installing x-attention"
+logged xattn_install "${XATTN_INSTALL[@]}" || fail "installing x-attention"
 # The built cubins: sm_80 (what the L4 runs) and sm_90, nothing else.
 USERSITE="$("$PY" -c 'import site; print(site.getusersitepackages())')"
 for lib in flash_attn_2_cuda block_sparse_attn_cuda; do

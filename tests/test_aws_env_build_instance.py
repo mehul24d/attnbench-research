@@ -415,12 +415,37 @@ def test_stop_before_compile_runs_every_step_up_to_the_first_compile(env):
     assert any(c.startswith("git clone -q") for c in calls)                # step 4, no compile
     assert sum(c.startswith("cuobjdump-apt --list-elf") and "flash_attn_3/_C.abi3.so" in c
                for c in calls) == 1
-    for word in ("fa_build", "block-sparse-attn @", "-e " + str(env[0] / "x-attention"),
-                 "-m pytest", "pip freeze"):
+    # Each source build's metadata step (the interpreter wave), in order, no compile.
+    assert [c for c in calls if c.startswith("fa_build")] == [
+        "fa_build --metadata-only 2.8.3.post1 archs=8.9;9.0/80;90/80;90"]
+    # The build's own pip commands, each with --dry-run, under "$PY".
+    meta = [c for c in calls if c.endswith(" --dry-run")]
+    assert meta == [
+        "py -m pip install --user --no-build-isolation block-sparse-attn @ git+https://github.com/"
+        "mit-han-lab/Block-Sparse-Attention.git@49d6c39e4dc0303442cda3bb758b3925d4399c49 --dry-run",
+        f"py -m pip install --user --no-deps -e {env[0] / 'x-attention'} --dry-run"]
+    first = lambda k: next(n for n, c in enumerate(calls) if c.startswith(k))
+    assert first("fa_build") < calls.index(meta[0]) < first("git clone -q") < calls.index(meta[1])
+    for word in ("block-sparse-attn @", "-e " + str(env[0] / "x-attention")):
+        assert not any(word in c and "--dry-run" not in c for c in calls), word
+    for word in ("-m pytest", "pip freeze"):
         assert not any(word in c for c in calls), word
     out = env[0] / "out"
     assert (out / "cuda_archs_fa3.txt").read_text() == "flash_attn_3 sm_80 sm_90\n"
     assert (out / "image_pip_before.txt").exists() and not (out / "SHA256SUMS").exists()
+    inv = (out / "interpreters.txt").read_text()
+    assert f"{env[1]['ATTNBENCH_PYTHON']} -> " in inv and "chosen: PY=" in inv
+
+
+@pytest.mark.parametrize("over,match", [
+    ({"FAKE_FA_RC": "1"}, "flash-attn 2.8.3.post1's metadata step"),
+    ({"FAKE_PIP_FAIL": "block-sparse-attn @"}, "block-sparse-attention's metadata step"),
+    ({"FAKE_PIP_FAIL": "-e "}, "x-attention's metadata step"),
+])
+def test_stop_before_compile_fails_at_a_metadata_step(env, over, match):
+    r, calls = run(env, "--stop-before-compile", str(env[2]), **_image(env), **over)
+    assert r.returncode != 0 and f"FAILED at step 4: {match}" in r.stderr, r.stderr[-1500:]
+    assert "ENV_BUILD_DRY_RUN_OK" not in r.stdout and "-- interpreters" in r.stderr
 
 
 def test_stop_before_compile_fails_without_the_fa3_library(env):
@@ -428,7 +453,8 @@ def test_stop_before_compile_fails_without_the_fa3_library(env):
     py.write_text(FAKE_PY.replace('mkdir -p "$FAKE_USERSITE/flash_attn_3"', "true"))
     r, calls = run(env, "--stop-before-compile", str(env[2]))
     assert r.returncode != 0 and "FAILED at step 4: no flash_attn_3/_C*.so" in r.stderr, r.stderr[-1500:]
-    assert "ENV_BUILD_DRY_RUN_OK" not in r.stdout and not any("fa_build" in c for c in calls)
+    assert "ENV_BUILD_DRY_RUN_OK" not in r.stdout
+    assert all(c.startswith("fa_build --metadata-only") for c in calls if "fa_build" in c)
 
 
 # --- the pre-compile steps on a clean Python 3.10.12 (same task, item 2) ----
@@ -441,6 +467,14 @@ def test_stop_before_compile_fails_without_the_fa3_library(env):
 # A pre-compile step that imports a non-stdlib module the image lacks
 # (docs/launch_cards/aws_env_build_image_modules.txt; after step 2, also the
 # v6 lists) fails here.
+#
+# The interpreter wave (same date): the real scripts/build_flash_attn.sh runs
+# its --metadata-only path here, and every source build's metadata step runs
+# for real on stand-in trees (a setup.py that imports what flash-attn's does).
+# The image's second Python is stood in for too: a `python3`, `python`, `pip`
+# and `pip3` first on PATH that answer the inventory as the 3.11 would and
+# fail anything else with the third attempt's "No module named 'torch'". Any
+# pre-compile call that reaches them fails the dry run.
 IMAGE_MODULES = ROOT / "docs" / "launch_cards" / "aws_env_build_image_modules.txt"
 V6 = ROOT / "docs" / "image_libraries" / "attnbench-env-v6-20260917"
 RECORDED_FA3_SHA = "1676ef0b86c377ae911a7de238c2a1f6b58a7666f1a6eef919d4dc7b0973b64a"
@@ -463,7 +497,7 @@ def _dump():
 atexit.register(_dump)
 '''
 
-# The image's python: real for -c and pip list, faked for installs.
+# The image's python: real for everything but pip's installs, which are faked.
 CLEAN_PY = r'''#!/usr/bin/env bash
 printf 'py %s\n' "$*" >> "$CALL_LOG"
 if [[ "$1" == -c ]]; then
@@ -472,15 +506,43 @@ if [[ "$1" == -c ]]; then
 fi
 if [[ "$1 $2" == "-m pip" ]]; then
   case "$*" in
-    *" list "*) exec "$CLEAN" "$@" ;;
+    *" list "*|*" --version"*) exec "$CLEAN" "$@" ;;
+    *" --dry-run"*)   # for real, as on the instance, less what a venv here cannot do:
+      args=()          # --user (refused in a venv), the git URL (the stand-in tree),
+      for a in "$@"; do  # build isolation for -e (it needs an index)
+        case "$a" in --user) ;; "block-sparse-attn @ git+"*) args+=("$BSA_STANDIN") ;; *) args+=("$a") ;; esac
+      done
+      [[ " $* " == *" -e "* ]] && args+=(--no-build-isolation)
+      exec "$CLEAN" "${args[@]}" ;;
     *req_system*) cp -R "$FAKE_PKGS"/. "$CLEAN_SITE"/ ;;
     *flash_attn_3-*.whl*) us="$("$CLEAN" -c 'import site; print(site.getusersitepackages())')"
        mkdir -p "$us/flash_attn_3"; : > "$us/flash_attn_3/_C.abi3.so" ;;
   esac
   exit 0
 fi
-echo "UNHANDLED $*" >&2; exit 97
+exec "$CLEAN" "$@"
 '''
+
+# The image's other Python (3.11, its pip first on PATH), as `python3`,
+# `python`, `pip` and `pip3`: it answers the inventory, and refuses the rest.
+OTHER_PY = r'''#!/usr/bin/env bash
+case "$1" in
+  --version) [[ "$0" == */pip* ]] && echo "pip 26.3 from /usr/local/lib/python3.11/dist-packages/pip (python 3.11)" \
+               || echo "Python 3.11.14"; exit 0 ;;
+  -c) [[ "$2" == "# interpreter inventory"* ]] && { echo "3.11.14 /usr/bin/python3.11 torch absent (ModuleNotFoundError)"; exit 0; } ;;
+esac
+printf 'other-interpreter %s %s\n' "${0##*/}" "$*" >> "$CALL_LOG"
+echo "ModuleNotFoundError: No module named 'torch'" >&2; exit 1
+'''
+
+# The stand-in source trees' setup.py: what flash-attn's (and, a fork of it,
+# block-sparse-attention's) imports at its top level; x-attention's is plain.
+STANDIN_SETUP = """import psutil, torch
+from torch.utils.cpp_extension import BuildExtension
+from setuptools import setup
+setup(name="@NAME@", version="0.0.0", py_modules=[])
+"""
+PLAIN_SETUP = 'from setuptools import setup\nsetup(name="xattn", version="0.0.0", py_modules=[])\n'
 
 # The helper python: the clean interpreter itself; the FA3 check with only
 # the wheel's hash and this Mac's platform tag faked (the wheel is a stand-in).
@@ -513,11 +575,36 @@ def _clean_python():
     return p
 
 
-def _image_modules():
-    text = IMAGE_MODULES.read_text()
+def _image_sections():
+    """{python version: set of names} from the list's `python:` sections."""
     import re
-    assert re.search(r"^python: 3\.10\.12$", text, re.M)
-    return set(re.findall(r"^module: (\S+)$", text, re.M))
+    out, cur = {}, None
+    for line in IMAGE_MODULES.read_text().splitlines():
+        if m := re.match(r"^python: (\S+)", line):
+            cur = out.setdefault(m.group(1), set())
+        elif m := re.match(r"^module: (\S+)$", line):
+            cur.add(m.group(1))
+    return out
+
+
+def _image_modules():   # the interpreter the build uses, /usr/bin/python3
+    return _image_sections()["3.10.12"]
+
+
+# Distributions whose top-level modules are not only their own name (their
+# top_level.txt): setuptools brings pkg_resources and _distutils_hack.
+EXTRA_MODULES = {"setuptools": {"pkg_resources", "_distutils_hack"}}
+
+
+def _with_extra_modules(names):
+    return names.union(*(EXTRA_MODULES.get(n, set()) for n in names))
+
+
+def test_the_image_list_covers_both_interpreters():
+    secs = _image_sections()
+    assert sorted(secs) == ["3.10.12", "3.11"]
+    assert len(secs["3.10.12"]) == 80 and {"pip", "setuptools"} <= secs["3.10.12"]
+    assert all("torch" not in names for names in secs.values())   # torch is step 2's
 
 
 def _v6_modules():
@@ -536,21 +623,50 @@ def clean_env(env, tmp_path):
     venv = tmp_path / "clean310"
     subprocess.run([base, "-m", "venv", str(venv)], check=True, capture_output=True)
     py = venv / "bin" / "python"
+    # The image's wheel 0.37.1 (image_pip_before.txt): setuptools' metadata
+    # hook needs bdist_wheel. From uv's cache when it has it, else the index.
+    for extra in (["--offline"], []):
+        if shutil.which("uv") and subprocess.run(
+                ["uv", "pip", "install", "-q", *extra, "--python", str(py), "wheel==0.37.1"],
+                capture_output=True).returncode == 0:
+            break
+    else:
+        pytest.skip("no wheel 0.37.1 for the clean venv (uv, offline or from the index)")
     site_dir = Path(subprocess.run([str(py), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
                                    capture_output=True, text=True, check=True).stdout.strip())
     (site_dir / "sitecustomize.py").write_text(RECORDER)
     pkgs = tmp_path / "fake_pkgs"
     (pkgs / "torch").mkdir(parents=True)
     (pkgs / "torch" / "__init__.py").write_text('__version__ = "2.9.1+cu129"\nclass version:\n    cuda = "12.9"\n')
+    (pkgs / "torch" / "utils").mkdir()
+    (pkgs / "torch" / "utils" / "__init__.py").write_text("")
+    (pkgs / "torch" / "utils" / "cpp_extension.py").write_text(
+        "def is_ninja_available():\n    return True\nclass BuildExtension:\n    pass\n")
     (pkgs / "triton").mkdir()
     (pkgs / "triton" / "__init__.py").write_text('__version__ = "3.5.1"\n')
+    (pkgs / "psutil").mkdir()   # v6's user site has psutil 7.2.2
+    (pkgs / "psutil" / "__init__.py").write_text('__version__ = "7.2.2"\n')
     tmp, e, wheel = env
     _exe(Path(e["ATTNBENCH_PYTHON"]), CLEAN_PY)
     _exe(Path(e["ENV_BUILD_HELPER_PYTHON"]), CLEAN_HELPER)
+    for name in ("python3", "python", "pip", "pip3"):
+        _exe(tmp / "bin" / name, OTHER_PY)
+    _exe(tmp / "bin" / "ninja", "exit 0")
+    trees = {"fa/flash_attn-2.8.3.post1": STANDIN_SETUP.replace("@NAME@", "flash_attn"),
+             "bsa_standin": STANDIN_SETUP.replace("@NAME@", "block_sparse_attn"),
+             "x-attention": PLAIN_SETUP}
+    for d, text in trees.items():
+        (tmp / d / ".git").mkdir(parents=True)
+        (tmp / d / "setup.py").write_text(text)
+    (tmp / "fa" / "flash_attn-2.8.3.post1" / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools", "torch"]\nbuild-backend = "setuptools.build_meta"\n')
+    shutil.rmtree(tmp / "fa" / "flash_attn-2.8.3.post1" / ".git")   # an sdist
     mi = tmp / "meminfo"
     mi.write_text(PROBE_MEMINFO)
     e.update({"CLEAN": str(py), "CLEAN_SITE": str(site_dir), "FAKE_PKGS": str(pkgs), "SHIM": SHIM,
-              "ENV_BUILD_MEMINFO": str(mi), "MAX_JOBS": "2", "FA3_WHEEL_SHA256": RECORDED_FA3_SHA})
+              "ENV_BUILD_MEMINFO": str(mi), "MAX_JOBS": "2", "FA3_WHEEL_SHA256": RECORDED_FA3_SHA,
+              "ENV_BUILD_FA_SCRIPT": str(ROOT / "scripts" / "build_flash_attn.sh"),
+              "FA_SRC_DIR": str(tmp / "fa"), "BSA_STANDIN": str(tmp / "bsa_standin"), "FA_FREE_GB_OVERRIDE": "15"})   # the third attempt read 14.4 GiB
     e.pop("REAL_PY", None)
     return env
 
@@ -571,7 +687,7 @@ def _imports_by_phase(calls):
 
 def test_the_pre_compile_steps_run_on_a_clean_python_310(clean_env):
     r, calls = run(clean_env, "--stop-before-compile", str(clean_env[2]), **_image(clean_env))
-    assert r.returncode == 0, r.stderr[-3000:]
+    assert r.returncode == 0, r.stderr.split("-- tool inventory --")[0][-3000:]
     assert r.stdout.rstrip().endswith("ENV_BUILD_DRY_RUN_OK")
     assert "memory check ok: 2 concurrent cicc" in r.stdout
     assert "FA3 wheel flash_attn_3" in r.stdout and "sha256 and tags checked" in r.stdout
@@ -580,15 +696,25 @@ def test_the_pre_compile_steps_run_on_a_clean_python_310(clean_env):
     # Not vacuous: the guard, both list reads and the FA3 check were recorded.
     for what in ("attnbench/build_guards.py", "requirements", "fa3-wheel"):
         assert what in seen, (what, [a for _, a, _ in recs])
+    # The interpreter wave: the real flash-attn script's metadata path and all
+    # three metadata steps ran under "$PY", and nothing reached the 3.11.
+    assert "METADATA_OK flash-attn 2.8.3.post1" in (clean_env[0] / "out" / "logs" / "fa_metadata.log").read_text()
+    # One metadata process per source build: pip's PEP 517 hook (a tree with
+    # a pyproject.toml) or its legacy `setup.py egg_info` (one without).
+    hooks = [a for _, a, _ in recs if a and a[0].endswith(("/_in_process.py", "/setup.py"))]
+    assert len(hooks) == 3 and all(a[1] in ("dist_info", "egg_info") for a in hooks), hooks
+    assert [c for c in calls if c.startswith("other-interpreter")] == []
+    inv = (clean_env[0] / "out" / "interpreters.txt").read_text()
+    assert "/bin/pip -> " in inv and "python 3.11" in inv and "3.11.14" in inv
 
 
 def test_no_pre_compile_step_imports_what_the_image_lacks(clean_env):
     r, calls = run(clean_env, "--stop-before-compile", str(clean_env[2]), **_image(clean_env))
-    assert r.returncode == 0, r.stderr[-3000:]
+    assert r.returncode == 0, r.stderr.split("-- tool inventory --")[0][-3000:]
     image, v6 = _image_modules(), _v6_modules()
     bad = []
     for phase, argv, mods in _imports_by_phase(calls):
-        allowed = image | (v6 if phase == "after" else set())
+        allowed = _with_extra_modules(image | (v6 if phase == "after" else set()))
         for name, f in mods.items():
             if f and str(Path(f).resolve()).startswith(str(ROOT)):
                 continue   # the repository's own modules

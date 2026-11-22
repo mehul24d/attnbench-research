@@ -40,5 +40,5 @@ fa3_redact() {
 # working directory otherwise (tests/test_import_resolution.py).
 fa3_module() {
   local mod="$1"; shift
-  PYTHONPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)${PYTHONPATH:+:$PYTHONPATH}" python3 -m attnbench."$mod" "$@"
+  PYTHONPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)${PYTHONPATH:+:$PYTHONPATH}" "${ATTNBENCH_PYTHON:-python3}" -m attnbench."$mod" "$@"
 }
