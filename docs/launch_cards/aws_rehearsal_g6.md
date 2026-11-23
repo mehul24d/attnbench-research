@@ -156,3 +156,13 @@ refuse, the launch stops (`LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY`).
 
   The driver ran end to end on the fake remote with the real launcher. The timed-path pin is
   unchanged.
+
+## The third attempt, 23 Nov 2026 (no capacity in any zone; nothing launched)
+
+The researcher ran the driver at 21:14 UTC from `01da24e`. The SSH preflight, the credit gate
+and the dry registration passed. `RunInstances` was refused with `InsufficientInstanceCapacity`
+for `g6.xlarge` in 2b, then 2c, then 2a, within 17 s. After each refusal the launcher confirmed
+that no instance and no volume of the session existed, and it stopped after one pass. Sydney read
+back with no instance, volume, address or schedule. The spend was ₹0. The launch record holds the
+three requests at ₹180 each until they are struck. The fallback behaved as tested. Checks 1 to 4
+are still unrun on a GPU, and P3's hours are not re-estimated. Another attempt needs a ruling.
