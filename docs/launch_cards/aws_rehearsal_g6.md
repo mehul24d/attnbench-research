@@ -86,3 +86,30 @@ the session.
 
 Instance terminated, no volume left, the Sydney sweep read back clean. The AMI and its
 snapshot stay for P3 (and P6, if it runs); their deletion is on the ledger's cleanup list.
+
+## The run, 23 Nov 2026 (one attempt; failed at check 2)
+
+Launched 10:51 UTC from `d193825` by the researcher with the off-repo driver. The SSH
+preflight, the credit gate ($158.39 left, ₹15,204 > ₹1,385 planned + ₹180), the trust
+read-back and the dry registration passed; SSH at about +1 min; deploy and bootstrap (RULER
+data copied and verified, wonderwords and nltk) passed by +6 min.
+
+- **Check 1 passed** (215 s): one `NVIDIA L4`, driver 595.112.07 with CUDA 13.2, torch
+  `2.9.1+cu129` sees capability (8, 9), the bf16 matmul is finite; flash-attn 2.8.3.post1,
+  block-sparse-attention and `xattn.src.Xattention` import; flash-attn's library holds
+  `sm_80` and `sm_90` only.
+- **Check 2 failed in 2.2 s on a defect of this rehearsal's own code**:
+  `aws_rehearsal_checks.py fa2` built `Harness(device="cuda")` without the required
+  `dry_run`, so no fa2 kernel ran. Checks 3 and 4 did not run. No test ran that path; one
+  does now (`test_the_fa2_check_builds_a_real_harness_and_screens_both_lengths`, watched to
+  fail on the old call), and the call is fixed.
+- The driver's teardown could not reach the EC2 endpoint (`Could not connect to the
+  endpoint URL`, then the account pin's credential check failed: a transient network
+  failure on this Mac). Re-run at once, the teardown terminated the instance at 11:09 UTC,
+  18 min from launch, about ₹36; Sydney read back with no instance, volume, address or
+  schedule. The in-guest halt (75 min) and the hard delete (90 min) bounded it meanwhile.
+
+So whether sm_80 code runs on the L4 is **still unconfirmed by a run** (the cubins are there),
+and P3's hours are not re-estimated: no step-5 time was measured. A second attempt needs a
+launch yes; the driver now also retries the teardown on a failure (below).
+

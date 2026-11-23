@@ -145,7 +145,7 @@ def run_fa2(out: Path, config: str | None) -> dict:
     cfg = S.load_config(config or str(ROOT / "configs" / "aws" / "rehearsal_g6.json"),
                         dry_run=False)
     cfg = dict(cfg, lengths=list(FA2_LENGTHS), batches={})
-    h = Harness(device="cuda")
+    h = Harness(device="cuda", dry_run=False)
     try:
         return S.dense_select_smoke(h, cfg)
     finally:

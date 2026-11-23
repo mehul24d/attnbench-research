@@ -138,3 +138,31 @@ def test_a_dirty_tree_is_refused_before_any_check(tmp_path):
     (t / "scripts" / "t31_steps.py").write_text("changed\n")
     p = _run(t, tmp_path)
     assert p.returncode == 1 and "not clean" in p.stdout and not (t / "calls.txt").exists()
+
+
+def test_the_fa2_check_builds_a_real_harness_and_screens_both_lengths(monkeypatch):
+    """The rehearsal of 23 Nov 2026 failed here: `Harness(device="cuda")` left
+    out the required `dry_run`, and nothing ran this path on the CPU."""
+    import inspect
+    import t31_steps as S
+    from attnbench.components import shakedown_arms
+    seen = {}
+
+    class FakeHarness:
+        def __init__(self, **kw):
+            inspect.signature(shakedown_arms.Harness.__init__).bind(None, **kw)   # the real signature
+            seen["kw"] = kw
+
+        def unwrap(self):
+            seen["unwrapped"] = True
+
+    def fake_smoke(h, cfg):
+        seen["lengths"], seen["batches"] = cfg["lengths"], cfg["batches"]
+        return {"cells": {f"L4_{L}_1": {"results": {"fa2": {"status": "correct"}}} for L in cfg["lengths"]}}
+
+    monkeypatch.setattr(shakedown_arms, "Harness", FakeHarness)
+    monkeypatch.setattr(S, "dense_select_smoke", fake_smoke)
+    rec = C.run_fa2(Path("."), None)
+    assert seen["kw"] == {"device": "cuda", "dry_run": False} and seen["unwrapped"]
+    assert seen["lengths"] == [2048, 8192] and seen["batches"] == {}
+    assert C.fa2_problems(rec) == []
