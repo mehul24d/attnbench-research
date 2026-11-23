@@ -437,6 +437,35 @@ def test_the_probe_cards_settings(tmp_path):
     assert "+6 min from boot" in p.stdout
 
 
+REH_CARD = {**ENV_CARD, "AWS_RATE_INR_HR": "118.41", "AWS_COST_CAP_INR": "180",
+            "AWS_HALT_MINUTES": "75", "AWS_MAX_RUN_MINUTES": "90"}
+
+
+def test_the_rehearsal_cards_settings(tmp_path):
+    """docs/launch_cards/aws_rehearsal_g6.md (adviser's task of 23 Nov 2026,
+    second): one g6.xlarge, halt at 75 min, hard delete at 90, cap Rs 180:
+    worst case Rs 118.41 x 90 min = Rs 177.62, rounded up to Rs 178."""
+    p, calls = _launch(tmp_path, "REH", env=REH_CARD)
+    assert p.returncode == 0, p.stderr
+    assert "worst case   : Rs 178, cost cap Rs 180" in p.stdout
+    calls = aws_calls(calls)
+    create = _one(calls, "ec2 run-instances")
+    assert "--instance-type g6.xlarge" in create and "AvailabilityZone=ap-southeast-2a" in create
+    assert "Key=attnbench-pairing,Value=REH" in create
+    stamp = dt.datetime.fromtimestamp(NOW + 90 * 60, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({stamp})" in _one(calls, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert "+75 min from boot" in p.stdout
+    card = (Path(__file__).resolve().parents[1] / "docs" / "launch_cards"
+            / "aws_rehearsal_g6.md").read_text()
+    for said in ("**₹118.41/h**", "**Cap ₹180**", "**75 min**", "**90 min**"):
+        assert said in card, said
+
+
+def test_a_cap_short_of_the_rehearsals_worst_case_is_refused(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env={**REH_CARD, "AWS_COST_CAP_INR": "177"})
+    assert p.returncode == 1 and "exceeds the cost cap" in p.stderr and calls == []
+
+
 @pytest.mark.parametrize("pairing,minutes,halt,ok", [
     ("PROBE", "4", "3", False), ("PROBE", "16", "6", False), ("PROBE", "8", "2", False),
     ("PROBE", "8", "8", False), ("PROBE", "5", "3", True), ("PROBE", "15", "13", True),

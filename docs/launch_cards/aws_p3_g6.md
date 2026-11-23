@@ -28,6 +28,18 @@ P1's side is T3.2d (`t32d_p1_20261109T0726Z`, the session P1's training file com
 all 35 cells' `bare_prices.json` are on this Mac (the 17 Nov 2026 download). The gate needs
 only step 5's files, so it can be computed even if a later step fails.
 
+**No go/no-go after block 1 (adviser's task of 23 Nov 2026, second, item 3).** The gate
+cannot be computed from block 1: block 1 holds no host components (`preflight`, `link`,
+`dense_select` and `probe`; step 5 is block 2 by itself). And the gate needs all the cells:
+the rule fixed on 21 Nov 2026 takes d as the median over every cell P3 and P1 share, so a d
+over part of the grid would be a new rule, not this one. The first point at which the gate
+can be read is the end of block 2, when step 5's 35 cells have been pulled and checked:
+`p6_host_effect.py` runs on the Mac then, before block 3 starts. Block 3 (device components,
+the in-session prediction, ground truth) does not feed the gate, so stopping P3 there on the
+gate's reading would save about 1.5 h (89 min of steps, about ₹212), at the cost of P3's reported device-side
+H0 and its ground truth. **Not proposed without a ruling: as written, block 3 runs whatever
+the gate reads.**
+
 ## Cells: P1's 35
 
 The T3.1 grid of `configs/t31/p1_session.json`, as P1 ran it in T3.2d, at the same prompts:
@@ -96,17 +108,17 @@ instance keeps running and keeps its results; nothing is lost until the hard del
    updated, the remaining step directories are pulled and checked, and it is terminated.
    The hard delete at 566 min is never moved: whatever is not pulled by then is lost, and
    the worst case stays inside the cap.
-2. **Instance-side upload (not proposed without a ruling).** The instance writes each finished
-   block to an S3 bucket in Sydney through an instance role. It survives a lost SSH and a
-   hard delete, but needs a bucket, a role and a write gate that do not exist (new resources,
-   a small storage charge).
+2. **No instance-side upload.** No S3 bucket and no instance role (adviser's task of
+   23 Nov 2026, second, item 3): results leave the instance only by the Mac's pulls over SSH.
 
 ## The prediction committed before any measurement
 
 `docs/p3_prediction/prediction_P3_exploratory_from_P1_20261122T211249520458Z.json` (sha256 `72b907cf4605336bba91ef3f04f8503945e49dabef207d4e3c4fc7b26183e1b2`, written 22 Nov 2026 21:12 UTC from `5b20daa`, 35 cells) with its sha256 sidecar,
 written by `scripts/p3_prediction_from_p1.py` from P1's committed T3.2d prediction
 (`prediction_P1_20261109T095833754749Z.json`, sha256 `280a3423…`, checked against its
-sidecar before it is read), and committed to this repository before any P3 session. It is
+sidecar before it is read), and committed to this repository before any P3 session; its
+receipt is the time its commit was pushed to `origin` (adviser's task of 23 Nov 2026,
+second, item 3), which must come before any P3 launch. It is
 the full transfer from P1: with no P3 component in existence, each P3 cell's prediction is P1's
 committed value for that cell (the sum, the step form, the recursion, the sum plus s0).
 **EXPLORATORY**: it scores no hypothesis; it tells how far a host change moves the
@@ -117,9 +129,20 @@ end-to-end time when nothing about P3 is measured.
 - A P3 session config (`configs/t31/p3_session.json`: P1's grid, pairing P3) and a launcher
   run of P3 from the image.
 - **A store for the in-session `predict` step.** P1's runner syncs its prediction to GCS
-  before the hold; P3 on AWS has no GCS write path. A decision is needed: the Mac's driver
-  pulls the prediction and its sidecar and writes the receipt back (needs SSH at that
-  moment), or the S3 path of option 2 above.
+  before the hold; P3 on AWS has no GCS write path, and no S3 bucket or role is to be made
+  (adviser, 23 Nov 2026). So the Mac's driver pulls the prediction and its sidecar, checks
+  the sha256 and writes the receipt back before the hold starts; this needs SSH at that
+  moment, and a lost SSH there stops the session before any ground truth (**plan default,
+  flagged**).
+- **The preflight on AWS.** T3.1's `preflight` (T2.27's `t21_t220`) refuses any host but
+  GCP's `g2-standard-8` (`EXPECTED_INSTANCE_TYPE`, `cloud_provider` `gcp`), so it would fail
+  on `g6.2xlarge` as written; the rehearsal does not run it. P3 needs the expected cloud and
+  type to be the pairing's (AWS, `g6.2xlarge`), with a test.
+- **The bootstrap on AWS.** The image, like v6, has no RULER data, wonderwords or nltk;
+  `gcp_bootstrap_instance.sh` is GCP-only (`gcloud compute ssh`). The rehearsal's driver does
+  its steps 1 to 4 and 8 over SSH; P3 needs that as a repository script. The model's weights
+  (Qwen2.5-1.5B-Instruct) are fetched from Hugging Face at the first load; the rehearsal
+  records which snapshot came.
 - The driver: the SSH preflight, the per-block pulls with sha256 checks, the restart path.
 - The pre-launch CPU pass (`scripts/prelaunch_cpu_pass.sh`) with a P3 entry, PASSED at the
   commit the yes names.

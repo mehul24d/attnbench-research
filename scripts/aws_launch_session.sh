@@ -11,7 +11,11 @@
 # inspection of the same image on the same type, with no build (adviser's
 # rulings dated 22 Nov 2026, probe): every guarantee below, but its hard
 # delete may be 5 to 15 minutes and its halt from 3 minutes (the ruling's
-# 8 and 6), where every other pairing needs 30 and 20.
+# 8 and 6), where every other pairing needs 30 and 20. REH is the g6.xlarge
+# rehearsal from the built image (adviser's task of 23 Nov 2026, second; card
+# docs/launch_cards/aws_rehearsal_g6.md): one L4 on P3's host family, every
+# guarantee below; it checks the image on the GPU and times one cell for
+# a sanity read only.
 #
 # The AWS counterpart of the gcp_launch_*.sh scripts, with the same
 # guarantees, each checked before anything is created:
@@ -123,7 +127,7 @@
 set -euo pipefail
 
 HERE="$(dirname "${BASH_SOURCE[0]}")"
-PAIRING="${1:?usage: aws_launch_session.sh PAIRING [NAME]   (PAIRING: P3, P5, P6, P7 or ENV)}"
+PAIRING="${1:?usage: aws_launch_session.sh PAIRING [NAME]   (PAIRING: P3, P5, P6, P7, ENV, PROBE or REH)}"
 
 # One GPU each, 8 vCPUs where the family allows, to match P1's
 # g2-standard-8; p5.4xlarge is the plan's own pin. Accepted 28 Oct 2026.
@@ -134,7 +138,8 @@ case "$PAIRING" in
   P7) INSTANCE_TYPE="g5.2xlarge";  GPU="1x A10G 24GB" ;;
   ENV) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: environment build only" ;;
   PROBE) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: image inspection only, no build" ;;
-  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, ENV is the environment build and PROBE its image inspection." >&2
+  REH) INSTANCE_TYPE="g6.xlarge"; GPU="1x L4 24GB: the image's rehearsal, no measurement of record" ;;
+  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, ENV is the environment build, PROBE its image inspection and REH the image's g6.xlarge rehearsal." >&2
      exit 1 ;;
 esac
 PAIR_LC="$(echo "$PAIRING" | tr 'A-Z' 'a-z')"
