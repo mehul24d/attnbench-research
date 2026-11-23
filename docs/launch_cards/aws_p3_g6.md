@@ -37,8 +37,7 @@ can be read is the end of block 2, when step 5's 35 cells have been pulled and c
 `p6_host_effect.py` runs on the Mac then, before block 3 starts. Block 3 (device components,
 the in-session prediction, ground truth) does not feed the gate, so stopping P3 there on the
 gate's reading would save about 1.5 h (89 min of steps, about ₹212), at the cost of P3's reported device-side
-H0 and its ground truth. **Not proposed without a ruling: as written, block 3 runs whatever
-the gate reads.**
+H0 and its ground truth. **Ruled 23 Nov 2026: the go/no-go is after block 2**, once all 35 cells have host components. There the driver pulls step 5, checks every sha256, runs `p6_host_effect.py` and records d and the verdict before block 3 starts. Go means block 2 passed with all 35 cells pulled and checked; block 3 then runs whatever the gate reads, since it carries P3's reported H0 and ground truth (**plan default, flagged**: the ruling did not say that a skip verdict stops block 3). No-go (a cell missing, failed or not pulled) stops the session there: halt, pull, tear down, report.
 
 ## Cells: P1's 35
 
@@ -134,15 +133,8 @@ end-to-end time when nothing about P3 is measured.
   the sha256 and writes the receipt back before the hold starts; this needs SSH at that
   moment, and a lost SSH there stops the session before any ground truth (**plan default,
   flagged**).
-- **The preflight on AWS.** T3.1's `preflight` (T2.27's `t21_t220`) refuses any host but
-  GCP's `g2-standard-8` (`EXPECTED_INSTANCE_TYPE`, `cloud_provider` `gcp`), so it would fail
-  on `g6.2xlarge` as written; the rehearsal does not run it. P3 needs the expected cloud and
-  type to be the pairing's (AWS, `g6.2xlarge`), with a test.
-- **The bootstrap on AWS.** The image, like v6, has no RULER data, wonderwords or nltk;
-  `gcp_bootstrap_instance.sh` is GCP-only (`gcloud compute ssh`). The rehearsal's driver does
-  its steps 1 to 4 and 8 over SSH; P3 needs that as a repository script. The model's weights
-  (Qwen2.5-1.5B-Instruct) are fetched from Hugging Face at the first load; the rehearsal
-  records which snapshot came.
+- **The preflight on AWS: built 23 Nov 2026.** T3.1's `preflight` calls T2.27's `t21_t220`, which required GCP's `g2-standard-8`. `scripts/t227_steps.py` is outside the timed-path pin, so it was fixed there as ruled: it now accepts the L4 hosts in `L4_HOSTS` by name (`ATTNBENCH_EXPECTED_HOST`, default `gcp:g2-standard-8`; P3 sets `aws:g6.2xlarge`), and refuses any other name (`tests/test_t227_expected_host.py`, which also checks that the file stays outside the pin). The pin is `0e0fb012…`, unchanged; `t31_steps.py` and `provenance.py`, which are pinned, are untouched.
+- **The bootstrap on AWS: built 23 Nov 2026.** `scripts/aws_bootstrap_instance.sh USER@HOST`, from the Mac after the deploy, does `gcp_bootstrap_instance.sh`'s steps 1 to 4 and 8 over SSH: the local RULER data verified against its pins, copied unless the instance's copy verifies, verified there; wonderwords 2.2.0, nltk 3.9.1 and lightgbm at the learned predictor's version in `/usr/bin/python3`'s user site; the word pool and the sentence tokenizer; the tree still clean (`tests/test_aws_bootstrap_instance.py`, with fake ssh and scp). The model's weights (Qwen2.5-1.5B-Instruct) are fetched from Hugging Face at the first load; the rehearsal records which snapshot came.
 - The driver: the SSH preflight, the per-block pulls with sha256 checks, the restart path.
 - The pre-launch CPU pass (`scripts/prelaunch_cpu_pass.sh`) with a P3 entry, PASSED at the
   commit the yes names.
