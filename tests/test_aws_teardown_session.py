@@ -161,3 +161,15 @@ def test_it_ends_with_the_cleanup_check(tmp_path):
     term = max(i for i, c in enumerate(calls) if "terminate-instances" in c)
     assert any("describe-volumes" in c for c in calls[term:])
     assert "AWS Cleanup Check" in p.stdout
+
+
+def test_the_zone_the_instance_ran_in_is_reported(tmp_path):
+    """The launcher may fall back to another zone (the researcher's yes of
+    23 Nov 2026); the instance is found by id in any zone and its zone is
+    printed and written to session_cost.txt."""
+    p, calls, out = _teardown(tmp_path, env={"FAKE_ZONE": "us-east-1c"})
+    assert p.returncode == 0, p.stderr
+    assert "zone us-east-1c" in p.stdout
+    cost = dict(line.split(": ", 1) for line in (out / "session_cost.txt").read_text().splitlines())
+    assert cost["zone"] == "us-east-1c"
+    assert not any("--filters Name=availability-zone" in c for c in calls)   # by id: every zone

@@ -23,6 +23,10 @@
 #   - the instance has no attnbench-session tag: this script deletes only
 #     instances aws_launch_session.sh created.
 #
+# The instance is found by id, which covers every zone of the region; the zone
+# it runs in is printed and written to session_cost.txt (the launcher may have
+# fallen back to another zone, the researcher's yes of 23 Nov 2026).
+#
 #   AWS_RATE_INR_HR=... bash scripts/aws_teardown_session.sh INSTANCE_ID REGION [RESULTS_DIR]
 #
 # SSH: AWS_SSH_KEY (private key path) and AWS_SSH_USER (default ubuntu).
@@ -80,12 +84,13 @@ if ! INFO="$(describe "$REGION")" || [[ -z "$INFO" ]]; then
   FOUND=0
 fi
 
-STATE="" SESSION="" DNS="" LAUNCH=""
+STATE="" SESSION="" DNS="" LAUNCH="" ZONE=""
 if [[ "$FOUND" -eq 1 ]]; then
   STATE="$INFO"
   SESSION="$(field "$REGION" 'Tags[?Key==`attnbench-session`]|[0].Value')"
   DNS="$(field "$REGION" 'PublicDnsName')"
   LAUNCH="$(field "$REGION" 'LaunchTime')"
+  ZONE="$(field "$REGION" 'Placement.AvailabilityZone')"
   if [[ -z "$SESSION" || "$SESSION" == "None" ]]; then
     echo "REFUSING: $ID has no attnbench-session tag, so aws_launch_session.sh did not" >&2
     echo "create it. This script deletes only the study's own instances. Nothing was" >&2
@@ -93,7 +98,7 @@ if [[ "$FOUND" -eq 1 ]]; then
     exit 2
   fi
   [[ "$DNS" == "None" ]] && DNS=""
-  echo "   $ID: session $SESSION, state $STATE"
+  echo "   $ID: session $SESSION, state $STATE, zone ${ZONE:-unknown}"
 fi
 mkdir -p "$S"
 
@@ -175,8 +180,8 @@ fi
 if [[ "$BOOT_EPOCH" =~ ^[0-9]+$ ]]; then
   MINS=$(( ( $(command date +%s) - BOOT_EPOCH + 59 ) / 60 ))
   COST=$(awk -v m="$MINS" -v r="$RATE_INR_HR" 'BEGIN{printf "%.0f", m*r/60}')
-  printf 'provider: aws\ninstance: %s\nsession: %s\nregion: %s\nboot: %s\nbasis: %s\nteardown: %s\nminutes: %s\nrate_inr_hr: %s\nest_inr: %s\n' \
-    "$ID" "$SESSION" "$REGION" "$BOOT_UTC" "$BASIS" "$(command date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  printf 'provider: aws\ninstance: %s\nsession: %s\nregion: %s\nzone: %s\nboot: %s\nbasis: %s\nteardown: %s\nminutes: %s\nrate_inr_hr: %s\nest_inr: %s\n' \
+    "$ID" "$SESSION" "$REGION" "${ZONE:-unknown}" "$BOOT_UTC" "$BASIS" "$(command date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$MINS" "$RATE_INR_HR" "$COST" > "$S/session_cost.txt"
   echo "   billable: ${MINS} min  ~= INR ${COST} at ${RATE_INR_HR}/hr -> $S/session_cost.txt"
 else

@@ -58,6 +58,19 @@ case "$1 $2" in
     echo /dev/sda1; exit 0 ;;
   "ec2 run-instances")
     [[ -n "${FAKE_RUN_FAIL:-}" ]] && { echo "An error occurred (InsufficientInstanceCapacity)" >&2; exit 254; }
+    # Per zone: FAKE_RUN_REFUSE_ZONES refuse for capacity, FAKE_RUN_ERROR_ZONES
+    # fail with FAKE_RUN_ERROR (another error), as the real CLI words them.
+    zone=""
+    for a in "$@"; do case "$a" in AvailabilityZone=*) zone="${a#AvailabilityZone=}";; esac; done
+    if [[ -n "$zone" && " ${FAKE_RUN_REFUSE_ZONES:-} " == *" $zone "* ]]; then
+      echo "" >&2
+      echo "aws: [ERROR]: An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation (reached max retries: 2): We currently do not have sufficient g6.xlarge capacity in the Availability Zone you requested ($zone)." >&2
+      exit 254
+    fi
+    if [[ -n "$zone" && " ${FAKE_RUN_ERROR_ZONES:-} " == *" $zone "* ]]; then
+      echo "aws: [ERROR]: An error occurred (${FAKE_RUN_ERROR:-Unsupported}) when calling the RunInstances operation: refused in $zone." >&2
+      exit 254
+    fi
     echo "arn:aws:ec2:$region:$FAKE_ACCOUNT:instance/$FAKE_INSTANCE" >&2
     echo "$FAKE_INSTANCE"; exit 0 ;;
   "iam get-role")
@@ -100,6 +113,7 @@ case "$1 $2" in
           *"attnbench-session"*) printf '%s\n' "$tag" ;;
           *PublicDnsName*) printf '%s\n' "$dns" ;;
           *LaunchTime*) printf '%s\n' "$lt" ;;
+          *Placement.AvailabilityZone*) printf '%s\n' "${FAKE_ZONE:-${region}a}" ;;
           *State.Name*) printf '%s\n' "$st" ;;
           *) echo "UNHANDLED query $*" >> "$AWS_LOG"; exit 1 ;;
         esac
@@ -107,9 +121,23 @@ case "$1 $2" in
       fi
       echo "An error occurred (InvalidInstanceID.NotFound)" >&2; exit 254
     fi
+    if [[ "$*" == *"Name=tag:attnbench-session,"* ]]; then      # the launcher's confirmation
+      [[ -n "${FAKE_LIST_FAIL:-}" ]] && { echo "RequestLimitExceeded" >&2; exit 254; }
+      [[ -n "${FAKE_STRAY_INSTANCE:-}" ]] && printf '%s\t%s\n' "$FAKE_STRAY_INSTANCE" "${region}b"
+      exit 0
+    fi
+    if [[ "$*" == *"Values=terminated"* ]]; then                  # the cleanup's recent list
+      [[ "$region" == "${FAKE_TERMINATED_REGION:-}" ]] && printf '%s\tg6.xlarge\t%s\tsess-1\n' "$FAKE_INSTANCE" "${FAKE_ZONE:-${region}b}"
+      exit 0
+    fi
     [[ "$region" == "${FAKE_LIVE_REGION:-}" ]] && printf '%s\trunning\n' "$FAKE_INSTANCE"
     exit 0 ;;
+  "ec2 describe-availability-zones") echo "${region}a ${region}b ${region}c"; exit 0 ;;
   "ec2 describe-volumes")
+    if [[ "$*" == *"Name=tag:attnbench-session,"* ]]; then
+      [[ -n "${FAKE_STRAY_VOLUME:-}" ]] && printf '%s\t%s\tavailable\n' "$FAKE_STRAY_VOLUME" "${region}b"
+      exit 0
+    fi
     [[ "$region" == "${FAKE_VOLUME_REGION:-}" ]] && echo "vol-0abc 200 gp3"
     exit 0 ;;
   "ec2 describe-addresses") exit 0 ;;

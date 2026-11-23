@@ -41,7 +41,7 @@ snapshot is recorded.
 | | |
 |---|---|
 | Type | `g6.xlarge` (1 x L4 24 GB, AMD EPYC 7R13, 4 vCPU, 16 GiB), on-demand |
-| Region | `ap-southeast-2` (any of 2a, 2b, 2c; all three offer `g6.xlarge`, read 23 Nov 2026) |
+| Region | `ap-southeast-2` (any of 2a, 2b, 2c; all three offer `g6.xlarge`, read 23 Nov 2026). From the third attempt: 2b, then 2c, then 2a, the next only after an `InsufficientInstanceCapacity` refusal (below) |
 | Image | `ami-096c5dc30364c9041` |
 | Quota | Running On-Demand G and VT: 8 vCPU (read 23 Nov 2026); this uses 4 |
 | Root volume | 200 GB gp3, encrypted, deleted with the instance |
@@ -113,3 +113,46 @@ So whether sm_80 code runs on the L4 is **still unconfirmed by a run** (the cubi
 and P3's hours are not re-estimated: no step-5 time was measured. A second attempt needs a
 launch yes; the driver now also retries the teardown on a failure (below).
 
+## The second attempt, 23 Nov 2026 (no capacity, twice; nothing launched)
+
+The researcher re-pointed the security group to this Mac's current /32 and ran the driver
+at 18:03 UTC from `f3d59ac`. The driver ran again, unchanged, at 18:13 UTC from `c8605c4`.
+Both times the SSH preflight, the credit gate and the dry registration passed, and then
+`RunInstances` was refused with `InsufficientInstanceCapacity` for `g6.xlarge` in
+`ap-southeast-2a`. AWS named 2b and 2c as having capacity. No instance id came back, and the
+Sydney listing showed no instance, volume, address or schedule. The spend was ₹0. The launch
+record holds both requests at ₹180 until they are struck.
+
+## The third attempt: the zone fallback (the researcher's launch yes of 23 Nov 2026)
+
+The launcher takes the ordered list `AWS_SESSION_AZS="ap-southeast-2b ap-southeast-2c
+ap-southeast-2a"`. The fallback is `aws_launch_across_zones` in
+`scripts/_aws_launch_policy.sh`, shared with P3 and P6. It makes one pass through the zones,
+with no loop. The launch policy is checked again before each zone. The next zone is tried only
+when three things hold: the refusal is `InsufficientInstanceCapacity`, no instance id came
+back, and the session's tag finds no instance and no volume anywhere in the region. Any other
+error, a stray instance or volume, or a read that fails stops at once. If all three zones
+refuse, the launch stops (`LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY`).
+
+- Each zone tried is a create request, so the launch record holds it at ₹180. The worst case
+  of a session is unchanged: only one instance can be created.
+- The launcher prints `LAUNCH_ZONE=` and `ZONES_REFUSED=`. The teardown finds the instance by
+  id in any zone and prints its zone, which is also written to `session_cost.txt`. The cleanup
+  check's listings are region-wide; it names the zones they cover and lists the study's
+  recently terminated instances with their zone.
+- Subnets, read only on 23 Nov 2026: the security group is in the default VPC. Each of 2a, 2b
+  and 2c has a default subnet that is available, gives a public address at launch, has free
+  addresses, routes 0.0.0.0/0 to an internet gateway, and has a network ACL that allows tcp/22
+  in and ephemeral ports out. With `--placement` alone, EC2 uses that subnet. The subnet ids are
+  recorded off-repo, and the driver records whether the instance's subnet is the recorded one.
+  The hard-delete schedule is regional (the schedule group `default`), so it does not depend on
+  the zone.
+- Tests on the fake `aws` (`tests/test_aws_launch_session.py`) cover:
+  - two refusals, then a launch in 2a;
+  - three refusals, after which it stops after one pass;
+  - a non-capacity error, which stops at once;
+  - a stray instance or volume, or a failed read, which stops;
+  - the policy read before each zone.
+
+  The driver ran end to end on the fake remote with the real launcher. The timed-path pin is
+  unchanged.

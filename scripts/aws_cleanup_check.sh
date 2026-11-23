@@ -15,6 +15,11 @@
 # says "Clean" while storage bills is the failure, so it says which.
 # Hard-delete schedules left behind are listed too: they bill nothing, but
 # one that remains means a session's hard delete has not fired yet.
+# Every listing is region-wide, so it covers every availability zone; the
+# zones are named per region, and the study's instances terminated within
+# the last hour or so (EC2 keeps them visible that long) are listed with
+# their zone, so a launch that fell back to another zone shows where it ran
+# (the researcher's yes of 23 Nov 2026). Neither is an error.
 set -uo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_aws_account.sh"
@@ -85,6 +90,14 @@ for R in $REGIONS; do
     ec2 describe-snapshots "${P[@]}" --owner-ids self \
     --query 'Snapshots[].[SnapshotId,VolumeSize,StartTime]' --output text \
     && SNAPSHOTS_SEEN=1
+  SOFT=1 listing "availability zones these listings cover" \
+    ec2 describe-availability-zones "${P[@]}" --filters Name=zone-type,Values=availability-zone \
+    --query 'join(` `, AvailabilityZones[].ZoneName)' --output text || true
+  SOFT=1 listing "the study's instances terminated recently, with their zone (not billed)" \
+    ec2 describe-instances "${P[@]}" \
+    --filters "Name=instance-state-name,Values=terminated" "Name=tag-key,Values=attnbench-session" \
+    --query 'Reservations[].Instances[].[InstanceId,InstanceType,Placement.AvailabilityZone,Tags[?Key==`attnbench-session`]|[0].Value]' \
+    --output text || true
   # Soft: Scheduler is not offered in every region, and a schedule bills nothing.
   SOFT=1 listing "hard-delete schedules still pending (not billed)" \
     scheduler list-schedules "${P[@]}" --name-prefix attnbench-hard-delete- \

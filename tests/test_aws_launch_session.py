@@ -477,3 +477,126 @@ def test_the_short_limits_are_the_probes_alone(tmp_path, pairing, minutes, halt,
     assert (p.returncode == 0) == ok, p.stderr
     if not ok:
         assert calls == []
+
+
+# --- the zone fallback (the researcher's launch yes of 23 Nov 2026, third
+# rehearsal attempt: 2b, then 2c, then 2a, on a no-capacity error only) ------
+ZONES = "ap-southeast-2b ap-southeast-2c ap-southeast-2a"
+REH_ZONES = {**{k: v for k, v in REH_CARD.items() if k != "AWS_SESSION_AZ"},
+             "AWS_SESSION_AZS": ZONES}
+
+
+def _zones_tried(calls):
+    return [re.search(r"AvailabilityZone=(\S+)", c).group(1)
+            for c in aws_calls(calls) if c.startswith("ec2 run-instances")]
+
+
+def _confirm_reads(calls):
+    return [k for k, c in enumerate(aws_calls(calls)) if "Name=tag:attnbench-session," in c]
+
+
+def test_two_capacity_refusals_then_a_launch_in_the_third_zone(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES,
+                       "FAKE_RUN_REFUSE_ZONES": "ap-southeast-2b ap-southeast-2c"})
+    assert p.returncode == 0, p.stderr
+    assert _zones_tried(calls) == ["ap-southeast-2b", "ap-southeast-2c", "ap-southeast-2a"]
+    c = aws_calls(calls)
+    runs = [k for k, x in enumerate(c) if x.startswith("ec2 run-instances")]
+    reads = _confirm_reads(calls)
+    # an instance and a volume read after each refusal, before the next request
+    assert len(reads) == 4 and runs[0] < reads[0] < reads[1] < runs[1] < reads[2] < reads[3] < runs[2]
+    assert [c[k].split()[1] for k in reads] == ["describe-instances", "describe-volumes"] * 2
+    assert all("--region ap-southeast-2" in c[k] for k in reads)
+    assert "LAUNCH_ZONE=ap-southeast-2a" in p.stdout
+    assert "ZONES_REFUSED=ap-southeast-2b,ap-southeast-2c" in p.stdout
+    assert f"INSTANCE_ID={INSTANCE}" in p.stdout
+    sched = _one(c, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert c.index(sched) > runs[2]
+    rec = [ln.split("\t")[1:] for ln in _record(tmp_path).read_text().splitlines()]
+    assert rec == [["REH", "no-id", "180"], ["REH", "no-id", "180"], ["REH", INSTANCE, "180"]]
+    assert "ap-southeast-2b ap-southeast-2c ap-southeast-2a (in this order" in p.stdout
+
+
+def test_three_capacity_refusals_stop_after_one_pass(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_RUN_REFUSE_ZONES": ZONES})
+    assert p.returncode == 1
+    assert _zones_tried(calls) == ["ap-southeast-2b", "ap-southeast-2c", "ap-southeast-2a"]
+    assert len(_confirm_reads(calls)) == 6
+    assert "every zone refused for capacity: ap-southeast-2b ap-southeast-2c ap-southeast-2a" in p.stderr
+    assert "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p.stdout
+    assert "aws_cleanup_check.sh" in p.stderr and "INSTANCE_ID=" not in p.stdout
+    assert not any("create-schedule" in c and "hard-delete-i-" in c for c in aws_calls(calls))
+    assert len(_record(tmp_path).read_text().splitlines()) == 3
+
+
+@pytest.mark.parametrize("error", ["InvalidParameterValue", "Unsupported", "UnauthorizedOperation",
+                                   "InsufficientInstanceCapacityX"])
+def test_a_non_capacity_error_stops_at_once(tmp_path, error):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_RUN_ERROR_ZONES": "ap-southeast-2b",
+                                             "FAKE_RUN_ERROR": error})
+    assert p.returncode == 1
+    assert _zones_tried(calls) == ["ap-southeast-2b"]
+    assert _confirm_reads(calls) == []
+    assert "an error other than" in p.stderr and "no other zone is tried" in p.stderr
+    assert "LAUNCH_RESULT" not in p.stdout
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"FAKE_STRAY_INSTANCE": "i-0aaaabbbbccccdddd"}, "the session has an instance"),
+    ({"FAKE_STRAY_VOLUME": "vol-0aaaabbbbccccdddd"}, "the session has a volume"),
+    ({"FAKE_LIST_FAIL": "1"}, "could not list the session's instances"),
+])
+def test_a_refusal_that_left_something_or_cannot_be_confirmed_stops(tmp_path, env, said):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, **env,
+                                             "FAKE_RUN_REFUSE_ZONES": "ap-southeast-2b"})
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert _zones_tried(calls) == ["ap-southeast-2b"]
+    assert "could not be confirmed" in p.stderr
+
+
+def test_the_policy_is_checked_again_before_each_zone(tmp_path):
+    """Three reads pass (the start, after the prompt, before 2b); the fourth,
+    before 2c, is the day after the last launch date: no request in 2c."""
+    seq = tmp_path / "today"
+    seq.write_text("2026-12-31\n2026-12-31\n2026-12-31\n2027-01-01\n")
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_TODAY_SEQ": str(seq),
+                                             "FAKE_RUN_REFUSE_ZONES": ZONES})
+    assert p.returncode == 1 and "after the last AWS" in p.stderr
+    assert _zones_tried(calls) == ["ap-southeast-2b"]
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"AWS_SESSION_AZS": "ap-southeast-2b ap-southeast-2b"}, "appears twice"),
+    ({"AWS_SESSION_AZS": "ap-southeast-2b us-east-1a"}, "not an availability zone of ap-southeast-2"),
+    ({"AWS_SESSION_AZS": "ap-southeast-2-per-1a"}, "Local Zone"),
+    ({"AWS_SESSION_AZS": "ap-southeast-4a"}, "other than"),
+    ({"AWS_SESSION_AZS": ZONES, "AWS_SESSION_AZ": "ap-southeast-2a"}, "not both"),
+    ({"AWS_SESSION_AZS": ZONES, "AWS_SUBNET_ID": "subnet-0123456789abcdef0"}, "not both"),
+])
+def test_a_bad_zone_list_is_refused_before_any_aws_call(tmp_path, env, said):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, **env})
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert calls == []
+
+
+def test_every_zone_in_the_list_must_offer_the_type(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_NOT_OFFERED": "1"})
+    assert p.returncode == 1 and "not offered in ap-southeast-2b" in p.stderr
+    assert not any("run-instances" in c for c in calls)
+    p, calls = _launch(tmp_path, "REH", env=REH_ZONES)     # the refusal above created nothing
+    offers = [c for c in aws_calls(calls) if "describe-instance-type-offerings" in c]
+    assert [re.search(r"Name=location,Values=(\S+)", c).group(1) for c in offers] == ZONES.split()
+
+
+def test_a_launch_in_the_first_zone_tries_no_other(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env=REH_ZONES)
+    assert p.returncode == 0, p.stderr
+    assert _zones_tried(calls) == ["ap-southeast-2b"] and _confirm_reads(calls) == []
+    assert "LAUNCH_ZONE=ap-southeast-2b" in p.stdout and "ZONES_REFUSED" not in p.stdout
+
+
+def test_the_policy_script_names_the_capacity_error_once():
+    from _aws_fakes import SCRIPTS
+    text = (SCRIPTS / "_aws_launch_policy.sh").read_text()
+    assert text.count('AWS_CAPACITY_ERROR="InsufficientInstanceCapacity"') == 1
+    assert '"($AWS_CAPACITY_ERROR)"' in text

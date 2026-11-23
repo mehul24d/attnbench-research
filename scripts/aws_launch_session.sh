@@ -116,7 +116,16 @@
 #   AWS_MAX_RUN_MINUTES    hard-delete limit, minutes from launch
 # Optional:
 #   AWS_SESSION_AZ         availability zone inside the region
+#   AWS_SESSION_AZS        an ordered list of zones, "ap-southeast-2b ap-southeast-2c
+#                          ap-southeast-2a": one pass, the next zone tried only after
+#                          an InsufficientInstanceCapacity refusal once no instance
+#                          and no volume of the session are confirmed
+#                          (scripts/_aws_launch_policy.sh, aws_launch_across_zones;
+#                          the researcher's yes of 23 Nov 2026). Not with
+#                          AWS_SESSION_AZ or AWS_SUBNET_ID
 #   AWS_SUBNET_ID          subnet-... (fixes the zone; then AZ is not passed)
+#                          Without it, a zone's default subnet in the default VPC
+#                          is used, as EC2 picks it for --placement
 #   AWS_HALT_MINUTES       in-guest halt (default AWS_MAX_RUN_MINUTES - 60)
 #   AWS_PROVISIONING       on-demand (the default and the only value accepted)
 #   AWS_HARD_DELETE_ROLE   IAM role the scheduler assumes (default
@@ -160,8 +169,19 @@ if [[ -n "$AZ" && "$AZ" != "$REGION"* ]]; then
   echo "REFUSING TO LAUNCH -- AWS_SESSION_AZ ($AZ) is not in $REGION." >&2
   exit 1
 fi
+ZONE_SPEC="${AWS_SESSION_AZS:-}"
+if [[ -n "$ZONE_SPEC" && ( -n "$AZ" || -n "${AWS_SUBNET_ID:-}" ) ]]; then
+  echo "REFUSING TO LAUNCH -- set AWS_SESSION_AZS (a zone list) or AWS_SESSION_AZ /" >&2
+  echo "AWS_SUBNET_ID (one placement), not both." >&2
+  exit 1
+fi
 source "$HERE/_aws_launch_policy.sh"
-aws_launch_policy_check "$REGION" $AZ
+aws_launch_policy_check "$REGION" $AZ $ZONE_SPEC
+if [[ -n "$ZONE_SPEC" ]]; then
+  aws_zone_list "$REGION" "$ZONE_SPEC"
+else
+  AWS_ZONES=("$AZ")     # one attempt, in AZ or wherever EC2 places it
+fi
 
 # --- money: rate, hard-delete limit, cost cap --------------------------------
 NUM='^[0-9]+([.][0-9]+)?$'
@@ -273,14 +293,16 @@ if ! awk -v c="$CREDITS_INR" -v n="$NEED_INR" 'BEGIN{exit !(c > n)}'; then
 fi
 
 # --- read-only checks against the account ------------------------------------
-OFFERED="$(aws ec2 describe-instance-type-offerings "${P[@]}" \
-  --location-type "$([[ -n "$AZ" ]] && echo availability-zone || echo region)" \
-  --filters "Name=instance-type,Values=$INSTANCE_TYPE" "Name=location,Values=${AZ:-$REGION}" \
-  --query 'InstanceTypeOfferings[0].InstanceType' --output text)"
-if [[ "$OFFERED" != "$INSTANCE_TYPE" ]]; then
-  echo "REFUSING TO LAUNCH -- $INSTANCE_TYPE is not offered in ${AZ:-$REGION}. Nothing was created." >&2
-  exit 1
-fi
+for Z in "${AWS_ZONES[@]}"; do
+  OFFERED="$(aws ec2 describe-instance-type-offerings "${P[@]}" \
+    --location-type "$([[ -n "$Z" ]] && echo availability-zone || echo region)" \
+    --filters "Name=instance-type,Values=$INSTANCE_TYPE" "Name=location,Values=${Z:-$REGION}" \
+    --query 'InstanceTypeOfferings[0].InstanceType' --output text)"
+  if [[ "$OFFERED" != "$INSTANCE_TYPE" ]]; then
+    echo "REFUSING TO LAUNCH -- $INSTANCE_TYPE is not offered in ${Z:-$REGION}. Nothing was created." >&2
+    exit 1
+  fi
+done
 ROOT_DEVICE="$(aws ec2 describe-images "${P[@]}" --image-ids "$AMI" \
   --query 'Images[0].RootDeviceName' --output text)"
 if [[ ! "$ROOT_DEVICE" =~ ^/dev/[a-z0-9]+$ ]]; then
@@ -327,7 +349,11 @@ echo "About to create a BILLABLE instance:"
 echo "  account      : ATTNBENCH_AWS_ACCOUNT via ATTNBENCH_AWS_PROFILE (pinned, not printed)"
 echo "  pairing      : $PAIRING"
 echo "  name         : $NAME"
-echo "  region / AZ  : $REGION / ${AZ:-${SUBNET:-any}}"
+if [[ -n "$ZONE_SPEC" ]]; then
+  echo "  region / AZ  : $REGION / ${AWS_ZONES[*]} (in this order, the next only on a capacity refusal)"
+else
+  echo "  region / AZ  : $REGION / ${AZ:-${SUBNET:-any}}"
+fi
 echo "  type         : $INSTANCE_TYPE ($GPU)"
 echo "  image        : $AMI (root $ROOT_DEVICE)"
 echo "  root volume  : 200 GB gp3, encrypted, deleted with the instance"
@@ -379,41 +405,80 @@ if [[ "$DRY_STATE" != "DISABLED" ]]; then
 fi
 echo "Dry registration accepted (schedule $DRY, deleted)."
 
-PLACEMENT=()
-if [[ -n "$SUBNET" ]]; then
-  PLACEMENT=(--subnet-id "$SUBNET")
-elif [[ -n "$AZ" ]]; then
-  PLACEMENT=(--placement "AvailabilityZone=$AZ")
-fi
-# One hard-delete time, fixed before the request: the tag and the schedule
-# carry the same value, and the instance runs at most AWS_MAX_RUN_MINUTES.
-DELETE_AT="$(iso_utc $(( $(command date -u +%s) + MAX_RUN_MINUTES * 60 )))"
-TAGS="{Key=Name,Value=$NAME},{Key=attnbench-session,Value=$NAME},{Key=attnbench-pairing,Value=$PAIRING},{Key=attnbench-provisioning-model,Value=$MODEL},{Key=attnbench-hard-delete-at,Value=${DELETE_AT}Z}"
+# One create request in one zone (aws_launch_across_zones calls it).
+launch_attempt() {
+  local zone="$1" errf out placement=()
+  if [[ -n "$SUBNET" ]]; then
+    placement=(--subnet-id "$SUBNET")
+  elif [[ -n "$zone" ]]; then
+    placement=(--placement "AvailabilityZone=$zone")
+  fi
+  # One hard-delete time, fixed before each request: the tag and the schedule
+  # carry the same value, and the instance runs at most AWS_MAX_RUN_MINUTES.
+  DELETE_AT="$(iso_utc $(( $(command date -u +%s) + MAX_RUN_MINUTES * 60 )))"
+  local tags="{Key=Name,Value=$NAME},{Key=attnbench-session,Value=$NAME},{Key=attnbench-pairing,Value=$PAIRING},{Key=attnbench-provisioning-model,Value=$MODEL},{Key=attnbench-hard-delete-at,Value=${DELETE_AT}Z}"
+  errf="$(mktemp)"
+  # bash 3.2 (macOS) aborts on "${EMPTY[@]}" under set -u, hence the guards.
+  out="$(aws ec2 run-instances "${P[@]}" \
+    --image-id "$AMI" \
+    --instance-type "$INSTANCE_TYPE" \
+    --count 1 \
+    --key-name "$KEY_NAME" \
+    --security-group-ids "$SG" \
+    ${placement[@]+"${placement[@]}"} \
+    --instance-initiated-shutdown-behavior "$SHUTDOWN_BEHAVIOR" \
+    --metadata-options 'HttpTokens=required,HttpEndpoint=enabled,InstanceMetadataTags=enabled' \
+    --block-device-mappings "DeviceName=$ROOT_DEVICE,Ebs={VolumeSize=200,VolumeType=gp3,DeleteOnTermination=true,Encrypted=true}" \
+    --tag-specifications "ResourceType=instance,Tags=[$tags]" "ResourceType=volume,Tags=[$tags]" \
+    --user-data "file://$STARTUP_SCRIPT" \
+    --query 'Instances[0].InstanceId' --output text 2>"$errf")" || true
+  AWS_ATTEMPT_ERR="$(cat "$errf")"; rm -f "$errf"
+  [[ -n "$AWS_ATTEMPT_ERR" ]] && printf '%s\n' "$AWS_ATTEMPT_ERR" >&2
+  out="$(tr -d '[:space:]' <<<"$out")"
+  [[ "$out" == None ]] && out=""
+  AWS_ATTEMPT_ID="$out"
+  # Every submitted create request goes into the launch record at its cap,
+  # created or not: an instance may exist even when no id came back.
+  mkdir -p "$(dirname "$LAUNCH_RECORD")"
+  printf '%s\t%s\t%s\t%s\n' "$(command date -u +%Y-%m-%dT%H:%M:%SZ)" "$PAIRING" \
+    "${AWS_ATTEMPT_ID:-no-id}" "$COST_CAP_INR" >> "$LAUNCH_RECORD"
+  [[ "$AWS_ATTEMPT_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
+}
 
-# bash 3.2 (macOS) aborts on "${EMPTY[@]}" under set -u, hence the guards.
-INSTANCE_ID="$(aws ec2 run-instances "${P[@]}" \
-  --image-id "$AMI" \
-  --instance-type "$INSTANCE_TYPE" \
-  --count 1 \
-  --key-name "$KEY_NAME" \
-  --security-group-ids "$SG" \
-  ${PLACEMENT[@]+"${PLACEMENT[@]}"} \
-  --instance-initiated-shutdown-behavior "$SHUTDOWN_BEHAVIOR" \
-  --metadata-options 'HttpTokens=required,HttpEndpoint=enabled,InstanceMetadataTags=enabled' \
-  --block-device-mappings "DeviceName=$ROOT_DEVICE,Ebs={VolumeSize=200,VolumeType=gp3,DeleteOnTermination=true,Encrypted=true}" \
-  --tag-specifications "ResourceType=instance,Tags=[$TAGS]" "ResourceType=volume,Tags=[$TAGS]" \
-  --user-data "file://$STARTUP_SCRIPT" \
-  --query 'Instances[0].InstanceId' --output text)" || INSTANCE_ID=""
-# Every submitted create request goes into the launch record at its cap,
-# created or not: an instance may exist even when no id came back.
-mkdir -p "$(dirname "$LAUNCH_RECORD")"
-printf '%s\t%s\t%s\t%s\n' "$(command date -u +%Y-%m-%dT%H:%M:%SZ)" "$PAIRING" \
-  "${INSTANCE_ID:-no-id}" "$COST_CAP_INR" >> "$LAUNCH_RECORD"
-if [[ ! "$INSTANCE_ID" =~ ^i-[0-9a-f]{8,17}$ ]]; then
-  echo "ERROR -- run-instances returned no instance id ('$INSTANCE_ID'). An instance may" >&2
+# After a refusal: no instance and no volume of this session anywhere in the
+# region (every zone), by its attnbench-session tag. A read that fails is not
+# a confirmation.
+confirm_nothing_created() {
+  local inst vols
+  inst="$(aws ec2 describe-instances "${P[@]}" \
+    --filters "Name=tag:attnbench-session,Values=$NAME" \
+              "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
+    --query 'Reservations[].Instances[].[InstanceId,Placement.AvailabilityZone]' --output text)" || {
+    echo "   could not list the session's instances" >&2; return 1; }
+  vols="$(aws ec2 describe-volumes "${P[@]}" \
+    --filters "Name=tag:attnbench-session,Values=$NAME" \
+    --query 'Volumes[].[VolumeId,AvailabilityZone,State]' --output text)" || {
+    echo "   could not list the session's volumes" >&2; return 1; }
+  inst="$(grep -v -e '^[[:space:]]*$' -e '^None$' <<<"$inst" || true)"
+  vols="$(grep -v -e '^[[:space:]]*$' -e '^None$' <<<"$vols" || true)"
+  if [[ -n "$inst" || -n "$vols" ]]; then
+    [[ -n "$inst" ]] && echo "   the session has an instance: $inst" >&2
+    [[ -n "$vols" ]] && echo "   the session has a volume: $vols" >&2
+    return 1
+  fi
+  echo "   confirmed: no instance and no volume of session $NAME in $REGION"
+}
+
+ZRC=0
+aws_launch_across_zones launch_attempt confirm_nothing_created "${AWS_ZONES[@]}" || ZRC=$?
+if [[ "$ZRC" -ne 0 ]]; then
+  [[ -n "$AWS_ZONES_REFUSED" ]] && echo "ZONES_REFUSED=${AWS_ZONES_REFUSED// /,}"
+  [[ "$ZRC" -eq 3 ]] && echo "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY"
+  echo "ERROR -- run-instances returned no instance id ('$AWS_ATTEMPT_ID'). An instance may" >&2
   echo "still exist: run scripts/aws_cleanup_check.sh now." >&2
   exit 1
 fi
+INSTANCE_ID="$AWS_ATTEMPT_ID"
 echo "Created $INSTANCE_ID. Billing now. Setting the hard delete."
 
 terminate_now() {
@@ -450,5 +515,7 @@ echo "  DELETES at ${DELETE_AT}Z (schedule $SCHEDULE), root volume with it"
 echo "  teardown: AWS_RATE_INR_HR=$RATE_INR_HR bash scripts/aws_teardown_session.sh $INSTANCE_ID $REGION"
 echo "  confirm clean: bash scripts/aws_cleanup_check.sh"
 echo "INSTANCE_ID=$INSTANCE_ID"
+echo "LAUNCH_ZONE=${AWS_LAUNCHED_ZONE:-any}"
+if [[ -n "$AWS_ZONES_REFUSED" ]]; then echo "ZONES_REFUSED=${AWS_ZONES_REFUSED// /,}"; fi
 echo "HARD_DELETE_AT=${DELETE_AT}Z"
 echo "PROVISIONING_MODEL=$MODEL"
