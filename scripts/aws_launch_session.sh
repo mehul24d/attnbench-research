@@ -581,11 +581,16 @@ if [[ "$ZRC" -ne 0 ]]; then
   fi
   if [[ -n "$AWS_ZONES_REFUSED" ]]; then echo "ZONES_REFUSED=${AWS_ZONES_REFUSED// /,}"; fi
   case "$ZRC" in
-    3) echo "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" ;;
-    4) echo "LAUNCH_RESULT=SSH_SOURCE_NOT_ADMITTED" ;;
+    3|4)
+      [[ "$ZRC" -eq 3 ]] && echo "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" \
+                         || echo "LAUNCH_RESULT=SSH_SOURCE_NOT_ADMITTED"
+      # Every request made was a capacity refusal confirmed by the session's tag.
+      echo "No instance was created: each of the $AWS_CAPACITY_REFUSALS requests was refused for capacity and" >&2
+      echo "confirmed to have left no instance and no volume of $NAME." >&2 ;;
+    *)
+      echo "ERROR -- run-instances returned no instance id ('$AWS_ATTEMPT_ID'). An instance may" >&2
+      echo "still exist: run scripts/aws_cleanup_check.sh now." >&2 ;;
   esac
-  echo "ERROR -- run-instances returned no instance id ('$AWS_ATTEMPT_ID'). An instance may" >&2
-  echo "still exist: run scripts/aws_cleanup_check.sh now." >&2
   exit 1
 fi
 record_line "window-closed:$NAME:launched" "$COST_CAP_INR"

@@ -136,11 +136,13 @@ aws_launch_across_zones() {     # aws_launch_across_zones ATTEMPT_FN CONFIRM_FN 
 #     aws_launch_window ATTEMPT_FN CONFIRM_FN PRECHECK_FN WINDOW_MINUTES ZONE...
 #
 # A pass tries every zone in order, exactly as aws_launch_across_zones does.
-# The next pass starts AWS_RETRY_INTERVAL_MINUTES (10) after the last one
+# The next pass starts AWS_RETRY_INTERVAL_MINUTES (5) after the last one
 # started (at once, if that pass took longer), and only while the window (at
 # most AWS_RETRY_WINDOW_MAX_MINUTES, 180, from its start) has not ended and
-# fewer than WINDOW_MINUTES / 10 passes have begun; WINDOW_MINUTES 0 is one
-# pass. Before every attempt: the launch policy,
+# fewer than WINDOW_MINUTES / AWS_RETRY_INTERVAL_MINUTES passes (rounded up)
+# have begun; WINDOW_MINUTES 0 is one pass. From the fifth rehearsal attempt
+# (the researcher's launch yes of 25 Nov 2026) the interval is 5 minutes, so a
+# 180-minute window has at most 36 passes. Before every attempt: the launch policy,
 # then PRECHECK_FN ZONE (the launcher's: the security group still admits this
 # Mac's current address on port 22). A failed precheck stops the window at once
 # and nothing is changed to make it pass: the security group is never
@@ -151,7 +153,7 @@ aws_launch_across_zones() {     # aws_launch_across_zones ATTEMPT_FN CONFIRM_FN 
 # AWS_ZONES_REFUSED lists the zones refused in the last pass, in order;
 # AWS_WINDOW_PASSES counts the passes begun and AWS_CAPACITY_REFUSALS every
 # confirmed capacity refusal of the window.
-AWS_RETRY_INTERVAL_MINUTES=10
+AWS_RETRY_INTERVAL_MINUTES=5
 AWS_RETRY_WINDOW_MAX_MINUTES=180
 
 aws_window_minutes_ok() {       # aws_window_minutes_ok MINUTES

@@ -191,9 +191,12 @@ def test_a_failed_terminate_after_a_failed_schedule_is_loud(tmp_path):
 
 
 def test_a_failed_create_points_at_the_cleanup_check(tmp_path):
-    p, calls = _launch(tmp_path, env={"FAKE_RUN_FAIL": "1"})
+    """Another error than a capacity refusal is not confirmed by the session's
+    tag, so an instance cannot be ruled out: point at the cleanup check."""
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_RUN_ERROR_ZONES": "ap-southeast-2b",
+                                             "FAKE_RUN_ERROR": "InternalError"})
     assert p.returncode == 1
-    assert "aws_cleanup_check.sh" in p.stderr
+    assert "aws_cleanup_check.sh" in p.stderr and "An instance may" in p.stderr
     assert not any("create-schedule" in c and "hard-delete-i-" in c for c in calls)
 
 
@@ -585,7 +588,9 @@ def test_three_capacity_refusals_stop_after_one_pass(tmp_path):
     assert len(_confirm_reads(calls)) == 6
     assert "every zone refused for capacity: ap-southeast-2b ap-southeast-2c ap-southeast-2a" in p.stderr
     assert "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p.stdout
-    assert "aws_cleanup_check.sh" in p.stderr and "INSTANCE_ID=" not in p.stdout
+    assert "INSTANCE_ID=" not in p.stdout
+    # Every refusal was confirmed by the session's tag: nothing may still exist.
+    assert "No instance was created: each of the 3 requests" in p.stderr and "An instance may" not in p.stderr
     assert not any("create-schedule" in c and "hard-delete-i-" in c for c in aws_calls(calls))
     assert [ln.split("\t")[2] for ln in _record(tmp_path).read_text().splitlines()] == [
         "window-open:sess-1", "window-closed:sess-1:refused"]
@@ -666,7 +671,8 @@ def test_the_policy_script_names_the_capacity_error_once():
 
 # --- the retry window (the researcher's launch yes of 24 Nov 2026, fourth
 # rehearsal attempt: 2b, 2c and 2a again every 10 minutes for at most 3 hours,
-# on a no-capacity error only; the security group re-checked before each) ----
+# on a no-capacity error only; the security group re-checked before each; from
+# the yes of 25 Nov 2026, the fifth attempt, every 5 minutes) ----------------
 def _window(tmp_path, minutes="180", **env):
     clock = tmp_path / "clock"
     clock.write_text(f"{NOW}\n")
@@ -688,12 +694,12 @@ def _record_words(tmp_path):
 
 
 def test_refusals_then_a_launch_inside_the_window(tmp_path):
-    """Pass 1: all three refused; pass 2, ten minutes after the start: 2b and
+    """Pass 1: all three refused; pass 2, five minutes after the start: 2b and
     2c refused, 2a launches."""
     p, calls = _window(tmp_path, FAKE_RUN_REFUSE_FIRST="5")
     assert p.returncode == 0, p.stderr
     assert _zones_tried(calls) == ZONES.split() * 2
-    assert _sleeps(calls) == [600]
+    assert _sleeps(calls) == [300]
     assert len(_confirm_reads(calls)) == 10            # an instance and a volume read per refusal
     assert len(_sg_reads(calls)) == 6 and sum(c.startswith("curl ") for c in calls) == 6
     c = aws_calls(calls)
@@ -702,20 +708,21 @@ def test_refusals_then_a_launch_inside_the_window(tmp_path):
     assert all(s + 1 == r for s, r in zip(sg, runs))   # the check just before each request
     for said in ("LAUNCH_ZONE=ap-southeast-2a", "ZONES_REFUSED=ap-southeast-2b,ap-southeast-2c",
                  "WINDOW_PASSES=2", "CAPACITY_REFUSALS=5", f"INSTANCE_ID={INSTANCE}",
-                 "retry window : 180 min, the zones again every 10 min"):
+                 "retry window : 180 min, the zones again every 5 min"):
         assert said in p.stdout, said
     assert _record_words(tmp_path) == ["window-open:sess-1", INSTANCE, "window-closed:sess-1:launched"]
 
 
 def test_the_window_ends_after_three_hours_of_refusals(tmp_path):
-    """18 passes (0, 10, ..., 170 min), 54 refused requests, 17 waits; then
+    """36 passes (0, 5, ..., 175 min), 108 refused requests, 35 waits; then
     the stop, with nothing counted in the credit gate."""
     p, calls = _window(tmp_path, FAKE_RUN_REFUSE_ZONES=ZONES)
     assert p.returncode == 1
-    assert _zones_tried(calls) == ZONES.split() * 18
-    assert _sleeps(calls) == [600] * 17
-    assert "the retry window (180 min) ended" in p.stderr and "18 passes (54 refusals)" in p.stderr
-    assert "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p.stdout and "WINDOW_PASSES=18" in p.stdout
+    assert _zones_tried(calls) == ZONES.split() * 36
+    assert _sleeps(calls) == [300] * 35
+    assert "the retry window (180 min) ended" in p.stderr and "36 passes (108 refusals)" in p.stderr
+    assert "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p.stdout and "WINDOW_PASSES=36" in p.stdout
+    assert "No instance was created" in p.stderr and "An instance may" not in p.stderr
     assert "INSTANCE_ID=" not in p.stdout
     assert _record_words(tmp_path) == ["window-open:sess-1", "window-closed:sess-1:refused"]
     p, _ = _launch(tmp_path, stdin="no\n")
@@ -723,9 +730,9 @@ def test_the_window_ends_after_three_hours_of_refusals(tmp_path):
 
 
 def test_the_window_ends_by_the_clock_when_passes_run_long(tmp_path):
-    """Each wait overruns by 20 minutes (a pass every 30 min): the window
+    """Each wait overruns by 25 minutes (a pass every 30 min): the window
     still ends at 180 min, after the pass begun at 150."""
-    p, calls = _window(tmp_path, FAKE_RUN_REFUSE_ZONES=ZONES, FAKE_SLEEP_EXTRA="1200")
+    p, calls = _window(tmp_path, FAKE_RUN_REFUSE_ZONES=ZONES, FAKE_SLEEP_EXTRA="1500")
     assert p.returncode == 1
     assert len(_zones_tried(calls)) == 3 * 6 and "WINDOW_PASSES=6" in p.stdout
 
@@ -787,5 +794,5 @@ def test_no_window_is_one_pass_and_never_waits(tmp_path):
 def test_the_policy_script_fixes_the_interval_and_the_window_bound():
     from _aws_fakes import SCRIPTS
     text = (SCRIPTS / "_aws_launch_policy.sh").read_text()
-    assert text.count("AWS_RETRY_INTERVAL_MINUTES=10\n") == 1
+    assert text.count("AWS_RETRY_INTERVAL_MINUTES=5\n") == 1
     assert text.count("AWS_RETRY_WINDOW_MAX_MINUTES=180\n") == 1
