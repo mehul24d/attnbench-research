@@ -1,4 +1,4 @@
-# Launch card: the `g6.xlarge` rehearsal (AWS Sydney, from the built AMI)
+# Launch card: the L4 rehearsal (AWS Sydney, from the built AMI; `g6.2xlarge` from the fourth attempt)
 
 Prepared 23 Nov 2026 (adviser's task of 23 Nov 2026, item 4a). **Not launched; for the
 adviser's approval.** No step below has run on a GPU, so every time and cost is an
@@ -21,8 +21,9 @@ three are checked:
 Checks 3 and 4 are timed and their times set beside T3.2d's for the same cell (step 5:
 51.9 s for `dense_d1_L8192_b1`, 4,729.9 s for all 35 cells) for a sanity read and for
 re-estimating P3's hours. They are not a measurement for any hypothesis, are not banked as
-one, and do not gate P3: the `g6.xlarge` host (4 vCPU, 16 GiB) is not P3's `g6.2xlarge`
-(8 vCPU, 32 GiB), although the processor is the same (AMD EPYC 7R13).
+one, and do not gate P3. Up to the third attempt the host was `g6.xlarge` (4 vCPU, 16 GiB);
+from the fourth it is P3's own `g6.2xlarge` (8 vCPU, 32 GiB, the same AMD EPYC 7R13), so
+the times are on P3's host type.
 
 **What runs, and what does not (plan defaults, flagged).** On the instance,
 `scripts/aws_rehearsal_instance.sh` runs checks 1 to 4 in order and stops at the first
@@ -40,12 +41,12 @@ snapshot is recorded.
 
 | | |
 |---|---|
-| Type | `g6.xlarge` (1 x L4 24 GB, AMD EPYC 7R13, 4 vCPU, 16 GiB), on-demand |
-| Region | `ap-southeast-2` (any of 2a, 2b, 2c; all three offer `g6.xlarge`, read 23 Nov 2026). From the third attempt: 2b, then 2c, then 2a, the next only after an `InsufficientInstanceCapacity` refusal (below) |
+| Type | From the fourth attempt, `g6.2xlarge` (1 x L4 24 GB, AMD EPYC 7R13, 8 vCPU, 32 GiB), on-demand, P3's type (the researcher's launch yes of 24 Nov 2026). Attempts 1 to 3: `g6.xlarge` (4 vCPU, 16 GiB) |
+| Region | `ap-southeast-2`. From the third attempt: 2b, then 2c, then 2a, the next only after an `InsufficientInstanceCapacity` refusal; from the fourth, that pass again every 10 minutes for at most 3 hours (below) |
 | Image | `ami-096c5dc30364c9041` |
-| Quota | Running On-Demand G and VT: 8 vCPU (read 23 Nov 2026); this uses 4 |
+| Quota | Running On-Demand G and VT: 8 vCPU (read 23 Nov 2026); `g6.2xlarge` uses all 8, so nothing else of the G family can run beside it |
 | Root volume | 200 GB gp3, encrypted, deleted with the instance |
-| Rate | **₹118.41/h** all-in: (the instance at $1.0464/h, SKU `N843N2ZTJ23RC5DC`, + 200 GB gp3 at $0.096/GB-month over 730 h) x 1.15 x ₹95.99; both rates read from the AWS Price List API for Sydney on 23 Nov 2026 (terms effective 1 Nov 2026) |
+| Rate | **₹143.21/h** all-in: (`g6.2xlarge` at $1.27107/h, SKU `A3JD2DB89TQHRAA7`, + 200 GB gp3 at $0.096/GB-month over 730 h) x 1.15 x ₹95.99, the P3 card's rates (`docs/launch_cards/aws_p3_g6.md`), read from the AWS Price List API for Sydney on 23 Nov 2026. Attempts 1 to 3: ₹118.41/h (`g6.xlarge` at $1.0464/h, SKU `N843N2ZTJ23RC5DC`) |
 
 ## Time and cost
 
@@ -59,12 +60,15 @@ snapshot is recorded.
 | Check 4, host components on one cell (P1: 52 s; doubled, then the harness load) | 3 |
 | Pull, teardown, cleanup check | 10 |
 | Margin | 7 |
-| **Planned** | **45** (about ₹89) |
+| **Planned** | **45** (about ₹107) |
 
-**Cap ₹180** (the adviser's figure); the in-guest halt **stops** the instance at **75 min**
-(₹148); the hard-delete schedule terminates it at **90 min** (worst case ₹178, inside the
-cap). On any failed check: stop, pull the logs, tear down and report; nothing is retried in
-the session.
+**Cap ₹220**, under the researcher's ₹250 (24 Nov 2026); the in-guest halt **stops** the
+instance at **75 min** (₹179); the hard-delete schedule terminates it at **90 min** (worst
+case ₹143.21 x 1.5 h = ₹214.82, ₹215 rounded up, inside the cap). The halt did not need
+shortening: the worst case runs to the hard delete, and 90 minutes fits. Attempts 1 to 3:
+cap ₹180 (worst case ₹178). On any failed check: stop, pull the logs, tear down and report;
+nothing is retried in the session. The time before a launch, in the retry window, bills
+nothing: a refused request creates nothing.
 
 ## Before the launch yes is asked
 
@@ -166,3 +170,35 @@ that no instance and no volume of the session existed, and it stopped after one 
 back with no instance, volume, address or schedule. The spend was ₹0. The launch record holds the
 three requests at ₹180 each until they are struck. The fallback behaved as tested. Checks 1 to 4
 are still unrun on a GPU, and P3's hours are not re-estimated. Another attempt needs a ruling.
+
+## The fourth attempt: `g6.2xlarge` and the retry window (the researcher's launch yes of 24 Nov 2026)
+
+- **Type and price.** `g6.2xlarge`, P3's type, at ₹143.21/h; cap ₹220, halt 75 min, hard
+  delete 90 min (above). The G quota of 8 vCPU is used in full.
+- **The window.** `aws_launch_window` in `scripts/_aws_launch_policy.sh`, used by the
+  launcher with `AWS_LAUNCH_WINDOW_MINUTES` (0 to 180; the rehearsal sets 180). A pass is the
+  third attempt's: 2b, 2c, 2a, the next only after an `InsufficientInstanceCapacity` refusal
+  with no instance id and nothing found by the session's tag. When a whole pass is refused,
+  the next starts 10 minutes after the last one started, while the window has not ended: at
+  most 18 passes (0, 10, ..., 170 minutes) and 54 requests. Any other error stops at once.
+- **The address check.** Before every request the launcher reads this Mac's public address
+  and the security group's port-22 ranges; unless the group admits that address as a /32,
+  the window stops (`LAUNCH_RESULT=SSH_SOURCE_NOT_ADMITTED`). The group is never re-pointed by
+  the launcher or the driver. The address is never printed.
+- **The launch record.** One record per window: a `window-open:NAME` line, then a
+  `window-closed:NAME:launched|refused|stopped` line. A real line (`i-...`) is written only
+  when an instance id exists. A confirmed capacity refusal writes nothing and is not counted
+  by the credit gate; a stop without that confirmation writes `unconfirmed`, which counts at
+  the cap; a window never closed counts at its cap. Lines are never rewritten: a dated
+  `VOID` line (six fields, naming the earlier line exactly) uncounts one. The five `no-id`
+  lines of 23 Nov 2026 were voided that way on 24 Nov 2026.
+- **The driver** (off-repo, `reh_driver.sh`) streams the launcher's output into the record
+  folder (`launcher.log`) while the window runs, and records the passes and refusals in
+  `placement.txt`.
+- **Tests on the fake `aws`** (`tests/test_aws_launch_session.py`): refusals then a launch
+  in the second pass; the window ending after 18 passes, and by the clock when the waits
+  run long; the bound of 180 minutes; the address changing mid-window (stops, touches no
+  rule); an address or group that cannot be read; a non-capacity error in the second pass
+  (stops, counted); the VOID and window lines in the credit gate. The driver ran end to end
+  on the fake remote with the real launcher in the same four cases. The timed-path pin is
+  unchanged.

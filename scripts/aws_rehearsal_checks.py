@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks 1 and 2 of the g6.xlarge rehearsal (docs/launch_cards/aws_rehearsal_g6.md;
+"""Checks 1 and 2 of the L4 rehearsal (docs/launch_cards/aws_rehearsal_g6.md;
 adviser's task of 23 Nov 2026, second, item 2). Run on the instance, from the
 deployed repository's root, by `scripts/aws_rehearsal_instance.sh`. EXPLORATORY:
 nothing here enters training, the floors, the prediction or any claim.

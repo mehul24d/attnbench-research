@@ -69,7 +69,7 @@ def test_the_zones_covered_and_a_recently_terminated_instance_zone_are_listed(tm
     p, calls = run(SCRIPT, [], tmp_path, extra={"FAKE_TERMINATED_REGION": "ap-south-1",
                                                 "FAKE_ZONE": "ap-south-1b"})
     assert p.returncode == 0, p.stdout
-    assert "ap-south-1a ap-south-1b ap-south-1c" in p.stdout
+    assert "ap-south-1a, ap-south-1b, ap-south-1c" in p.stdout     # a separator (23 Nov 2026: none)
     assert f"{INSTANCE}\tg6.xlarge\tap-south-1b\tsess-1" in p.stdout
     assert "Clean -- no instances" in p.stdout
     q = [c for c in calls if "describe-instances" in c and "Values=terminated" in c]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The g6.xlarge rehearsal's work, on the instance (docs/launch_cards/aws_rehearsal_g6.md;
+# The L4 rehearsal's work (g6.2xlarge from the fourth attempt), on the instance (docs/launch_cards/aws_rehearsal_g6.md;
 # adviser's task of 23 Nov 2026, second, item 2). Runs from the deployed
 # repository's root after the deploy; the Mac's driver starts it detached and
 # pulls OUT when it ends. EXPLORATORY: nothing it writes enters training, the

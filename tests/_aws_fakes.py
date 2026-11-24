@@ -1,5 +1,5 @@
-"""Fakes for the AWS session scripts (task T5.1): `aws`, `ssh`, `scp` and
-`date`, first on PATH, every call logged.
+"""Fakes for the AWS session scripts (task T5.1): `aws`, `ssh`, `scp`,
+`date`, `curl` and `sleep`, first on PATH, every call logged.
 
 The real cloud CLIs are dropped from PATH, not just shadowed, the same way
 the GCP tests do it, so no path through a script can reach AWS. The fakes
@@ -26,6 +26,7 @@ REGION = "us-east-1"
 REGIONS = "us-east-1\tus-west-2\tap-south-1"
 NOW = 1793170800            # 2026-10-28T07:00:00Z
 BOOT = 1793167200           # 2026-10-28T06:00:00Z, one hour earlier
+MY_IP = "203.0.113.7"       # this Mac's public address, as the fake curl reads it
 
 FAKE_AWS = r"""#!/usr/bin/env bash
 args="$*"; printf '%s\n' "${args//$'\n'/ }" >> "$AWS_LOG"
@@ -58,13 +59,29 @@ case "$1 $2" in
     echo /dev/sda1; exit 0 ;;
   "ec2 run-instances")
     [[ -n "${FAKE_RUN_FAIL:-}" ]] && { echo "An error occurred (InsufficientInstanceCapacity)" >&2; exit 254; }
+    itype=""; prev2=""
+    for a in "$@"; do [[ "$prev2" == "--instance-type" ]] && itype="$a"; prev2="$a"; done
+    # FAKE_RUN_REFUSE_FIRST=N: the first N requests, in any zone, refused for
+    # capacity (a count kept in FAKE_RUN_COUNT_FILE), then the zone rules below.
+    if [[ -n "${FAKE_RUN_REFUSE_FIRST:-}" ]]; then
+      k=$(( $(cat "$FAKE_RUN_COUNT_FILE" 2>/dev/null || echo 0) + 1 )); echo "$k" > "$FAKE_RUN_COUNT_FILE"
+      if (( k <= FAKE_RUN_REFUSE_FIRST )); then
+        echo "aws: [ERROR]: An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation (reached max retries: 2): We currently do not have sufficient $itype capacity in the Availability Zone you requested (any)." >&2
+        exit 254
+      fi
+      # FAKE_RUN_ERROR_AT=N: request N fails with FAKE_RUN_ERROR instead
+      if [[ "$k" == "${FAKE_RUN_ERROR_AT:-}" ]]; then
+        echo "aws: [ERROR]: An error occurred (${FAKE_RUN_ERROR:-Unsupported}) when calling the RunInstances operation: refused." >&2
+        exit 254
+      fi
+    fi
     # Per zone: FAKE_RUN_REFUSE_ZONES refuse for capacity, FAKE_RUN_ERROR_ZONES
     # fail with FAKE_RUN_ERROR (another error), as the real CLI words them.
     zone=""
     for a in "$@"; do case "$a" in AvailabilityZone=*) zone="${a#AvailabilityZone=}";; esac; done
     if [[ -n "$zone" && " ${FAKE_RUN_REFUSE_ZONES:-} " == *" $zone "* ]]; then
       echo "" >&2
-      echo "aws: [ERROR]: An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation (reached max retries: 2): We currently do not have sufficient g6.xlarge capacity in the Availability Zone you requested ($zone)." >&2
+      echo "aws: [ERROR]: An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation (reached max retries: 2): We currently do not have sufficient $itype capacity in the Availability Zone you requested ($zone)." >&2
       exit 254
     fi
     if [[ -n "$zone" && " ${FAKE_RUN_ERROR_ZONES:-} " == *" $zone "* ]]; then
@@ -132,7 +149,13 @@ case "$1 $2" in
     fi
     [[ "$region" == "${FAKE_LIVE_REGION:-}" ]] && printf '%s\trunning\n' "$FAKE_INSTANCE"
     exit 0 ;;
-  "ec2 describe-availability-zones") echo "${region}a ${region}b ${region}c"; exit 0 ;;
+  "ec2 describe-availability-zones")
+    # As the CLI's JMESPath reads the join separator: `" "` is the string " ";
+    # a bare ` ` is an old-style literal whose JSON is empty, so the names run
+    # together (seen on 23 Nov 2026: "ap-southeast-2aap-southeast-2b...").
+    sep=""
+    q="$*"; [[ "$q" =~ join\(\`\"([^\"]*)\"\` ]] && sep="${BASH_REMATCH[1]}"
+    printf '%s\n' "${region}a${sep}${region}b${sep}${region}c"; exit 0 ;;
   "ec2 describe-volumes")
     if [[ "$*" == *"Name=tag:attnbench-session,"* ]]; then
       [[ -n "${FAKE_STRAY_VOLUME:-}" ]] && printf '%s\t%s\tavailable\n' "$FAKE_STRAY_VOLUME" "${region}b"
@@ -141,6 +164,9 @@ case "$1 $2" in
     [[ "$region" == "${FAKE_VOLUME_REGION:-}" ]] && echo "vol-0abc 200 gp3"
     exit 0 ;;
   "ec2 describe-addresses") exit 0 ;;
+  "ec2 describe-security-groups")
+    [[ -n "${FAKE_SG_FAIL:-}" ]] && { echo "RequestLimitExceeded" >&2; exit 254; }
+    printf '%s\n' "${FAKE_SG_CIDRS-$FAKE_MY_IP/32}"; exit 0 ;;
   "ec2 describe-snapshots")
     [[ -n "${FAKE_FAIL_SNAPSHOTS:-}" ]] && exit 254
     exit 0 ;;
@@ -165,8 +191,32 @@ printf 'scp %s\n' "$*" >> "$AWS_LOG"
 exit 0
 """
 
-# Today (India time) for the launch policy, and a fixed "now" for epochs;
-# everything else goes to the real date.
+# This Mac's public address. FAKE_MY_IP_SEQ: a file of addresses, one consumed
+# per read (the last repeats), as for FAKE_TODAY_SEQ.
+FAKE_CURL = r"""#!/usr/bin/env bash
+printf 'curl %s\n' "$*" >> "$AWS_LOG"
+[[ -n "${FAKE_CURL_FAIL:-}" ]] && exit 28
+if [[ -n "${FAKE_MY_IP_SEQ:-}" ]]; then
+  head -1 "$FAKE_MY_IP_SEQ"
+  [[ $(wc -l < "$FAKE_MY_IP_SEQ") -gt 1 ]] && sed -i.bak 1d "$FAKE_MY_IP_SEQ"
+  exit 0
+fi
+echo "$FAKE_MY_IP"
+"""
+
+# A sleep that sleeps for no time: it moves the fake clock (FAKE_CLOCK, a file
+# holding epoch seconds) by its argument plus FAKE_SLEEP_EXTRA.
+FAKE_SLEEP = r"""#!/usr/bin/env bash
+printf 'sleep %s\n' "$*" >> "$AWS_LOG"
+if [[ -n "${FAKE_CLOCK:-}" ]]; then
+  echo $(( $(cat "$FAKE_CLOCK") + $1 + ${FAKE_SLEEP_EXTRA:-0} )) > "$FAKE_CLOCK"
+fi
+exit 0
+"""
+
+# Today (India time) for the launch policy, and a fixed "now" for epochs
+# (FAKE_CLOCK, when set, wins over FAKE_NOW); everything else goes to the real
+# date.
 FAKE_DATE = r"""#!/usr/bin/env bash
 if [[ "$*" == "+%F" ]]; then
   # FAKE_TODAY_SEQ: a file of dates, one consumed per read (the last repeats).
@@ -178,8 +228,9 @@ if [[ "$*" == "+%F" ]]; then
   echo "$FAKE_TODAY"; exit 0
 fi
 last="${*: -1}"
-if [[ "$last" == "+%s" && "$*" != *"-d"* && "$*" != *"-j"* && -n "${FAKE_NOW:-}" ]]; then
-  echo "$FAKE_NOW"; exit 0
+if [[ "$last" == "+%s" && "$*" != *"-d"* && "$*" != *"-j"* ]]; then
+  [[ -n "${FAKE_CLOCK:-}" ]] && { cat "$FAKE_CLOCK"; exit 0; }
+  [[ -n "${FAKE_NOW:-}" ]] && { echo "$FAKE_NOW"; exit 0; }
 fi
 exec /bin/date "$@"
 """
@@ -232,7 +283,7 @@ def run(script: Path, args, tmp_path: Path, *, extra=None, pin=True,
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     for name, body in (("aws", FAKE_AWS), ("ssh", FAKE_SSH), ("scp", FAKE_SCP),
-                       ("date", FAKE_DATE)):
+                       ("date", FAKE_DATE), ("curl", FAKE_CURL), ("sleep", FAKE_SLEEP)):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     log = tmp_path / "aws.log"
@@ -244,7 +295,8 @@ def run(script: Path, args, tmp_path: Path, *, extra=None, pin=True,
     env.update(PATH=os.pathsep.join([str(bin_dir), *real]), HOME=str(tmp_path),
                AWS_LOG=str(log), FAKE_ACCOUNT=ACCOUNT, FAKE_INSTANCE=INSTANCE,
                FAKE_REGIONS=REGIONS, FAKE_TODAY=today, FAKE_NOW=str(NOW),
-               FAKE_BOOT=str(BOOT))
+               FAKE_BOOT=str(BOOT), FAKE_MY_IP=MY_IP,
+               FAKE_RUN_COUNT_FILE=str(tmp_path / "run_count"))
     if pin:
         env.update(ATTNBENCH_AWS_ACCOUNT=ACCOUNT, ATTNBENCH_AWS_PROFILE=PROFILE)
     env.update(extra or {})
@@ -255,4 +307,4 @@ def run(script: Path, args, tmp_path: Path, *, extra=None, pin=True,
 
 
 def aws_calls(lines):
-    return [c for c in lines if not c.startswith(("ssh ", "scp ", "UNHANDLED "))]
+    return [c for c in lines if not c.startswith(("ssh ", "scp ", "curl ", "sleep ", "UNHANDLED "))]

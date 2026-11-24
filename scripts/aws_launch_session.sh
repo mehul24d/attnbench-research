@@ -11,11 +11,13 @@
 # inspection of the same image on the same type, with no build (adviser's
 # rulings dated 22 Nov 2026, probe): every guarantee below, but its hard
 # delete may be 5 to 15 minutes and its halt from 3 minutes (the ruling's
-# 8 and 6), where every other pairing needs 30 and 20. REH is the g6.xlarge
-# rehearsal from the built image (adviser's task of 23 Nov 2026, second; card
-# docs/launch_cards/aws_rehearsal_g6.md): one L4 on P3's host family, every
-# guarantee below; it checks the image on the GPU and times one cell for
-# a sanity read only.
+# 8 and 6), where every other pairing needs 30 and 20. REH is the rehearsal
+# from the built image (adviser's task of 23 Nov 2026, second; card
+# docs/launch_cards/aws_rehearsal_g6.md): one L4, every guarantee below; it
+# checks the image on the GPU and times one cell for a sanity read only. From
+# the fourth attempt it runs on P3's own type, g6.2xlarge (the researcher's
+# launch yes of 24 Nov 2026), after g6.xlarge was refused for capacity in
+# every Sydney zone on 23 Nov 2026.
 #
 # The AWS counterpart of the gcp_launch_*.sh scripts, with the same
 # guarantees, each checked before anything is created:
@@ -71,7 +73,11 @@
 #     refused, because the trust condition named the schedule; the launcher
 #     terminated it about 3 s later. AWS validates the role at create time,
 #     a disabled schedule included (checked 21 Nov 2026 against that role);
-#   - typed confirmation ("launch") after the summary.
+#   - typed confirmation ("launch") after the summary;
+#   - before every create request, the security group must still admit this
+#     Mac's current public address on port 22 (the researcher's launch yes of
+#     24 Nov 2026): a session nobody can reach bills for nothing. If it does
+#     not, the launch stops; the group is never re-pointed by this script.
 #
 # AWS services allowed (adviser's rulings dated 22 Nov 2026, credits): EC2,
 # EBS volumes, EBS snapshots and AMIs, networking (the VPC, security group,
@@ -123,6 +129,11 @@
 #                          (scripts/_aws_launch_policy.sh, aws_launch_across_zones;
 #                          the researcher's yes of 23 Nov 2026). Not with
 #                          AWS_SESSION_AZ or AWS_SUBNET_ID
+#   AWS_LAUNCH_WINDOW_MINUTES  a retry window, whole minutes, 0 to 180 (default
+#                          0, one pass): the zone list is tried again every 10
+#                          minutes while every zone refuses for capacity and the
+#                          window has not ended (scripts/_aws_launch_policy.sh,
+#                          aws_launch_window; the researcher's yes of 24 Nov 2026)
 #   AWS_SUBNET_ID          subnet-... (fixes the zone; then AZ is not passed)
 #                          Without it, a zone's default subnet in the default VPC
 #                          is used, as EC2 picks it for --placement
@@ -133,6 +144,8 @@
 #                          ec2:TerminateInstances
 #   AWS_LAUNCH_RECORD      the launch record the credit gate sums (default
 #                          ~/.attnbench/aws_launches.tsv, off-repo)
+#   AWS_SSH_SOURCE_URL     where this Mac's public address is read (default
+#                          https://checkip.amazonaws.com)
 set -euo pipefail
 
 HERE="$(dirname "${BASH_SOURCE[0]}")"
@@ -147,8 +160,8 @@ case "$PAIRING" in
   P7) INSTANCE_TYPE="g5.2xlarge";  GPU="1x A10G 24GB" ;;
   ENV) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: environment build only" ;;
   PROBE) INSTANCE_TYPE="m7a.xlarge"; GPU="no GPU: image inspection only, no build" ;;
-  REH) INSTANCE_TYPE="g6.xlarge"; GPU="1x L4 24GB: the image's rehearsal, no measurement of record" ;;
-  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, ENV is the environment build, PROBE its image inspection and REH the image's g6.xlarge rehearsal." >&2
+  REH) INSTANCE_TYPE="g6.2xlarge"; GPU="1x L4 24GB: the image's rehearsal on P3's type, no measurement of record" ;;
+  *) echo "REFUSING -- unknown pairing '$PAIRING'; AWS pairings are P3, P5, P6 and P7, ENV is the environment build, PROBE its image inspection and REH the image's g6.2xlarge rehearsal." >&2
      exit 1 ;;
 esac
 PAIR_LC="$(echo "$PAIRING" | tr 'A-Z' 'a-z')"
@@ -177,6 +190,13 @@ if [[ -n "$ZONE_SPEC" && ( -n "$AZ" || -n "${AWS_SUBNET_ID:-}" ) ]]; then
 fi
 source "$HERE/_aws_launch_policy.sh"
 aws_launch_policy_check "$REGION" $AZ $ZONE_SPEC
+WINDOW_MINUTES="${AWS_LAUNCH_WINDOW_MINUTES:-0}"
+if ! aws_window_minutes_ok "$WINDOW_MINUTES"; then
+  echo "REFUSING TO LAUNCH -- AWS_LAUNCH_WINDOW_MINUTES ('$WINDOW_MINUTES') must be whole minutes" >&2
+  echo "from 0 to $AWS_RETRY_WINDOW_MAX_MINUTES." >&2
+  exit 1
+fi
+WINDOW_MINUTES=$(( 10#$WINDOW_MINUTES ))
 if [[ -n "$ZONE_SPEC" ]]; then
   aws_zone_list "$REGION" "$ZONE_SPEC"
 else
@@ -248,14 +268,31 @@ P=(--profile "$AWS_PIN_PROFILE" --region "$REGION")
 # --- credits: the remaining credits must cover everything planned -----------
 # Refused unless the account is on the paid plan (the Free plan admits only
 # Free Tier instance types) and its remaining credits, read from the Free
-# Tier API, exceed the planned AWS spend so far plus this block's cap. The
-# planned spend so far is the sum of the caps in the launch record: one line
-# per create request this launcher has submitted, written at the block's cap
-# whatever it later cost, because the credit balance lags the bill by up to
-# a day. A line is struck by hand, with a leading '#', only once the bill
-# shows what the block cost (or that it created nothing). Credits are in
-# USD; caps are converted at Rs 95.99 per USD, the rate every AWS planning
-# rate in this repository was built at (plan Section 5.2).
+# Tier API, exceed the planned AWS spend so far plus this block's cap. Credits
+# are in USD; caps are converted at Rs 95.99 per USD, the rate every AWS
+# planning rate in this repository was built at (plan Section 5.2).
+#
+# The planned spend so far is the sum of the caps the launch record counts
+# (the researcher's launch yes of 24 Nov 2026, item 3). The record is
+# append-only, four tab-separated fields a line, UTC PAIRING WHAT CAP_INR:
+#   i-...                  an instance was created: counted at its cap,
+#                          whatever it later cost (credits lag the bill by up
+#                          to a day);
+#   unconfirmed            a create request stopped without an instance id and
+#                          without a confirmation that nothing was created:
+#                          counted;
+#   no-id                  the old form (to 23 Nov 2026) of a request without an
+#                          id: counted, unless voided;
+#   window-open:NAME       a launch window began (one per window): counted until
+#   window-closed:NAME:HOW its closing line, which says how it ended (launched,
+#                          refused, stopped); both are then uncounted. A window
+#                          left open (the launcher killed mid-window) counts.
+# A create request refused for capacity, with no id and nothing found by the
+# session's tag afterwards, writes nothing and is not counted.
+# A line is voided, never rewritten, by a dated line of six fields:
+#   VOID  UTC-of-the-line  PAIRING  WHAT  UTC-of-the-void  reason
+# which must name an earlier line exactly. Lines with a leading '#' are
+# comments (the old way of striking a line; still honoured).
 INR_PER_USD="95.99"
 LAUNCH_RECORD="${AWS_LAUNCH_RECORD:-$HOME/.attnbench/aws_launches.tsv}"
 PLAN_STATE="$(aws freetier get-account-plan-state --profile "$AWS_PIN_PROFILE" --region us-east-1 \
@@ -272,14 +309,44 @@ if [[ "${CREDIT_UNIT:-}" != "USD" || ! "${CREDITS_USD:-}" =~ $NUM ]]; then
   echo "Nothing was created." >&2
   exit 1
 fi
+# The planned spend the record counts; "BAD <line>" for a line it cannot read.
+record_planned_inr() {
+  awk -F'\t' '
+    function bad() { printf "BAD %d\n", NR; failed = 1; exit }
+    /^[[:space:]]*(#|$)/ { next }
+    $1 == "VOID" {
+      if (NF != 6 || $2 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:]+Z$/ \
+          || $5 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:]+Z$/ || $6 == "") bad()
+      k = $2 SUBSEP $3 SUBSEP $4
+      if (!(k in seen)) bad()             # must void an earlier line, exactly
+      voided[k] = 1; next
+    }
+    NF != 4 || $4 !~ /^[0-9]+([.][0-9]+)?$/ || $1 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:]+Z$/ { bad() }
+    {
+      k = $1 SUBSEP $2 SUBSEP $3; seen[k] = 1; cap[k] = $4; n++; key[n] = k; what[n] = $3
+      if ($3 ~ /^window-open:/)   { opened[substr($3, 13)] = n }
+      else if ($3 ~ /^window-closed:/) { w = substr($3, 15); sub(/:.*/, "", w); closed[w] = 1 }
+      else if ($3 !~ /^(i-[0-9a-f]+|unconfirmed|no-id)$/) bad()
+    }
+    END {
+      if (failed) exit
+      for (i = 1; i <= n; i++) {
+        if (key[i] in voided) continue
+        if (what[i] ~ /^window-closed:/) continue
+        if (what[i] ~ /^window-open:/) { w = substr(what[i], 13); if (w in closed) continue }
+        s += cap[key[i]]
+      }
+      printf "%.2f\n", s + 0
+    }' "$LAUNCH_RECORD"
+}
 PLANNED_INR=0
 if [[ -e "$LAUNCH_RECORD" ]]; then
-  PLANNED_INR="$(awk -F'\t' '/^[[:space:]]*(#|$)/ {next}
-    NF != 4 || $4 !~ /^[0-9]+([.][0-9]+)?$/ {bad = 1; exit}
-    {s += $4} END {if (bad) print "BAD"; else printf "%.2f\n", s + 0}' "$LAUNCH_RECORD")"
+  PLANNED_INR="$(record_planned_inr)"
   if [[ ! "$PLANNED_INR" =~ $NUM ]]; then
-    echo "REFUSING TO LAUNCH -- the launch record $LAUNCH_RECORD has a line that is not" >&2
-    echo "'UTC<tab>PAIRING<tab>INSTANCE<tab>CAP_INR' (strike lines with a leading '#'). Nothing was created." >&2
+    echo "REFUSING TO LAUNCH -- the launch record $LAUNCH_RECORD has a line it cannot read" >&2
+    echo "(line ${PLANNED_INR#BAD }): not 'UTC<tab>PAIRING<tab>WHAT<tab>CAP_INR', or a VOID line that is" >&2
+    echo "not 'VOID<tab>UTC<tab>PAIRING<tab>WHAT<tab>VOID-UTC<tab>reason' naming an earlier line." >&2
+    echo "Nothing was created." >&2
     exit 1
   fi
 fi
@@ -351,6 +418,9 @@ echo "  pairing      : $PAIRING"
 echo "  name         : $NAME"
 if [[ -n "$ZONE_SPEC" ]]; then
   echo "  region / AZ  : $REGION / ${AWS_ZONES[*]} (in this order, the next only on a capacity refusal)"
+  if (( WINDOW_MINUTES > 0 )); then
+    echo "  retry window : ${WINDOW_MINUTES} min, the zones again every ${AWS_RETRY_INTERVAL_MINUTES} min while every zone refuses for capacity"
+  fi
 else
   echo "  region / AZ  : $REGION / ${AZ:-${SUBNET:-any}}"
 fi
@@ -364,6 +434,7 @@ echo "  hard delete  : +${MAX_RUN_MINUTES} min, ec2:TerminateInstances by EventB
 echo "  role trust   : ${ROLE_NAME}, aws:SourceArn = schedule-group/default (read back)"
 echo "  worst case   : Rs ${WORST_INR}, cost cap Rs ${COST_CAP_INR}"
 echo "  credits      : \$${CREDITS_USD} left (Rs ${CREDITS_INR}) > Rs ${PLANNED_INR} planned so far + Rs ${COST_CAP_INR} cap"
+echo "  ssh source   : the security group must admit this Mac's current address on port 22, before every request"
 echo
 read -r -p "Type 'launch' to proceed, anything else to abort: " CONFIRM
 if [[ "$CONFIRM" != "launch" ]]; then
@@ -405,7 +476,29 @@ if [[ "$DRY_STATE" != "DISABLED" ]]; then
 fi
 echo "Dry registration accepted (schedule $DRY, deleted)."
 
-# One create request in one zone (aws_launch_across_zones calls it).
+record_line() {                 # record_line WHAT CAP_INR (append-only)
+  mkdir -p "$(dirname "$LAUNCH_RECORD")"
+  printf '%s\t%s\t%s\t%s\n' "$(command date -u +%Y-%m-%dT%H:%M:%SZ)" "$PAIRING" "$1" "$2" >> "$LAUNCH_RECORD"
+}
+
+# Before every create request: does the security group still admit this
+# Mac's current public address on port 22? The address is never printed.
+SSH_SOURCE_URL="${AWS_SSH_SOURCE_URL:-https://checkip.amazonaws.com}"
+ssh_source_admitted() {
+  local ip cidrs
+  ip="$(command curl -s -m 10 "$SSH_SOURCE_URL" 2>/dev/null | tr -d '[:space:]')" || ip=""
+  if [[ ! "$ip" =~ ^[0-9]{1,3}([.][0-9]{1,3}){3}$ ]]; then
+    echo "   cannot read this Mac's public address" >&2; return 1
+  fi
+  cidrs="$(aws ec2 describe-security-groups "${P[@]}" --group-ids "$SG" \
+    --query 'SecurityGroups[0].IpPermissions[?FromPort==`22`].IpRanges[].CidrIp' --output text)" || {
+    echo "   could not read the security group's port-22 ranges" >&2; return 1; }
+  if [[ " $(tr -s '[:space:]' ' ' <<<"$cidrs") " != *" $ip/32 "* ]]; then
+    echo "   the security group no longer admits this Mac's current address on port 22" >&2; return 1
+  fi
+}
+
+# One create request in one zone (aws_launch_window calls it).
 launch_attempt() {
   local zone="$1" errf out placement=()
   if [[ -n "$SUBNET" ]]; then
@@ -437,11 +530,10 @@ launch_attempt() {
   out="$(tr -d '[:space:]' <<<"$out")"
   [[ "$out" == None ]] && out=""
   AWS_ATTEMPT_ID="$out"
-  # Every submitted create request goes into the launch record at its cap,
-  # created or not: an instance may exist even when no id came back.
-  mkdir -p "$(dirname "$LAUNCH_RECORD")"
-  printf '%s\t%s\t%s\t%s\n' "$(command date -u +%Y-%m-%dT%H:%M:%SZ)" "$PAIRING" \
-    "${AWS_ATTEMPT_ID:-no-id}" "$COST_CAP_INR" >> "$LAUNCH_RECORD"
+  # An instance id is a real line at the cap, written at once. A request
+  # without one writes nothing here: a confirmed capacity refusal is never
+  # counted, and any other stop is written as "unconfirmed" after the window.
+  [[ -n "$AWS_ATTEMPT_ID" ]] && record_line "$AWS_ATTEMPT_ID" "$COST_CAP_INR"
   [[ "$AWS_ATTEMPT_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
 }
 
@@ -469,15 +561,34 @@ confirm_nothing_created() {
   echo "   confirmed: no instance and no volume of session $NAME in $REGION"
 }
 
+# One record per window: an open line now, a closing line however it ends
+# (the record's vocabulary is in the credits section above).
+record_line "window-open:$NAME" "$COST_CAP_INR"
 ZRC=0
-aws_launch_across_zones launch_attempt confirm_nothing_created "${AWS_ZONES[@]}" || ZRC=$?
+aws_launch_window launch_attempt confirm_nothing_created ssh_source_admitted "$WINDOW_MINUTES" \
+  "${AWS_ZONES[@]}" || ZRC=$?
+echo "WINDOW_PASSES=$AWS_WINDOW_PASSES"
+echo "CAPACITY_REFUSALS=$AWS_CAPACITY_REFUSALS"
 if [[ "$ZRC" -ne 0 ]]; then
-  [[ -n "$AWS_ZONES_REFUSED" ]] && echo "ZONES_REFUSED=${AWS_ZONES_REFUSED// /,}"
-  [[ "$ZRC" -eq 3 ]] && echo "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY"
+  if [[ "$ZRC" -eq 3 ]]; then
+    record_line "window-closed:$NAME:refused" "$COST_CAP_INR"
+  elif [[ "$ZRC" -eq 4 ]]; then
+    record_line "window-closed:$NAME:stopped" "$COST_CAP_INR"
+  else
+    # Not a confirmed refusal: counted until the bill shows nothing was made.
+    [[ -z "$AWS_ATTEMPT_ID" ]] && record_line unconfirmed "$COST_CAP_INR"
+    record_line "window-closed:$NAME:stopped" "$COST_CAP_INR"
+  fi
+  if [[ -n "$AWS_ZONES_REFUSED" ]]; then echo "ZONES_REFUSED=${AWS_ZONES_REFUSED// /,}"; fi
+  case "$ZRC" in
+    3) echo "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" ;;
+    4) echo "LAUNCH_RESULT=SSH_SOURCE_NOT_ADMITTED" ;;
+  esac
   echo "ERROR -- run-instances returned no instance id ('$AWS_ATTEMPT_ID'). An instance may" >&2
   echo "still exist: run scripts/aws_cleanup_check.sh now." >&2
   exit 1
 fi
+record_line "window-closed:$NAME:launched" "$COST_CAP_INR"
 INSTANCE_ID="$AWS_ATTEMPT_ID"
 echo "Created $INSTANCE_ID. Billing now. Setting the hard delete."
 

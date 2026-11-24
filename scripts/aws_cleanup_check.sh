@@ -92,7 +92,7 @@ for R in $REGIONS; do
     && SNAPSHOTS_SEEN=1
   SOFT=1 listing "availability zones these listings cover" \
     ec2 describe-availability-zones "${P[@]}" --filters Name=zone-type,Values=availability-zone \
-    --query 'join(` `, AvailabilityZones[].ZoneName)' --output text || true
+    --query 'join(`", "`, AvailabilityZones[].ZoneName)' --output text || true
   SOFT=1 listing "the study's instances terminated recently, with their zone (not billed)" \
     ec2 describe-instances "${P[@]}" \
     --filters "Name=instance-state-name,Values=terminated" "Name=tag-key,Values=attnbench-session" \

@@ -122,36 +122,122 @@ aws_zone_list() {               # aws_zone_list REGION "ZONE ZONE ..."
 }
 
 aws_launch_across_zones() {     # aws_launch_across_zones ATTEMPT_FN CONFIRM_FN ZONE...
+  # One pass, no wait, no precheck: the third attempt's form (23 Nov 2026).
   local attempt="$1" confirm="$2"; shift 2
-  local z n=0 total=$#
-  AWS_LAUNCHED_ZONE="" AWS_ZONES_REFUSED=""
-  for z in "$@"; do
-    n=$(( n + 1 ))
-    aws_launch_policy_check "$z"
-    AWS_ATTEMPT_ID="" AWS_ATTEMPT_ERR=""
-    echo "Zone ${z:-any} ($n of $total): submitting the create request."
-    if "$attempt" "$z"; then
-      AWS_LAUNCHED_ZONE="$z"
-      return 0
+  aws_launch_window "$attempt" "$confirm" true 0 "$@"
+}
+
+# --- the retry window (the researcher's launch yes of 24 Nov 2026, fourth
+# rehearsal attempt: "retrying zones 2b, 2c and 2a on a no-capacity error
+# only for at most 3 hours") ----------------------------------------------------
+# On 23 Nov 2026 the third attempt was refused for capacity in all three
+# Sydney zones within 17 s. The window repeats the one-pass fallback:
+#
+#     aws_launch_window ATTEMPT_FN CONFIRM_FN PRECHECK_FN WINDOW_MINUTES ZONE...
+#
+# A pass tries every zone in order, exactly as aws_launch_across_zones does.
+# The next pass starts AWS_RETRY_INTERVAL_MINUTES (10) after the last one
+# started (at once, if that pass took longer), and only while the window (at
+# most AWS_RETRY_WINDOW_MAX_MINUTES, 180, from its start) has not ended and
+# fewer than WINDOW_MINUTES / 10 passes have begun; WINDOW_MINUTES 0 is one
+# pass. Before every attempt: the launch policy,
+# then PRECHECK_FN ZONE (the launcher's: the security group still admits this
+# Mac's current address on port 22). A failed precheck stops the window at once
+# and nothing is changed to make it pass: the security group is never
+# re-pointed here.
+#
+# Returns 0 with AWS_LAUNCHED_ZONE set; 3 when the window ended with every
+# attempt refused for capacity; 4 when the precheck failed; 1 otherwise.
+# AWS_ZONES_REFUSED lists the zones refused in the last pass, in order;
+# AWS_WINDOW_PASSES counts the passes begun and AWS_CAPACITY_REFUSALS every
+# confirmed capacity refusal of the window.
+AWS_RETRY_INTERVAL_MINUTES=10
+AWS_RETRY_WINDOW_MAX_MINUTES=180
+
+aws_window_minutes_ok() {       # aws_window_minutes_ok MINUTES
+  [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= AWS_RETRY_WINDOW_MAX_MINUTES ))
+}
+
+# One attempt in one zone. 0: created; 2: refused for capacity, nothing left
+# (the caller may go on); 4: the precheck failed; 1: stop.
+_aws_try_zone() {               # _aws_try_zone ATTEMPT_FN CONFIRM_FN PRECHECK_FN ZONE LABEL
+  local attempt="$1" confirm="$2" precheck="$3" z="$4" label="$5"
+  aws_launch_policy_check "$z"
+  if ! "$precheck" "$z"; then
+    echo "STOPPING -- before the create request in ${z:-the region}, the security group no longer" >&2
+    echo "admits this Mac's current address on port 22 (above). It was not re-pointed; nothing" >&2
+    echo "more is tried. Re-point it (sg_repoint.sh) and ask for a new launch." >&2
+    return 4
+  fi
+  AWS_ATTEMPT_ID="" AWS_ATTEMPT_ERR=""
+  echo "Zone ${z:-any} ($label): submitting the create request."
+  if "$attempt" "$z"; then
+    AWS_LAUNCHED_ZONE="$z"
+    return 0
+  fi
+  if ! aws_is_capacity_refusal "$AWS_ATTEMPT_ERR"; then
+    echo "STOPPING -- the create request in ${z:-the region} failed with an error other than" >&2
+    echo "$AWS_CAPACITY_ERROR (above); no other zone is tried." >&2
+    return 1
+  fi
+  if [[ -n "$AWS_ATTEMPT_ID" ]]; then
+    echo "STOPPING -- ${z:-the region} refused for capacity but an instance id came back" >&2
+    echo "('$AWS_ATTEMPT_ID'); no other zone is tried." >&2
+    return 1
+  fi
+  echo "Zone ${z:-any} refused for capacity, no instance id came back; confirming nothing was created."
+  if ! "$confirm" "$z"; then
+    echo "STOPPING -- after the refusal in ${z:-the region}, it could not be confirmed that the" >&2
+    echo "session has no instance and no volume (above); no other zone is tried." >&2
+    return 1
+  fi
+  return 2
+}
+
+aws_launch_window() {           # aws_launch_window ATTEMPT_FN CONFIRM_FN PRECHECK_FN WINDOW_MINUTES ZONE...
+  local attempt="$1" confirm="$2" precheck="$3" window="$4"; shift 4
+  if ! aws_window_minutes_ok "$window"; then
+    echo "REFUSING TO LAUNCH -- the retry window ('$window' minutes) must be whole minutes from 0" >&2
+    echo "to $AWS_RETRY_WINDOW_MAX_MINUTES." >&2
+    exit 1
+  fi
+  window=$(( 10#$window ))
+  local interval_s=$(( AWS_RETRY_INTERVAL_MINUTES * 60 )) window_s=$(( window * 60 ))
+  local passes=$(( (window_s + interval_s - 1) / interval_s ))
+  (( passes < 1 )) && passes=1
+  local z n total=$# rc start now next pass_start
+  AWS_LAUNCHED_ZONE="" AWS_ZONES_REFUSED="" AWS_WINDOW_PASSES=0 AWS_CAPACITY_REFUSALS=0
+  AWS_ATTEMPT_ID="" AWS_ATTEMPT_ERR=""
+  start="$(command date -u +%s)"
+  pass_start="$start"
+  while :; do
+    AWS_WINDOW_PASSES=$(( AWS_WINDOW_PASSES + 1 ))
+    AWS_ZONES_REFUSED="" n=0
+    (( passes > 1 )) && echo "Pass $AWS_WINDOW_PASSES of at most $passes (window $window min, a pass every $AWS_RETRY_INTERVAL_MINUTES min)."
+    for z in "$@"; do
+      n=$(( n + 1 ))
+      rc=0
+      _aws_try_zone "$attempt" "$confirm" "$precheck" "$z" "$n of $total" || rc=$?
+      [[ $rc -eq 2 ]] || return $rc
+      AWS_CAPACITY_REFUSALS=$(( AWS_CAPACITY_REFUSALS + 1 ))
+      AWS_ZONES_REFUSED+="${AWS_ZONES_REFUSED:+ }${z:-any}"
+    done
+    (( AWS_WINDOW_PASSES >= passes )) && break
+    next=$(( pass_start + interval_s ))
+    now="$(command date -u +%s)"
+    (( now >= start + window_s )) && break
+    if (( next > now )); then
+      echo "Pass $AWS_WINDOW_PASSES: every zone refused for capacity; the next pass starts in $(( next - now )) s (the window ends at +$window min)."
+      command sleep $(( next - now ))
     fi
-    if ! aws_is_capacity_refusal "$AWS_ATTEMPT_ERR"; then
-      echo "STOPPING -- the create request in ${z:-the region} failed with an error other than" >&2
-      echo "$AWS_CAPACITY_ERROR (above); no other zone is tried." >&2
-      return 1
-    fi
-    if [[ -n "$AWS_ATTEMPT_ID" ]]; then
-      echo "STOPPING -- ${z:-the region} refused for capacity but an instance id came back" >&2
-      echo "('$AWS_ATTEMPT_ID'); no other zone is tried." >&2
-      return 1
-    fi
-    echo "Zone ${z:-any} refused for capacity, no instance id came back; confirming nothing was created."
-    if ! "$confirm" "$z"; then
-      echo "STOPPING -- after the refusal in ${z:-the region}, it could not be confirmed that the" >&2
-      echo "session has no instance and no volume (above); no other zone is tried." >&2
-      return 1
-    fi
-    AWS_ZONES_REFUSED+="${AWS_ZONES_REFUSED:+ }${z:-any}"
+    pass_start="$(command date -u +%s)"
+    (( pass_start >= start + window_s )) && break
   done
-  echo "STOPPING -- every zone refused for capacity: $AWS_ZONES_REFUSED." >&2
+  if (( passes > 1 )); then
+    echo "STOPPING -- the retry window ($window min) ended: every zone refused for capacity in each of" >&2
+    echo "$AWS_WINDOW_PASSES passes ($AWS_CAPACITY_REFUSALS refusals)." >&2
+  else
+    echo "STOPPING -- every zone refused for capacity: $AWS_ZONES_REFUSED." >&2
+  fi
   return 3
 }

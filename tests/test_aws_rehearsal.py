@@ -1,4 +1,4 @@
-"""The g6.xlarge rehearsal's checks and its instance script, on the CPU
+"""The L4 rehearsal's checks and its instance script, on the CPU
 (docs/launch_cards/aws_rehearsal_g6.md; adviser's task of 23 Nov 2026, second)."""
 from __future__ import annotations
 
