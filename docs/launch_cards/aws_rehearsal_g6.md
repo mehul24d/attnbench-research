@@ -42,7 +42,7 @@ snapshot is recorded.
 | | |
 |---|---|
 | Type | From the fourth attempt, `g6.2xlarge` (1 x L4 24 GB, AMD EPYC 7R13, 8 vCPU, 32 GiB), on-demand, P3's type (the researcher's launch yes of 24 Nov 2026). Attempts 1 to 3: `g6.xlarge` (4 vCPU, 16 GiB) |
-| Region | `ap-southeast-2`. From the third attempt: 2b, then 2c, then 2a, the next only after an `InsufficientInstanceCapacity` refusal; from the fourth, that pass again every 10 minutes for at most 3 hours (below) |
+| Region | `ap-southeast-2`. From the third attempt: 2b, then 2c, then 2a, the next only after an `InsufficientInstanceCapacity` refusal; from the fourth, that pass again every 10 minutes for at most 3 hours; from the fifth, every 5 minutes, in at most two windows (below) |
 | Image | `ami-096c5dc30364c9041` |
 | Quota | Running On-Demand G and VT: 8 vCPU (read 23 Nov 2026); `g6.2xlarge` uses all 8, so nothing else of the G family can run beside it |
 | Root volume | 200 GB gp3, encrypted, deleted with the instance |
@@ -202,3 +202,43 @@ are still unrun on a GPU, and P3's hours are not re-estimated. Another attempt n
   (stops, counted); the VOID and window lines in the credit gate. The driver ran end to end
   on the fake remote with the real launcher in the same four cases. The timed-path pin is
   unchanged.
+
+## The fourth attempt ran (24 Nov 2026)
+
+The researcher ran the driver at 17:37 UTC from `035c8c1`. The reads before it: Sydney's G and
+VT Spot quota is 0 vCPU (on-demand 8); Cost Explorer showed every service line covered 100% by
+credits. The window ran its full 180 minutes: 18 passes, and `RunInstances` was refused with
+`InsufficientInstanceCapacity` for `g6.2xlarge` in 2b, 2c and 2a in every pass, 54 refusals.
+After each one the launcher confirmed that no instance and no volume of the session existed;
+the address check passed before every request. Nothing was created and the spend was ₹0. The
+launch record closed the window as `refused`, so the gate counts nothing for it. Sydney read back
+with no instance, volume, address or schedule; the cleanup check's other 16 regions cannot be
+listed (the org SCP), so it reads INCOMPLETE. Checks 1 to 4 are still unrun on a GPU.
+
+## The fifth attempt: a pass every 5 minutes, in two windows (the researcher's launch yes of 25 Nov 2026)
+
+- **The pass.** As the fourth attempt, but the next pass starts 5 minutes after the last one
+  started (`AWS_RETRY_INTERVAL_MINUTES=5`): a 180-minute window has at most 36 passes and 108
+  requests. Capacity refusals only; the address check before every request; never re-pointed.
+- **Two windows at most**, one in Sydney's evening and one in its deep night, both before
+  18:30 UTC on 28 Nov 2026 (05:30 on 29 Nov in Sydney, AEDT, UTC+11), the plan's cutoff for P3.
+  The driver takes the window's name (`evening` or `night`) and refuses to start outside its
+  hours in Sydney (evening: a start from 17:00 to 21:59; night: 23:00 to 03:59, **plan
+  defaults, flagged**), or after the cutoff; a window that would run past the cutoff is
+  shortened to end at it.
+- **₹250 in total.** One session's cap is ₹220 (worst case ₹215), so two sessions could pass
+  ₹250: the second window runs only when the first created nothing. The driver keeps an
+  off-repo ledger of the two windows (`~/.attnbench/reh_attempt5_windows.tsv`: a start line, an
+  end line saying `NOTHING_CREATED`, `LAUNCHED <id>` or `UNCLEAR`) and refuses a window whose
+  name has run, a third window, and any window after one that did not end `NOTHING_CREATED`.
+  Expected if it launches: about ₹107 (45 min).
+- **The launcher's closing words.** After a window of confirmed refusals, or a stop at the
+  address check, it now says that no instance was created; it points at the cleanup check
+  only when an instance cannot be ruled out (another error than a capacity refusal).
+- **Tests.** On the fake `aws`: the window of 36 passes and 108 refusals with 35 waits of
+  300 s, a launch in the second pass after 300 s, the clock bound, the closing words (a
+  mutation back to 10 minutes and one restoring the old words were both caught). The driver on
+  the fake remote with the real launcher: an evening window of refusals, then a night window
+  launching in pass 2 (DONE OK); a third window, a window outside its hours, one after the
+  cutoff, one after a window that launched, and one without a name, all refused before any
+  request; a night window at 03:30 Sydney on 29 Nov shortened to 120 minutes (24 passes).
