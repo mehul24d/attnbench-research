@@ -1,0 +1,75 @@
+{
+ "_comment": "P3 (AMD EPYC 7R13 + L4, AWS g6.2xlarge, Sydney; EXPLORATORY, Appendix A 21 Nov 2026; card docs/launch_cards/aws_p3_g6.md). P1's grid and arms at the values every later pairing runs: the T4.1 items (densities, grid, throttle set, rerun budget, the P1 resolution floors, the chain, residual and pricing tolerances) are null here and come from docs/lock_values.json, as for P2 and P4; the lock holds no P3 block, so the four session values it holds for P2 and P4 alone (eager group only, reps, dense rounds, sampler interval), identical for both, are copied here. Nothing about the estimators, the pricing or the matching rules is changed. The oracle at 0.5 and 32768 stays dropped, as for P1, so the cells match one for one (35).",
+ "pairing": "P3",
+ "card": "L4",
+ "model": "primary",
+ "lengths": null,
+ "batches": null,
+ "arms": [
+  "dense",
+  "oracle",
+  "meanpool",
+  "xattention",
+  "xattention_noassert"
+ ],
+ "densities": null,
+ "gt_groups": {
+  "eager": [
+   "dense",
+   "oracle",
+   "meanpool",
+   "xattention",
+   "xattention_noassert"
+  ]
+ },
+ "reps": 10,
+ "warmup": 3,
+ "max_rerun_rounds": null,
+ "resolution_floor_ms": null,
+ "dense_rounds": 5,
+ "flag_reasons": null,
+ "sampler_interval_s": 0.1,
+ "prediction_prefix": "predictions/P3",
+ "not_measured": [
+  {
+   "arm": "oracle",
+   "density": 0.5,
+   "length": 32768,
+   "batch": 1,
+   "reason": "not measured: host memory limit of P1's pinned machine (the drop fallback, every pairing; plan Appendix A, 2 Nov 2026)"
+  }
+ ],
+ "delay_injection": {
+  "_comment": "Gate A leg 3 (T2.25), declared 8 Nov 2026 before any run (adviser's ruling 1, fifth paste; Appendix A): the dense arm at 2048 tokens, batch 1 (the dense cell with the smallest absolute spread in T3.2a, median 121.3 ms, standard error of the median about 0.40 ms); every priced mechanism; counts chosen so the predicted increment at the top count is at least 10 times that standard error for every mechanism on T3.2a's priced dense cell (busy 17.1 to 17.8 ms at 64, idle 4.8 ms for event_synchronize at 4000 and 16 to 51 ms for the others); 10 timed repeats and 3 warm-ups per variant; payload 0.",
+  "arm": "dense",
+  "length": 2048,
+  "batch": 1,
+  "mechanisms": [
+   "synchronize",
+   "item",
+   "bool",
+   "copy_to_host_pinned",
+   "copy_to_host_pageable",
+   "event_synchronize",
+   "copy_from_host_pinned",
+   "copy_from_host_pageable"
+  ],
+  "counts": {
+   "busy": [
+    0,
+    16,
+    32,
+    64
+   ],
+   "idle": [
+    0,
+    1000,
+    2000,
+    4000
+   ]
+  },
+  "reps": 10,
+  "warmup": 3,
+  "payload_bytes": 0
+ }
+}

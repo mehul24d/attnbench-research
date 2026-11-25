@@ -796,3 +796,36 @@ def test_the_policy_script_fixes_the_interval_and_the_window_bound():
     text = (SCRIPTS / "_aws_launch_policy.sh").read_text()
     assert text.count("AWS_RETRY_INTERVAL_MINUTES=5\n") == 1
     assert text.count("AWS_RETRY_WINDOW_MAX_MINUTES=180\n") == 1
+
+
+# --- P3 (the researcher's task of 26 Nov 2026; docs/launch_cards/aws_p3_g6.md) ------------
+P3_ZONES = {**REH_ZONES, "AWS_COST_CAP_INR": "1353", "AWS_HALT_MINUTES": "473",
+            "AWS_MAX_RUN_MINUTES": "503", "AWS_LAUNCH_WINDOW_MINUTES": "180"}
+
+
+def test_the_p3_cards_settings(tmp_path):
+    """Halt at the planned 6.3 h plus about 25% (473 min), hard delete 30 min
+    later (503), cap Rs 1,353 (6.3 h x 1.5): worst case Rs 143.21 x 503 min =
+    Rs 1,200.58, rounded up to Rs 1,201. The retry window's zones in order, a
+    capacity refusal only, and the security group read before every request."""
+    p, calls = _launch(tmp_path, "P3", env={**P3_ZONES,
+                       "FAKE_RUN_REFUSE_ZONES": "ap-southeast-2b ap-southeast-2c"})
+    assert p.returncode == 0, p.stderr
+    assert "worst case   : Rs 1201, cost cap Rs 1353" in p.stdout
+    assert "+473 min from boot" in p.stdout
+    assert "retry window : 180 min, the zones again every 5 min" in p.stdout
+    c = aws_calls(calls)
+    runs = [k for k, x in enumerate(c) if x.startswith("ec2 run-instances")]
+    sgs = [k for k, x in enumerate(c) if x.startswith("ec2 describe-security-groups")]
+    assert _zones_tried(calls) == ["ap-southeast-2b", "ap-southeast-2c", "ap-southeast-2a"]
+    assert len(sgs) == 3 and all(any(s < r and (i == 0 or s > runs[i - 1]) for s in sgs)
+                                 for i, r in enumerate(runs))
+    create = c[runs[-1]]
+    assert "--instance-type g6.2xlarge" in create and "Key=attnbench-pairing,Value=P3" in create
+    stamp = dt.datetime.fromtimestamp(NOW + 503 * 60, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({stamp})" in _one(c, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+
+
+def test_a_cap_short_of_p3s_worst_case_is_refused(tmp_path):
+    p, calls = _launch(tmp_path, "P3", env={**P3_ZONES, "AWS_COST_CAP_INR": "1200"})
+    assert p.returncode == 1 and "exceeds the cost cap" in p.stderr and calls == []

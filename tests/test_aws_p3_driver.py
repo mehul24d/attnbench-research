@@ -1,0 +1,226 @@
+"""scripts/aws_p3_driver.sh end to end on the fake remote (tests/_p3_fake_remote.py).
+
+The full P3 flow: the launch settings handed to the launcher, the deploy, the
+three blocks run by scripts/aws_p3_instance.sh through the real
+scripts/t31_session.py on configs/t31/p3_session.json, each block's pull with
+every sha256 checked before the next block, the prediction and the leg-3 plan
+witnessed by the Mac through scripts/aws_p3_gsutil.py under the real
+GsutilStore, the P6 gate read after block 2 (and block 3 run whatever it
+reads), the teardown. Then the ways it stops: a network drop that never comes
+back (the teardown at the pull deadline, the instance halting itself), one
+that does, a failed step, a block 2 short of P1's 35 cells, and the launch
+windows and their deadline.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+import _p3_fake_remote as F
+
+pytestmark = pytest.mark.skipif(
+    len(list(F.P1_HOST.glob("*/bare_prices.json"))) != 35,
+    reason="needs P1's T3.2d host components (the 17 Nov 2026 download) on this Mac")
+
+DEADLINE = 1796236200          # 2026-12-02T18:30:00Z
+
+
+def _status(fake) -> str:
+    return (F.rec_dir(fake) / "status.txt").read_text()
+
+
+def _windows(fake) -> list[list[str]]:
+    p = fake["run"] / "windows.tsv"
+    return [ln.split("\t") for ln in p.read_text().splitlines()] if p.exists() else []
+
+
+@pytest.mark.parametrize("scale,verdict", [("1.05", "skip (inconclusive band)"), ("1.5", "run")])
+def test_the_full_flow_runs_every_block_whatever_the_gate_reads(tmp_path, scale, verdict):
+    fake = F.build(tmp_path, FAKE_HOST_SCALE=scale)
+    p = F.run_driver(fake)
+    log = F.driver_log(fake)
+    assert p.returncode == 0, log[-3000:]
+    assert _status(fake).split(" ", 1)[1].startswith("DONE OK all three blocks passed and pulled")
+    rec = F.rec_dir(fake)
+    # the launcher was given P3's card: halt +473, delete +503, cap Rs 1,353, rate, window, zones
+    env = (fake["run"] / "launch_env.txt").read_text().splitlines()
+    for want in ("AWS_HALT_MINUTES=473", "AWS_MAX_RUN_MINUTES=503", "AWS_COST_CAP_INR=1353",
+                 "AWS_RATE_INR_HR=143.21", "AWS_LAUNCH_WINDOW_MINUTES=180",
+                 "AWS_SESSION_AZS=ap-southeast-2b ap-southeast-2c ap-southeast-2a",
+                 "AWS_SESSION_REGION=ap-southeast-2", "AWS_AMI_ID=ami-096c5dc30364c9041",
+                 "typed=launch"):
+        assert want in env, (want, env)
+    # each block pulled and every file checked, in order, before the next block started
+    order = [ln for ln in log.splitlines() if ln.split(" ")[1:2] in (["BLOCK"], ["PULLED"], ["GATE"])]
+    kinds = [ln.split(" ", 2)[1] + " " + ln.split(" ", 3)[2] for ln in order]
+    assert kinds == ["BLOCK b1", "PULLED b1:", "BLOCK b2", "PULLED b2:", "GATE after",
+                     "BLOCK b3", "PULLED b3:", "PULLED final:"], kinds
+    for b in ("b1", "b2", "b3"):
+        check = (rec / "pull" / b / "check.txt").read_text().splitlines()
+        assert check and all(ln.endswith(": OK") for ln in check), check
+    s = rec / "session"
+    assert sorted(d.name for d in s.iterdir() if d.is_dir()) == [
+        "01_preflight", "02_link", "03_dense_select", "04_probe", "05_host_components",
+        "06_device_components", "07_predict", "08_hold", "09_ground_truth", "10_verify",
+        "11_postflight", "12_delay_injection"]
+    m = json.loads((s / "manifest.json").read_text())
+    last = {a["step"]: a["status"] for a in m["attempts"]}     # ground truth also records "started" first
+    assert len(last) == 12 and set(last.values()) == {"passed"}, last
+    # the gate: 35 cells, P6 only; block 3 ran whatever it read
+    gate = json.loads((rec / "gate.json").read_text())
+    assert gate["cells"] == 35 and gate["verdict"] == verdict
+    assert abs(gate["d"] - (float(scale) - 1)) < 1e-9
+    assert f"verdict={verdict}" in (rec / "gate.txt").read_text()
+    # the store: the prediction, its sidecar and the leg-3 plan, witnessed with this Mac's clock
+    wit = [ln.split("\t") for ln in (rec / "store_witness.tsv").read_text().splitlines()]
+    names = [Path(w[1]).name for w in wit]
+    assert names == ["prediction_P3_stub.json", "prediction_P3_stub.json.sha256", "leg3_plan.json"]
+    receipt = json.loads((s / "07_predict" / "receipt.json").read_text())
+    import datetime as dt
+    t = max(dt.datetime.fromisoformat(w[0].replace("Z", "+00:00")) for w in wit[:2])
+    assert dt.datetime.fromisoformat(receipt["synced_at"]) == t + dt.timedelta(seconds=1)
+    assert (rec / "store" / wit[0][1]).read_bytes() == (s / "07_predict" / "prediction_P3_stub.json").read_bytes()
+    # one teardown, after the last pull; one launch window, ended LAUNCHED
+    td = (fake["run"] / "teardown.log").read_text().splitlines()
+    assert td == [f"fake teardown: {F.INSTANCE} ap-southeast-2 {rec}/teardown_1  rate=143.21"]
+    w = _windows(fake)
+    assert [x[0] for x in w] == ["start", "end"] and w[1][3] == f"LAUNCHED {F.INSTANCE}"
+    # the driver never touched the security group's rules
+    calls = (fake["run"] / "aws_calls.log").read_text()
+    assert "authorize-security-group" not in calls and "revoke-security-group" not in calls
+
+
+def test_a_network_drop_that_never_ends_is_torn_down_at_the_pull_deadline(tmp_path):
+    """SSH lost in block 2 for good, and this Mac's address changed: the driver
+    says so on every poll, never re-points the group, pulls nothing more, and
+    tears down at the pull deadline; block 1 is kept, checked. The instance,
+    its block ended and no next one started, halts itself."""
+    fake = F.build(tmp_path, FAKE_DROP_BLOCK="b2", FAKE_DROP_AT="1", FAKE_DROP_FAILS="0",
+                   FAKE_IDLE_HALT_S="2", P3_PULL_DEADLINE_S="15")
+    (fake["run"] / "sg_cidrs").write_text(f"{F.MY_IP}/32\n")
+    # the address changes when the network drops (fake curl reads it on every call)
+    orig = fake["env"]["PATH"]
+    p = F.run_driver(_with_ip_change(fake, orig))
+    log = F.driver_log(fake)
+    assert p.returncode == 1
+    lost = [ln for ln in log.splitlines() if " SSH LOST b2 " in ln]
+    assert len(lost) >= 3, log[-3000:]
+    assert all("re-point it with sg_repoint.sh (the driver never does)" in ln for ln in lost)
+    assert " DEADLINE b2 " in log
+    assert _status(fake).split(" ", 1)[1].startswith("DONE FAILED at block b2 (rc 2)")
+    td = (fake["run"] / "teardown.log").read_text().splitlines()
+    assert len(td) == 1 and (fake["run"] / "state").read_text().strip() == "terminated"
+    assert "fake cleanup check" in (fake["run"] / "cleanup.log").read_text()
+    rec = F.rec_dir(fake)
+    assert all(ln.endswith(": OK") for ln in (rec / "pull" / "b1" / "check.txt").read_text().splitlines())
+    assert not (rec / "pull" / "b2" / "check.txt").exists()
+    assert "sudo -n shutdown -h now" in (fake["run"] / "sudo.log").read_text()
+    calls = (fake["run"] / "aws_calls.log").read_text()
+    assert "authorize-security-group" not in calls and "revoke-security-group" not in calls
+
+
+def _with_ip_change(fake, path):
+    """curl answers the new address once the network is down."""
+    b = fake["run"] / "bin_ipchange"
+    b.mkdir()
+    (b / "curl").write_text('#!/usr/bin/env bash\nif [[ -e "$FAKE_RUN/net_down" ]]; then echo 198.51.100.9; '
+                            'else cat "$FAKE_RUN/my_ip"; fi\n')
+    (b / "curl").chmod(0o755)
+    fake["env"]["PATH"] = f"{b}:{path}"
+    return fake
+
+
+def test_a_network_drop_that_ends_goes_on(tmp_path):
+    fake = F.build(tmp_path, FAKE_DROP_BLOCK="b2", FAKE_DROP_AT="1", FAKE_DROP_FAILS="4",
+                   FAKE_STEP_SLEEP_S="0.5")
+    p = F.run_driver(fake)
+    log = F.driver_log(fake)
+    assert p.returncode == 0, log[-3000:]
+    assert " SSH LOST b2 poll 1 " in log and " SSH back after " in log
+    assert "the group still admits this Mac's address (network?)" in log
+    assert _status(fake).split(" ", 1)[1].startswith("DONE OK")
+
+
+def test_a_failed_step_stops_the_session_and_tears_down(tmp_path):
+    fake = F.build(tmp_path, FAKE_FAIL_STEP="host_components")
+    p = F.run_driver(fake)
+    assert p.returncode == 1
+    assert _status(fake).split(" ", 1)[1].startswith("DONE FAILED at block b2 (rc 1)")
+    assert not (fake["home"] / "p3" / "b3.started").exists()
+    assert len((fake["run"] / "teardown.log").read_text().splitlines()) == 1
+    # what there is was pulled and checked: block 1, and the failed step's directory
+    rec = F.rec_dir(fake)
+    assert (rec / "session" / "05_host_components" / "result.json").exists()
+
+
+def test_a_block_2_short_of_p1s_35_cells_is_a_no_go(tmp_path, monkeypatch):
+    fake = F.build(tmp_path)
+    stub = fake["run"].parent / "fr" / "stub_steps.py"
+    stub.write_text(stub.read_text().replace(
+        'for f in sorted(Path(os.environ["FAKE_P1_HOST"]).glob("*/bare_prices.json")):',
+        'for f in sorted(Path(os.environ["FAKE_P1_HOST"]).glob("*/bare_prices.json"))[1:]:'))
+    p = F.run_driver(fake)
+    assert p.returncode == 1
+    st = _status(fake).split(" ", 1)[1]
+    assert st.startswith("DONE FAILED no-go after block 2: P3 has 34 cells"), st
+    assert not (fake["home"] / "p3" / "b3.started").exists()
+
+
+def test_a_window_that_created_nothing_allows_another_and_a_launch_allows_none(tmp_path):
+    fake = F.build(tmp_path, FAKE_LAUNCH_MODE="refused")
+    p = F.run_driver(fake)
+    assert p.returncode == 1 and "NOT LAUNCHED the window ended" in _status(fake)
+    assert _windows(fake)[-1][3] == "NOTHING_CREATED"
+    assert not (fake["run"] / "teardown.log").exists()
+    # a second window, which launches
+    for d in (fake["run"] / "rec").iterdir():
+        d.rename(d.with_name(d.name + ".first"))
+    fake["env"]["FAKE_LAUNCH_MODE"] = "ok"
+    assert F.run_driver(fake).returncode == 0
+    # and then no third
+    for d in (fake["run"] / "rec").glob("aws_p3_g6_*Z"):
+        d.rename(d.with_name(d.name + ".second"))
+    (fake["run"] / "launch_env.txt").unlink()
+    p = F.run_driver(fake)
+    assert p.returncode == 1 and "one P3 session" in _status(fake)
+    assert not (fake["run"] / "launch_env.txt").exists()
+
+
+def test_a_window_left_without_its_end_line_refuses_the_next(tmp_path):
+    fake = F.build(tmp_path)
+    (fake["run"] / "windows.tsv").write_text("start\t2026-11-26T10:00:00Z\t/x/rec\n")
+    p = F.run_driver(fake)
+    assert p.returncode == 1 and "has no end line saying it created nothing" in _status(fake)
+    assert not (fake["run"] / "launch_env.txt").exists()
+
+
+@pytest.mark.parametrize("now,ok,window", [
+    (DEADLINE - 100 * 60, True, "100"), (DEADLINE - 4 * 60, False, None),
+    (DEADLINE, False, None), (DEADLINE + 3600, False, None)])
+def test_the_launch_deadline_is_18_30_utc_on_2_december(tmp_path, now, ok, window):
+    fake = F.build(tmp_path, P3_NOW_EPOCH=str(now), FAKE_LAUNCH_MODE="refused")
+    F.run_driver(fake)
+    st = _status(fake)
+    if ok:
+        env = (fake["run"] / "launch_env.txt").read_text()
+        assert f"AWS_LAUNCH_WINDOW_MINUTES={window}" in env
+    else:
+        assert "REFUSED" in st and not (fake["run"] / "launch_env.txt").exists()
+
+
+def test_an_address_the_group_does_not_admit_launches_nothing(tmp_path):
+    fake = F.build(tmp_path)
+    (fake["run"] / "sg_cidrs").write_text("198.51.100.9/32\n")
+    p = F.run_driver(fake)
+    assert p.returncode == 1 and "sg_repoint.sh" in _status(fake)
+    assert not (fake["run"] / "launch_env.txt").exists() and _windows(fake) == []
+
+
+def test_p3_variables_without_the_dry_switch_are_refused(tmp_path):
+    fake = F.build(tmp_path)
+    fake["env"].pop("P3_DRY")
+    p = F.run_driver(fake)
+    assert p.returncode == 1 and "P3_DRY is not 1" in p.stderr
+    assert not (fake["run"] / "launch_env.txt").exists()
