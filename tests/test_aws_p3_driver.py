@@ -8,12 +8,14 @@ witnessed by the Mac through scripts/aws_p3_gsutil.py under the real
 GsutilStore, the P6 gate read after block 2 (and block 3 run whatever it
 reads), the teardown. Then the ways it stops: a network drop that never comes
 back (the teardown at the pull deadline, the instance halting itself), one
-that does, a failed step, a block 2 short of P1's 35 cells, and the launch
-windows and their deadline.
+that does, a failed step, a block 2 short of P1's 35 cells, the launch
+windows and their deadline, and the credentials' end logged at each window's start.
 """
 from __future__ import annotations
 
 import json
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -224,3 +226,50 @@ def test_p3_variables_without_the_dry_switch_are_refused(tmp_path):
     p = F.run_driver(fake)
     assert p.returncode == 1 and "P3_DRY is not 1" in p.stderr
     assert not (fake["run"] / "launch_env.txt").exists()
+
+
+def _cred(fake):
+    log = F.driver_log(fake)
+    rows = (F.rec_dir(fake) / "credentials.tsv").read_text().splitlines()
+    return log, [r.split("\t") for r in rows]
+
+
+@pytest.mark.parametrize("ago_s,warn", [(0, False), (25 * 60, False), (35 * 60, True),
+                                        (5 * 3600, True)])
+def test_each_window_logs_when_the_login_session_ends_and_warns_under_11_5_h(tmp_path, ago_s, warn):
+    login = int(time.time()) - ago_s
+    fake = F.build(tmp_path, FAKE_LAUNCH_MODE="refused", ATTNBENCH_LOGIN_AT=str(login))
+    F.run_driver(fake)
+    log, rows = _cred(fake)
+    end = datetime.fromtimestamp(login + 12 * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert len(rows) == 1 and rows[0][0] == "window_start" and rows[0][2] == end
+    assert f"CREDENTIALS the aws login session ends by {end}" in log
+    assert ("WARN CREDENTIALS end in" in log) is warn
+    assert "NOT LAUNCHED the window ended" in _status(fake)   # a warning, not a refusal
+    # logged before the window's launch
+    assert log.index("CREDENTIALS") < log.index("LAUNCHING")
+
+
+def test_no_login_time_is_a_warning_that_the_end_is_unknown(tmp_path):
+    fake = F.build(tmp_path, FAKE_LAUNCH_MODE="refused")
+    fake["env"].pop("ATTNBENCH_LOGIN_AT")
+    F.run_driver(fake)
+    log, rows = _cred(fake)
+    assert rows[0][2] == "unknown" and "WARN CREDENTIALS the session's end is not known" in log
+
+
+def test_an_earlier_session_expiry_in_the_login_cache_is_used_and_nothing_else_is_printed(tmp_path):
+    fake = F.build(tmp_path, FAKE_LAUNCH_MODE="refused")
+    now = time.time()
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat()  # noqa: E731
+    (fake["run"] / "login_cache" / "abc.json").write_text(json.dumps({
+        "accessToken": {"accessKeyId": "AKIAFAKEKEYID", "secretAccessKey": "SECRETVALUE",
+                        "expiresAt": iso(now + 900)},            # the 15-min credential: ignored
+        "refreshToken": "REFRESHVALUE", "sessionExpiration": iso(now + 5 * 3600)}))
+    F.run_driver(fake)
+    log, rows = _cred(fake)
+    want = datetime.fromtimestamp(int(now + 5 * 3600), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert rows[0][2] == want and "the login cache's session expiry" in rows[0][3]
+    assert "WARN CREDENTIALS end in 5.0 h" in log or "WARN CREDENTIALS end in 4.9 h" in log
+    text = log + (F.rec_dir(fake) / "credentials.tsv").read_text()
+    assert not any(s in text for s in ("SECRETVALUE", "REFRESHVALUE", "AKIAFAKEKEYID"))

@@ -136,6 +136,75 @@ case $SG in
 esac
 status "SSH preflight passed (the security group admits this Mac's current address)"
 
+# The credentials (the researcher's task of 26 Nov 2026, item 4). `aws login`
+# credentials rotate every 15 min inside a session that ends at most 12 h after
+# the login (the AWS CLI user guide, "Login for AWS local development using
+# console credentials"), so the window and the run (3 h + 503 min = 11.4 h) need
+# a login under 30 min old. The launch command stamps the login time
+# (ATTNBENCH_LOGIN_AT); a session expiry in the login cache more than 1 h ahead,
+# if it holds one, is used when earlier. Only expiry timestamps are read from the
+# cache; nothing else in it is printed. Logged at the start of every window; a
+# warning under 11.5 h, not a refusal (the hard delete still bounds the cost).
+LOGIN_CACHE="${AWS_LOGIN_CACHE_DIRECTORY:-$HOME/.aws/login/cache}"
+[[ "${P3_DRY:-}" == 1 ]] && LOGIN_CACHE="$P3_LOGIN_CACHE"
+CRED="$("$VPY" -I - "$LOGIN_CACHE" "${ATTNBENCH_LOGIN_AT:-}" "$NOW_EPOCH" <<'PY' 2>/dev/null
+import glob, json, os, sys
+from datetime import datetime, timezone
+cache, login_at, now = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+def stamps(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if "expir" in k.lower() and isinstance(v, (str, int, float)):
+                yield v
+            else:
+                yield from stamps(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from stamps(v)
+
+def epoch(v):
+    if isinstance(v, (int, float)):
+        return v / 1000 if v > 1e11 else float(v)
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
+
+found = []
+for f in glob.glob(os.path.join(cache, "*.json")):
+    try:
+        found += [e for e in map(epoch, stamps(json.load(open(f)))) if e]
+    except (OSError, ValueError):
+        pass
+cands = []
+if login_at.isdigit():
+    cands.append((int(login_at) + 12 * 3600, "aws login at %s + 12 h" % datetime.fromtimestamp(
+        int(login_at), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+longer = [e for e in found if e > now + 3600]
+if longer:
+    cands.append((int(max(longer)), "the login cache's session expiry"))
+if not cands:
+    print("unknown\tno login time (ATTNBENCH_LOGIN_AT) and no session expiry in the login cache")
+else:
+    end, src = min(cands)
+    print("%d\t%s" % (end, src))
+PY
+)"
+CRED_END="${CRED%%$'\t'*}"; CRED_SRC="${CRED#*$'\t'}"
+if [[ ! "$CRED_END" =~ ^[0-9]+$ ]]; then
+  printf 'window_start\t%s\tunknown\t%s\n' "$(date -u +%FT%TZ)" "${CRED_SRC:-not read}" >> "$REC/credentials.tsv"
+  status "WARN CREDENTIALS the session's end is not known (${CRED_SRC:-not read}): start the window with the launch command, which stamps the login time"
+else
+  CRED_LEFT_S=$(( CRED_END - NOW_EPOCH ))
+  CRED_H="$(awk -v s="$CRED_LEFT_S" 'BEGIN {printf "%.1f", s / 3600}')"
+  CRED_UTC="$(date -u -r "$CRED_END" +%FT%TZ)"
+  printf 'window_start\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$CRED_UTC" "$CRED_SRC" >> "$REC/credentials.tsv"
+  status "CREDENTIALS the aws login session ends by $CRED_UTC, $CRED_H h from now ($CRED_SRC)"
+  (( CRED_LEFT_S >= 41400 )) || status "WARN CREDENTIALS end in $CRED_H h, under 11.5 h: the window and the run need 11.4 h, so the teardown could fail on expired credentials (the instance then halts at +$HALT_MIN and is deleted at +$DELETE_MIN). Stop with Ctrl-C now, run aws login --profile attnbench, and start the window again"
+fi
+
 printf 'start\t%s\t%s\n' "$(date -u +%FT%TZ)" "$REC" >> "$WINDOWS"
 status "LAUNCHING P3 commit ${COMMIT:0:7} (g6.2xlarge; window ${WINDOW_MIN} min, a pass every 5 min; halt +$HALT_MIN, delete +$DELETE_MIN, cap Rs $CAP; progress in launcher.log)"
 echo launch | "${LAUNCH[@]}" 2>&1 | sed -u -E "s/${ATTNBENCH_AWS_ACCOUNT}/<account>/g" | tee "$REC/launcher.log"

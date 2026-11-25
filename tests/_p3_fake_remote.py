@@ -309,8 +309,11 @@ def build(tmp: Path, **opts) -> dict:
         "P3_WINDOWS": str(run / "windows.tsv"), "P3_P1_HOST": str(P1_HOST), "P3_VPY": sys.executable,
         "P3_POLL_S": "1", "P3_LAUNCH": str(launch), "P3_TEARDOWN": str(teardown),
         "P3_CLEANUP": str(cleanup), "P3_BOOTSTRAP": str(bootstrap),
+        "P3_LOGIN_CACHE": str(run / "login_cache"),
+        "ATTNBENCH_LOGIN_AT": str(int(time.time())),      # as the launch command stamps it
         "PYTHONDONTWRITEBYTECODE": "1",
     })
+    (run / "login_cache").mkdir()
     env.update({k: str(v) for k, v in opts.items()})
     return {"repo": repo, "run": run, "home": home, "env": env}
 

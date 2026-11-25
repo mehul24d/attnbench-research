@@ -2,8 +2,10 @@
 
 Prepared 23 Nov 2026 (adviser's task of 23 Nov 2026, item 4b); **built 26 Nov 2026** (the
 researcher's task of 26 Nov 2026: one session for all blocks on one `g6.2xlarge`, the
-rehearsal's launch policy, retry window and teardown). **Not launched; the launch yes is
-owed.** The rehearsal passed on 25 Nov 2026 (`REHEARSAL_OK`, `docs/launch_cards/aws_rehearsal_g6.md`).
+rehearsal's launch policy, retry window and teardown); **updated 26 Nov 2026** (the researcher's
+second task of 26 Nov 2026: the dense backend, the pre-launch CPU pass, the recovery of a
+stopped instance, the credentials' end, the Appendix A lines). **Not launched; the launch yes
+is owed.** The rehearsal passed on 25 Nov 2026 (`REHEARSAL_OK`, `docs/launch_cards/aws_rehearsal_g6.md`).
 No P3 step has run, so every time below is P1's measurement or an estimate.
 P3 is exploratory (Appendix A, 21 Nov 2026): it scores no hypothesis.
 
@@ -78,6 +80,31 @@ loss costs only the block in progress.
 | b3 | `delay_injection` | 3.7 | 3.7 |
 | | **Steps** | **191.1** | **285.8** |
 
+## The dense backend: what the prediction priced and what ground truth runs
+
+A read-only check (the researcher's second task of 26 Nov 2026, item 1). **They differ.**
+
+- **Priced: `sdpa_flash`, at every dense cell.** The prediction committed on 22 Nov 2026 is a
+  full transfer from P1 (its `basis`): each cell's value is P1's committed value, and its six
+  dense cells carry P1's code path `NVIDIA L4|eager|O0|c3b3ddc3bc31`. Steps 5 and 6 record and
+  price the harness's dense arm, `ARMS["dense"]` = `sdpa_flash`
+  (`attnbench/components/shakedown_arms.py`); P1's banked step-5 records (T3.2d) show
+  `aten::_scaled_dot_product_flash_attention` in all six dense cells. P3's own steps 5 and 6
+  run the same pinned code, so P3's in-session prediction prices `sdpa_flash` too.
+- **Run: the dense selection's choice, per cell.** Ground truth's dense control is
+  `registry_candidates(card)[choice.chosen]` from step 3's record (`t31_steps._real_cells`).
+  P1 chose `sdpa_flash` at 2048 and 4096, `sdpa_cudnn` at 8192, and `fa2` at 16384 (batch 1
+  and 4) and 32768. On P3's host the rehearsal's one selection (8192, batch 1, 25 Nov 2026)
+  chose `fa2` (3.10 ms; `sdpa_flash` and `sdpa_cudnn` within the floor). P3's own step 3 decides
+  the rest; its record is pulled with block 1.
+- **So** at every dense cell where P3's step 3 chooses other than `sdpa_flash`, the predicted
+  and the measured dense cells are of different kernels. This is the fault Appendix A, 17 Nov
+  2026, disclosed for P4 (FA3 run, `sdpa_flash` priced). It is disclosed for P3 as an
+  implementation fault in the committed prediction (`docs/appendix_a_bundled_wave.md`):
+  nothing is rescored or re-predicted, and the pin `0e0fb012` and the 22 Nov file are
+  untouched. P3's dense cells are reported with the chosen kernel beside each. **The P6 gate is
+  not affected:** it compares the host components of P3 and P1, and both price `sdpa_flash`.
+
 ## Time and cost
 
 | | Hours |
@@ -127,12 +154,66 @@ keeps its results; nothing is lost until the hard delete.
    instance schedules its own halt 30 min later (`scripts/aws_p3_instance.sh`), which the
    next block cancels. So the GPU stops billing within 30 min of a block's end, and the disk
    is deleted with the instance at +503 min.
-4. **Not built (plan default, flagged):** the 23 Nov card's restart of a halted instance
-   (`ec2 start-instances` after a re-point, to pull and then terminate). The ruling of
-   26 Nov 2026 takes the rehearsal's teardown, which has no restart; a halted instance's
-   unpulled results are lost at the teardown.
+4. **A stopped instance is started once, only to pull, before the delete** (the researcher's
+   launch-yes wording of 26 Nov 2026). This is manual, not in the driver; see the next section.
 5. **No instance-side upload.** No S3 bucket and no instance role (adviser's task of
    23 Nov 2026, second, item 3): results leave the instance only by the Mac's pulls over SSH.
+
+## If the instance stopped before the last pull: the manual recovery
+
+When: EC2 reads the instance `stopped` (it halted itself, 30 min after a block's end or at
++473), the driver has gone or its teardown failed, some block's directories were never pulled,
+and it is at least 20 min before the delete time in the driver's `LAUNCHED` line. Once only, to
+pull data only: no step is run. A restart bills only until the hard delete at +503, which the
+worst case (₹1,201) already counts. The in-guest halt was scheduled by first-boot user data,
+which does not run again, so step 2 sets a halt of its own. If the group no longer admits this
+Mac's address, the researcher runs `sg_repoint.sh` first. From the worktree:
+
+```bash
+REC=~/Desktop/research/attnbench_backups/aws_p3_g6_<UTC>     # the driver's record
+ID=$(cat "$REC/instance_id.txt"); source ~/.attnbench/aws_env.sh
+R=(--profile attnbench --region ap-southeast-2)
+aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+  --query 'Reservations[0].Instances[0].State.Name' --output text        # must say: stopped
+# 1. Start it, once.
+aws ec2 start-instances "${R[@]}" --instance-ids "$ID" --query 'StartingInstances[0].CurrentState.Name' --output text
+aws ec2 wait instance-running "${R[@]}" --instance-ids "$ID"
+DNS=$(aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+  --query 'Reservations[0].Instances[0].PublicDnsName' --output text)    # a new address; not printed
+O=(-i "$AWS_SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$REC/known_hosts")
+# 2. Its own halt first, so a lost Mac cannot leave it running to the delete.
+ssh "${O[@]}" ubuntu@"$DNS" 'sudo -n shutdown -h +45'
+# 3. Pack every step directory with each file's sha256, as the driver's last pull does.
+ssh "${O[@]}" ubuntu@"$DNS" 'cd ~/p3_session && find [0-9][0-9]_* manifest.json -type f | LC_ALL=C sort > ~/p3/recover.files && tr "\n" "\0" < ~/p3/recover.files | xargs -0 sha256sum > ~/p3/recover.sha256 && tar cf ~/p3/recover.tar -T ~/p3/recover.files && sha256sum ~/p3/recover.tar'
+mkdir -p "$REC/pull/recover" "$REC/session_recovered"
+scp "${O[@]}" "ubuntu@$DNS:~/p3/recover.tar" "ubuntu@$DNS:~/p3/recover.sha256" "ubuntu@$DNS:~/p3/*.log" "ubuntu@$DNS:~/p3/*.exit" "$REC/pull/recover/"
+shasum -a 256 "$REC/pull/recover/recover.tar"                          # must equal the line step 3 printed
+tar xf "$REC/pull/recover/recover.tar" -C "$REC/session_recovered"
+(cd "$REC/session_recovered" && shasum -a 256 -c ../pull/recover/recover.sha256 > ../pull/recover/check.txt; grep -vc ': OK$' ../pull/recover/check.txt)   # must print 0
+# 4. Stop it, and let the hard delete terminate it.
+aws ec2 stop-instances "${R[@]}" --instance-ids "$ID" --query 'StoppingInstances[0].CurrentState.Name' --output text
+aws ec2 wait instance-stopped "${R[@]}" --instance-ids "$ID"
+# 5. After the delete time: the instance terminated and Sydney clean.
+bash scripts/aws_cleanup_check.sh
+```
+
+A recovered directory is kept beside the driver's `session/`, never merged into it. Each block
+is read only if its steps passed in the recovered `manifest.json`. **Not tested (flagged):** these
+commands have not been run, on the fake remote or on AWS; the pack, the tar's sha256 and the
+per-file check are the driver's `pull` (tested), typed out.
+
+## The credentials
+
+`aws login` credentials rotate every 15 min inside a session that ends at most 12 h after the
+login (the AWS CLI user guide, "Login for AWS local development using console credentials").
+The window and the run need 3 h + 503 min = 11.4 h. So at the start of each window the driver
+logs when the session ends (`credentials.tsv` and the log): the login time the launch command
+stamps (`ATTNBENCH_LOGIN_AT`) plus 12 h, or an earlier session expiry if the login cache holds
+one more than 1 h ahead (only expiry timestamps are read from it; nothing else is printed). It
+**warns** when that is under 11.5 h away (a login more than 30 min old), and does not refuse. An
+expiry during the run makes the teardown fail; the instance then halts at +473 and is deleted
+at +503, and the recovery above applies. **Plan default, flagged:** a principal whose configured
+session is shorter than 12 h is not detected by the login-time rule.
 
 ## The prediction committed before any measurement
 
@@ -211,11 +292,32 @@ end-to-end time when nothing about P3 is measured.
 
 Two mutations were each caught: the gate accepting 34 cells, and the halt at 491.
 
-**Not built (flagged):** a P3 entry in the pre-launch CPU pass (`scripts/prelaunch_cpu_pass.sh`
-runs P2's and P4's runner, `t61_session.py`, not T3.1's). The fake-remote flow, the config
-loaded by the pinned code, and the launcher test stand in for it. The real step bodies on P3's
-config have not run on a CPU boundary: P1 ran them in T3.2d, and P2 and P4 ran them on the
-lock's values.
+**Built in the second task of 26 Nov 2026:**
+
+- **The pre-launch CPU pass for P3:** `scripts/prelaunch_cpu_pass.sh p3`
+  (`tests/test_prelaunch_cpu_pass_p3.py`). It runs `t31_session.main` as
+  `aws_p3_instance.sh` runs it: the real config, the armed exit wrapper, the clean-tree
+  refusal and the three blocks on one session. Every step's real body runs, with the real
+  hold and the real P3 store (`aws_p3_gsutil.py` with a witness thread). The P6 gate script
+  then reads block 2's real output (35 cells). Mocked, and only these:
+  - probe's and postflight's dry bodies;
+  - T2.27's GPU probes;
+  - the kernel contract;
+  - the dense selection's timing (a fixed `fa2`);
+  - the GPU boundary of the components and ground truth;
+  - leg 3's timing.
+
+  It checks that a pairing other than P1 takes the lock's values: every T4.1 item from
+  `docs/lock_values.json` (its sha256 included), the pairing keys from the lock's P2 and P4
+  values, and none of P1's working values. Six refusals of that check are tested. The
+  record is cited in the launch's permission-log row.
+- **The credentials' end, logged at each window's start** (above), with six tests on the fake
+  remote; a mutation of the 11.5 h threshold was caught.
+- **The manual recovery of a stopped instance** (above), not tested.
+
+**Still not built (flagged):** the suite record on the instance. It is made after the run,
+on the Mac at the deployed commit, and committed before the push
+(`docs/appendix_a_bundled_wave.md`); its 0.33 h above becomes margin.
 
 ## Budget
 
