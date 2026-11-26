@@ -9,6 +9,16 @@ is owed.** The rehearsal passed on 25 Nov 2026 (`REHEARSAL_OK`, `docs/launch_car
 No P3 step has run, so every time below is P1's measurement or an estimate.
 P3 is exploratory (Appendix A, 21 Nov 2026): it scores no hypothesis.
 
+**Ran 26 Nov 2026** (the paragraph above is the card as prepared). The relaunch, at `6e9188a`,
+launched 09:12 UTC in 2a; all three blocks passed and were pulled, every sha256 checked
+(274, 693 and 349 files); the gate after block 2 read **d = 0.2440, verdict run**
+(`docs/p3_run/gate.json`); terminated 12:57:34 UTC, about ₹539 (P3 in all about ₹682 of
+₹1,353). The record is `attnbench_backups/aws_p3_g6_20261126T0906Z/`. The 22 Nov 2026
+prediction against P3's ground truth, EXPLORATORY: `docs/p3_run/p3_exploratory_scored.md`.
+The suite record: `docs/p3_run/suite_record.md`. After the run (26 Nov 2026): the final
+re-pull of every block is off by default (its scp was refused), each pull pushes the halt
+back (`aws_p3_instance.sh push-halt`), and the cleanup check masks the organization's denials.
+
 ## What P3 is for
 
 1. **The host-effect rule, which gates P6** (Appendix A, 21 Nov 2026; `scripts/p6_host_effect.py`,

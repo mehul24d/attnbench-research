@@ -1,0 +1,132 @@
+{
+ "config": "p3",
+ "pairing": "P3",
+ "session_config": "configs/t31/p3_session.json",
+ "commit": "6e9188aa96f16148dafb4374ec4f8f8f0ea4beca",
+ "runner": "scripts/t31_session.py (main), as scripts/aws_p3_instance.sh runs it",
+ "store": [
+  {
+   "object": "p3-mac/predictions/P3/p3_session/prediction_P3_20261126T135541373481Z.json",
+   "sha256": "679aa68b59a4f1c4c8ae5d77ffd3c9ba309ebde1797a1569c88fa959c713933c",
+   "at": "2026-11-26T13:55:41Z"
+  },
+  {
+   "object": "p3-mac/predictions/P3/p3_session/prediction_P3_20261126T135541373481Z.json.sha256",
+   "sha256": "400b6af26d0d2b3e85d7b114d4343484086234284ae8a48dae1ebff8b0c19a38",
+   "at": "2026-11-26T13:55:44Z"
+  },
+  {
+   "object": "p3-mac/predictions/P3/p3_session/leg3_plan.json",
+   "sha256": "61e947819540d49f7f13f90118ed89cbd8728d463e8c3014ac2ab2eaa82dbbfa",
+   "at": "2026-11-26T13:58:17Z"
+  }
+ ],
+ "mocked": [
+  "probe and postflight: their dry bodies",
+  "T2.27's GPU probes inside preflight and link: dry",
+  "the block-sparse kernel contract: not run",
+  "the dense selection's timing: a fixed choice (fa2)",
+  "the GPU boundary of the components and ground truth (test_t31_wiring's fakes; the bare profile's per-operator prices are 1 us per call)",
+  "step 12's leg-3 timing: the dry leg 3 inside the real step body"
+ ],
+ "blocks": {
+  "b1": {
+   "rc": 0,
+   "seconds": 11.7,
+   "steps": [
+    "preflight",
+    "link",
+    "dense_select",
+    "probe"
+   ],
+   "failed": []
+  },
+  "b2": {
+   "rc": 0,
+   "seconds": 1.0,
+   "steps": [
+    "host_components"
+   ],
+   "failed": []
+  },
+  "b3": {
+   "rc": 0,
+   "seconds": 158.7,
+   "steps": [
+    "device_components",
+    "predict",
+    "hold",
+    "ground_truth",
+    "verify",
+    "postflight",
+    "delay_injection"
+   ],
+   "failed": []
+  }
+ },
+ "passed": true,
+ "lock_values": {
+  "pairing": "P3",
+  "filled_from_lock": [
+   "batches",
+   "chain_check_tolerance",
+   "densities",
+   "flag_reasons",
+   "lengths",
+   "max_rerun_rounds",
+   "min_clean_rounds",
+   "pricing_mismatch_share",
+   "residual_spread_tolerance",
+   "resolution_floor_ms"
+  ],
+  "pairing_keys_from": "the lock's P2 and P4 pairing_values",
+  "gt_groups": [
+   "eager"
+  ],
+  "max_rerun_rounds": 5,
+  "min_clean_rounds": 10,
+  "resolution_floor_ms": {
+   "2048x1": 1.39,
+   "4096x1": 7.69,
+   "8192x1": 17.76,
+   "16384x1": 13.77,
+   "16384x4": 27.59,
+   "32768x1": 101.16
+  }
+ },
+ "gate": {
+  "rc": 0,
+  "cells_with_bare_prices": 35,
+  "cells_read": 35,
+  "verdict": "run",
+  "note": "synthetic recordings: d means nothing; this checks that the gate reads the real step body's layout"
+ },
+ "steps_run": [
+  "preflight",
+  "link",
+  "dense_select",
+  "probe",
+  "host_components",
+  "device_components",
+  "predict",
+  "hold",
+  "ground_truth",
+  "verify",
+  "postflight",
+  "delay_injection"
+ ],
+ "receipt": {
+  "remote": "predictions/P3/p3_session/prediction_P3_20261126T135541373481Z.json",
+  "synced_at": "2026-11-26T13:55:45.000000+00:00",
+  "sha256": "679aa68b59a4f1c4c8ae5d77ffd3c9ba309ebde1797a1569c88fa959c713933c"
+ },
+ "hold": {
+  "synced_at": "2026-11-26T13:55:45+00:00",
+  "released_at": "2026-11-26T13:58:15.001326+00:00",
+  "held_s": 148.95
+ },
+ "ground_truth_controls": [
+  "FA2"
+ ],
+ "synced_at": "2026-11-26T13:55:45+00:00"
+}
