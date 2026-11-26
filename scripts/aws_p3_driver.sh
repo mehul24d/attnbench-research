@@ -10,7 +10,8 @@
 # refusal only for at most 3 hours (scripts/_aws_launch_policy.sh), the security
 # group checked against this Mac's address before every create request and never
 # re-pointed, the credit gate, the hard-delete schedule. P3's numbers:
-#   rate Rs 143.21/h, cap Rs 1,353 (6.3 h x 1.5), in-guest halt +473 min (the
+#   rate Rs 143.21/h, cap Rs 1,353 for P3 in all (6.3 h x 1.5; this session's
+#   cap is that less the aborted session's Rs 143), in-guest halt +473 min (the
 #   planned 6.3 h plus 25%), hard delete +503 min (30 min later); worst case
 #   Rs 1,201. Expected about 4.7 h (an observation, below), planned 6.3 h.
 # The launch deadline is 18:30 UTC on 2 Dec 2026: a window is shortened to end
@@ -66,7 +67,12 @@ LAUNCH=(bash scripts/aws_launch_session.sh P3); TEARDOWN=scripts/aws_teardown_se
 CLEANUP=scripts/aws_cleanup_check.sh; BOOTSTRAP=scripts/aws_bootstrap_instance.sh
 END_EPOCH=1796236200                 # 2026-12-02T18:30:00Z, the launch deadline
 NOW_EPOCH="$(date -u +%s)"
-HALT_MIN=473; DELETE_MIN=503; CAP=1353; RATE=143.21
+HALT_MIN=473; DELETE_MIN=503; RATE=143.21
+# The cap: Rs 1,353 for P3 in all (the researcher's relaunch yes of 26 Nov 2026),
+# less what the aborted session of 25 Nov 2026 cost (about Rs 143: 59 min
+# running, then its volume while stopped). The worst case, 503 min at the rate,
+# is Rs 1,201, inside it.
+P3_TOTAL_CAP=1353; ABORTED_INR=143; CAP=$(( P3_TOTAL_CAP - ABORTED_INR ))
 PULL_MARGIN_MIN=10                   # the last pull starts 10 min before the halt
 if [[ "${P3_DRY:-}" == 1 ]]; then    # the fake remote, never AWS
   REC_BASE="$P3_REC_BASE"; AWS_ENV="$P3_AWS_ENV"; WINDOWS="$P3_WINDOWS"; P1_HOST="$P3_P1_HOST"
@@ -95,9 +101,16 @@ WINDOW_MIN=$(( LEFT_MIN < 180 ? LEFT_MIN : 180 ))
 (( WINDOW_MIN >= 5 )) || refuse "less than 5 minutes are left before 18:30 UTC on 2 Dec 2026"
 mkdir -p "$(dirname "$WINDOWS")"; touch "$WINDOWS"
 # The ledger: "start<TAB>UTC<TAB>REC" when a window begins, "end<TAB>UTC<TAB>REC<TAB>HOW" when it ends.
-awk -F'\t' '$1 == "end" && $4 ~ /^LAUNCHED/ {f = 1} END {exit !f}' "$WINDOWS" \
-  && refuse "a P3 instance has already been launched ($WINDOWS): one P3 session"
-OPEN="$(awk -F'\t' '$1 == "start" {s[$3] = $2} $1 == "end" && $4 == "NOTHING_CREATED" {delete s[$3]} END {for (r in s) print s[r]}' "$WINDOWS")"
+# One P3 session: a launched window refuses the next, unless a dated line
+# "aborted<TAB>UTC<TAB>REC<TAB>why" names its record (written on the researcher's
+# yes to relaunch; the aborted session of 25 Nov 2026), and then only one more.
+LAUNCHED_LIVE="$(awk -F'\t' '$1 == "end" && $4 ~ /^LAUNCHED/ {l[$3] = 1} $1 == "aborted" {a[$3] = 1}
+  END {for (r in l) if (!(r in a)) n++; print n + 0}' "$WINDOWS")"
+(( LAUNCHED_LIVE == 0 )) || refuse "a P3 instance has already been launched ($WINDOWS): one P3 session"
+NABORTED="$(awk -F'\t' '$1 == "aborted" {n++} END {print n + 0}' "$WINDOWS")"
+(( NABORTED <= 1 )) || refuse "$NABORTED P3 sessions are recorded aborted ($WINDOWS): a further relaunch needs its own yes and code"
+OPEN="$(awk -F'\t' '$1 == "start" {s[$3] = $2} $1 == "end" && $4 == "NOTHING_CREATED" {delete s[$3]}
+  $1 == "end" && $4 ~ /^LAUNCHED/ {l[$3] = 1} $1 == "aborted" && ($3 in l) {delete s[$3]} END {for (r in s) print s[r]}' "$WINDOWS")"
 [[ -z "$OPEN" ]] || refuse "a window started at $OPEN has no end line saying it created nothing ($WINDOWS)"
 win_end() { printf 'end\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$REC" "$1" >> "$WINDOWS"; }
 
@@ -342,14 +355,14 @@ whatever_there_is() {   # pull every step directory that exists, as a last act
 }
 
 run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the deadline
-  local b="$1" out ex fails=0 now mins
+  local b="$1" out ex fails=0 now mins st said_stopped=0
   status "BLOCK $b START ($(block_dirs "$b"))"
-  rssh "nohup bash -c 'cd ~/attnbench_scaffold && bash scripts/aws_p3_instance.sh $b ~/p3_session' >/dev/null 2>&1 < /dev/null &" \
+  rssh "nohup bash -c 'cd ~/attnbench_scaffold && ATTNBENCH_P3_HALT_MIN=$HALT_MIN bash scripts/aws_p3_instance.sh $b ~/p3_session' >/dev/null 2>&1 < /dev/null &" \
     || { status "BLOCK $b could not be started over SSH"; return 1; }
   while :; do
     sleep "$POLL_S"
     now="$(date -u +%s)"; mins=$(( (now - LAUNCH_EPOCH) / 60 ))
-    if out="$(rssh "cat ~/p3/$b.exit 2>/dev/null; echo ---; grep -E '^=====|^-----|BLOCK ENDED|STOPPED|REFUSING' ~/p3/$b.log 2>/dev/null | tail -2" 2>&1)"; then
+    if out="$(rssh "cat ~/p3/$b.exit 2>/dev/null; echo ---; grep -E '^=====|^-----|BLOCK ENDED|STOPPED|REFUSING|P3_HALT_WARN' ~/p3/$b.log 2>/dev/null | tail -2" 2>&1)"; then
       (( fails )) && status "SSH back after $fails failed poll(s)"
       fails=0
       witness_store || true
@@ -370,7 +383,15 @@ run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the 
         2) why="the security group could not be read (aws login --profile attnbench?)" ;;
         *) why="the group no longer admits this Mac's address: re-point it with sg_repoint.sh (the driver never does)" ;;
       esac
-      status "SSH LOST $b poll $fails at +${mins}min: $why; the instance runs on"
+      # The instance's own state (26 Nov 2026): a stopped instance is said at once.
+      st="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)" || st="unreadable"
+      if [[ "$st" == stopped || "$st" == stopping ]]; then
+        (( said_stopped )) || status "INSTANCE STOPPED ($st) in $b at +${mins}min: it halted itself; SSH cannot come back. The card's recovery (one start, only to pull data, before the delete) or Ctrl-C to tear down"
+        said_stopped=1
+      else
+        status "SSH LOST $b poll $fails at +${mins}min: $why; the instance is '${st:-unreadable}'"
+      fi
     fi
     if (( now > PULL_DEADLINE )); then
       status "DEADLINE $b at +${mins}min (10 min before the halt): pulling what there is"

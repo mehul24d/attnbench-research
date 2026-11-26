@@ -118,7 +118,7 @@ A read-only check (the researcher's second task of 26 Nov 2026, item 1). **They 
 
 Rate **₹143.21/h** all-in: (`g6.2xlarge` at $1.27107/h, SKU `A3JD2DB89TQHRAA7`, + 200 GB gp3
 at $0.096/GB-month over 730 h) x 1.15 x ₹95.99, both read from the AWS Price List API for
-Sydney on 23 Nov 2026. **Cap ₹1,353** (₹143.21 x 6.3 h x 1.5, as Appendix A, 21 Nov 2026).
+Sydney on 23 Nov 2026. **Cap ₹1,353** (₹143.21 x 6.3 h x 1.5, as Appendix A, 21 Nov 2026), for P3 in all: the relaunch (the researcher's yes of 26 Nov 2026) has ₹1,210, the cap less the aborted first session's ₹143; its worst case is ₹1,201.
 **Ruled 26 Nov 2026:** the in-guest halt **stops** the instance at the planned hours plus about
 25%, **473 min** (7 h 53 min; ₹1,129); the hard-delete schedule terminates it **30 min later,
 at 503 min** (8 h 23 min; worst case ₹1,200.58, which the launcher rounds up to ₹1,201, inside
@@ -151,9 +151,17 @@ keeps its results; nothing is lost until the hard delete.
    and tears down. Whatever was not pulled by then is lost; the blocks already pulled were
    checked when they came.
 3. **An instance whose driver has gone halts itself.** When a block ends, passed or not, the
-   instance schedules its own halt 30 min later (`scripts/aws_p3_instance.sh`), which the
-   next block cancels. So the GPU stops billing within 30 min of a block's end, and the disk
-   is deleted with the instance at +503 min.
+   instance schedules its own halt 30 min later (`shutdown -P +30`, `scripts/aws_p3_instance.sh`),
+   and only then writes the block's exit file. The next block cancels it by scheduling the
+   planned halt (+473 min from boot) in its place (systemd keeps one pending shutdown; `shutdown -c`
+   is never used, since it would cancel the planned halt too), reads the pending shutdown back,
+   and keeps a watchdog on it while the block runs (the cancel file `~/p3/<block>.running`). So
+   the GPU stops billing within 30 min of a block's end, no idle halt powers off a running
+   block, the planned halt is never cancelled or delayed, and the disk is deleted with the
+   instance at +503 min. *Rebuilt 26 Nov 2026:* the first launch (25 Nov 2026) stopped itself
+   in block 2 because the old idle halt, a `sleep` started with TERM ignored, ignored the next
+   block's `kill` (`tests/test_p3_halts.py`). When SSH drops, the driver reads the instance's
+   state and says at once if it has stopped.
 4. **A stopped instance is started once, only to pull, before the delete** (the researcher's
    launch-yes wording of 26 Nov 2026). This is manual, not in the driver; see the next section.
 5. **No instance-side upload.** No S3 bucket and no instance role (adviser's task of

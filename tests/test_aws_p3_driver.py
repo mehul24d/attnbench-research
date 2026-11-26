@@ -46,9 +46,10 @@ def test_the_full_flow_runs_every_block_whatever_the_gate_reads(tmp_path, scale,
     assert p.returncode == 0, log[-3000:]
     assert _status(fake).split(" ", 1)[1].startswith("DONE OK all three blocks passed and pulled")
     rec = F.rec_dir(fake)
-    # the launcher was given P3's card: halt +473, delete +503, cap Rs 1,353, rate, window, zones
+    # the launcher was given P3's card: halt +473, delete +503, the cap (Rs 1,353 in all less the
+    # aborted session's Rs 143), rate, window, zones
     env = (fake["run"] / "launch_env.txt").read_text().splitlines()
-    for want in ("AWS_HALT_MINUTES=473", "AWS_MAX_RUN_MINUTES=503", "AWS_COST_CAP_INR=1353",
+    for want in ("AWS_HALT_MINUTES=473", "AWS_MAX_RUN_MINUTES=503", "AWS_COST_CAP_INR=1210",
                  "AWS_RATE_INR_HR=143.21", "AWS_LAUNCH_WINDOW_MINUTES=180",
                  "AWS_SESSION_AZS=ap-southeast-2b ap-southeast-2c ap-southeast-2a",
                  "AWS_SESSION_REGION=ap-southeast-2", "AWS_AMI_ID=ami-096c5dc30364c9041",
@@ -100,7 +101,7 @@ def test_a_network_drop_that_never_ends_is_torn_down_at_the_pull_deadline(tmp_pa
     tears down at the pull deadline; block 1 is kept, checked. The instance,
     its block ended and no next one started, halts itself."""
     fake = F.build(tmp_path, FAKE_DROP_BLOCK="b2", FAKE_DROP_AT="1", FAKE_DROP_FAILS="0",
-                   FAKE_IDLE_HALT_S="2", P3_PULL_DEADLINE_S="15")
+                   P3_PULL_DEADLINE_S="15")
     (fake["run"] / "sg_cidrs").write_text(f"{F.MY_IP}/32\n")
     # the address changes when the network drops (fake curl reads it on every call)
     orig = fake["env"]["PATH"]
@@ -118,7 +119,14 @@ def test_a_network_drop_that_never_ends_is_torn_down_at_the_pull_deadline(tmp_pa
     rec = F.rec_dir(fake)
     assert all(ln.endswith(": OK") for ln in (rec / "pull" / "b1" / "check.txt").read_text().splitlines())
     assert not (rec / "pull" / "b2" / "check.txt").exists()
-    assert "sudo -n shutdown -h now" in (fake["run"] / "sudo.log").read_text()
+    # block 1's idle halt was set when it ended, never cancelled, and block 2 read the
+    # planned halt back as the pending shutdown (the fake sudo only records)
+    sudo = (fake["run"] / "sudo.log").read_text()
+    assert "sudo -n shutdown -P --no-wall +30" in sudo and "shutdown -c" not in sudo
+    b2 = (fake["home"] / "p3" / "b2.log").read_text()
+    assert "P3_PLANNED_HALT pending" in b2 and "P3_HALT_WARN" not in b2
+    # each block was told the planned halt's minutes
+    assert "ATTNBENCH_P3_HALT_MIN=473 bash scripts/aws_p3_instance.sh b2" in (fake["run"] / "ssh_calls.log").read_text().replace("\\", "")
     calls = (fake["run"] / "aws_calls.log").read_text()
     assert "authorize-security-group" not in calls and "revoke-security-group" not in calls
 
@@ -188,6 +196,46 @@ def test_a_window_that_created_nothing_allows_another_and_a_launch_allows_none(t
     p = F.run_driver(fake)
     assert p.returncode == 1 and "one P3 session" in _status(fake)
     assert not (fake["run"] / "launch_env.txt").exists()
+
+
+def test_an_aborted_session_allows_one_relaunch_and_then_none(tmp_path):
+    """The researcher's relaunch yes of 26 Nov 2026: a launched window with a
+    dated `aborted` line naming its record allows one more session, no more."""
+    fake = F.build(tmp_path)
+    w = fake["run"] / "windows.tsv"
+    w.write_text("start\t2026-11-25T20:43:39Z\t/x/rec\nend\t2026-11-25T20:59:03Z\t/x/rec\tLAUNCHED i-0old\n")
+    p = F.run_driver(fake)
+    assert p.returncode == 1 and "one P3 session" in _status(fake)      # not aborted: refused
+    for d in (fake["run"] / "rec").glob("aws_p3_g6_*Z"):
+        d.rename(d.with_name(d.name + ".refused"))
+    with w.open("a") as fh:
+        fh.write("aborted\t2026-11-26T06:00:00Z\t/x/rec\tstopped itself (idle-halt defect)\n")
+    p = F.run_driver(fake)
+    assert p.returncode == 0, F.driver_log(fake)[-2000:]
+    for d in (fake["run"] / "rec").glob("aws_p3_g6_*Z"):
+        d.rename(d.with_name(d.name + ".relaunch"))
+    p = F.run_driver(fake)                                                # the relaunch launched
+    assert p.returncode == 1 and "one P3 session" in _status(fake)
+    for d in (fake["run"] / "rec").glob("aws_p3_g6_*Z"):
+        d.rename(d.with_name(d.name + ".third"))
+    recs = [ln.split("\t")[2] for ln in w.read_text().splitlines() if ln.startswith("end\t")]
+    with w.open("a") as fh:                                               # a second abort line
+        fh.write(f"aborted\t2026-11-26T07:00:00Z\t{recs[-1]}\tx\n")
+    p = F.run_driver(fake)
+    assert p.returncode == 1 and "2 P3 sessions are recorded aborted" in _status(fake)
+
+
+def test_a_stopped_instance_is_said_at_once_when_ssh_drops(tmp_path):
+    fake = F.build(tmp_path, FAKE_DROP_BLOCK="b2", FAKE_DROP_AT="1", FAKE_DROP_FAILS="0",
+                   P3_PULL_DEADLINE_S="12")
+    (fake["run"] / "state").write_text("stopped\n")
+    p = F.run_driver(fake)
+    log = F.driver_log(fake)
+    assert p.returncode == 1
+    said = [ln for ln in log.splitlines() if " INSTANCE STOPPED (stopped) in b2 " in ln]
+    assert len(said) == 1, log[-3000:]                                    # once, at the first lost poll
+    assert " SSH LOST b2 " not in log
+    assert " DEADLINE b2 " in log
 
 
 def test_a_window_left_without_its_end_line_refuses_the_next(tmp_path):

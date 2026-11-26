@@ -70,7 +70,8 @@ exec env -i HOME="$FAKE_HOME" USER=ubuntu LANG=en_US.UTF-8 \
   ATTNBENCH_PYTHON="$FAKE_PY" FAKE_RUN="$FAKE_RUN" FAKE_ROOT="$FAKE_ROOT" FAKE_VPY="$FAKE_VPY" \
   FAKE_P1_HOST="$FAKE_P1_HOST" FAKE_HOST_SCALE="${FAKE_HOST_SCALE:-1.05}" \
   FAKE_FAIL_STEP="${FAKE_FAIL_STEP:-}" FAKE_STEP_SLEEP_S="${FAKE_STEP_SLEEP_S:-0}" \
-  ATTNBENCH_P3_IDLE_HALT_S="${FAKE_IDLE_HALT_S:-30}" \
+  ATTNBENCH_P3_SHUTDOWN_SCHEDULED="$FAKE_RUN/shutdown_scheduled" ATTNBENCH_P3_BOOT_EPOCH="$FAKE_BOOT_EPOCH" \
+  ATTNBENCH_P3_WATCH_S=0.5 \
   bash -c "$cmd"
 '''
 
@@ -299,12 +300,16 @@ def build(tmp: Path, **opts) -> dict:
         f'export ATTNBENCH_AWS_ACCOUNT=000000000000 AWS_SSH_KEY="{key}" AWS_SECURITY_GROUP_ID=sg-0fake\n')
     (run / "my_ip").write_text(MY_IP + "\n")
     (run / "sg_cidrs").write_text(f"{MY_IP}/32\n")
+    # The launcher's user data: the planned halt, pending from boot (+473 min).
+    # The fake `sudo` only records, so it stays the pending shutdown throughout.
+    boot = int(time.time())
+    (run / "shutdown_scheduled").write_text(f"USEC={(boot + 473 * 60) * 1_000_000}\nMODE=poweroff\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("P3_", "AWS_", "FAKE_"))}
     env.update({
         "PATH": f"{fr / 'bin_local'}:{env['PATH']}", "TMPDIR": str(run),
         "FAKE_ROOT": str(fr), "FAKE_RUN": str(run), "FAKE_HOME": str(home), "FAKE_DNS": DNS,
         "FAKE_VPY": sys.executable, "FAKE_PY": str(fr / "bin_remote" / "fakepy"),
-        "FAKE_P1_HOST": str(P1_HOST), "FAKE_INSTANCE": INSTANCE,
+        "FAKE_P1_HOST": str(P1_HOST), "FAKE_INSTANCE": INSTANCE, "FAKE_BOOT_EPOCH": str(boot),
         "P3_DRY": "1", "P3_REC_BASE": str(run / "rec"), "P3_AWS_ENV": str(run / "aws_env.sh"),
         "P3_WINDOWS": str(run / "windows.tsv"), "P3_P1_HOST": str(P1_HOST), "P3_VPY": sys.executable,
         "P3_POLL_S": "1", "P3_LAUNCH": str(launch), "P3_TEARDOWN": str(teardown),

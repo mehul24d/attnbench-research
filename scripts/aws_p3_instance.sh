@@ -17,13 +17,26 @@
 #
 # The exit path (the counterpart of scripts/session_exit.sh, which syncs to GCS
 # and halts at once, so it cannot end a block that the Mac still has to pull):
-# on any exit of the block -- passed, failed, killed or hung up on -- write
-# ~/p3/<block>.exit with the code and the time, then schedule a halt of the
-# instance ATTNBENCH_P3_IDLE_HALT_MIN (30) minutes later. The Mac's next block
-# cancels it; the Mac's teardown makes it moot. So an instance whose driver has
-# gone stops billing for the GPU within 30 minutes of its block's end, and keeps
-# its disk until the hard delete. The launcher's in-guest halt and hard delete
-# stay the outer bounds.
+# on any exit of the block -- passed, failed, killed or hung up on -- schedule
+# the idle halt, `shutdown -P +ATTNBENCH_P3_IDLE_HALT_MIN` (30), unless the
+# planned halt comes first, and then write ~/p3/<block>.exit with the code and
+# the time. So an instance whose driver has gone stops billing for the GPU within
+# 30 minutes of its block's end, and keeps its disk until the hard delete.
+#
+# The halts (rebuilt 26 Nov 2026, after the aborted session of 25 Nov 2026). The
+# old idle halt was a `sleep` started after `trap '' TERM`; it inherited the
+# ignored TERM, so the next block's `kill` did nothing and it halted the
+# instance in block 2. Now no halt is a process of ours: systemd keeps one
+# pending shutdown, and a new `shutdown` replaces it. The planned halt is the
+# launcher's in-guest halt (`shutdown -h +473` from boot; ATTNBENCH_P3_HALT_MIN,
+# which the driver passes). `shutdown -c` is never used: it would cancel the
+# planned halt too. Instead a block cancels the idle halt by re-scheduling the
+# planned halt in its place, reads the pending shutdown back
+# (/run/systemd/shutdown/scheduled), and while it runs the cancel file
+# ~/p3/<block>.running keeps a watchdog checking that the pending shutdown is the
+# planned one, re-arming it if not. So no idle halt can power off while a
+# block runs, and nothing here cancels or delays the planned halt. The watchdog
+# ends by itself when the cancel file goes; it is never killed.
 set -uo pipefail
 BLOCK="${1:-}"; SESSION="${2:-}"
 case "$BLOCK" in
@@ -37,24 +50,73 @@ PY="${ATTNBENCH_PYTHON:-/usr/bin/python3}"
 CONFIG="configs/t31/p3_session.json"
 STATE="${ATTNBENCH_P3_STATE:-$HOME/p3}"
 IDLE_MIN="${ATTNBENCH_P3_IDLE_HALT_MIN:-30}"
-IDLE_S="${ATTNBENCH_P3_IDLE_HALT_S:-$(( IDLE_MIN * 60 ))}"   # seconds: the fake remote's tests only
+HALT_MIN="${ATTNBENCH_P3_HALT_MIN:-473}"       # the launcher's in-guest halt, from boot
+# Test settings only (the halt tests and the fake remote): a minute's length in
+# seconds, the boot time, the watchdog's period and where systemd's pending
+# shutdown is read.
+MIN_S="${ATTNBENCH_P3_MINUTE_S:-60}"
+BOOT="${ATTNBENCH_P3_BOOT_EPOCH:-$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))}"
+WATCH_S="${ATTNBENCH_P3_WATCH_S:-15}"
+SCHED="${ATTNBENCH_P3_SHUTDOWN_SCHEDULED:-/run/systemd/shutdown/scheduled}"
+PLANNED_AT=$(( BOOT + HALT_MIN * MIN_S ))
 REPO="$(pwd)"
 mkdir -p "$STATE"
 LOG="$STATE/$BLOCK.log"
 RC=1
 DONE=0
 
+RUNNING="$STATE/$BLOCK.running"   # the cancel file: this block runs
+WD=""
+iso() { date -u -d "@$1" +%FT%TZ 2>/dev/null || date -u -r "$1" +%FT%TZ; }
+pending_s() {   # the pending shutdown's time (epoch s), empty if none or unreadable
+  local u
+  u="$( { cat "$SCHED" 2>/dev/null || sudo -n cat "$SCHED" 2>/dev/null; } | sed -n 's/^USEC=//p' | head -1)"
+  [[ "$u" =~ ^[0-9]+$ ]] && echo $(( u / 1000000 ))
+}
+planned_ok() {  # the pending shutdown is the planned halt (re-armed in whole minutes, so up to a minute early)
+  local p; p="$(pending_s)"
+  [[ -n "$p" ]] && (( p >= PLANNED_AT - MIN_S - 2 && p <= PLANNED_AT + 2 ))
+}
+arm_planned() { # schedule the planned halt; it replaces any pending shutdown
+  local m=$(( (PLANNED_AT - $(date +%s)) / MIN_S ))
+  (( m < 0 )) && m=0
+  sudo -n shutdown -P --no-wall "+$m" >/dev/null 2>&1
+}
+watchdog() {    # while the cancel file exists: the pending shutdown is the planned halt
+  local warned=0
+  while [[ -e "$RUNNING" ]]; do
+    sleep "$WATCH_S"
+    [[ -e "$RUNNING" ]] || break
+    planned_ok && continue
+    arm_planned
+    if planned_ok; then
+      echo "P3_HALT_WATCHDOG $BLOCK re-armed the planned halt $(iso $PLANNED_AT) $(date -u +%FT%TZ)" >> "$LOG"
+    elif (( ! warned )); then
+      warned=1; echo "P3_HALT_WARN $BLOCK the pending shutdown cannot be read back as the planned halt $(date -u +%FT%TZ)" >> "$LOG"
+    fi
+  done
+}
+idle_halt() {
+  local now; now="$(date +%s)"
+  if (( now + IDLE_MIN * MIN_S >= PLANNED_AT )); then
+    echo "P3_IDLE_HALT not set: the planned halt $(iso $PLANNED_AT) comes first" >> "$LOG"; return
+  fi
+  sudo -n shutdown -P --no-wall "+$IDLE_MIN" >/dev/null 2>&1
+  echo "P3_IDLE_HALT +$IDLE_MIN min, pending $(iso "$(pending_s || echo 0)") $(date -u +%FT%TZ)" >> "$LOG"
+}
+
 finish() {
   (( DONE )) && return
   DONE=1
   trap '' TERM INT HUP
+  rm -f "$RUNNING"
+  [[ -n "$WD" ]] && wait "$WD" 2>/dev/null   # the watchdog ends on its own within WATCH_S
+  idle_halt
+  # The exit file last: the driver starts the next block only once this one's
+  # idle halt is set, so a late idle halt cannot replace the next block's halt.
   printf '%s\t%s\n' "$RC" "$(date -u +%FT%TZ)" > "$STATE/$BLOCK.exit.part"
   mv "$STATE/$BLOCK.exit.part" "$STATE/$BLOCK.exit"
   echo "P3_BLOCK_EXIT $BLOCK rc=$RC $(date -u +%FT%TZ)" >> "$LOG"
-  # The idle halt: cancelled by the next block, moot after the teardown.
-  nohup bash -c "sleep $IDLE_S; logger 'attnbench P3: $BLOCK ended rc=$RC, no next block in $IDLE_S s; halting' 2>/dev/null; sudo -n shutdown -h now" \
-    >/dev/null 2>&1 < /dev/null &
-  echo $! > "$STATE/idle_halt.pid"
 }
 refuse() { echo "REFUSING: $*" | tee -a "$LOG" >&2; RC=2; exit 2; }
 CHILD=""
@@ -64,14 +126,21 @@ trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
 
-# A pending idle halt is cancelled first: this block is the next one.
-if [[ -f "$STATE/idle_halt.pid" ]]; then
-  kill "$(cat "$STATE/idle_halt.pid")" 2>/dev/null || true
-  rm -f "$STATE/idle_halt.pid"
-fi
 [[ -e "$STATE/$BLOCK.started" ]] && { DONE=1; echo "REFUSING: $BLOCK has already started ($STATE/$BLOCK.started)" >&2; exit 2; }
 date -u +%FT%TZ > "$STATE/$BLOCK.started"
 echo "P3_BLOCK_START $BLOCK $(date -u +%FT%TZ) commit $(git rev-parse HEAD)" >> "$LOG"
+
+# The halts: this block cancels a pending idle halt by putting the planned halt
+# back in its place, reads it back, and keeps it there while it runs.
+touch "$RUNNING"
+planned_ok || arm_planned
+if planned_ok; then
+  echo "P3_PLANNED_HALT pending $(iso "$(pending_s)") (boot + $HALT_MIN min: $(iso $PLANNED_AT))" >> "$LOG"
+else
+  echo "P3_HALT_WARN $BLOCK the pending shutdown cannot be read back as the planned halt ($(iso $PLANNED_AT)); the hard delete stays the bound" >> "$LOG"
+fi
+watchdog >/dev/null 2>&1 < /dev/null &
+WD=$!
 
 [[ -z "$(git status --porcelain)" ]] || refuse "the tree is not clean"
 [[ "$("$PY" -c 'import platform; print(platform.python_version())')" == "3.10.12" ]] \
