@@ -51,6 +51,14 @@ The commands below are what goes after the `--`:
     python3 scripts/t31_session.py
     python3 scripts/t31_session.py --from link --session results/t31_p1_...
     python3 scripts/t31_session.py --list      # the steps, and what is not built
+A session in blocks (P3 on AWS, docs/launch_cards/aws_p3_g6.md): `--until STEP`
+ends the run after STEP has passed, and the next block resumes with `--from`
+on the same `--session`, so the Mac can pull and check each block's steps
+before the next one starts:
+    python3 scripts/t31_session.py --config configs/t31/p3_session.json \
+        --session DIR --no-sync --until probe
+    python3 scripts/t31_session.py ... --from host_components --until host_components
+    python3 scripts/t31_session.py ... --from device_components
 Dry run on a CPU (fakes for steps 4 to 6 and a dense-only ground truth on the
 random two-layer model; no sync, no clean-tree refusal):
     python3 scripts/t31_session.py --dry-run --session /tmp/t31_dry
@@ -163,12 +171,15 @@ def clocked_started(manifest: dict) -> bool:
 def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, sync: bool,
                 runner=run_logged, rehearsal: bool = False, debug: bool = False,
                 keep_going: bool = False, rehearsal_end: bool = False,
-                cap_s: float | None = None, clock=time.time) -> int:
+                cap_s: float | None = None, clock=time.time,
+                until: str | None = None) -> int:
     """`debug`: a debug session (`t31_debug`), whose manifest says so and which
     no other session may share a directory with. `keep_going`: a step whose
     inputs did not fail runs after a failure (`DEPENDS`); the others are
     recorded as blocked. `cap_s`: no step starts after this many seconds since
-    the session began. `rehearsal_end`: end at `hold`, as a rehearsal does."""
+    the session began. `rehearsal_end`: end at `hold`, as a rehearsal does.
+    `until`: end after this step (a block of a session run in blocks); the
+    steps after it are left for a later run `--from` the next one."""
     session.mkdir(parents=True, exist_ok=True)
     session_t0 = clock()
     manifest = load_manifest(session)
@@ -187,7 +198,15 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
               file=sys.stderr)
         return 2
     last = STEPS.index(REHEARSAL_LAST) if rehearsal or rehearsal_end else len(STEPS) - 1
+    if until is not None:
+        if STEPS.index(until) > last:
+            print(f"REFUSING --until {until}: a rehearsal ends at {REHEARSAL_LAST}", file=sys.stderr)
+            return 2
+        last = STEPS.index(until)
     first = STEPS.index(start)
+    if until is not None and first > last:
+        print(f"REFUSING --until {until}: it comes before --from {start}", file=sys.stderr)
+        return 2
     if first > last:
         print(f"REFUSING --from {start}: a rehearsal ends at {REHEARSAL_LAST}", file=sys.stderr)
         return 2
@@ -279,6 +298,9 @@ def run_session(session: Path, *, start: str, extra: list[str], dry_run: bool, s
                   f"--session {session}", flush=True)
             return 1
     statuses = last_status(manifest)
+    if until is not None and last < len(STEPS) - 1:
+        print(f"\nBLOCK ENDED after {until}: the session goes on with --from "
+              f"{STEPS[last + 1]} --session {session}", flush=True)
     label = ("T3.1 rehearsal (results discarded)" if rehearsal else
              f"T3.1 DEBUG session ({manifest['debug']})" if debug else "T3.1 session")
     print(f"\n{label}: " + ", ".join(f"{s} {statuses.get(s)}" for s in STEPS[:last + 1]))
@@ -454,6 +476,8 @@ def main(argv=None) -> int:
                          "'debug, not T3.1 data'); starts where it was staged")
     ap.add_argument("--keep-going", action="store_true",
                     help="with --debug: run every step whose inputs did not fail")
+    ap.add_argument("--until", default=None, choices=STEPS,
+                    help="end after this step (a session run in blocks); resume with --from")
     ap.add_argument("--list", action="store_true",
                     help="print the steps, and what is not built yet, and exit")
     ap.add_argument("--repeat", choices=REPEATS, default=None,
@@ -467,6 +491,10 @@ def main(argv=None) -> int:
             if s in NOT_BUILT:   # empty since 31 Oct 2026; kept for a step that regresses
                 print(f"   {'':18s} NOT BUILT: {NOT_BUILT[s]}")
         return 0
+    if args.until and (args.debug or args.rehearsal or args.cpu_boundary or args.repeat):
+        print("REFUSING: --until is for a session run in blocks, not a debug session, a "
+              "rehearsal or a T3.2 repeat", file=sys.stderr)
+        return 2
     if args.repeat and (args.debug or args.rehearsal or args.cpu_boundary or args.dry_run):
         print("REFUSING: a T3.2 repeat is real data: not a debug session, not a rehearsal, "
               "not a dry run", file=sys.stderr)
@@ -546,7 +574,7 @@ def main(argv=None) -> int:
     extra = ["--config", args.config] if args.config else []
     return run_session(Path(args.session), start=args.start, extra=extra,
                        dry_run=args.dry_run, sync=not (args.dry_run or args.no_sync),
-                       rehearsal=args.rehearsal)
+                       rehearsal=args.rehearsal, until=args.until)
 
 
 if __name__ == "__main__":

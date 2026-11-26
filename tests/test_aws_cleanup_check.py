@@ -74,3 +74,30 @@ def test_the_zones_covered_and_a_recently_terminated_instance_zone_are_listed(tm
     assert "Clean -- no instances" in p.stdout
     q = [c for c in calls if "describe-instances" in c and "Values=terminated" in c]
     assert len(q) == 3 and all("tag-key,Values=attnbench-session" in c for c in q)
+
+
+def test_a_region_the_organization_denies_is_named_and_its_error_never_printed(tmp_path):
+    """The organization's policy denies EC2 outside the study's Region; the CLI's
+    denial names the policy's ARN, the role and its session id. They reached
+    every driver log until 26 Nov 2026. The region is named as denied, no ARN,
+    session id or account number is printed, and the check is still not clean."""
+    import re
+    from _aws_fakes import ACCOUNT
+    p, _ = run(SCRIPT, [], tmp_path, extra={"FAKE_SCP_DENIED_REGIONS": "us-east-1 us-west-2"})
+    out = p.stdout + p.stderr
+    assert p.returncode == 2, out
+    assert "denied by the organization's policy, not listed" in p.stdout
+    assert "Denied by the organization's policy (not listed): 2 region(s): us-east-1 us-west-2" in p.stdout
+    assert "INCOMPLETE" in p.stdout and "Clean --" not in p.stdout
+    for leak in ("arn:", "assumed-role/FakeRole", "fake-session-0123", "o-fakeorg123", "p-fake1234", ACCOUNT):
+        assert leak not in out, leak
+    assert not re.search(r"(?<![0-9])[0-9]{12}(?![0-9])", out)
+    assert "## ap-south-1" in p.stdout        # the region not denied is still listed
+
+
+def test_another_error_is_printed_masked(tmp_path):
+    """An error that is not the organization's denial is still shown, masked."""
+    from _aws_fakes import ACCOUNT
+    p, _ = run(SCRIPT, [], tmp_path, extra={"FAKE_FAIL_SNAPSHOTS_MSG": "1"})
+    assert p.returncode == 2
+    assert "AccessDenied for arn:<masked>" in p.stderr and ACCOUNT not in p.stderr
