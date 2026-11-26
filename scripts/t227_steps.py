@@ -65,6 +65,11 @@ EXPECTED_INSTANCE_TYPE = "g2-standard-8"
 # unchanged).
 L4_HOSTS = {"gcp:g2-standard-8": ("gcp", EXPECTED_INSTANCE_TYPE),
             "aws:g6.2xlarge": ("aws", "g6.2xlarge")}
+# The hosts of other GPUs a session may name the same way, with the GPU the
+# row must carry (the researcher's task of 26 Nov 2026 after P3's push, item
+# 2e: P6 is AWS's p5.4xlarge with the H100, run through P3's runner, whose
+# preflight calls this file's `t21_t220`).
+OTHER_HOSTS = {"aws:p5.4xlarge": (("aws", "p5.4xlarge"), "H100")}
 EXPECTED_HOST_ENV = "ATTNBENCH_EXPECTED_HOST"
 DEFAULT_HOST = "gcp:g2-standard-8"
 
@@ -73,10 +78,19 @@ def expected_host() -> tuple[str, str]:
     """(cloud, instance type) the preflight requires: P1's unless the
     environment names another host of `L4_HOSTS`; any other name is refused."""
     name = os.environ.get(EXPECTED_HOST_ENV) or DEFAULT_HOST
+    if name in OTHER_HOSTS:
+        return OTHER_HOSTS[name][0]
     if name not in L4_HOSTS:
-        raise StepFailed(f"{EXPECTED_HOST_ENV}={name!r} is not an accepted L4 host "
-                         f"({sorted(L4_HOSTS)})")
+        raise StepFailed(f"{EXPECTED_HOST_ENV}={name!r} is not an accepted host "
+                         f"({sorted(L4_HOSTS) + sorted(OTHER_HOSTS)})")
     return L4_HOSTS[name]
+
+
+def expected_gpu() -> str:
+    """The GPU the preflight requires: the L4, unless the environment names
+    one of `OTHER_HOSTS`."""
+    name = os.environ.get(EXPECTED_HOST_ENV) or DEFAULT_HOST
+    return OTHER_HOSTS[name][1] if name in OTHER_HOSTS else EXPECTED_GPU
 # A row name (`attnbench.provisioning`), which is what a row carries. The
 # launch name "STANDARD" failed every real t21_t220 (Shakedown 2, 31 Oct 2026).
 from attnbench.provisioning import ON_DEMAND as EXPECTED_PROVISIONING  # noqa: E402
@@ -226,8 +240,9 @@ def step_t21_t220(args) -> dict:
         for k in ("cpu_microcode", "instance_generation"):
             if not row.get(k):
                 problems.append(f"{k} is empty")
-        if EXPECTED_GPU not in str(row.get("gpu_name")):
-            problems.append(f"gpu_name {row.get('gpu_name')!r} is not an {EXPECTED_GPU}")
+        gpu = expected_gpu()
+        if gpu not in str(row.get("gpu_name")):
+            problems.append(f"gpu_name {row.get('gpu_name')!r} is not an {gpu}")
         if row.get("null_launch_s_median") is None:
             problems.append("no null-kernel burst on a GPU instance")
     else:

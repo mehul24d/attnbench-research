@@ -43,6 +43,20 @@
 # The teardown is the rehearsal's: scripts/aws_teardown_session.sh, retried until
 # EC2 reads the instance terminated, then scripts/aws_cleanup_check.sh.
 #
+# P6 (the researcher's task of 26 Nov 2026 after P3's push, item 2e;
+# docs/launch_cards/aws_p6_p5.md): the same driver, with its fixes, for one
+# p5.4xlarge (H100) in Sydney:
+#
+#   caffeinate -i bash scripts/aws_p3_driver.sh P6
+#
+# P6's numbers: rate Rs 990.2/h, cap Rs 5,940 (4.0 h x 1.5), in-guest halt
+# +312 min, hard delete +359 min (worst case Rs 5,925), the zones 2b, 2c, 2a
+# (read 26 Nov 2026), its own windows (~/.attnbench/p6_windows.tsv), the same
+# deadline. Its blocks are P3's on configs/t31/p6_session.json, with block 1's
+# image and dense-backend check first (scripts/p6_backend_check.py; a failure
+# stops the session) and block 3 ending at postflight; no gate after block 2
+# (P3's gate was P6's). The record is attnbench_backups/aws_p6_p5_<UTC>/.
+#
 # Test mode (tests/test_aws_p3_driver.py, the fake remote): P3_DRY=1 lets P3_*
 # variables point the AWS side, the paths and the clock at fakes. Without
 # P3_DRY=1 any P3_* variable is refused.
@@ -56,14 +70,16 @@ if [[ -z "${P3_DRIVER_COPY:-}" ]]; then
   exec env P3_DRIVER_COPY="$COPY" P3_DRIVER_WT="$WT0" bash "$COPY" "$@"
 fi
 WT="$P3_DRIVER_WT"
+PAIRING="${1:-P3}"
+case "$PAIRING" in P3|P6) ;; *) echo "REFUSING: the pairing is '$PAIRING', not P3 or P6; nothing launched" >&2; exit 1 ;; esac
 
 REC_BASE="$HOME/Desktop/research/attnbench_backups"
 AWS_ENV="$HOME/.attnbench/aws_env.sh"
-WINDOWS="$HOME/.attnbench/p3_windows.tsv"
+WINDOWS="$HOME/.attnbench/$(tr 'A-Z' 'a-z' <<<"$PAIRING")_windows.tsv"
 P1_HOST="$HOME/Desktop/research/attnbench_backups/bucket_20261117/attnbench-l4-t32d-20261109-1237/results/t32d_p1_20261109T0726Z/05_host_components"
 VPY="$HOME/Desktop/research/attnbench_scaffold/.venv/bin/python"
 POLL_S=60; SSH_TRIES=40; SSH_WAIT_S=15; TEARDOWN_WAIT_S=30
-LAUNCH=(bash scripts/aws_launch_session.sh P3); TEARDOWN=scripts/aws_teardown_session.sh
+LAUNCH=(bash scripts/aws_launch_session.sh "$PAIRING"); TEARDOWN=scripts/aws_teardown_session.sh
 CLEANUP=scripts/aws_cleanup_check.sh; BOOTSTRAP=scripts/aws_bootstrap_instance.sh
 END_EPOCH=1796236200                 # 2026-12-02T18:30:00Z, the launch deadline
 NOW_EPOCH="$(date -u +%s)"
@@ -73,6 +89,20 @@ HALT_MIN=473; DELETE_MIN=503; RATE=143.21
 # running, then its volume while stopped). The worst case, 503 min at the rate,
 # is Rs 1,201, inside it.
 P3_TOTAL_CAP=1353; ABORTED_INR=143; CAP=$(( P3_TOTAL_CAP - ABORTED_INR ))
+ITYPE_WANT=g6.2xlarge; REC_NAME=aws_p3_g6; AZS="ap-southeast-2b ap-southeast-2c ap-southeast-2a"
+BLOCKS_LAST="12_delay_injection"
+CRED_NEED_S=41400                    # 11.5 h: the window and the run, 3 h + 503 min = 11.4 h
+if [[ "$PAIRING" == P6 ]]; then
+  # P6 (docs/launch_cards/aws_p6_p5.md): the card rate of Appendix A, 21 Nov 2026
+  # (p5.4xlarge at $8.944/h, Sydney's public price file of 20 Nov 2026, and 200 GB
+  # gp3, x 1.15 x Rs 95.99); planned 4.0 h, cap 4.0 h x rate x 1.5. The worst
+  # case, 359 min at the rate, is Rs 5,925, inside it. Zones offering it in
+  # Sydney, read 26 Nov 2026: 2b, 2c, 2a.
+  HALT_MIN=312; DELETE_MIN=359; RATE=990.2; CAP=5940
+  ITYPE_WANT=p5.4xlarge; REC_NAME=aws_p6_p5
+  BLOCKS_LAST=""                     # block 3 ends at postflight (no delay injection)
+  CRED_NEED_S=34200                  # 9.5 h: 3 h + 359 min = 9.0 h, and a margin
+fi
 PULL_MARGIN_MIN=10                   # the last pull starts 10 min before the halt
 # The final re-pull of every step directory, after all three blocks were pulled
 # and checked, is off unless P3_DRIVER_FINAL_REPULL=1 (26 Nov 2026: it re-sends
@@ -83,7 +113,7 @@ PUSH_EVERY_S=600                     # while a copy runs, the halt is pushed bac
 if [[ "${P3_DRY:-}" == 1 ]]; then    # the fake remote, never AWS
   REC_BASE="$P3_REC_BASE"; AWS_ENV="$P3_AWS_ENV"; WINDOWS="$P3_WINDOWS"; P1_HOST="$P3_P1_HOST"
   VPY="$P3_VPY"; POLL_S="$P3_POLL_S"; SSH_TRIES=3; SSH_WAIT_S=1; TEARDOWN_WAIT_S=1
-  LAUNCH=(bash "$P3_LAUNCH"); TEARDOWN="$P3_TEARDOWN"; CLEANUP="$P3_CLEANUP"; BOOTSTRAP="$P3_BOOTSTRAP"
+  LAUNCH=(bash "$P3_LAUNCH" "$PAIRING"); TEARDOWN="$P3_TEARDOWN"; CLEANUP="$P3_CLEANUP"; BOOTSTRAP="$P3_BOOTSTRAP"
   NOW_EPOCH="${P3_NOW_EPOCH:-$NOW_EPOCH}"
   [[ -n "${P3_PULL_DEADLINE_S:-}" ]] && PULL_DEADLINE_S="$P3_PULL_DEADLINE_S"
   PUSH_EVERY_S="${P3_PUSH_EVERY_S:-$PUSH_EVERY_S}"
@@ -92,7 +122,7 @@ elif env | grep '^P3_' | grep -qv '^P3_DRIVER_'; then
 fi
 
 UTC="$(date -u +%Y%m%dT%H%MZ)"
-REC="$REC_BASE/aws_p3_g6_$UTC"
+REC="$REC_BASE/${REC_NAME}_$UTC"
 [[ -e "$REC" ]] && { echo "REFUSING: $REC exists" >&2; exit 1; }
 mkdir -p "$REC"
 cp "$P3_DRIVER_COPY" "$REC/driver.sh"
@@ -104,7 +134,7 @@ status() { echo "$(date -u +%FT%TZ) $*"; echo "$(date -u +%FT%TZ) $*" > "$REC/st
 refuse() { status "REFUSED $*; nothing launched"; exit 1; }
 
 # --- the launch windows ---------------------------------------------------------
-(( NOW_EPOCH < END_EPOCH )) || refuse "18:30 UTC on 2 Dec 2026 has passed: no L4 by then, so P3 is dropped"
+(( NOW_EPOCH < END_EPOCH )) || refuse "18:30 UTC on 2 Dec 2026 has passed: no $([[ $PAIRING == P6 ]] && echo H100 || echo L4) by then, so $PAIRING is dropped"
 LEFT_MIN=$(( (END_EPOCH - NOW_EPOCH) / 60 ))
 WINDOW_MIN=$(( LEFT_MIN < 180 ? LEFT_MIN : 180 ))
 (( WINDOW_MIN >= 5 )) || refuse "less than 5 minutes are left before 18:30 UTC on 2 Dec 2026"
@@ -115,16 +145,16 @@ mkdir -p "$(dirname "$WINDOWS")"; touch "$WINDOWS"
 # yes to relaunch; the aborted session of 25 Nov 2026), and then only one more.
 LAUNCHED_LIVE="$(awk -F'\t' '$1 == "end" && $4 ~ /^LAUNCHED/ {l[$3] = 1} $1 == "aborted" {a[$3] = 1}
   END {for (r in l) if (!(r in a)) n++; print n + 0}' "$WINDOWS")"
-(( LAUNCHED_LIVE == 0 )) || refuse "a P3 instance has already been launched ($WINDOWS): one P3 session"
+(( LAUNCHED_LIVE == 0 )) || refuse "a $PAIRING instance has already been launched ($WINDOWS): one $PAIRING session"
 NABORTED="$(awk -F'\t' '$1 == "aborted" {n++} END {print n + 0}' "$WINDOWS")"
-(( NABORTED <= 1 )) || refuse "$NABORTED P3 sessions are recorded aborted ($WINDOWS): a further relaunch needs its own yes and code"
+(( NABORTED <= 1 )) || refuse "$NABORTED $PAIRING sessions are recorded aborted ($WINDOWS): a further relaunch needs its own yes and code"
 OPEN="$(awk -F'\t' '$1 == "start" {s[$3] = $2} $1 == "end" && $4 == "NOTHING_CREATED" {delete s[$3]}
   $1 == "end" && $4 ~ /^LAUNCHED/ {l[$3] = 1} $1 == "aborted" && ($3 in l) {delete s[$3]} END {for (r in s) print s[r]}' "$WINDOWS")"
 [[ -z "$OPEN" ]] || refuse "a window started at $OPEN has no end line saying it created nothing ($WINDOWS)"
 win_end() { printf 'end\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$REC" "$1" >> "$WINDOWS"; }
 
 unset AWS_SESSION_AZ AWS_SUBNET_ID
-export AWS_SESSION_REGION=ap-southeast-2 AWS_SESSION_AZS="ap-southeast-2b ap-southeast-2c ap-southeast-2a"
+export AWS_SESSION_REGION=ap-southeast-2 AWS_SESSION_AZS="$AZS"
 export AWS_RATE_INR_HR=$RATE AWS_COST_CAP_INR=$CAP AWS_HALT_MINUTES=$HALT_MIN AWS_MAX_RUN_MINUTES=$DELETE_MIN
 export AWS_LAUNCH_WINDOW_MINUTES=$WINDOW_MIN
 export AWS_AMI_ID=ami-096c5dc30364c9041
@@ -136,7 +166,7 @@ SSH_OPTS=(-i "$AWS_SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostK
 cd "$WT" || exit 1
 [[ -z "$(git status --porcelain)" ]] || refuse "the tree is not clean"
 COMMIT="$(git rev-parse HEAD)"
-[[ -d "$P1_HOST" ]] && (( $(ls "$P1_HOST"/*/bare_prices.json 2>/dev/null | wc -l) == 35 )) \
+[[ "$PAIRING" == P6 ]] || { [[ -d "$P1_HOST" ]] && (( $(ls "$P1_HOST"/*/bare_prices.json 2>/dev/null | wc -l) == 35 )); } \
   || refuse "P1's T3.2d host components (35 cells) are not at $P1_HOST: the gate could not be read"
 
 # The SSH source: does the security group admit this Mac's current address?
@@ -224,11 +254,12 @@ else
   CRED_UTC="$(date -u -r "$CRED_END" +%FT%TZ)"
   printf 'window_start\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$CRED_UTC" "$CRED_SRC" >> "$REC/credentials.tsv"
   status "CREDENTIALS the aws login session ends by $CRED_UTC, $CRED_H h from now ($CRED_SRC)"
-  (( CRED_LEFT_S >= 41400 )) || status "WARN CREDENTIALS end in $CRED_H h, under 11.5 h: the window and the run need 11.4 h, so the teardown could fail on expired credentials (the instance then halts at +$HALT_MIN and is deleted at +$DELETE_MIN). Stop with Ctrl-C now, run aws login --profile attnbench, and start the window again"
+  CRED_NEED_H="$(awk -v s="$CRED_NEED_S" 'BEGIN {printf "%.1f", s / 3600}')"
+  (( CRED_LEFT_S >= CRED_NEED_S )) || status "WARN CREDENTIALS end in $CRED_H h, under $CRED_NEED_H h: the window and the run need that, so the teardown could fail on expired credentials (the instance then halts at +$HALT_MIN and is deleted at +$DELETE_MIN). Stop with Ctrl-C now, run aws login --profile attnbench, and start the window again"
 fi
 
 printf 'start\t%s\t%s\n' "$(date -u +%FT%TZ)" "$REC" >> "$WINDOWS"
-status "LAUNCHING P3 commit ${COMMIT:0:7} (g6.2xlarge; window ${WINDOW_MIN} min, a pass every 5 min; halt +$HALT_MIN, delete +$DELETE_MIN, cap Rs $CAP; progress in launcher.log)"
+status "LAUNCHING $PAIRING commit ${COMMIT:0:7} ($ITYPE_WANT; window ${WINDOW_MIN} min, a pass every 5 min; halt +$HALT_MIN, delete +$DELETE_MIN, cap Rs $CAP; progress in launcher.log)"
 echo launch | "${LAUNCH[@]}" 2>&1 | sed -u -E "s/${ATTNBENCH_AWS_ACCOUNT}/<account>/g" | tee "$REC/launcher.log"
 LRC=${PIPESTATUS[1]}
 LOUT="$(cat "$REC/launcher.log")"
@@ -281,7 +312,7 @@ IZONE="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --que
 ITYPE="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].InstanceType' --output text)"
 printf 'launcher_zone\t%s\ninstance_zone\t%s\ninstance_type\t%s\nwindow_passes\t%s\ncapacity_refusals\t%s\n' \
   "$LZONE" "$IZONE" "$ITYPE" "${PASSES:-}" "${NREFUSED:-}" > "$REC/placement.txt"
-[[ "$ITYPE" == g6.2xlarge ]] || stop "instance type '$ITYPE'" "FAIL the instance is not a g6.2xlarge"
+[[ "$ITYPE" == "$ITYPE_WANT" ]] || stop "instance type '$ITYPE'" "FAIL the instance is not a $ITYPE_WANT"
 H="ubuntu@$DNS"
 rssh() { ssh "${SSH_OPTS[@]}" "$H" "$@"; }
 ok=0
@@ -376,11 +407,15 @@ pull() {   # pull NAME DIR...: 0 when every file checks
     || { status "PULL $name: $(grep -vc ': OK$' "$d/check.txt") file(s) do not check"; return 1; }
   status "PULLED $name: $(wc -l < "$d/$name.sha256" | tr -d ' ') files, every sha256 checked"
 }
-pull_logs() { scp "${SSH_OPTS[@]}" "$H:~/p3/*.log" "$H:~/p3/*.exit" "$REC/" >/dev/null 2>&1 || true; }
+pull_logs() {
+  scp "${SSH_OPTS[@]}" "$H:~/p3/*.log" "$H:~/p3/*.exit" "$REC/" >/dev/null 2>&1 || true
+  [[ "$PAIRING" == P6 ]] && { scp "${SSH_OPTS[@]}" "$H:~/p3/b1_backends.json" "$REC/" >/dev/null 2>&1 || true; }
+  return 0
+}
 
 BLOCK_DIRS_b1="01_preflight 02_link 03_dense_select 04_probe"
 BLOCK_DIRS_b2="05_host_components"
-BLOCK_DIRS_b3="06_device_components 07_predict 08_hold 09_ground_truth 10_verify 11_postflight 12_delay_injection"
+BLOCK_DIRS_b3="06_device_components 07_predict 08_hold 09_ground_truth 10_verify 11_postflight${BLOCKS_LAST:+ $BLOCKS_LAST}"
 block_dirs() { eval "echo \$BLOCK_DIRS_$1"; }
 whatever_there_is() {   # pull every step directory that exists, as a last act
   local have
@@ -392,7 +427,7 @@ whatever_there_is() {   # pull every step directory that exists, as a last act
 run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the deadline
   local b="$1" out ex fails=0 now mins st said_stopped=0
   status "BLOCK $b START ($(block_dirs "$b"))"
-  rssh "nohup bash -c 'cd ~/attnbench_scaffold && ATTNBENCH_P3_HALT_MIN=$HALT_MIN bash scripts/aws_p3_instance.sh $b ~/p3_session' >/dev/null 2>&1 < /dev/null &" \
+  rssh "nohup bash -c 'cd ~/attnbench_scaffold && ATTNBENCH_P3_PAIRING=$PAIRING ATTNBENCH_P3_HALT_MIN=$HALT_MIN bash scripts/aws_p3_instance.sh $b ~/p3_session' >/dev/null 2>&1 < /dev/null &" \
     || { status "BLOCK $b could not be started over SSH"; return 1; }
   while :; do
     sleep "$POLL_S"
@@ -442,7 +477,7 @@ for B in b1 b2 b3; do
     whatever_there_is
     stop "block $B rc=$brc" "DONE FAILED at block $B (rc $brc); results so far in $REC/session"
   fi
-  if [[ "$B" == b2 ]]; then
+  if [[ "$B" == b2 && "$PAIRING" == P3 ]]; then
     N3="$(ls "$REC/session/05_host_components"/*/bare_prices.json 2>/dev/null | wc -l | tr -d ' ')"
     "$VPY" scripts/p6_host_effect.py "$REC/session/05_host_components" "$P1_HOST" > "$REC/gate.json" 2> "$REC/gate.err"
     GRC=$?
@@ -466,4 +501,4 @@ fi
 push_halt teardown
 rssh 'ls ~/.cache/huggingface/hub/*/snapshots/ 2>&1; du -sh ~/.cache/huggingface 2>&1' > "$REC/hf_snapshots.txt" 2>&1 || true
 teardown "all three blocks passed"
-status "DONE OK all three blocks passed and pulled; $GATE"
+status "DONE OK all three blocks passed and pulled${GATE:+; $GATE}"
