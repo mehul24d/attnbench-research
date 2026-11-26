@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from _aws_fakes import INSTANCE, NOW, aws_calls, launch_env, run, scripts_copy
+from _aws_fakes import INSTANCE, MY_IP, NOW, aws_calls, launch_env, run, scripts_copy
 
 
 def _launch(tmp_path, pairing="P3", *, env=None, drop=(), stdin="launch\n"):
@@ -191,9 +191,12 @@ def test_a_failed_terminate_after_a_failed_schedule_is_loud(tmp_path):
 
 
 def test_a_failed_create_points_at_the_cleanup_check(tmp_path):
-    p, calls = _launch(tmp_path, env={"FAKE_RUN_FAIL": "1"})
+    """Another error than a capacity refusal is not confirmed by the session's
+    tag, so an instance cannot be ruled out: point at the cleanup check."""
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_RUN_ERROR_ZONES": "ap-southeast-2b",
+                                             "FAKE_RUN_ERROR": "InternalError"})
     assert p.returncode == 1
-    assert "aws_cleanup_check.sh" in p.stderr
+    assert "aws_cleanup_check.sh" in p.stderr and "An instance may" in p.stderr
     assert not any("create-schedule" in c and "hard-delete-i-" in c for c in calls)
 
 
@@ -314,22 +317,80 @@ def test_a_malformed_record_line_refuses(tmp_path):
     rec.parent.mkdir()
     rec.write_text("2026-11-23T00:00:00Z\tP3\ti-0bbb\tabout 500\n")
     p, calls = _launch(tmp_path)
-    assert p.returncode == 1 and "has a line that is not" in p.stderr and _no_create(calls)
+    assert p.returncode == 1 and "has a line it cannot read" in p.stderr and _no_create(calls)
 
 
-def test_each_create_request_is_recorded_at_its_cap_and_counted_next_time(tmp_path):
+def test_each_window_is_recorded_and_only_an_instance_or_a_doubt_is_counted(tmp_path):
+    """The researcher's launch yes of 24 Nov 2026, item 3: one record per
+    window, a real line only once an instance id exists; a confirmed capacity
+    refusal is not counted, anything else without an id is."""
     p, _ = _launch(tmp_path)
     assert p.returncode == 0, p.stderr
     p, _ = _launch(tmp_path, env={"FAKE_RUN_FAIL": "1", "AWS_COST_CAP_INR": "1300"})
     assert p.returncode == 1
+    p, _ = _launch(tmp_path, env={"FAKE_RUN_ERROR_ZONES": "us-east-1a", "FAKE_RUN_ERROR": "Unsupported",
+                                  "AWS_SESSION_AZ": "us-east-1a", "AWS_COST_CAP_INR": "1100"})
+    assert p.returncode == 1
     lines = [ln.split("\t") for ln in _record(tmp_path).read_text().splitlines()]
-    assert [ln[1:] for ln in lines] == [["P3", INSTANCE, "1200"], ["P3", "no-id", "1300"]]
+    assert [ln[1:] for ln in lines] == [
+        ["P3", "window-open:sess-1", "1200"], ["P3", INSTANCE, "1200"],
+        ["P3", "window-closed:sess-1:launched", "1200"],
+        ["P3", "window-open:sess-1", "1300"], ["P3", "window-closed:sess-1:refused", "1300"],
+        ["P3", "window-open:sess-1", "1100"], ["P3", "unconfirmed", "1100"],
+        ["P3", "window-closed:sess-1:stopped", "1100"]]
     assert all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", ln[0]) for ln in lines)
     p, _ = _launch(tmp_path, stdin="no\n")
-    assert "> Rs 2500.00 planned so far + Rs 1200 cap" in p.stdout
-    # and the record decides: Rs 2,500 + Rs 1,200 needs more than $38.55
-    p, calls = _launch(tmp_path, env={"FAKE_CREDITS": "38.54"})
+    assert "> Rs 2300.00 planned so far + Rs 1200 cap" in p.stdout     # 1,200 + 1,100
+    # and the record decides: Rs 2,300 + Rs 1,200 needs more than $36.46
+    p, calls = _launch(tmp_path, env={"FAKE_CREDITS": "36.46"})
     assert p.returncode == 1 and _no_create(calls)
+
+
+def _gate(tmp_path, record):
+    rec = _record(tmp_path)
+    rec.parent.mkdir(exist_ok=True)
+    rec.write_text(record)
+    return _launch(tmp_path, stdin="no\n")
+
+
+def test_a_window_left_open_is_counted(tmp_path):
+    p, _ = _gate(tmp_path, "2026-11-24T10:00:00Z\tREH\twindow-open:s1\t220\n"
+                           "2026-11-24T11:00:00Z\tREH\twindow-open:s2\t220\n"
+                           "2026-11-24T11:30:00Z\tREH\twindow-closed:s2:refused\t220\n")
+    assert "> Rs 220.00 planned so far" in p.stdout, p.stdout + p.stderr
+
+
+def test_a_dated_void_line_uncounts_the_line_it_names(tmp_path):
+    rec = ("2026-11-23T18:03:26Z\tREH\tno-id\t180\n"
+           "2026-11-23T18:13:54Z\tREH\tno-id\t180\n"
+           "2026-11-23T10:51:17Z\tREH\ti-09462143e8347fb80\t180\n"
+           "VOID\t2026-11-23T18:03:26Z\tREH\tno-id\t2026-11-24T17:00:00Z\tcapacity refusal, nothing created\n")
+    p, _ = _gate(tmp_path, rec)
+    assert "> Rs 360.00 planned so far" in p.stdout, p.stdout + p.stderr
+
+
+@pytest.mark.parametrize("void", [
+    "VOID\t2026-11-23T18:03:27Z\tREH\tno-id\t2026-11-24T17:00:00Z\tnames no line",
+    "VOID\t2026-11-23T18:03:26Z\tREH\tno-id\t2026-11-24T17:00:00Z\t",
+    "VOID\t2026-11-23T18:03:26Z\tREH\tno-id\t24 Nov\tnot dated in UTC",
+    "VOID\t2026-11-23T18:03:26Z\tREH\tno-id\t2026-11-24T17:00:00Z",
+])
+def test_a_void_line_that_is_malformed_or_names_no_earlier_line_refuses(tmp_path, void):
+    p, calls = _gate(tmp_path, "2026-11-23T18:03:26Z\tREH\tno-id\t180\n" + void + "\n")
+    assert p.returncode == 1 and "has a line it cannot read" in p.stderr, p.stderr
+    assert "(line 2)" in p.stderr
+    assert _no_create(calls)
+
+
+def test_a_void_line_before_the_line_it_names_refuses(tmp_path):
+    p, _ = _gate(tmp_path, "VOID\t2026-11-23T18:03:26Z\tREH\tno-id\t2026-11-24T17:00:00Z\tearly\n"
+                           "2026-11-23T18:03:26Z\tREH\tno-id\t180\n")
+    assert p.returncode == 1 and "(line 1)" in p.stderr
+
+
+def test_an_unknown_record_word_refuses(tmp_path):
+    p, _ = _gate(tmp_path, "2026-11-23T18:03:26Z\tREH\trefused\t180\n")
+    assert p.returncode == 1 and "cannot read" in p.stderr
 
 
 def test_an_abort_or_a_refusal_records_nothing(tmp_path):
@@ -437,6 +498,37 @@ def test_the_probe_cards_settings(tmp_path):
     assert "+6 min from boot" in p.stdout
 
 
+REH_CARD = {**ENV_CARD, "AWS_RATE_INR_HR": "143.21", "AWS_COST_CAP_INR": "220",
+            "AWS_HALT_MINUTES": "75", "AWS_MAX_RUN_MINUTES": "90"}
+
+
+def test_the_rehearsal_cards_settings(tmp_path):
+    """docs/launch_cards/aws_rehearsal_g6.md, re-priced for g6.2xlarge (the
+    researcher's launch yes of 24 Nov 2026): halt at 75 min, hard delete at
+    90, cap Rs 220: worst case Rs 143.21 x 90 min = Rs 214.82, rounded up to
+    Rs 215, under the yes's Rs 250."""
+    p, calls = _launch(tmp_path, "REH", env=REH_CARD)
+    assert p.returncode == 0, p.stderr
+    assert "worst case   : Rs 215, cost cap Rs 220" in p.stdout
+    calls = aws_calls(calls)
+    create = _one(calls, "ec2 run-instances")
+    assert "--instance-type g6.2xlarge" in create and "AvailabilityZone=ap-southeast-2a" in create
+    assert "Key=attnbench-pairing,Value=REH" in create
+    stamp = dt.datetime.fromtimestamp(NOW + 90 * 60, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    assert f"--schedule-expression at({stamp})" in _one(calls, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert "+75 min from boot" in p.stdout
+    card = (Path(__file__).resolve().parents[1] / "docs" / "launch_cards"
+            / "aws_rehearsal_g6.md").read_text()
+    for said in ("**₹143.21/h**", "**Cap ₹220**", "**75 min**", "**90 min**", "`g6.2xlarge`"):
+        assert said in card, said
+    assert int("220") <= 250
+
+
+def test_a_cap_short_of_the_rehearsals_worst_case_is_refused(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env={**REH_CARD, "AWS_COST_CAP_INR": "214"})
+    assert p.returncode == 1 and "exceeds the cost cap" in p.stderr and calls == []
+
+
 @pytest.mark.parametrize("pairing,minutes,halt,ok", [
     ("PROBE", "4", "3", False), ("PROBE", "16", "6", False), ("PROBE", "8", "2", False),
     ("PROBE", "8", "8", False), ("PROBE", "5", "3", True), ("PROBE", "15", "13", True),
@@ -448,3 +540,259 @@ def test_the_short_limits_are_the_probes_alone(tmp_path, pairing, minutes, halt,
     assert (p.returncode == 0) == ok, p.stderr
     if not ok:
         assert calls == []
+
+
+# --- the zone fallback (the researcher's launch yes of 23 Nov 2026, third
+# rehearsal attempt: 2b, then 2c, then 2a, on a no-capacity error only) ------
+ZONES = "ap-southeast-2b ap-southeast-2c ap-southeast-2a"
+REH_ZONES = {**{k: v for k, v in REH_CARD.items() if k != "AWS_SESSION_AZ"},
+             "AWS_SESSION_AZS": ZONES}
+
+
+def _zones_tried(calls):
+    return [re.search(r"AvailabilityZone=(\S+)", c).group(1)
+            for c in aws_calls(calls) if c.startswith("ec2 run-instances")]
+
+
+def _confirm_reads(calls):
+    return [k for k, c in enumerate(aws_calls(calls)) if "Name=tag:attnbench-session," in c]
+
+
+def test_two_capacity_refusals_then_a_launch_in_the_third_zone(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES,
+                       "FAKE_RUN_REFUSE_ZONES": "ap-southeast-2b ap-southeast-2c"})
+    assert p.returncode == 0, p.stderr
+    assert _zones_tried(calls) == ["ap-southeast-2b", "ap-southeast-2c", "ap-southeast-2a"]
+    c = aws_calls(calls)
+    runs = [k for k, x in enumerate(c) if x.startswith("ec2 run-instances")]
+    reads = _confirm_reads(calls)
+    # an instance and a volume read after each refusal, before the next request
+    assert len(reads) == 4 and runs[0] < reads[0] < reads[1] < runs[1] < reads[2] < reads[3] < runs[2]
+    assert [c[k].split()[1] for k in reads] == ["describe-instances", "describe-volumes"] * 2
+    assert all("--region ap-southeast-2" in c[k] for k in reads)
+    assert "LAUNCH_ZONE=ap-southeast-2a" in p.stdout
+    assert "ZONES_REFUSED=ap-southeast-2b,ap-southeast-2c" in p.stdout
+    assert f"INSTANCE_ID={INSTANCE}" in p.stdout
+    sched = _one(c, f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression")
+    assert c.index(sched) > runs[2]
+    rec = [ln.split("\t")[1:] for ln in _record(tmp_path).read_text().splitlines()]
+    assert rec == [["REH", "window-open:sess-1", "220"], ["REH", INSTANCE, "220"],
+                   ["REH", "window-closed:sess-1:launched", "220"]]
+    assert "ap-southeast-2b ap-southeast-2c ap-southeast-2a (in this order" in p.stdout
+
+
+def test_three_capacity_refusals_stop_after_one_pass(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_RUN_REFUSE_ZONES": ZONES})
+    assert p.returncode == 1
+    assert _zones_tried(calls) == ["ap-southeast-2b", "ap-southeast-2c", "ap-southeast-2a"]
+    assert len(_confirm_reads(calls)) == 6
+    assert "every zone refused for capacity: ap-southeast-2b ap-southeast-2c ap-southeast-2a" in p.stderr
+    assert "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p.stdout
+    assert "INSTANCE_ID=" not in p.stdout
+    # Every refusal was confirmed by the session's tag: nothing may still exist.
+    assert "No instance was created: each of the 3 requests" in p.stderr and "An instance may" not in p.stderr
+    assert not any("create-schedule" in c and "hard-delete-i-" in c for c in aws_calls(calls))
+    assert [ln.split("\t")[2] for ln in _record(tmp_path).read_text().splitlines()] == [
+        "window-open:sess-1", "window-closed:sess-1:refused"]
+
+
+@pytest.mark.parametrize("error", ["InvalidParameterValue", "Unsupported", "UnauthorizedOperation",
+                                   "InsufficientInstanceCapacityX"])
+def test_a_non_capacity_error_stops_at_once(tmp_path, error):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_RUN_ERROR_ZONES": "ap-southeast-2b",
+                                             "FAKE_RUN_ERROR": error})
+    assert p.returncode == 1
+    assert _zones_tried(calls) == ["ap-southeast-2b"]
+    assert _confirm_reads(calls) == []
+    assert "an error other than" in p.stderr and "no other zone is tried" in p.stderr
+    assert "LAUNCH_RESULT" not in p.stdout
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"FAKE_STRAY_INSTANCE": "i-0aaaabbbbccccdddd"}, "the session has an instance"),
+    ({"FAKE_STRAY_VOLUME": "vol-0aaaabbbbccccdddd"}, "the session has a volume"),
+    ({"FAKE_LIST_FAIL": "1"}, "could not list the session's instances"),
+])
+def test_a_refusal_that_left_something_or_cannot_be_confirmed_stops(tmp_path, env, said):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, **env,
+                                             "FAKE_RUN_REFUSE_ZONES": "ap-southeast-2b"})
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert _zones_tried(calls) == ["ap-southeast-2b"]
+    assert "could not be confirmed" in p.stderr
+
+
+def test_the_policy_is_checked_again_before_each_zone(tmp_path):
+    """Three reads pass (the start, after the prompt, before 2b); the fourth,
+    before 2c, is the day after the last launch date: no request in 2c."""
+    seq = tmp_path / "today"
+    seq.write_text("2026-12-31\n2026-12-31\n2026-12-31\n2027-01-01\n")
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_TODAY_SEQ": str(seq),
+                                             "FAKE_RUN_REFUSE_ZONES": ZONES})
+    assert p.returncode == 1 and "after the last AWS" in p.stderr
+    assert _zones_tried(calls) == ["ap-southeast-2b"]
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"AWS_SESSION_AZS": "ap-southeast-2b ap-southeast-2b"}, "appears twice"),
+    ({"AWS_SESSION_AZS": "ap-southeast-2b us-east-1a"}, "not an availability zone of ap-southeast-2"),
+    ({"AWS_SESSION_AZS": "ap-southeast-2-per-1a"}, "Local Zone"),
+    ({"AWS_SESSION_AZS": "ap-southeast-4a"}, "other than"),
+    ({"AWS_SESSION_AZS": ZONES, "AWS_SESSION_AZ": "ap-southeast-2a"}, "not both"),
+    ({"AWS_SESSION_AZS": ZONES, "AWS_SUBNET_ID": "subnet-0123456789abcdef0"}, "not both"),
+])
+def test_a_bad_zone_list_is_refused_before_any_aws_call(tmp_path, env, said):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, **env})
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert calls == []
+
+
+def test_every_zone_in_the_list_must_offer_the_type(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env={**REH_ZONES, "FAKE_NOT_OFFERED": "1"})
+    assert p.returncode == 1 and "not offered in ap-southeast-2b" in p.stderr
+    assert not any("run-instances" in c for c in calls)
+    p, calls = _launch(tmp_path, "REH", env=REH_ZONES)     # the refusal above created nothing
+    offers = [c for c in aws_calls(calls) if "describe-instance-type-offerings" in c]
+    assert [re.search(r"Name=location,Values=(\S+)", c).group(1) for c in offers] == ZONES.split()
+
+
+def test_a_launch_in_the_first_zone_tries_no_other(tmp_path):
+    p, calls = _launch(tmp_path, "REH", env=REH_ZONES)
+    assert p.returncode == 0, p.stderr
+    assert _zones_tried(calls) == ["ap-southeast-2b"] and _confirm_reads(calls) == []
+    assert "LAUNCH_ZONE=ap-southeast-2b" in p.stdout and "ZONES_REFUSED" not in p.stdout
+
+
+def test_the_policy_script_names_the_capacity_error_once():
+    from _aws_fakes import SCRIPTS
+    text = (SCRIPTS / "_aws_launch_policy.sh").read_text()
+    assert text.count('AWS_CAPACITY_ERROR="InsufficientInstanceCapacity"') == 1
+    assert '"($AWS_CAPACITY_ERROR)"' in text
+
+
+# --- the retry window (the researcher's launch yes of 24 Nov 2026, fourth
+# rehearsal attempt: 2b, 2c and 2a again every 10 minutes for at most 3 hours,
+# on a no-capacity error only; the security group re-checked before each; from
+# the yes of 25 Nov 2026, the fifth attempt, every 5 minutes) ----------------
+def _window(tmp_path, minutes="180", **env):
+    clock = tmp_path / "clock"
+    clock.write_text(f"{NOW}\n")
+    e = {**REH_ZONES, "AWS_LAUNCH_WINDOW_MINUTES": minutes, "FAKE_CLOCK": str(clock)}
+    e.update(env)
+    return _launch(tmp_path, "REH", env=e)
+
+
+def _sleeps(calls):
+    return [int(c.split()[1]) for c in calls if c.startswith("sleep ")]
+
+
+def _sg_reads(calls):
+    return [c for c in aws_calls(calls) if c.startswith("ec2 describe-security-groups")]
+
+
+def _record_words(tmp_path):
+    return [ln.split("\t")[2] for ln in _record(tmp_path).read_text().splitlines()]
+
+
+def test_refusals_then_a_launch_inside_the_window(tmp_path):
+    """Pass 1: all three refused; pass 2, five minutes after the start: 2b and
+    2c refused, 2a launches."""
+    p, calls = _window(tmp_path, FAKE_RUN_REFUSE_FIRST="5")
+    assert p.returncode == 0, p.stderr
+    assert _zones_tried(calls) == ZONES.split() * 2
+    assert _sleeps(calls) == [300]
+    assert len(_confirm_reads(calls)) == 10            # an instance and a volume read per refusal
+    assert len(_sg_reads(calls)) == 6 and sum(c.startswith("curl ") for c in calls) == 6
+    c = aws_calls(calls)
+    sg = [k for k, x in enumerate(c) if x.startswith("ec2 describe-security-groups")]
+    runs = [k for k, x in enumerate(c) if x.startswith("ec2 run-instances")]
+    assert all(s + 1 == r for s, r in zip(sg, runs))   # the check just before each request
+    for said in ("LAUNCH_ZONE=ap-southeast-2a", "ZONES_REFUSED=ap-southeast-2b,ap-southeast-2c",
+                 "WINDOW_PASSES=2", "CAPACITY_REFUSALS=5", f"INSTANCE_ID={INSTANCE}",
+                 "retry window : 180 min, the zones again every 5 min"):
+        assert said in p.stdout, said
+    assert _record_words(tmp_path) == ["window-open:sess-1", INSTANCE, "window-closed:sess-1:launched"]
+
+
+def test_the_window_ends_after_three_hours_of_refusals(tmp_path):
+    """36 passes (0, 5, ..., 175 min), 108 refused requests, 35 waits; then
+    the stop, with nothing counted in the credit gate."""
+    p, calls = _window(tmp_path, FAKE_RUN_REFUSE_ZONES=ZONES)
+    assert p.returncode == 1
+    assert _zones_tried(calls) == ZONES.split() * 36
+    assert _sleeps(calls) == [300] * 35
+    assert "the retry window (180 min) ended" in p.stderr and "36 passes (108 refusals)" in p.stderr
+    assert "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p.stdout and "WINDOW_PASSES=36" in p.stdout
+    assert "No instance was created" in p.stderr and "An instance may" not in p.stderr
+    assert "INSTANCE_ID=" not in p.stdout
+    assert _record_words(tmp_path) == ["window-open:sess-1", "window-closed:sess-1:refused"]
+    p, _ = _launch(tmp_path, stdin="no\n")
+    assert "> Rs 0.00 planned so far" in p.stdout
+
+
+def test_the_window_ends_by_the_clock_when_passes_run_long(tmp_path):
+    """Each wait overruns by 25 minutes (a pass every 30 min): the window
+    still ends at 180 min, after the pass begun at 150."""
+    p, calls = _window(tmp_path, FAKE_RUN_REFUSE_ZONES=ZONES, FAKE_SLEEP_EXTRA="1500")
+    assert p.returncode == 1
+    assert len(_zones_tried(calls)) == 3 * 6 and "WINDOW_PASSES=6" in p.stdout
+
+
+def test_the_window_is_bounded_at_three_hours(tmp_path):
+    for bad in ("181", "240", "3h", "-1", "1.5"):
+        p, calls = _window(tmp_path, minutes=bad)
+        assert p.returncode == 1 and "AWS_LAUNCH_WINDOW_MINUTES" in p.stderr, bad
+        assert calls == [], bad
+
+
+def test_an_address_change_mid_window_stops_and_re_points_nothing(tmp_path):
+    """Pass 1 refused; before 2b in pass 2 the Mac's address has changed: the
+    window stops there, the group is not touched, and nothing is counted."""
+    seq = tmp_path / "ips"
+    seq.write_text(f"{MY_IP}\n" * 3 + "198.51.100.9\n")
+    p, calls = _window(tmp_path, FAKE_RUN_REFUSE_ZONES=ZONES, FAKE_MY_IP_SEQ=str(seq))
+    assert p.returncode == 1
+    assert _zones_tried(calls) == ZONES.split()
+    assert "no longer admits this Mac's current address" in p.stderr
+    assert "It was not re-pointed" in p.stderr and "LAUNCH_RESULT=SSH_SOURCE_NOT_ADMITTED" in p.stdout
+    assert not any(w in c for c in aws_calls(calls)
+                   for w in ("authorize-security-group", "revoke-security-group", "modify-security-group"))
+    assert MY_IP not in p.stdout + p.stderr and "198.51.100.9" not in p.stdout + p.stderr
+    assert _record_words(tmp_path) == ["window-open:sess-1", "window-closed:sess-1:stopped"]
+
+
+@pytest.mark.parametrize("env,said", [
+    ({"FAKE_CURL_FAIL": "1"}, "cannot read this Mac's public address"),
+    ({"FAKE_SG_FAIL": "1"}, "could not read the security group"),
+    ({"FAKE_SG_CIDRS": "198.51.100.0/24"}, "no longer admits"),
+    ({"FAKE_SG_CIDRS": "203.0.113.70/32"}, "no longer admits"),
+])
+def test_an_unadmitted_or_unreadable_source_stops_before_the_first_request(tmp_path, env, said):
+    p, calls = _window(tmp_path, **env)
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert _zones_tried(calls) == []
+
+
+def test_a_non_capacity_error_mid_window_stops_at_once_and_is_counted(tmp_path):
+    """Pass 1 refused; the first request of pass 2 fails with another error:
+    no other zone, no other pass, and the doubt is counted at the cap."""
+    p, calls = _window(tmp_path, FAKE_RUN_REFUSE_FIRST="3", FAKE_RUN_ERROR_AT="4",
+                       FAKE_RUN_ERROR="VcpuLimitExceeded")
+    assert p.returncode == 1
+    assert _zones_tried(calls) == ZONES.split() + ["ap-southeast-2b"]
+    assert "an error other than" in p.stderr and "LAUNCH_RESULT" not in p.stdout
+    assert _record_words(tmp_path) == ["window-open:sess-1", "unconfirmed", "window-closed:sess-1:stopped"]
+    p, _ = _launch(tmp_path, stdin="no\n")
+    assert "> Rs 220.00 planned so far" in p.stdout
+
+
+def test_no_window_is_one_pass_and_never_waits(tmp_path):
+    p, calls = _window(tmp_path, minutes="0", FAKE_RUN_REFUSE_ZONES=ZONES)
+    assert p.returncode == 1 and _sleeps(calls) == [] and len(_zones_tried(calls)) == 3
+    assert "retry window" not in p.stdout
+
+
+def test_the_policy_script_fixes_the_interval_and_the_window_bound():
+    from _aws_fakes import SCRIPTS
+    text = (SCRIPTS / "_aws_launch_policy.sh").read_text()
+    assert text.count("AWS_RETRY_INTERVAL_MINUTES=5\n") == 1
+    assert text.count("AWS_RETRY_WINDOW_MAX_MINUTES=180\n") == 1

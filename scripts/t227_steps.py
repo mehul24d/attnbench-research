@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -57,6 +58,25 @@ STEPS = ("t21_t220", "zoo", "link", "launch_queue", "nsys", "replay", "probe",
          "assert_gate", "graph_breaks", "null_kernel", "figure1")
 
 EXPECTED_INSTANCE_TYPE = "g2-standard-8"
+# The L4 hosts a T2.20 preflight accepts, by name: (cloud, instance type). The
+# default is P1's; a session names another with ATTNBENCH_EXPECTED_HOST, and
+# only a host in this table is accepted (adviser's rulings of 23 Nov 2026: P3
+# is AWS's g6.2xlarge; this file is outside the timed-path pin, so the pin is
+# unchanged).
+L4_HOSTS = {"gcp:g2-standard-8": ("gcp", EXPECTED_INSTANCE_TYPE),
+            "aws:g6.2xlarge": ("aws", "g6.2xlarge")}
+EXPECTED_HOST_ENV = "ATTNBENCH_EXPECTED_HOST"
+DEFAULT_HOST = "gcp:g2-standard-8"
+
+
+def expected_host() -> tuple[str, str]:
+    """(cloud, instance type) the preflight requires: P1's unless the
+    environment names another host of `L4_HOSTS`; any other name is refused."""
+    name = os.environ.get(EXPECTED_HOST_ENV) or DEFAULT_HOST
+    if name not in L4_HOSTS:
+        raise StepFailed(f"{EXPECTED_HOST_ENV}={name!r} is not an accepted L4 host "
+                         f"({sorted(L4_HOSTS)})")
+    return L4_HOSTS[name]
 # A row name (`attnbench.provisioning`), which is what a row carries. The
 # launch name "STANDARD" failed every real t21_t220 (Shakedown 2, 31 Oct 2026).
 from attnbench.provisioning import ON_DEMAND as EXPECTED_PROVISIONING  # noqa: E402
@@ -196,7 +216,8 @@ def step_t21_t220(args) -> dict:
     integrity = provenance.stamp_integrity_problems(row)
     if not args.dry_run:
         problems += integrity
-        expect = {"cloud_provider": "gcp", "instance_type": EXPECTED_INSTANCE_TYPE,
+        cloud, itype = expected_host()
+        expect = {"cloud_provider": cloud, "instance_type": itype,
                   "provisioning_model": EXPECTED_PROVISIONING,
                   "provisioning_model_problem": None}
         for k, v in expect.items():

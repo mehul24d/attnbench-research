@@ -60,3 +60,17 @@ def test_nothing_is_ever_deleted(tmp_path):
         verb = c.split()[1]
         assert verb.startswith(("describe-", "list-", "get-")), c
     assert not any("UNHANDLED" in c for c in calls)
+
+
+def test_the_zones_covered_and_a_recently_terminated_instance_zone_are_listed(tmp_path):
+    """Region-wide listings cover every zone; the zones are named, and the
+    study's recently terminated instance shows the zone it ran in. Neither
+    is an error (the researcher's yes of 23 Nov 2026, zone fallback)."""
+    p, calls = run(SCRIPT, [], tmp_path, extra={"FAKE_TERMINATED_REGION": "ap-south-1",
+                                                "FAKE_ZONE": "ap-south-1b"})
+    assert p.returncode == 0, p.stdout
+    assert "ap-south-1a, ap-south-1b, ap-south-1c" in p.stdout     # a separator (23 Nov 2026: none)
+    assert f"{INSTANCE}\tg6.xlarge\tap-south-1b\tsess-1" in p.stdout
+    assert "Clean -- no instances" in p.stdout
+    q = [c for c in calls if "describe-instances" in c and "Values=terminated" in c]
+    assert len(q) == 3 and all("tag-key,Values=attnbench-session" in c for c in q)

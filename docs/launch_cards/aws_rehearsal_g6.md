@@ -1,4 +1,4 @@
-# Launch card: the `g6.xlarge` rehearsal (AWS Sydney, from the built AMI)
+# Launch card: the L4 rehearsal (AWS Sydney, from the built AMI; `g6.2xlarge` from the fourth attempt)
 
 Prepared 23 Nov 2026 (adviser's task of 23 Nov 2026, item 4a). **Not launched; for the
 adviser's approval.** No step below has run on a GPU, so every time and cost is an
@@ -15,11 +15,25 @@ three are checked:
 |---|---|---|---|
 | 1 | GPU and driver | `nvidia-smi` lists exactly one `NVIDIA L4`; the driver's CUDA version is at least 12.9 (torch `2.9.1+cu129`); `torch.cuda.is_available()`; compute capability (8, 9); one bf16 matmul runs | a base-image driver that does not suit the L4 shows only on a GPU (`docs/launch_cards/aws_env_build_m7a.md`) |
 | 2 | The `fa2` arm | `flash_attn` 2.8.3.post1 imports from the image; the repository's `fa2` backend (`attnbench/backends/impls.py`, a K2 candidate in `attnbench/dense_selection.py`) passes the dense selection's correctness check against the reference at 2048 and 8192 tokens, batch 1, status `correct` | flash-attn was built for `80;90` (its `setup.py` takes no 89), so the L4 runs the sm_80 cubin; untested on an sm_89 card until now |
-| 3 | One dense cell | the `dense` arm at 8192 tokens, batch 1 (P1's and P4's anchor), through T3.1's harness, eager, 3 warm-ups then the session's repeats; finite times, the strict stamp written | the harness on this image and host end to end, once |
+| 3 | One dense cell | T3.1's step 3, `dense_select`, on the one cell of `configs/aws/rehearsal_g6.json` (the `dense` arm at 8192 tokens, batch 1, P1's and P4's anchor; P1's session values): the session floor's dense pre-pass, then K2's timed rounds for every L4 candidate, `fa2` among them; `complete`, a candidate chosen | the harness, the model and a RULER prompt on this image and host, once |
+| 4 | Host components, one cell | T3.1's step 5, `host_components`, on the same cell (adviser's task of 23 Nov 2026, second): recording, the null-kernel pass, the bare timer, the residual; `bare_prices.json` written; its time | P3's gate reads step 5, its longest block |
 
-Check 3's time is printed beside P1's anchor (T3.2d) for a sanity read only. It is not a
-measurement for any hypothesis, it is not banked as one, and it does not gate P3: the
-`g6.xlarge` host (4 vCPU, 16 GiB) is not P3's `g6.2xlarge` (8 vCPU, 32 GiB).
+Checks 3 and 4 are timed and their times set beside T3.2d's for the same cell (step 5:
+51.9 s for `dense_d1_L8192_b1`, 4,729.9 s for all 35 cells) for a sanity read and for
+re-estimating P3's hours. They are not a measurement for any hypothesis, are not banked as
+one, and do not gate P3. Up to the third attempt the host was `g6.xlarge` (4 vCPU, 16 GiB);
+from the fourth it is P3's own `g6.2xlarge` (8 vCPU, 32 GiB, the same AMD EPYC 7R13), so
+the times are on P3's host type.
+
+**What runs, and what does not (plan defaults, flagged).** On the instance,
+`scripts/aws_rehearsal_instance.sh` runs checks 1 to 4 in order and stops at the first
+failure (`scripts/aws_rehearsal_checks.py` for 1 and 2; `scripts/t31_steps.py` for 3 and
+4, with `--config configs/aws/rehearsal_g6.json`). T3.1's `preflight` is not run: its T2.20
+check expects GCP's `g2-standard-8` and would refuse this host (a P3 build item). Before
+the checks the driver bootstraps the image as `gcp_bootstrap_instance.sh` steps 1 to 4 and 8
+do (RULER data verified locally, copied, verified there; wonderwords 2.2.0 and nltk 3.9.1;
+the tree still clean). The model's weights come from Hugging Face at the first load; the
+snapshot is recorded.
 **Plan default, flagged:** check 1 also imports `block_sparse_attn` and XAttention, untimed
 (under a minute), because a missing library on the GPU host would otherwise show first in P3.
 
@@ -27,35 +41,44 @@ measurement for any hypothesis, it is not banked as one, and it does not gate P3
 
 | | |
 |---|---|
-| Type | `g6.xlarge` (1 x L4 24 GB, AMD EPYC 7R13, 4 vCPU, 16 GiB), on-demand |
-| Region | `ap-southeast-2` (any of 2a, 2b, 2c; all three offer `g6.xlarge`, read 23 Nov 2026) |
+| Type | From the fourth attempt, `g6.2xlarge` (1 x L4 24 GB, AMD EPYC 7R13, 8 vCPU, 32 GiB), on-demand, P3's type (the researcher's launch yes of 24 Nov 2026). Attempts 1 to 3: `g6.xlarge` (4 vCPU, 16 GiB) |
+| Region | `ap-southeast-2`. From the third attempt: 2b, then 2c, then 2a, the next only after an `InsufficientInstanceCapacity` refusal; from the fourth, that pass again every 10 minutes for at most 3 hours; from the fifth, every 5 minutes, in at most two windows (below) |
 | Image | `ami-096c5dc30364c9041` |
-| Quota | Running On-Demand G and VT: 8 vCPU (read 23 Nov 2026); this uses 4 |
+| Quota | Running On-Demand G and VT: 8 vCPU (read 23 Nov 2026); `g6.2xlarge` uses all 8, so nothing else of the G family can run beside it |
 | Root volume | 200 GB gp3, encrypted, deleted with the instance |
-| Rate | **₹118.41/h** all-in: (the instance at $1.0464/h, SKU `N843N2ZTJ23RC5DC`, + 200 GB gp3 at $0.096/GB-month over 730 h) x 1.15 x ₹95.99; both rates read from the AWS Price List API for Sydney on 23 Nov 2026 (terms effective 1 Nov 2026) |
+| Rate | **₹143.21/h** all-in: (`g6.2xlarge` at $1.27107/h, SKU `A3JD2DB89TQHRAA7`, + 200 GB gp3 at $0.096/GB-month over 730 h) x 1.15 x ₹95.99, the P3 card's rates (`docs/launch_cards/aws_p3_g6.md`), read from the AWS Price List API for Sydney on 23 Nov 2026. Attempts 1 to 3: ₹118.41/h (`g6.xlarge` at $1.0464/h, SKU `N843N2ZTJ23RC5DC`) |
 
 ## Time and cost
 
 | | Minutes |
 |---|---|
-| Launch to SSH, the image's environment check | 10 |
-| Check 1, GPU and driver | 3 |
-| Check 2, the `fa2` arm | 7 |
-| Check 3, one dense cell | 10 |
+| Launch to SSH | 8 |
+| Deploy and bootstrap | 4 |
+| Check 1, GPU and driver | 2 |
+| Check 2, the `fa2` arm (the model's first load included) | 6 |
+| Check 3, one dense cell | 5 |
+| Check 4, host components on one cell (P1: 52 s; doubled, then the harness load) | 3 |
 | Pull, teardown, cleanup check | 10 |
-| Margin | 5 |
-| **Planned** | **45** (about ₹89) |
+| Margin | 7 |
+| **Planned** | **45** (about ₹107) |
 
-**Cap ₹180** (the adviser's figure); the in-guest halt **stops** the instance at **75 min**
-(₹148); the hard-delete schedule terminates it at **90 min** (worst case ₹178, inside the
-cap). On any failed check: stop, pull the logs, tear down and report; nothing is retried in
-the session.
+**Cap ₹220**, under the researcher's ₹250 (24 Nov 2026); the in-guest halt **stops** the
+instance at **75 min** (₹179); the hard-delete schedule terminates it at **90 min** (worst
+case ₹143.21 x 1.5 h = ₹214.82, ₹215 rounded up, inside the cap). The halt did not need
+shortening: the worst case runs to the hard delete, and 90 minutes fits. Attempts 1 to 3:
+cap ₹180 (worst case ₹178). On any failed check: stop, pull the logs, tear down and report;
+nothing is retried in the session. The time before a launch, in the retry window, bills
+nothing: a refused request creates nothing.
 
 ## Before the launch yes is asked
 
-- The launcher has no rehearsal target yet: `scripts/aws_launch_session.sh` knows P3, P5,
-  P6, P7, ENV and PROBE. A target for `g6.xlarge` (with the rate, cap and limits above) and
-  its tests are built first, then a CPU dry run of the driver.
+- **Approved 23 Nov 2026** (adviser's task of 23 Nov 2026, second, item 2): launch once the
+  pre-launch pass succeeds; one attempt.
+- The launcher's `REH` target (`g6.xlarge`), with the card's settings tested
+  (`tests/test_aws_launch_session.py::test_the_rehearsal_cards_settings`: worst case ₹178
+  under the ₹180 cap; ₹177 refused before any AWS call); the instance script and the checks'
+  verdicts tested on the CPU (`tests/test_aws_rehearsal.py`), and steps 3 and 5 run on the
+  CPU behind the stubbed GPU boundary with this config.
 - The SSH preflight (the security group admits this Mac's current address) runs before the
   launch; on 22 Nov 2026 the address changed between sessions.
 - The credit gate passes (credits x ₹95.99 above the caps in the off-repo launch record plus
@@ -67,3 +90,155 @@ the session.
 
 Instance terminated, no volume left, the Sydney sweep read back clean. The AMI and its
 snapshot stay for P3 (and P6, if it runs); their deletion is on the ledger's cleanup list.
+
+## The run, 23 Nov 2026 (one attempt; failed at check 2)
+
+Launched 10:51 UTC from `d193825` by the researcher with the off-repo driver. The SSH
+preflight, the credit gate ($158.39 left, ₹15,204 > ₹1,385 planned + ₹180), the trust
+read-back and the dry registration passed; SSH at about +1 min; deploy and bootstrap (RULER
+data copied and verified, wonderwords and nltk) passed by +6 min.
+
+- **Check 1 passed** (215 s): one `NVIDIA L4`, driver 595.112.07 with CUDA 13.2, torch
+  `2.9.1+cu129` sees capability (8, 9), the bf16 matmul is finite; flash-attn 2.8.3.post1,
+  block-sparse-attention and `xattn.src.Xattention` import; flash-attn's library holds
+  `sm_80` and `sm_90` only.
+- **Check 2 failed in 2.2 s on a defect of this rehearsal's own code**:
+  `aws_rehearsal_checks.py fa2` built `Harness(device="cuda")` without the required
+  `dry_run`, so no fa2 kernel ran. Checks 3 and 4 did not run. No test ran that path; one
+  does now (`test_the_fa2_check_builds_a_real_harness_and_screens_both_lengths`, watched to
+  fail on the old call), and the call is fixed.
+- The driver's teardown could not reach the EC2 endpoint (`Could not connect to the
+  endpoint URL`, then the account pin's credential check failed: a transient network
+  failure on this Mac). Re-run at once, the teardown terminated the instance at 11:09 UTC,
+  18 min from launch, about ₹36; Sydney read back with no instance, volume, address or
+  schedule. The in-guest halt (75 min) and the hard delete (90 min) bounded it meanwhile.
+
+So whether sm_80 code runs on the L4 is **still unconfirmed by a run** (the cubins are there),
+and P3's hours are not re-estimated: no step-5 time was measured. A second attempt needs a
+launch yes; the driver now also retries the teardown on a failure (below).
+
+## The second attempt, 23 Nov 2026 (no capacity, twice; nothing launched)
+
+The researcher re-pointed the security group to this Mac's current /32 and ran the driver
+at 18:03 UTC from `f3d59ac`. The driver ran again, unchanged, at 18:13 UTC from `c8605c4`.
+Both times the SSH preflight, the credit gate and the dry registration passed, and then
+`RunInstances` was refused with `InsufficientInstanceCapacity` for `g6.xlarge` in
+`ap-southeast-2a`. AWS named 2b and 2c as having capacity. No instance id came back, and the
+Sydney listing showed no instance, volume, address or schedule. The spend was ₹0. The launch
+record holds both requests at ₹180 until they are struck.
+
+## The third attempt: the zone fallback (the researcher's launch yes of 23 Nov 2026)
+
+The launcher takes the ordered list `AWS_SESSION_AZS="ap-southeast-2b ap-southeast-2c
+ap-southeast-2a"`. The fallback is `aws_launch_across_zones` in
+`scripts/_aws_launch_policy.sh`, shared with P3 and P6. It makes one pass through the zones,
+with no loop. The launch policy is checked again before each zone. The next zone is tried only
+when three things hold: the refusal is `InsufficientInstanceCapacity`, no instance id came
+back, and the session's tag finds no instance and no volume anywhere in the region. Any other
+error, a stray instance or volume, or a read that fails stops at once. If all three zones
+refuse, the launch stops (`LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY`).
+
+- Each zone tried is a create request, so the launch record holds it at ₹180. The worst case
+  of a session is unchanged: only one instance can be created.
+- The launcher prints `LAUNCH_ZONE=` and `ZONES_REFUSED=`. The teardown finds the instance by
+  id in any zone and prints its zone, which is also written to `session_cost.txt`. The cleanup
+  check's listings are region-wide; it names the zones they cover and lists the study's
+  recently terminated instances with their zone.
+- Subnets, read only on 23 Nov 2026: the security group is in the default VPC. Each of 2a, 2b
+  and 2c has a default subnet that is available, gives a public address at launch, has free
+  addresses, routes 0.0.0.0/0 to an internet gateway, and has a network ACL that allows tcp/22
+  in and ephemeral ports out. With `--placement` alone, EC2 uses that subnet. The subnet ids are
+  recorded off-repo, and the driver records whether the instance's subnet is the recorded one.
+  The hard-delete schedule is regional (the schedule group `default`), so it does not depend on
+  the zone.
+- Tests on the fake `aws` (`tests/test_aws_launch_session.py`) cover:
+  - two refusals, then a launch in 2a;
+  - three refusals, after which it stops after one pass;
+  - a non-capacity error, which stops at once;
+  - a stray instance or volume, or a failed read, which stops;
+  - the policy read before each zone.
+
+  The driver ran end to end on the fake remote with the real launcher. The timed-path pin is
+  unchanged.
+
+## The third attempt, 23 Nov 2026 (no capacity in any zone; nothing launched)
+
+The researcher ran the driver at 21:14 UTC from `01da24e`. The SSH preflight, the credit gate
+and the dry registration passed. `RunInstances` was refused with `InsufficientInstanceCapacity`
+for `g6.xlarge` in 2b, then 2c, then 2a, within 17 s. After each refusal the launcher confirmed
+that no instance and no volume of the session existed, and it stopped after one pass. Sydney read
+back with no instance, volume, address or schedule. The spend was ₹0. The launch record holds the
+three requests at ₹180 each until they are struck. The fallback behaved as tested. Checks 1 to 4
+are still unrun on a GPU, and P3's hours are not re-estimated. Another attempt needs a ruling.
+
+## The fourth attempt: `g6.2xlarge` and the retry window (the researcher's launch yes of 24 Nov 2026)
+
+- **Type and price.** `g6.2xlarge`, P3's type, at ₹143.21/h; cap ₹220, halt 75 min, hard
+  delete 90 min (above). The G quota of 8 vCPU is used in full.
+- **The window.** `aws_launch_window` in `scripts/_aws_launch_policy.sh`, used by the
+  launcher with `AWS_LAUNCH_WINDOW_MINUTES` (0 to 180; the rehearsal sets 180). A pass is the
+  third attempt's: 2b, 2c, 2a, the next only after an `InsufficientInstanceCapacity` refusal
+  with no instance id and nothing found by the session's tag. When a whole pass is refused,
+  the next starts 10 minutes after the last one started, while the window has not ended: at
+  most 18 passes (0, 10, ..., 170 minutes) and 54 requests. Any other error stops at once.
+- **The address check.** Before every request the launcher reads this Mac's public address
+  and the security group's port-22 ranges; unless the group admits that address as a /32,
+  the window stops (`LAUNCH_RESULT=SSH_SOURCE_NOT_ADMITTED`). The group is never re-pointed by
+  the launcher or the driver. The address is never printed.
+- **The launch record.** One record per window: a `window-open:NAME` line, then a
+  `window-closed:NAME:launched|refused|stopped` line. A real line (`i-...`) is written only
+  when an instance id exists. A confirmed capacity refusal writes nothing and is not counted
+  by the credit gate; a stop without that confirmation writes `unconfirmed`, which counts at
+  the cap; a window never closed counts at its cap. Lines are never rewritten: a dated
+  `VOID` line (six fields, naming the earlier line exactly) uncounts one. The five `no-id`
+  lines of 23 Nov 2026 were voided that way on 24 Nov 2026.
+- **The driver** (off-repo, `reh_driver.sh`) streams the launcher's output into the record
+  folder (`launcher.log`) while the window runs, and records the passes and refusals in
+  `placement.txt`.
+- **Tests on the fake `aws`** (`tests/test_aws_launch_session.py`): refusals then a launch
+  in the second pass; the window ending after 18 passes, and by the clock when the waits
+  run long; the bound of 180 minutes; the address changing mid-window (stops, touches no
+  rule); an address or group that cannot be read; a non-capacity error in the second pass
+  (stops, counted); the VOID and window lines in the credit gate. The driver ran end to end
+  on the fake remote with the real launcher in the same four cases. The timed-path pin is
+  unchanged.
+
+## The fourth attempt ran (24 Nov 2026)
+
+The researcher ran the driver at 17:37 UTC from `035c8c1`. The reads before it: Sydney's G and
+VT Spot quota is 0 vCPU (on-demand 8); Cost Explorer showed every service line covered 100% by
+credits. The window ran its full 180 minutes: 18 passes, and `RunInstances` was refused with
+`InsufficientInstanceCapacity` for `g6.2xlarge` in 2b, 2c and 2a in every pass, 54 refusals.
+After each one the launcher confirmed that no instance and no volume of the session existed;
+the address check passed before every request. Nothing was created and the spend was ₹0. The
+launch record closed the window as `refused`, so the gate counts nothing for it. Sydney read back
+with no instance, volume, address or schedule; the cleanup check's other 16 regions cannot be
+listed (the org SCP), so it reads INCOMPLETE. Checks 1 to 4 are still unrun on a GPU.
+
+## The fifth attempt: a pass every 5 minutes, in two windows (the researcher's launch yes of 25 Nov 2026)
+
+- **The pass.** As the fourth attempt, but the next pass starts 5 minutes after the last one
+  started (`AWS_RETRY_INTERVAL_MINUTES=5`): a 180-minute window has at most 36 passes and 108
+  requests. Capacity refusals only; the address check before every request; never re-pointed.
+- **Two windows at most**, one in Sydney's evening and one in its deep night, both before
+  18:30 UTC on 28 Nov 2026 (05:30 on 29 Nov in Sydney, AEDT, UTC+11), the plan's cutoff for P3.
+  The driver takes the window's name (`evening` or `night`) and refuses to start outside its
+  hours in Sydney (evening: a start from 17:00 to 21:59; night: 23:00 to 03:59, **plan
+  defaults, flagged**), or after the cutoff; a window that would run past the cutoff is
+  shortened to end at it.
+- **₹250 in total.** One session's cap is ₹220 (worst case ₹215), so two sessions could pass
+  ₹250: the second window runs only when the first created nothing. The driver keeps an
+  off-repo ledger of the two windows (`~/.attnbench/reh_attempt5_windows.tsv`: a start line, an
+  end line saying `NOTHING_CREATED`, `LAUNCHED <id>` or `UNCLEAR`) and refuses a window whose
+  name has run, a third window, and any window after one that did not end `NOTHING_CREATED`.
+  Expected if it launches: about ₹107 (45 min).
+- **The launcher's closing words.** After a window of confirmed refusals, or a stop at the
+  address check, it now says that no instance was created; it points at the cleanup check
+  only when an instance cannot be ruled out (another error than a capacity refusal).
+- **Tests.** On the fake `aws`: the window of 36 passes and 108 refusals with 35 waits of
+  300 s, a launch in the second pass after 300 s, the clock bound, the closing words (a
+  mutation back to 10 minutes and one restoring the old words were both caught). The driver on
+  the fake remote with the real launcher: an evening window of refusals, then a night window
+  launching in pass 2 (DONE OK); a third window, a window outside its hours, one after the
+  cutoff, one after a window that launched, and one without a name, all refused before any
+  request; a night window at 03:30 Sydney on 29 Nov shortened to 120 minutes (24 passes).
