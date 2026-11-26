@@ -70,6 +70,7 @@ exec env -i HOME="$FAKE_HOME" USER=ubuntu LANG=en_US.UTF-8 \
   ATTNBENCH_PYTHON="$FAKE_PY" FAKE_RUN="$FAKE_RUN" FAKE_ROOT="$FAKE_ROOT" FAKE_VPY="$FAKE_VPY" \
   FAKE_P1_HOST="$FAKE_P1_HOST" FAKE_HOST_SCALE="${FAKE_HOST_SCALE:-1.05}" \
   FAKE_FAIL_STEP="${FAKE_FAIL_STEP:-}" FAKE_STEP_SLEEP_S="${FAKE_STEP_SLEEP_S:-0}" \
+  FAKE_BACKEND_FAIL="${FAKE_BACKEND_FAIL:-}" \
   ATTNBENCH_P3_SHUTDOWN_SCHEDULED="$FAKE_RUN/shutdown_scheduled" ATTNBENCH_P3_BOOT_EPOCH="$FAKE_BOOT_EPOCH" \
   ATTNBENCH_P3_WATCH_S=0.5 \
   bash -c "$cmd"
@@ -136,7 +137,7 @@ echo "curl $*" >> "$FAKE_RUN/aws_calls.log"; cat "$FAKE_RUN/my_ip"
 # The launcher's stand-in: what the real one prints, and every setting it was given.
 FAKE_LAUNCH = r'''#!/usr/bin/env bash
 env | grep -E '^AWS_(SESSION|RATE|COST|HALT|MAX_RUN|LAUNCH_WINDOW|AMI)' | sort > "$FAKE_RUN/launch_env.txt"
-read -r typed; echo "typed=$typed" >> "$FAKE_RUN/launch_env.txt"
+read -r typed; echo "typed=$typed" >> "$FAKE_RUN/launch_env.txt"; echo "args=$*" >> "$FAKE_RUN/launch_env.txt"
 echo "Pass 1 of at most 36 (window 180 min, a pass every 5 min)."
 echo "WINDOW_PASSES=${FAKE_PASSES:-2}"
 echo "CAPACITY_REFUSALS=${FAKE_REFUSALS:-3}"
@@ -176,8 +177,19 @@ exec "$FAKE_VPY" "$@"
 ''',
 }
 
-SITECUSTOMIZE = '''"""The fake remote: t31_session's `scripts/t31_steps.py STEP` runs the stub."""
-import os, runpy, sys
+SITECUSTOMIZE = '''"""The fake remote: t31_session's `scripts/t31_steps.py STEP` runs the stub, and
+P6's `scripts/p6_backend_check.py` writes a fake report (failed when
+FAKE_BACKEND_FAIL is set; no GPU here)."""
+import json, os, runpy, sys
+if sys.argv and sys.argv[0].endswith("scripts/p6_backend_check.py") and os.environ.get("FAKE_STUB"):
+    out = sys.argv[sys.argv.index("--out") + 1]
+    bad = os.environ.get("FAKE_BACKEND_FAIL")
+    rep = {"fake": True, "gpu": {"name": "NVIDIA H100 80GB HBM3 (fake)"}, "priced_dense_kernel": "sdpa_flash",
+           "problems": [bad] if bad else [], "passed": not bad}
+    open(out, "w").write(json.dumps(rep) + "\\n")
+    print(("P6_BACKEND_CHECK FAILED: " + bad) if bad else "P6_BACKEND_CHECK PASSED (fake)")
+    sys.stdout.flush()
+    os._exit(1 if bad else 0)
 if sys.argv and sys.argv[0].endswith("scripts/t31_steps.py") and os.environ.get("FAKE_STUB"):
     stub = os.environ.pop("FAKE_STUB")
     sys.argv[0] = stub
@@ -203,7 +215,7 @@ out, session = Path(a.out), Path(a.session)
 out.mkdir(parents=True, exist_ok=True)
 time.sleep(float(os.environ.get("FAKE_STEP_SLEEP_S", "0")))
 cfg = json.loads(Path(a.config).read_text())
-assert cfg["pairing"] == "P3", cfg["pairing"]
+assert cfg["pairing"] in ("P3", "P6"), cfg["pairing"]
 findings = {"stub": a.step}
 sys.path.insert(0, os.getcwd())
 
@@ -232,9 +244,10 @@ if a.step == "host_components":
     findings["cells"] = len(list(out.glob("*/bare_prices.json")))
 elif a.step == "predict":
     from attnbench.predict import commit as C
-    rec = json.dumps({"pairing": "P3", "stub": True, "at": datetime.now(timezone.utc).isoformat()}).encode()
-    p = out / "prediction_P3_stub.json"; p.write_bytes(rec)
-    side = out / "prediction_P3_stub.json.sha256"; side.write_text(hashlib.sha256(rec).hexdigest() + "\n")
+    pn = cfg["pairing"]
+    rec = json.dumps({"pairing": pn, "stub": True, "at": datetime.now(timezone.utc).isoformat()}).encode()
+    p = out / f"prediction_{pn}_stub.json"; p.write_bytes(rec)
+    side = out / f"prediction_{pn}_stub.json.sha256"; side.write_text(hashlib.sha256(rec).hexdigest() + "\n")
     receipt = C.sync_prediction(C.CommittedFile(p, side, hashlib.sha256(rec).hexdigest()), C.GsutilStore(),
                                 f"{os.environ['ATTNBENCH_BUCKET']}/{cfg['prediction_prefix']}/{session.name}")
     (out / "receipt.json").write_text(json.dumps(receipt.to_dict()))
@@ -275,7 +288,7 @@ def repo_copy(dest: Path) -> Path:
     return dest
 
 
-def build(tmp: Path, **opts) -> dict:
+def build(tmp: Path, halt_min: int = 473, **opts) -> dict:
     """The fake remote in `tmp`; returns the paths and the environment."""
     fr = tmp / "fr"
     run = tmp / "run"
@@ -301,10 +314,10 @@ def build(tmp: Path, **opts) -> dict:
         f'export ATTNBENCH_AWS_ACCOUNT=000000000000 AWS_SSH_KEY="{key}" AWS_SECURITY_GROUP_ID=sg-0fake\n')
     (run / "my_ip").write_text(MY_IP + "\n")
     (run / "sg_cidrs").write_text(f"{MY_IP}/32\n")
-    # The launcher's user data: the planned halt, pending from boot (+473 min).
+    # The launcher's user data: the planned halt, pending from boot (+473 min; P6 +312).
     # The fake `sudo` only records, so it stays the pending shutdown throughout.
     boot = int(time.time())
-    (run / "shutdown_scheduled").write_text(f"USEC={(boot + 473 * 60) * 1_000_000}\nMODE=poweroff\n")
+    (run / "shutdown_scheduled").write_text(f"USEC={(boot + halt_min * 60) * 1_000_000}\nMODE=poweroff\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("P3_", "AWS_", "FAKE_"))}
     env.update({
         "PATH": f"{fr / 'bin_local'}:{env['PATH']}", "TMPDIR": str(run),
@@ -324,8 +337,8 @@ def build(tmp: Path, **opts) -> dict:
     return {"repo": repo, "run": run, "home": home, "env": env}
 
 
-def run_driver(fake: dict, timeout: float = 240) -> subprocess.CompletedProcess:
-    p = subprocess.run(["bash", str(fake["repo"] / "scripts" / "aws_p3_driver.sh")],
+def run_driver(fake: dict, *args: str, timeout: float = 240) -> subprocess.CompletedProcess:
+    p = subprocess.run(["bash", str(fake["repo"] / "scripts" / "aws_p3_driver.sh"), *args],
                        cwd=fake["repo"], env=fake["env"], capture_output=True, text=True,
                        timeout=timeout)
     time.sleep(0.2)      # the driver's log pipe (sed) drains after it exits
@@ -333,7 +346,7 @@ def run_driver(fake: dict, timeout: float = 240) -> subprocess.CompletedProcess:
 
 
 def rec_dir(fake: dict) -> Path:
-    recs = sorted((fake["run"] / "rec").glob("aws_p3_g6_*Z"))
+    recs = sorted((fake["run"] / "rec").glob("aws_p[36]_*Z"))
     assert len(recs) == 1, recs
     return recs[0]
 

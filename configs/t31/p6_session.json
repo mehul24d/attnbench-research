@@ -1,0 +1,75 @@
+{
+ "_comment": "P6 (AMD EPYC 7R13 + H100, AWS p5.4xlarge, Sydney; EXPLORATORY, Appendix A 21 Nov 2026; card docs/launch_cards/aws_p6_p5.md; the researcher's task of 26 Nov 2026 after P3's push, item 2). P3's file (configs/t31/p3_session.json) with the pairing, the card and the prediction prefix changed, nothing else: P1's grid and arms at the lock's values (the T4.1 items null here and filled from docs/lock_values.json; the four session values the lock holds for P2 and P4 alone, identical for both, copied as for P3), so P6's 35 cells are P4's and P3's one for one. Card H100: K2's planned candidates include FA3 (dense_selection.planned_candidates). Nothing about the estimators, the pricing or the matching rules is changed. The delay_injection block is P3's and is not run on P6: block 3 ends at postflight (scripts/aws_p3_instance.sh), as P4 ran no delay injection.",
+ "pairing": "P6",
+ "card": "H100",
+ "model": "primary",
+ "lengths": null,
+ "batches": null,
+ "arms": [
+  "dense",
+  "oracle",
+  "meanpool",
+  "xattention",
+  "xattention_noassert"
+ ],
+ "densities": null,
+ "gt_groups": {
+  "eager": [
+   "dense",
+   "oracle",
+   "meanpool",
+   "xattention",
+   "xattention_noassert"
+  ]
+ },
+ "reps": 10,
+ "warmup": 3,
+ "max_rerun_rounds": null,
+ "resolution_floor_ms": null,
+ "dense_rounds": 5,
+ "flag_reasons": null,
+ "sampler_interval_s": 0.1,
+ "prediction_prefix": "predictions/P6",
+ "not_measured": [
+  {
+   "arm": "oracle",
+   "density": 0.5,
+   "length": 32768,
+   "batch": 1,
+   "reason": "not measured: host memory limit of P1's pinned machine (the drop fallback, every pairing; plan Appendix A, 2 Nov 2026)"
+  }
+ ],
+ "delay_injection": {
+  "_comment": "Gate A leg 3 (T2.25), declared 8 Nov 2026 before any run (adviser's ruling 1, fifth paste; Appendix A): the dense arm at 2048 tokens, batch 1 (the dense cell with the smallest absolute spread in T3.2a, median 121.3 ms, standard error of the median about 0.40 ms); every priced mechanism; counts chosen so the predicted increment at the top count is at least 10 times that standard error for every mechanism on T3.2a's priced dense cell (busy 17.1 to 17.8 ms at 64, idle 4.8 ms for event_synchronize at 4000 and 16 to 51 ms for the others); 10 timed repeats and 3 warm-ups per variant; payload 0.",
+  "arm": "dense",
+  "length": 2048,
+  "batch": 1,
+  "mechanisms": [
+   "synchronize",
+   "item",
+   "bool",
+   "copy_to_host_pinned",
+   "copy_to_host_pageable",
+   "event_synchronize",
+   "copy_from_host_pinned",
+   "copy_from_host_pageable"
+  ],
+  "counts": {
+   "busy": [
+    0,
+    16,
+    32,
+    64
+   ],
+   "idle": [
+    0,
+    1000,
+    2000,
+    4000
+   ]
+  },
+  "reps": 10,
+  "warmup": 3,
+  "payload_bytes": 0
+ }
+}

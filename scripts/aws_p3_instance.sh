@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One block of P3 on the instance (AWS g6.2xlarge; docs/launch_cards/aws_p3_g6.md).
+# One block of P3 or P6 on the instance (AWS g6.2xlarge or p5.4xlarge;
+# docs/launch_cards/aws_p3_g6.md, docs/launch_cards/aws_p6_p5.md).
 # The Mac's driver (scripts/aws_p3_driver.sh) starts each block detached, pulls
 # and checks its steps when it ends, and only then starts the next:
 #
@@ -8,6 +9,15 @@
 #   b1  preflight, link, dense_select, probe      (--until probe)
 #   b2  host_components: the P6 gate's input      (--from host_components --until host_components)
 #   b3  device_components to delay_injection      (--from device_components)
+#
+# P6 (ATTNBENCH_P3_PAIRING=P6, which the driver passes; the researcher's task
+# of 26 Nov 2026 after P3's push, item 2): the same three blocks on
+# configs/t31/p6_session.json and the p5.4xlarge, with two differences. Block 1
+# starts with scripts/p6_backend_check.py, the image and dense-backend check:
+# a failure ends the block with exit 3 before any step runs, and the Mac's
+# driver then stops the session (the abort gate). Block 3 ends at postflight
+# (--until postflight): P4, the pairing P6 is read against, ran no delay
+# injection.
 #
 # T3.1's runner (scripts/t31_session.py) on configs/t31/p3_session.json, with no
 # bucket sync (--no-sync): results leave the instance only by the Mac's pulls.
@@ -51,16 +61,21 @@
 # the final re-pull's scp opened its connection in that window and was refused.
 set -uo pipefail
 BLOCK="${1:-}"; SESSION="${2:-}"
+PAIRING="${ATTNBENCH_P3_PAIRING:-P3}"
+case "$PAIRING" in
+  P3) CONFIG="configs/t31/p3_session.json"; HOST="aws:g6.2xlarge"; B3_UNTIL="" ;;
+  P6) CONFIG="configs/t31/p6_session.json"; HOST="aws:p5.4xlarge"; B3_UNTIL="--until postflight" ;;
+  *) echo "REFUSING: ATTNBENCH_P3_PAIRING is '$PAIRING', not P3 or P6" >&2; exit 2 ;;
+esac
 case "$BLOCK" in
   push-halt) ARGS=(); SESSION="${SESSION:--}" ;;   # SESSION is the delete time here
   b1) ARGS=(--until probe) ;;
   b2) ARGS=(--from host_components --until host_components) ;;
-  b3) ARGS=(--from device_components) ;;
+  b3) ARGS=(--from device_components $B3_UNTIL) ;;
   *) echo "usage: aws_p3_instance.sh b1|b2|b3 SESSION | push-halt [DELETE_EPOCH]" >&2; exit 2 ;;
 esac
 [[ -n "$SESSION" ]] || { echo "usage: aws_p3_instance.sh b1|b2|b3 SESSION" >&2; exit 2; }
 PY="${ATTNBENCH_PYTHON:-/usr/bin/python3}"
-CONFIG="configs/t31/p3_session.json"
 STATE="${ATTNBENCH_P3_STATE:-$HOME/p3}"
 IDLE_MIN="${ATTNBENCH_P3_IDLE_HALT_MIN:-30}"
 HALT_MIN="${ATTNBENCH_P3_HALT_MIN:-473}"       # the launcher's in-guest halt, from boot
@@ -181,7 +196,7 @@ trap 'on_signal 130' INT
 
 [[ -e "$STATE/$BLOCK.started" ]] && { DONE=1; echo "REFUSING: $BLOCK has already started ($STATE/$BLOCK.started)" >&2; exit 2; }
 date -u +%FT%TZ > "$STATE/$BLOCK.started"
-echo "P3_BLOCK_START $BLOCK $(date -u +%FT%TZ) commit $(git rev-parse HEAD)" >> "$LOG"
+echo "P3_BLOCK_START $BLOCK $(date -u +%FT%TZ) commit $(git rev-parse HEAD) pairing $PAIRING" >> "$LOG"
 
 # The halts: this block cancels a pending idle halt by putting the planned halt
 # back in its place, reads it back, and keeps it there while it runs.
@@ -204,12 +219,21 @@ case "$BLOCK" in
   b3) [[ "$(cut -f1 "$STATE/b2.exit" 2>/dev/null)" == 0 ]] || refuse "block 2 did not end with 0" ;;
 esac
 
+# P6's abort gate: the image and its dense backends on the H100, before any step.
+if [[ "$BLOCK" == b1 && "$PAIRING" == P6 ]]; then
+  if ! "$PY" scripts/p6_backend_check.py --out "$STATE/b1_backends.json" >> "$LOG" 2>&1; then
+    echo "P6_BACKEND_GATE FAILED: block 1 stops before any step; the session stops ($STATE/b1_backends.json)" >> "$LOG"
+    RC=3; exit 3
+  fi
+  echo "P6_BACKEND_GATE passed $(date -u +%FT%TZ)" >> "$LOG"
+fi
+
 # The prediction store: the Mac, through aws_p3_gsutil.py.
 mkdir -p "$STATE/bin" "$HOME/p3_store"
 printf '#!/usr/bin/env bash\nexec "%s" "%s/scripts/aws_p3_gsutil.py" "$@"\n' "$PY" "$REPO" > "$STATE/bin/gsutil"
 chmod +x "$STATE/bin/gsutil"
 export PATH="$STATE/bin:$PATH" ATTNBENCH_BUCKET="gs://p3-mac" ATTNBENCH_P3_STORE="$HOME/p3_store"
-export ATTNBENCH_EXPECTED_HOST="aws:g6.2xlarge" ATTNBENCH_PYTHON="$PY" PYTHONDONTWRITEBYTECODE=1
+export ATTNBENCH_EXPECTED_HOST="$HOST" ATTNBENCH_PYTHON="$PY" PYTHONDONTWRITEBYTECODE=1
 # The exit path above stands in for session_exit.sh's (see the header).
 export ATTNBENCH_SESSION_EXIT=armed
 

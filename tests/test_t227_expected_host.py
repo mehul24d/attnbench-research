@@ -1,6 +1,7 @@
 """The T2.20 preflight's accepted L4 hosts (adviser's rulings of 23 Nov 2026):
 P1's GCP g2-standard-8 by default, AWS's g6.2xlarge for P3 when named, any
-other name refused; and the file stays outside the timed-path pin."""
+other name refused; P6's AWS p5.4xlarge with the H100 when named (26 Nov
+2026); and the file stays outside the timed-path pin."""
 from __future__ import annotations
 
 import sys
@@ -27,8 +28,23 @@ def test_p3s_host_is_accepted_when_named(monkeypatch):
 @pytest.mark.parametrize("name", ["aws:g6.xlarge", "gcp:a2-highgpu-1g", "g6.2xlarge", "aws:"])
 def test_any_other_host_is_refused(monkeypatch, name):
     monkeypatch.setenv(S.EXPECTED_HOST_ENV, name)
-    with pytest.raises(S.StepFailed, match="not an accepted L4 host"):
+    with pytest.raises(S.StepFailed, match="not an accepted host"):
         S.expected_host()
+
+
+def test_p6s_host_is_accepted_when_named_and_requires_the_h100(monkeypatch):
+    monkeypatch.setenv(S.EXPECTED_HOST_ENV, "aws:p5.4xlarge")
+    assert S.expected_host() == ("aws", "p5.4xlarge")
+    assert S.expected_gpu() == "H100"
+
+
+@pytest.mark.parametrize("name", [None, "gcp:g2-standard-8", "aws:g6.2xlarge"])
+def test_the_l4_hosts_require_the_l4(monkeypatch, name):
+    if name is None:
+        monkeypatch.delenv(S.EXPECTED_HOST_ENV, raising=False)
+    else:
+        monkeypatch.setenv(S.EXPECTED_HOST_ENV, name)
+    assert S.expected_gpu() == "L4"
 
 
 def test_the_preflight_reads_its_expectation_from_the_table():
@@ -37,6 +53,7 @@ def test_the_preflight_reads_its_expectation_from_the_table():
     assert "cloud, itype = expected_host()" in body
     assert '"cloud_provider": cloud, "instance_type": itype' in body
     assert '"cloud_provider": "gcp"' not in body
+    assert "gpu = expected_gpu()" in body and "EXPECTED_GPU not in" not in body
 
 
 def test_the_file_is_outside_the_timed_path_pin():

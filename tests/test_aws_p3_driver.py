@@ -349,3 +349,85 @@ def test_a_long_copy_pushes_the_halt_back_while_it_runs(tmp_path):
     assert len(copying) >= 2, log[-2000:]
     last_b3 = max(i for i, ln in enumerate(log.splitlines()) if "PULLED b3:" in ln)
     assert not [ln for ln in log.splitlines()[last_b3 + 1:] if "copying)" in ln]
+
+
+# --- P6: the same driver for one p5.4xlarge (the researcher's task of 26 Nov 2026
+# after P3's push, item 2e; docs/launch_cards/aws_p6_p5.md) --------------------------
+
+def _p6(tmp_path, **opts):
+    return F.build(tmp_path, halt_min=312, FAKE_ITYPE="p5.4xlarge", **opts)
+
+
+def test_p6_runs_its_three_blocks_with_a_long_final_pull(tmp_path):
+    """P6's card handed to the launcher; block 1's backend check passed before any
+    step; no gate after block 2; block 3 ends at postflight; and the final pull,
+    slow here (3 s, a re-push every 1 s), keeps the halt pushed back, bounded by
+    the planned halt (+312) and the delete (+359), until it ends."""
+    fake = _p6(tmp_path, P3_PUSH_EVERY_S="1", FAKE_SCP_SLEEP_S="3")
+    p = F.run_driver(fake, "P6")
+    log = F.driver_log(fake)
+    assert p.returncode == 0, log[-3000:]
+    rec = F.rec_dir(fake)
+    assert rec.name.startswith("aws_p6_p5_")
+    assert _status(fake).split(" ", 1)[1].strip() == "DONE OK all three blocks passed and pulled"
+    env = (fake["run"] / "launch_env.txt").read_text().splitlines()
+    for want in ("AWS_HALT_MINUTES=312", "AWS_MAX_RUN_MINUTES=359", "AWS_COST_CAP_INR=5940",
+                 "AWS_RATE_INR_HR=990.2", "AWS_LAUNCH_WINDOW_MINUTES=180",
+                 "AWS_SESSION_AZS=ap-southeast-2b ap-southeast-2c ap-southeast-2a",
+                 "AWS_SESSION_REGION=ap-southeast-2", "AWS_AMI_ID=ami-096c5dc30364c9041",
+                 "typed=launch", "args=P6"):
+        assert want in env, (want, env)
+    order = [ln.split(" ", 2)[1] + " " + ln.split(" ", 3)[2] for ln in log.splitlines()
+             if ln.split(" ")[1:2] in (["BLOCK"], ["PULLED"], ["GATE"])]
+    assert order == ["BLOCK b1", "PULLED b1:", "BLOCK b2", "PULLED b2:", "BLOCK b3", "PULLED b3:"], order
+    assert not (rec / "gate.json").exists()
+    s = rec / "session"
+    assert sorted(d.name for d in s.iterdir() if d.is_dir()) == [
+        "01_preflight", "02_link", "03_dense_select", "04_probe", "05_host_components",
+        "06_device_components", "07_predict", "08_hold", "09_ground_truth", "10_verify",
+        "11_postflight"]
+    cfg = json.loads((s / "manifest.json").read_text())
+    last = {a["step"]: a["status"] for a in cfg["attempts"]}
+    assert len(last) == 11 and set(last.values()) == {"passed"} and "delay_injection" not in last
+    # the abort gate ran first in block 1 and its record came back
+    b1 = (fake["home"] / "p3" / "b1.log").read_text()
+    assert "P6_BACKEND_GATE passed" in b1 and b1.index("P6_BACKEND_GATE") < b1.index("P3_BLOCK_EXIT")
+    assert json.loads((rec / "b1_backends.json").read_text())["passed"] is True
+    ssh = (fake["run"] / "ssh_calls.log").read_text().replace("\\", "")
+    assert "ATTNBENCH_P3_PAIRING=P6 ATTNBENCH_P3_HALT_MIN=312 bash scripts/aws_p3_instance.sh b1" in ssh
+    # the final pull is long: the halt was pushed back while it copied, and every push
+    # read P6's planned halt (+312) back as the pending one, so none moved it later
+    # (the bounds themselves, in fast minutes: tests/test_p3_halts.py)
+    copying = [ln for ln in log.splitlines() if "HALT pushed back (pull b3, copying)" in ln]
+    assert len(copying) >= 2, log[-2000:]
+    halt = (fake["home"] / "p3" / "halt.log").read_text().splitlines()
+    boot = int(fake["env"]["FAKE_BOOT_EPOCH"])
+    planned = datetime.fromtimestamp(boot + 312 * 60, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert len(halt) >= 2 + len(copying) and all(f"pending {planned} is not before" in ln for ln in halt), halt[-3:]
+    assert (fake["run"] / "teardown.log").read_text().splitlines() == [
+        f"fake teardown: {F.INSTANCE} ap-southeast-2 {rec}/teardown_1  rate=990.2"]
+    names = [Path(ln.split("\t")[1]).name for ln in (rec / "store_witness.tsv").read_text().splitlines()]
+    assert names == ["prediction_P6_stub.json", "prediction_P6_stub.json.sha256"]
+
+
+def test_p6s_backend_check_failing_stops_the_session_before_any_step(tmp_path):
+    fake = _p6(tmp_path, FAKE_BACKEND_FAIL="K2 candidates not supplied on the H100: ['fa3']")
+    p = F.run_driver(fake, "P6")
+    log = F.driver_log(fake)
+    assert p.returncode == 1
+    assert _status(fake).split(" ", 1)[1].startswith("DONE FAILED at block b1"), log[-2000:]
+    assert " BLOCK b1 FAILED exit 3" in log and " BLOCK b2 " not in log
+    rec = F.rec_dir(fake)
+    assert not (rec / "session" / "01_preflight").exists()
+    assert not (fake["home"] / "p3_session" / "01_preflight").exists()
+    rep = json.loads((rec / "b1_backends.json").read_text())
+    assert rep["passed"] is False and "fa3" in rep["problems"][0]
+    assert (rec / "b1.exit").read_text().split("\t")[0] == "3"
+    assert len((fake["run"] / "teardown.log").read_text().splitlines()) == 1
+
+
+def test_a_pairing_other_than_p3_or_p6_is_refused(tmp_path):
+    fake = _p6(tmp_path)
+    p = F.run_driver(fake, "P5")
+    assert p.returncode == 1 and "REFUSING: the pairing is 'P5'" in p.stderr
+    assert not (fake["run"] / "launch_env.txt").exists()
