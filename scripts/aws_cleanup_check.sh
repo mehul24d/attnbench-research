@@ -43,11 +43,33 @@ SNAPSHOTS_SEEN=0
 # One listing: prints it under its heading when non-empty and returns 0 when
 # it found something. A failed query is not "nothing": it is counted and
 # makes the check fail, since a listing that could not run proves nothing.
+#
+# A listing's error text is never printed as it comes: the organization's
+# policy denies EC2 outside the study's Region, and that denial names the
+# policy's ARN, the role and its session id (26 Nov 2026). A denial by the
+# organization's policy is named as such, per region, and counted apart; any
+# other error is printed with ARNs and 12-digit numbers masked. Either way the
+# listing did not run, so it is not "nothing" (the exit is unchanged).
+mask_err() {
+  sed -E 's/arn:aws[A-Za-z0-9-]*:[^[:space:]"'"'"',)]*/arn:<masked>/g;
+          s/assumed-role\/[^[:space:]"'"'"',)]+/assumed-role\/<masked>/g;
+          s/(^|[^0-9])[0-9]{12}([^0-9]|$)/\1<id>\2/g' | sed 's/^/     /' >&2
+}
+ORG_DENIED_REGIONS=""
 listing() {
   local heading="$1"; shift
-  local out rc=0
-  out="$(aws "$@")" || rc=$?
+  local out rc=0 errf err
+  errf="$(mktemp)"
+  out="$(aws "$@" 2>"$errf")" || rc=$?
+  err="$(cat "$errf")"; rm -f "$errf"
   if [[ "$rc" -ne 0 ]]; then
+    if printf '%s' "$err" | grep -qi 'service control policy'; then
+      echo "   (denied by the organization's policy, not listed: $heading)"
+      case " $ORG_DENIED_REGIONS " in *" $R "*) ;; *) ORG_DENIED_REGIONS="${ORG_DENIED_REGIONS:+$ORG_DENIED_REGIONS }$R" ;; esac
+      [[ "${SOFT:-0}" -eq 1 ]] || QUERY_FAILED=1
+      return 1
+    fi
+    [[ -n "$err" ]] && printf '%s\n' "$err" | mask_err
     if [[ "${SOFT:-0}" -eq 1 ]]; then
       echo "   (could not list: $heading)"
     else
@@ -110,8 +132,11 @@ STORAGE_KINDS=()
 [[ "$IMAGES_SEEN" -eq 1 ]]    && STORAGE_KINDS+=("images")
 [[ "$SNAPSHOTS_SEEN" -eq 1 ]] && STORAGE_KINDS+=("snapshots")
 
+if [[ -n "$ORG_DENIED_REGIONS" ]]; then
+  echo "Denied by the organization's policy (not listed): $(echo $ORG_DENIED_REGIONS | wc -w | tr -d ' ') region(s): $ORG_DENIED_REGIONS"
+fi
 if [[ "$QUERY_FAILED" -eq 1 ]]; then
-  echo "INCOMPLETE: at least one listing failed (marked !! above). Not clean until it runs."
+  echo "INCOMPLETE: at least one listing failed (marked !! or denied above). Not clean until it runs."
   exit 2
 elif [[ "$FOUND_SOMETHING" -eq 1 ]]; then
   echo "ATTENTION: billable resources exist above. Review before walking away."

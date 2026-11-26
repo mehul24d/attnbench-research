@@ -12,7 +12,10 @@ below stands in for systemd's scheduler, as logind does it: one pending
 shutdown (in a `scheduled` file, as /run/systemd/shutdown/scheduled), which a
 new `shutdown` replaces and `shutdown -c` removes, fired by a timer that is not
 our process (a new session, its signals reset). A power-off is recorded, and
-after it every `shutdown` is a no-op (the machine is off).
+after it every `shutdown` is a no-op (the machine is off). As shutdown(8) says,
+5 minutes before a scheduled halt /run/nologin is written, and from then new
+logins are refused; the fake writes it (ATTNBENCH_P3_NOLOGIN) and, the worst
+case, never removes it when the halt is replaced.
 
 P3_INSTANCE_SCRIPT runs them on another version of the script (the break
 test: the version deployed on 25 Nov 2026 must fail them).
@@ -39,6 +42,15 @@ DOWN = os.path.join(RUN, "down")
 def log(name, msg):
     with open(os.path.join(RUN, name), "a") as fh: fh.write(f"{time.time():.3f} {msg}\n")
 a = sys.argv[1:]
+if a[:1] == ["--nologin"]:
+    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP): signal.signal(s, signal.SIG_DFL)
+    token, usec = a[1], int(a[2])
+    time.sleep(max(0.0, usec / 1e6 - time.time()))
+    try: cur = open(F).read()
+    except FileNotFoundError: sys.exit(0)
+    if f"TOKEN={token}\n" in cur and not os.path.exists(DOWN) and os.environ.get("ATTNBENCH_P3_NOLOGIN"):
+        open(os.environ["ATTNBENCH_P3_NOLOGIN"], "w").write("System is going down.\n"); log("nologin.log", f"NOLOGIN {token}")
+    sys.exit(0)
 if a[:1] == ["--timer"]:
     for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP): signal.signal(s, signal.SIG_DFL)
     token, usec = a[1], int(a[2])
@@ -60,6 +72,8 @@ with open(F + ".tmp", "w") as fh: fh.write(f"USEC={usec}\nMODE=poweroff\nTOKEN={
 os.replace(F + ".tmp", F)
 log("shutdown_calls.log", f"scheduled {token} {usec / 1e6:.3f}")
 subprocess.Popen([sys.executable, __file__, "--timer", token, str(usec)], start_new_session=True,
+                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.Popen([sys.executable, __file__, "--nologin", token, str(int(usec - 5 * MIN * 1e6))], start_new_session=True,
                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 '''
 FAKE_SUDO = '#!/bin/bash\n[[ "$1" == -n ]] && shift\nexec "$@"\n'
@@ -94,7 +108,7 @@ def _setup(tmp: Path, *, halt: int, idle: int, b1: float, b2: float) -> dict:
            "ATTNBENCH_P3_SHUTDOWN_SCHEDULED": str(run / "scheduled"),
            "ATTNBENCH_P3_MINUTE_S": "1", "ATTNBENCH_P3_BOOT_EPOCH": str(boot),
            "ATTNBENCH_P3_HALT_MIN": str(halt), "ATTNBENCH_P3_IDLE_HALT_MIN": str(idle),
-           "ATTNBENCH_P3_WATCH_S": "0.3",
+           "ATTNBENCH_P3_WATCH_S": "0.3", "ATTNBENCH_P3_NOLOGIN": str(run / "nologin"),
            "ATTNBENCH_P3_IDLE_HALT_S": str(idle)}       # the 25 Nov 2026 version's setting
     # The launcher's user data, at boot: the planned halt.
     subprocess.run([str(bin_ / "shutdown"), "-h", f"+{halt}"], env=env, check=True)
@@ -179,3 +193,87 @@ def test_an_earlier_shutdown_set_while_a_block_runs_is_replaced_by_the_planned_h
     during = [t for t in _poweroffs(f) if b2_start - 0.5 <= t <= b2_end]
     assert not during, "the outside shutdown fired while block 2 ran"
     assert "P3_HALT_WATCHDOG b2 re-armed the planned halt" in (st / "b2.log").read_text()
+
+
+def _push(f: dict, delete_at: float | None = None) -> subprocess.CompletedProcess:
+    """As the driver runs push-halt over SSH at a pull's start (26 Nov 2026)."""
+    a = ["bash", "scripts/aws_p3_instance.sh", "push-halt"] + ([str(int(delete_at))] if delete_at else [])
+    return subprocess.run(a, cwd=f["repo"], env=f["env"], capture_output=True, text=True, timeout=20)
+
+
+def _pending(f: dict) -> float:
+    for ln in (f["run"] / "scheduled").read_text().splitlines():
+        if ln.startswith("USEC="):
+            return int(ln[5:]) / 1e6
+    raise AssertionError("no pending shutdown")
+
+
+def _login(f: dict, what: str) -> None:
+    """A new SSH login (the driver's ssh or scp): refused while /run/nologin exists."""
+    assert not (f["run"] / "nologin").exists(), f"{what}: the login was refused (/run/nologin)"
+
+
+def test_a_long_final_pull_is_not_cut_by_the_idle_halt_and_its_logins_stay_open(tmp_path):
+    """P3's run, 26 Nov 2026: block 3's pull ended 6 min before its idle halt, and
+    the final re-pull's scp, a new login inside the halt's last 5 min, was refused.
+    Here (a minute being 1 s) the last block ends, its idle halt is 12 min away;
+    a pull starts, packs, copies for 20 min (longer than the idle halt) with the
+    halt pushed back every 4 min, then the teardown logs in. Nothing powers off
+    and no login is refused until the teardown is done; then the halt fires 12 min
+    after the last push, before the planned halt."""
+    f = _setup(tmp_path, halt=120, idle=12, b1=0.5, b2=0.5)
+    st = f["home"] / "p3"
+    _start(f, "b1")
+    b1_end = _wait(st / "b1.exit", 20)
+    time.sleep(0.5)
+    _login(f, "pull start")
+    assert _push(f).returncode == 0
+    time.sleep(1.0)                                    # the pack
+    _login(f, "scp")
+    t0 = time.time()
+    while time.time() - t0 < 20:                       # the copy, with the driver's re-push
+        time.sleep(4)
+        _login(f, "re-push")
+        assert _push(f).returncode == 0
+    _login(f, "teardown")
+    last = time.time(); assert _push(f).returncode == 0
+    end = time.time()
+    assert not [t for t in _poweroffs(f) if b1_end - 0.5 <= t <= end], "powered off during the pull"
+    time.sleep(max(0.0, _pending(f) - time.time()) + 1.5)
+    offs = _poweroffs(f)
+    assert len(offs) == 1 and 10.0 <= offs[0] - last <= 13.5, [round(t - last, 1) for t in offs]
+    assert offs[0] < f["planned"]
+    assert "P3_HALT_PUSH pending" in (st / "halt.log").read_text()
+    assert "shutdown -c" not in (f["run"] / "shutdown_calls.log").read_text()
+
+
+def test_the_push_never_goes_past_the_planned_halt_or_the_delete(tmp_path):
+    """The push is bounded by the planned halt (boot + HALT_MIN) and by the hard
+    delete less ATTNBENCH_P3_DELETE_MARGIN_MIN (10)."""
+    f = _setup(tmp_path, halt=22, idle=20, b1=0.5, b2=0.5)
+    st = f["home"] / "p3"
+    _start(f, "b1"); _wait(st / "b1.exit", 20)
+    time.sleep(2.0)
+    assert _push(f).returncode == 0
+    assert f["planned"] - 1.5 <= _pending(f) <= f["planned"] + 2.0, _pending(f) - f["planned"]
+    g = _setup(tmp_path / "d", halt=600, idle=20, b1=0.5, b2=0.5)
+    _start(g, "b1"); b1_end = _wait(g["home"] / "p3" / "b1.exit", 20)
+    idle_at = _pending(g)
+    time.sleep(2.0)
+    delete_at = b1_end + 21 + 10          # bound: the delete less 10 min, 1 min short of now + 20
+    assert _push(g, delete_at).returncode == 0
+    p = _pending(g)
+    assert idle_at - 0.5 <= p <= delete_at - 10 + 0.5, (p - b1_end, idle_at - b1_end)
+    # never earlier than it was: a bound before the pending halt leaves it
+    assert _push(g, b1_end + 5 + 10).returncode == 0 and abs(_pending(g) - p) < 0.01
+
+
+def test_the_push_changes_nothing_while_a_block_runs(tmp_path):
+    """While a block runs its watchdog keeps the planned halt; push-halt leaves it."""
+    f = _setup(tmp_path, halt=60, idle=4, b1=0.5, b2=6)
+    b1_end, b2_start, st = _run_b1_then_b2(f)
+    time.sleep(0.5)
+    before = _pending(f)
+    r = _push(f)
+    assert r.returncode == 0 and abs(_pending(f) - before) < 0.01
+    assert "unchanged: b2 runs" in (st / "halt.log").read_text()

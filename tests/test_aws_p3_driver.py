@@ -59,7 +59,13 @@ def test_the_full_flow_runs_every_block_whatever_the_gate_reads(tmp_path, scale,
     order = [ln for ln in log.splitlines() if ln.split(" ")[1:2] in (["BLOCK"], ["PULLED"], ["GATE"])]
     kinds = [ln.split(" ", 2)[1] + " " + ln.split(" ", 3)[2] for ln in order]
     assert kinds == ["BLOCK b1", "PULLED b1:", "BLOCK b2", "PULLED b2:", "GATE after",
-                     "BLOCK b3", "PULLED b3:", "PULLED final:"], kinds
+                     "BLOCK b3", "PULLED b3:"], kinds
+    # no final re-pull of every block (26 Nov 2026), and the halt pushed back as each
+    # pull starts and before the teardown, on the instance, by aws_p3_instance.sh
+    assert "FINAL RE-PULL skipped" in log
+    pushes = [ln.split("(", 1)[1].split(")", 1)[0] for ln in log.splitlines() if " HALT pushed back (" in ln]
+    assert pushes == ["pull b1", "pull b2", "pull b3", "teardown"], pushes
+    assert (fake["home"] / "p3" / "halt.log").read_text().count("P3_HALT_PUSH") == 4
     for b in ("b1", "b2", "b3"):
         check = (rec / "pull" / b / "check.txt").read_text().splitlines()
         assert check and all(ln.endswith(": OK") for ln in check), check
@@ -321,3 +327,25 @@ def test_an_earlier_session_expiry_in_the_login_cache_is_used_and_nothing_else_i
     assert "WARN CREDENTIALS end in 5.0 h" in log or "WARN CREDENTIALS end in 4.9 h" in log
     text = log + (F.rec_dir(fake) / "credentials.tsv").read_text()
     assert not any(s in text for s in ("SECRETVALUE", "REFRESHVALUE", "AKIAFAKEKEYID"))
+
+
+def test_the_final_re_pull_runs_only_when_asked(tmp_path):
+    """P3_DRIVER_FINAL_REPULL=1 (allowed without the dry switch) turns it back on."""
+    fake = F.build(tmp_path, FAKE_HOST_SCALE="1.5", P3_DRIVER_FINAL_REPULL="1")
+    p = F.run_driver(fake)
+    log = F.driver_log(fake)
+    assert p.returncode == 0, log[-3000:]
+    assert "PULLED final:" in log and "FINAL RE-PULL skipped" not in log
+
+
+def test_a_long_copy_pushes_the_halt_back_while_it_runs(tmp_path):
+    """A slow copy (3 s here, a re-push every 1 s) pushes the halt back while it
+    runs, and no pusher outlives its pull."""
+    fake = F.build(tmp_path, FAKE_HOST_SCALE="1.5", P3_PUSH_EVERY_S="1", FAKE_SCP_SLEEP_S="3")
+    p = F.run_driver(fake)
+    log = F.driver_log(fake)
+    assert p.returncode == 0, log[-3000:]
+    copying = [ln for ln in log.splitlines() if "HALT pushed back (pull b3, copying)" in ln]
+    assert len(copying) >= 2, log[-2000:]
+    last_b3 = max(i for i, ln in enumerate(log.splitlines()) if "PULLED b3:" in ln)
+    assert not [ln for ln in log.splitlines()[last_b3 + 1:] if "copying)" in ln]

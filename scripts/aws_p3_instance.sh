@@ -37,13 +37,26 @@
 # planned one, re-arming it if not. So no idle halt can power off while a
 # block runs, and nothing here cancels or delays the planned halt. The watchdog
 # ends by itself when the cancel file goes; it is never killed.
+#
+#   bash scripts/aws_p3_instance.sh push-halt [DELETE_EPOCH]
+#
+# The driver runs this as each pull starts (26 Nov 2026, after P3's run): the
+# pending halt goes back to now + ATTNBENCH_P3_IDLE_HALT_MIN, never earlier than
+# it was, never past the planned halt and never within
+# ATTNBENCH_P3_DELETE_MARGIN_MIN (10) of the hard delete. While a block runs
+# (a cancel file exists) it changes nothing: that block's watchdog keeps the
+# planned halt. systemd writes /run/nologin 5 min before a scheduled halt, and
+# from then every new SSH login is refused, so a halt pushed back more than
+# 5 min also removes a /run/nologin left by the halt it replaced. In P3's run
+# the final re-pull's scp opened its connection in that window and was refused.
 set -uo pipefail
 BLOCK="${1:-}"; SESSION="${2:-}"
 case "$BLOCK" in
+  push-halt) ARGS=(); SESSION="${SESSION:--}" ;;   # SESSION is the delete time here
   b1) ARGS=(--until probe) ;;
   b2) ARGS=(--from host_components --until host_components) ;;
   b3) ARGS=(--from device_components) ;;
-  *) echo "usage: aws_p3_instance.sh b1|b2|b3 SESSION" >&2; exit 2 ;;
+  *) echo "usage: aws_p3_instance.sh b1|b2|b3 SESSION | push-halt [DELETE_EPOCH]" >&2; exit 2 ;;
 esac
 [[ -n "$SESSION" ]] || { echo "usage: aws_p3_instance.sh b1|b2|b3 SESSION" >&2; exit 2; }
 PY="${ATTNBENCH_PYTHON:-/usr/bin/python3}"
@@ -104,6 +117,46 @@ idle_halt() {
   sudo -n shutdown -P --no-wall "+$IDLE_MIN" >/dev/null 2>&1
   echo "P3_IDLE_HALT +$IDLE_MIN min, pending $(iso "$(pending_s || echo 0)") $(date -u +%FT%TZ)" >> "$LOG"
 }
+
+NOLOGIN="${ATTNBENCH_P3_NOLOGIN:-/run/nologin}"
+DELETE_MARGIN_MIN="${ATTNBENCH_P3_DELETE_MARGIN_MIN:-10}"
+push_halt() {   # push-halt [DELETE_EPOCH]: a pull starts; 0 when the halt reads back as set
+  local now bound target m p f del="${1:-}"
+  now="$(date +%s)"
+  for f in "$STATE"/b?.running; do
+    [[ -e "$f" ]] || continue
+    echo "P3_HALT_PUSH unchanged: $(basename "$f" .running) runs (its watchdog keeps the planned halt) $(iso "$now")" >> "$LOG"
+    return 0
+  done
+  bound=$PLANNED_AT
+  if [[ "$del" =~ ^[0-9]+$ ]] && (( del - DELETE_MARGIN_MIN * MIN_S < bound )); then
+    bound=$(( del - DELETE_MARGIN_MIN * MIN_S ))
+  fi
+  target=$(( now + IDLE_MIN * MIN_S ))
+  (( target > bound )) && target=$bound
+  p="$(pending_s)"
+  if [[ -n "$p" ]] && (( p >= target )); then
+    echo "P3_HALT_PUSH unchanged: pending $(iso "$p") is not before $(iso "$target") $(iso "$now")" >> "$LOG"
+    return 0
+  fi
+  m=$(( (target - now) / MIN_S )); (( m < 0 )) && m=0
+  sudo -n shutdown -P --no-wall "+$m" >/dev/null 2>&1
+  p="$(pending_s)"
+  if [[ -z "$p" ]] || (( p < target - MIN_S - 2 || p > target + 2 )); then
+    echo "P3_HALT_WARN push-halt: the pending shutdown does not read back as $(iso "$target") $(iso "$now")" >> "$LOG"
+    return 1
+  fi
+  if (( p - now > 5 * MIN_S )) && [[ -e "$NOLOGIN" ]]; then
+    sudo -n rm -f "$NOLOGIN" 2>/dev/null || rm -f "$NOLOGIN" 2>/dev/null
+  fi
+  echo "P3_HALT_PUSH pending $(iso "$p") (+$m min; bound $(iso "$bound")) $(iso "$now")" >> "$LOG"
+  echo "pending $(iso "$p") (+$m min; bound $(iso "$bound"))"
+}
+if [[ "$BLOCK" == push-halt ]]; then
+  LOG="$STATE/halt.log"
+  push_halt "$([[ "$SESSION" == - ]] || echo "$SESSION")"
+  exit $?
+fi
 
 finish() {
   (( DONE )) && return

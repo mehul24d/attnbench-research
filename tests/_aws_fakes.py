@@ -36,6 +36,12 @@ for a in "$@"; do
   [[ "$prev" == "--profile" ]] && profile="$a"
   prev="$a"
 done
+# FAKE_SCP_DENIED_REGIONS: every call in these regions is denied by the
+# organization's policy, worded as the real CLI words it (26 Nov 2026).
+if [[ -n "$region" && "$1" != sts && "$2" != describe-regions && " ${FAKE_SCP_DENIED_REGIONS:-} " == *" $region "* ]]; then
+  echo "aws: [ERROR]: An error occurred (UnauthorizedOperation) when calling the DescribeInstances operation: You are not authorized to perform this operation. User: arn:aws:sts::$FAKE_ACCOUNT:assumed-role/FakeRole/fake-session-0123 is not authorized to perform: ec2:DescribeInstances with an explicit deny in a service control policy: arn:aws:organizations::$FAKE_ACCOUNT:policy/o-fakeorg123/service_control_policy/p-fake1234" >&2
+  exit 254
+fi
 case "$1 $2" in
   "sts get-caller-identity")
     if [[ -n "$profile" ]]; then echo "${FAKE_PROFILE_ACCOUNT:-$FAKE_ACCOUNT}"
@@ -169,6 +175,7 @@ case "$1 $2" in
     printf '%s\n' "${FAKE_SG_CIDRS-$FAKE_MY_IP/32}"; exit 0 ;;
   "ec2 describe-snapshots")
     [[ -n "${FAKE_FAIL_SNAPSHOTS:-}" ]] && exit 254
+    [[ -n "${FAKE_FAIL_SNAPSHOTS_MSG:-}" ]] && { echo "AccessDenied for arn:aws:iam::$FAKE_ACCOUNT:role/x" >&2; exit 254; }
     exit 0 ;;
 esac
 echo "UNHANDLED $*" >> "$AWS_LOG"

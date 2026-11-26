@@ -112,6 +112,7 @@ for ((i=0; i<n-1; i++)); do
     cp -R "$s" "$dest" || rc=1
   done
 done
+[[ "${args[*]}" == *".tar"* ]] && sleep "${FAKE_SCP_SLEEP_S:-0}"
 exit $rc
 '''
 

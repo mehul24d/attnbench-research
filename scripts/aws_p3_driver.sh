@@ -74,12 +74,19 @@ HALT_MIN=473; DELETE_MIN=503; RATE=143.21
 # is Rs 1,201, inside it.
 P3_TOTAL_CAP=1353; ABORTED_INR=143; CAP=$(( P3_TOTAL_CAP - ABORTED_INR ))
 PULL_MARGIN_MIN=10                   # the last pull starts 10 min before the halt
+# The final re-pull of every step directory, after all three blocks were pulled
+# and checked, is off unless P3_DRIVER_FINAL_REPULL=1 (26 Nov 2026: it re-sends
+# every block, about 8 GB, and in P3's run its scp was refused). A failed block
+# still pulls whatever there is.
+FINAL_REPULL="${P3_DRIVER_FINAL_REPULL:-0}"
+PUSH_EVERY_S=600                     # while a copy runs, the halt is pushed back every 10 min
 if [[ "${P3_DRY:-}" == 1 ]]; then    # the fake remote, never AWS
   REC_BASE="$P3_REC_BASE"; AWS_ENV="$P3_AWS_ENV"; WINDOWS="$P3_WINDOWS"; P1_HOST="$P3_P1_HOST"
   VPY="$P3_VPY"; POLL_S="$P3_POLL_S"; SSH_TRIES=3; SSH_WAIT_S=1; TEARDOWN_WAIT_S=1
   LAUNCH=(bash "$P3_LAUNCH"); TEARDOWN="$P3_TEARDOWN"; CLEANUP="$P3_CLEANUP"; BOOTSTRAP="$P3_BOOTSTRAP"
   NOW_EPOCH="${P3_NOW_EPOCH:-$NOW_EPOCH}"
   [[ -n "${P3_PULL_DEADLINE_S:-}" ]] && PULL_DEADLINE_S="$P3_PULL_DEADLINE_S"
+  PUSH_EVERY_S="${P3_PUSH_EVERY_S:-$PUSH_EVERY_S}"
 elif env | grep '^P3_' | grep -qv '^P3_DRIVER_'; then
   echo "REFUSING: P3_* variables are set but P3_DRY is not 1; nothing launched" >&2; exit 1
 fi
@@ -90,7 +97,9 @@ REC="$REC_BASE/aws_p3_g6_$UTC"
 mkdir -p "$REC"
 cp "$P3_DRIVER_COPY" "$REC/driver.sh"
 source "$AWS_ENV"
-exec > >(sed -u -E "s/${ATTNBENCH_AWS_ACCOUNT}/<account>/g; s/(^|[^0-9a-f])[0-9]{12}([^0-9]|$)/\1<id>\2/g" >> "$REC/driver.log") 2>&1
+# The log is filtered: the account, any 12-digit number, ARNs and role sessions
+# (the organization's denials name its policy, the role and the session; 26 Nov 2026).
+exec > >(sed -u -E "s/${ATTNBENCH_AWS_ACCOUNT}/<account>/g; s/(^|[^0-9a-f])[0-9]{12}([^0-9]|$)/\1<id>\2/g; s#arn:aws[A-Za-z0-9-]*:[^[:space:]\"',)]*#arn:<masked>#g; s#assumed-role/[^[:space:]\"',)]+#assumed-role/<masked>#g" >> "$REC/driver.log") 2>&1
 status() { echo "$(date -u +%FT%TZ) $*"; echo "$(date -u +%FT%TZ) $*" > "$REC/status.txt"; }
 refuse() { status "REFUSED $*; nothing launched"; exit 1; }
 
@@ -243,6 +252,7 @@ if [[ $LRC -ne 0 || ! "$ID" =~ ^i- ]]; then
 fi
 win_end "LAUNCHED $ID"
 LAUNCH_EPOCH="$(date -u +%s)"
+DELETE_AT=$(( LAUNCH_EPOCH + DELETE_MIN * 60 ))   # the hard delete, as the launcher schedules it
 PULL_DEADLINE=$(( LAUNCH_EPOCH + ${PULL_DEADLINE_S:-$(( (HALT_MIN - PULL_MARGIN_MIN) * 60 ))} ))
 echo "$ID" > "$REC/instance_id.txt"
 status "LAUNCHED $ID in zone ${LZONE:-unknown} on pass ${PASSES:-?} (capacity refusals before it: ${NREFUSED:-0}); halt $(date -u -r $(( LAUNCH_EPOCH + HALT_MIN * 60 )) +%FT%TZ 2>/dev/null), delete $(date -u -r $(( LAUNCH_EPOCH + DELETE_MIN * 60 )) +%FT%TZ 2>/dev/null) (about)"
@@ -326,14 +336,39 @@ witness_store() {
 
 # --- pulls: one tar per block, its sha256 and every file's, checked here ------------
 mkdir -p "$REC/session"
+# Error text from ssh and scp, kept for the record without addresses or ids.
+mask() { sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g; s/ec2-[0-9-]+[^ :]*/<host>/g; s/ip-[0-9-]+/<host>/g;
+                 s/arn:[^ ]*/arn:<masked>/g; s/i-[0-9a-f]{8,17}/i-<id>/g'; }
+# push_halt WHY: as a pull starts, the instance's pending halt goes back to now +
+# 30 min, never past the planned halt or the delete (aws_p3_instance.sh
+# push-halt; 26 Nov 2026: block 3's pull ended 6 min before its idle halt, and
+# systemd refuses new logins in a halt's last 5 min). A failure is a warning.
+# While the copy runs it is pushed back again every PUSH_EVERY_S, so a copy of
+# any length keeps the halt over 20 min away (until the planned halt).
+push_halt() {
+  local out
+  if out="$(rssh "cd ~/attnbench_scaffold && ATTNBENCH_P3_HALT_MIN=$HALT_MIN bash scripts/aws_p3_instance.sh push-halt $DELETE_AT" 2>&1)"; then
+    status "HALT pushed back ($1): ${out:-unchanged}"
+  else
+    status "WARN HALT not pushed back ($1): $(tail -1 <<<"$out" | mask | cut -c1-160)"
+  fi
+}
 pull() {   # pull NAME DIR...: 0 when every file checks
   local name="$1"; shift
   local d="$REC/pull/$name" sum
   mkdir -p "$d"
+  push_halt "pull $name"
   sum="$(rssh "set -e; cd ~/p3_session; for x in $*; do test -e \"\$x\"; done; find $* manifest.json -type f | LC_ALL=C sort > ~/p3/$name.files; tr '\n' '\0' < ~/p3/$name.files | xargs -0 sha256sum > ~/p3/$name.sha256; tar cf ~/p3/$name.tar -T ~/p3/$name.files; sha256sum ~/p3/$name.tar | cut -d' ' -f1" 2>"$d/remote.err")" \
     || { status "PULL $name: the instance could not pack $* ($(tail -1 "$d/remote.err"))"; return 1; }
-  scp "${SSH_OPTS[@]}" "$H:~/p3/$name.tar" "$H:~/p3/$name.sha256" "$d/" >/dev/null 2>&1 \
-    || { status "PULL $name: scp failed"; return 1; }
+  local kp rc
+  ( s=""; trap '[[ -n "$s" ]] && kill "$s" 2>/dev/null; exit 0' TERM
+    while :; do sleep "$PUSH_EVERY_S" & s=$!; wait "$s"; push_halt "pull $name, copying"; done ) </dev/null &
+  kp=$!
+  scp "${SSH_OPTS[@]}" "$H:~/p3/$name.tar" "$H:~/p3/$name.sha256" "$d/" 2>&1 >/dev/null | mask > "$d/scp.err"
+  rc=${PIPESTATUS[0]}
+  kill "$kp" 2>/dev/null; wait "$kp" 2>/dev/null
+  [[ "$rc" == 0 ]] \
+    || { status "PULL $name: scp failed ($(tail -1 "$d/scp.err" | cut -c1-160))"; return 1; }
   [[ "$(shasum -a 256 "$d/$name.tar" | cut -d' ' -f1)" == "$sum" ]] \
     || { status "PULL $name: the tar's sha256 differs from the instance's"; return 1; }
   tar xf "$d/$name.tar" -C "$REC/session" || { status "PULL $name: tar failed"; return 1; }
@@ -422,7 +457,13 @@ for B in b1 b2 b3; do
     status "GATE after block 2 (35 cells; P6 only, block 3 runs whatever it reads): $GATE"
   fi
 done
-whatever_there_is
+if [[ "$FINAL_REPULL" == 1 ]]; then
+  whatever_there_is
+else
+  pull_logs
+  status "FINAL RE-PULL skipped: every block was pulled and checked (P3_DRIVER_FINAL_REPULL=1 turns it on)"
+fi
+push_halt teardown
 rssh 'ls ~/.cache/huggingface/hub/*/snapshots/ 2>&1; du -sh ~/.cache/huggingface 2>&1' > "$REC/hf_snapshots.txt" 2>&1 || true
 teardown "all three blocks passed"
 status "DONE OK all three blocks passed and pulled; $GATE"
