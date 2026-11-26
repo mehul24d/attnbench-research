@@ -1,4 +1,6 @@
-# Appendix A lines for the bundled wave (drafts; not yet in the plan)
+# Appendix A lines for the bundled wave (applied 26 Nov 2026)
+
+**Applied to `docs/RESEARCH_PLAN.md` Appendix A on 26 Nov 2026** (branch `plan-wave-2026-11-26`, the researcher's task after P3's push, item 3), word for word, as its first two 26 Nov 2026 entries, with the lock's `plan_sha256` synced. Kept as the record of what was drafted before the run.
 
 The bundled Appendix A wave is held until the Archive step is settled (`docs/permission_log.md`,
 22 Nov 2026). The plan is not edited here: a plan edit must also update the lock's
