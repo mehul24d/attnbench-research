@@ -431,3 +431,180 @@ def test_a_pairing_other_than_p3_or_p6_is_refused(tmp_path):
     p = F.run_driver(fake, "P5")
     assert p.returncode == 1 and "REFUSING: the pairing is 'P5'" in p.stderr
     assert not (fake["run"] / "launch_env.txt").exists()
+
+
+# --- P6 on Spot (the researcher's task of 27 Nov 2026; docs/launch_cards/aws_p6_p5_spot.md):
+# an interrupted block is discarded in full and rerun on a new instance, in block 1's
+# zone, the finished blocks restored and checked first, at most two relaunches, all
+# inside P6's Rs 5,940 -----------------------------------------------------------------
+
+def _spot(tmp_path, **opts):
+    return _p6(tmp_path, FAKE_MARKET="spot", FAKE_STEP_SLEEP_S="1.5", **opts)
+
+
+def _events(log):
+    keep = ("BLOCK", "PULLED", "SPOT", "INTERRUPTED", "RELAUNCH", "RESTORED", "BACKEND", "DONE")
+    return [ln.split(" ", 2)[1] + " " + ln.split(" ", 3)[2] for ln in log.splitlines()
+            if ln.split(" ")[1:2] and ln.split(" ")[1] in keep]
+
+
+def _env(fake, n):
+    name = "launch_env.txt" if n == 1 else f"launch_env_{n}.txt"
+    return dict(ln.split("=", 1) for ln in (fake["run"] / name).read_text().splitlines())
+
+
+def test_p6_spot_hands_the_launcher_spot_first_with_the_bid(tmp_path):
+    fake = _p6(tmp_path, FAKE_LAUNCH_MODE="refused")
+    p = F.run_driver(fake, "P6", "spot")
+    assert p.returncode == 1 and "NOT LAUNCHED the window ended" in _status(fake)
+    env = _env(fake, 1)
+    assert env["AWS_PROVISIONING"] == "spot-first" and env["AWS_SPOT_MAX_PRICE_USD"] == "8.944"
+    assert env["AWS_COST_CAP_INR"] == "5940" and env["AWS_MAX_RUN_MINUTES"] == "359"
+    assert "Spot then on-demand in each pass, bid at most $8.944/h" in F.driver_log(fake)
+
+
+@pytest.mark.parametrize("args,said", [(("P3", "spot"), "spot is for P6 only"),
+                                       (("P6", "spots"), "not spot")])
+def test_spot_is_p6s_alone(tmp_path, args, said):
+    fake = _p6(tmp_path)
+    p = F.run_driver(fake, *args)
+    assert p.returncode == 1 and said in p.stderr
+    assert not (fake["run"] / "launch_env.txt").exists()
+
+
+def test_p6_on_demand_never_reads_the_spot_notice(tmp_path):
+    """An on-demand instance (the launcher's fallback) polls as before."""
+    fake = _p6(tmp_path)
+    p = F.run_driver(fake, "P6", "spot")
+    assert p.returncode == 0, F.driver_log(fake)[-2000:]
+    ssh = (fake["run"] / "ssh_calls.log").read_text()
+    assert "spot/instance-action" not in ssh and "ATTNBENCH_P3_MARKET=on-demand" in ssh.replace("\\", "")
+
+
+@pytest.mark.parametrize("block,how", [("b2", "state"), ("b3", "notice")])
+def test_a_spot_interruption_mid_block_relaunches_restores_and_resumes(tmp_path, block, how):
+    fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK=block, FAKE_INTERRUPT_AT="1", FAKE_INTERRUPT_HOW=how)
+    p = F.run_driver(fake, "P6", "spot")
+    log = F.driver_log(fake)
+    assert p.returncode == 0, log[-4000:]
+    assert _status(fake).split(" ", 1)[1].strip() == "DONE OK all three blocks passed and pulled; relaunches 1"
+    ev = _events(log)
+    i = ev.index(f"BLOCK {block}")
+    said = "SPOT INTERRUPTED" if how == "state" else "SPOT INTERRUPTION"
+    assert ev[i + 1].startswith(said), ev
+    assert ev[i + 2:i + 6] == ["INTERRUPTED attempt", "RELAUNCH 1", "RESTORED the", "BACKEND CHECK"], ev
+    assert ev[i + 6] == f"BLOCK {block}", ev                       # the block again, from its start
+    blocks = [e for e in ev if e.startswith(("BLOCK b", "PULLED b"))]
+    assert [e for e in blocks if e.startswith("PULLED")] == ["PULLED b1:", "PULLED b2:", "PULLED b3:"]
+    rec = F.rec_dir(fake)
+    # the relaunch: block 1's zone, what is left of the cap, P6's halt and delete, a 60-min window
+    first, second = _env(fake, 1), _env(fake, 2)
+    assert second["AWS_SESSION_AZS"] == "ap-southeast-2a" and second["AWS_LAUNCH_WINDOW_MINUTES"] == "60"
+    cost = [ln.split("\t") for ln in (rec / "cost.tsv").read_text().splitlines()]
+    used = int(cost[0][6].split()[1])
+    minutes = int(cost[0][5].split()[1])
+    assert used == -(-990.2 * minutes // 60) and cost[0][7] == f"interrupted in {block}"
+    assert second["AWS_COST_CAP_INR"] == str(5940 - used)
+    delete = min(359, int((5940 - used) * 60 / 990.2))     # what is left buys, at most P6's +359
+    assert second["AWS_MAX_RUN_MINUTES"] == str(delete) and delete >= 355
+    assert second["AWS_HALT_MINUTES"] == str(min(312, delete - 47))
+    assert second["AWS_PROVISIONING"] == "spot-first" and first["AWS_SESSION_AZS"].split() == [
+        "ap-southeast-2b", "ap-southeast-2c", "ap-southeast-2a"]
+    # two instances, each torn down once; the ledger says so
+    td = (fake["run"] / "teardown.log").read_text().splitlines()
+    assert [ln.split()[2] for ln in td] == [F.INSTANCE, "i-0fa0e0000000000b2"]
+    w = _windows(fake)
+    assert [x[0] for x in w] == ["start", "end", "relaunch"] and w[2][3] == "LAUNCHED i-0fa0e0000000000b2"
+    # the finished blocks went back checked; the interrupted one's files are set aside
+    restore = rec / "restore_2"
+    assert (restore / "restore.sha256").exists()
+    assert (rec / "attempt_1" / "instance_id.txt").read_text().strip() == F.INSTANCE
+    assert (rec / "attempt_1" / f"{'b1' if block == 'b2' else 'b2'}.exit").exists()
+    assert "restored, attempt 2" in (rec / "b1.exit").read_text()
+    # the session: every step once, passed; the discarded block left nothing in it
+    s = rec / "session"
+    m = json.loads((s / "manifest.json").read_text())
+    last = {a["step"]: a["status"] for a in m["attempts"]}
+    assert len(last) == 11 and set(last.values()) == {"passed"}, last
+    assert [a["status"] for a in m["attempts"] if a["step"] == "host_components"] == ["passed"]
+    # the rerun block 3 committed its own prediction, witnessed on this Mac
+    names = [Path(ln.split("\t")[1]).name for ln in (rec / "store_witness.tsv").read_text().splitlines()]
+    assert names == ["prediction_P6_stub.json", "prediction_P6_stub.json.sha256"]
+    # the second instance's block 1 gate ran again before the block, and the market reached the block
+    assert json.loads((rec / "relaunch_backends.json").read_text())["passed"] is True
+    halt = second["AWS_HALT_MINUTES"]
+    assert f"ATTNBENCH_P3_MARKET=spot ATTNBENCH_P3_PAIRING=P6 ATTNBENCH_P3_HALT_MIN={halt} bash scripts/aws_p3_instance.sh {block}" \
+        in (fake["run"] / "ssh_calls.log").read_text().replace("\\", "")
+
+
+def test_an_interruption_in_block_1_reruns_block_1_with_nothing_to_restore(tmp_path):
+    fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK="b1", FAKE_INTERRUPT_AT="1")
+    p = F.run_driver(fake, "P6", "spot")
+    log = F.driver_log(fake)
+    assert p.returncode == 0, log[-4000:]
+    ev = _events(log)
+    i = ev.index("RELAUNCH 1")
+    assert ev[i + 1] == "BLOCK b1" and "RESTORED the" not in ev and "BACKEND CHECK" not in ev
+    assert "P6_BACKEND_GATE passed" in (fake["home"] / "p3" / "b1.log").read_text()
+
+
+def test_a_third_interruption_stops_with_the_blocks_it_has(tmp_path):
+    fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK="b2", FAKE_INTERRUPT_AT="1", FAKE_INTERRUPTS="3")
+    p = F.run_driver(fake, "P6", "spot")
+    log = F.driver_log(fake)
+    assert p.returncode == 1
+    assert "DONE FAILED Spot interrupted in block b2 with all 2 relaunches used" in _status(fake), log[-3000:]
+    assert len((fake["run"] / "teardown.log").read_text().splitlines()) == 3
+    assert (fake["run"] / "launches").read_text().strip() == "3"
+    rec = F.rec_dir(fake)
+    assert sorted(d.name for d in (rec / "session").iterdir() if d.is_dir()) == [
+        "01_preflight", "02_link", "03_dense_select", "04_probe"]
+    cost = (rec / "cost.tsv").read_text().splitlines()
+    assert [ln.split("\t")[1] for ln in cost] == ["1", "2", "3"]
+
+
+def test_a_relaunch_refused_for_capacity_creates_nothing_more(tmp_path):
+    fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK="b2", FAKE_INTERRUPT_AT="1", FAKE_RELAUNCH_MODE="refused")
+    p = F.run_driver(fake, "P6", "spot")
+    assert p.returncode == 1
+    assert "relaunch 1 created nothing" in _status(fake)
+    assert len((fake["run"] / "teardown.log").read_text().splitlines()) == 1
+    assert _windows(fake)[-1][0] == "relaunch" and _windows(fake)[-1][3].startswith("NOTHING_CREATED")
+
+
+@pytest.mark.parametrize("cap,block,ok", [("3500", "b3", True), ("2700", "b2", False)])
+def test_what_is_left_of_the_cap_bounds_the_relaunched_instance(tmp_path, cap, block, ok):
+    """The new hard delete is what the cap left buys at the rate (at most +359),
+    its halt 47 min earlier (at most +312); it must leave the blocks still to
+    run their card minutes (20 for setup, b2 81, b3 99) and the last pull's 10."""
+    fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK=block, FAKE_INTERRUPT_AT="1", P3_CAP=cap)
+    p = F.run_driver(fake, "P6", "spot")
+    rec = F.rec_dir(fake)
+    used = int((rec / "cost.tsv").read_text().splitlines()[0].split("\t")[6].split()[1])
+    left = int(cap) - used
+    delete = int(left * 60 / 990.2)
+    halt = delete - 47
+    if ok:
+        assert p.returncode == 0, F.driver_log(fake)[-3000:]
+        env = _env(fake, 2)
+        assert env["AWS_COST_CAP_INR"] == str(left)
+        assert env["AWS_MAX_RUN_MINUTES"] == str(delete) and env["AWS_HALT_MINUTES"] == str(halt)
+        assert halt - 10 >= 20 + 99
+        assert f"ATTNBENCH_P3_HALT_MIN={halt} bash scripts/aws_p3_instance.sh b3" in (
+            fake["run"] / "ssh_calls.log").read_text().replace("\\", "")
+    else:
+        assert p.returncode == 1 and halt - 10 < 20 + 81 + 99
+        assert f"allows a halt at +{halt} min, short of the 200 min" in _status(fake)
+        assert (fake["run"] / "launches").read_text().strip() == "1"
+
+
+@pytest.mark.parametrize("opts,said", [
+    ({"FAKE_RELAUNCH_GPU": "NVIDIA H100 PCIe, 999.99"}, "does not match the first"),
+    ({"FAKE_RELAUNCH_BACKEND_FAIL": "fa3 incorrect at 2048 (fake)"}, "dense-backend check failed on the relaunched"),
+])
+def test_a_relaunched_instance_unlike_the_first_or_failing_the_gate_is_not_used(tmp_path, opts, said):
+    fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK="b2", FAKE_INTERRUPT_AT="1", **opts)
+    p = F.run_driver(fake, "P6", "spot")
+    assert p.returncode == 1 and said in _status(fake), F.driver_log(fake)[-3000:]
+    assert len((fake["run"] / "teardown.log").read_text().splitlines()) == 2
+    assert not (fake["home"] / "p3" / "b2.started").exists()

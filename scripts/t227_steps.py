@@ -94,7 +94,27 @@ def expected_gpu() -> str:
 # A row name (`attnbench.provisioning`), which is what a row carries. The
 # launch name "STANDARD" failed every real t21_t220 (Shakedown 2, 31 Oct 2026).
 from attnbench.provisioning import ON_DEMAND as EXPECTED_PROVISIONING  # noqa: E402
+from attnbench.provisioning import SPOT as _SPOT  # noqa: E402
 EXPECTED_GPU = "L4"
+# The provisioning a session may name instead of on-demand, by host
+# (ATTNBENCH_EXPECTED_PROVISIONING; the researcher's task of 27 Nov 2026: P6 on
+# AWS Spot, docs/launch_cards/aws_p6_p5_spot.md). Every other host, and an
+# unset variable, keeps on-demand; any other value is refused.
+EXPECTED_PROVISIONING_ENV = "ATTNBENCH_EXPECTED_PROVISIONING"
+SPOT_HOSTS = frozenset({"aws:p5.4xlarge"})
+
+
+def expected_provisioning() -> str:
+    """The row name the preflight requires: on-demand, or spot on a host of
+    `SPOT_HOSTS` when the session names it."""
+    want = os.environ.get(EXPECTED_PROVISIONING_ENV) or EXPECTED_PROVISIONING
+    if want == EXPECTED_PROVISIONING:
+        return want
+    host = os.environ.get(EXPECTED_HOST_ENV) or DEFAULT_HOST
+    if want == _SPOT and host in SPOT_HOSTS:
+        return want
+    raise StepFailed(f"{EXPECTED_PROVISIONING_ENV}={want!r} is not accepted on {host!r} "
+                     f"(on-demand, or spot on {sorted(SPOT_HOSTS)})")
 
 
 class Skip(Exception):
@@ -232,7 +252,7 @@ def step_t21_t220(args) -> dict:
         problems += integrity
         cloud, itype = expected_host()
         expect = {"cloud_provider": cloud, "instance_type": itype,
-                  "provisioning_model": EXPECTED_PROVISIONING,
+                  "provisioning_model": expected_provisioning(),
                   "provisioning_model_problem": None}
         for k, v in expect.items():
             if row.get(k) != v:

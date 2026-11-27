@@ -57,6 +57,35 @@
 # stops the session) and block 3 ending at postflight; no gate after block 2
 # (P3's gate was P6's). The record is attnbench_backups/aws_p6_p5_<UTC>/.
 #
+# P6 on Spot (the researcher's task of 27 Nov 2026; docs/launch_cards/aws_p6_p5_spot.md):
+#
+#   caffeinate -i bash scripts/aws_p3_driver.sh P6 spot
+#
+# The launcher's spot-first mode: each pass of the window asks for a one-time
+# Spot p5.4xlarge (bid at most the on-demand $8.944/h) in 2b, 2c and 2a, then
+# on-demand in 2b, 2c and 2a; no Spot request when the Spot quota reads under
+# 16 vCPU. On a Spot instance a block's poll also reads the instance's
+# interruption notice (IMDSv2 spot/instance-action), and a lost poll reads the
+# instance's state reason. An interruption (the notice, or the instance
+# terminated with Server.SpotInstanceTermination, or a pull cut by either)
+# discards the block it hit in full, as P4's Spot blocks were (plan Appendix A,
+# 15 Nov 2026: "An interrupted block is still discarded in full and rerun on a
+# new instance"). The driver then: tears the instance down; counts what it
+# cost at the rate, from launch to the teardown, rounded up; relaunches at
+# most twice, in block 1's zone (P4's rule: later blocks run in b1's zone),
+# Spot then on-demand, for a window of up to 60 min, before the deadline; sets
+# the new instance's hard delete to what is left of P6's Rs 5,940 in all
+# (never more than +359 min, its halt 47 min earlier, never more than +312),
+# and stops if that halt cannot fit the blocks left (the card's minutes);
+# boots, deploys and bootstraps it as the first; requires it to match the
+# first instance (type, zone, GPU and driver, CPU model, vCPUs); sends the
+# finished blocks back (one tar, every file's sha256 checked on the instance);
+# runs the image and dense-backend check (block 1's abort gate) again before a
+# later block; and reruns the interrupted block from its start. The Mac's
+# prediction store of an interrupted attempt is set aside with its logs
+# (attempt_N/), so a rerun block 3 commits its own prediction. A third
+# interruption stops the session with what it has.
+#
 # Test mode (tests/test_aws_p3_driver.py, the fake remote): P3_DRY=1 lets P3_*
 # variables point the AWS side, the paths and the clock at fakes. Without
 # P3_DRY=1 any P3_* variable is refused.
@@ -72,6 +101,12 @@ fi
 WT="$P3_DRIVER_WT"
 PAIRING="${1:-P3}"
 case "$PAIRING" in P3|P6) ;; *) echo "REFUSING: the pairing is '$PAIRING', not P3 or P6; nothing launched" >&2; exit 1 ;; esac
+SPOT=0
+case "${2:-}" in
+  "") ;;
+  spot) [[ "$PAIRING" == P6 ]] || { echo "REFUSING: spot is for P6 only; nothing launched" >&2; exit 1; }; SPOT=1 ;;
+  *) echo "REFUSING: the second argument is '${2}', not spot; nothing launched" >&2; exit 1 ;;
+esac
 
 REC_BASE="$HOME/Desktop/research/attnbench_backups"
 AWS_ENV="$HOME/.attnbench/aws_env.sh"
@@ -103,6 +138,14 @@ if [[ "$PAIRING" == P6 ]]; then
   BLOCKS_LAST=""                     # block 3 ends at postflight (no delay injection)
   CRED_NEED_S=34200                  # 9.5 h: 3 h + 359 min = 9.0 h, and a margin
 fi
+# Spot (P6 only): the bid is the on-demand price (p5.4xlarge in Sydney, the price
+# file of 20 Nov 2026), so the rate above bounds a Spot hour too.
+SPOT_MAX_USD=8.944
+MAX_RELAUNCHES=2; RELAUNCH_WINDOW_MAX=60
+# A relaunched instance's halt must fit the blocks left, at the card's minutes:
+# boot, deploy, bootstrap and the backend check 20; then P3's blocks on the same
+# AMD host (26 Nov 2026): b1 35, b2 81, b3 99.
+SETUP_MIN=20; BLOCK_MIN_b1=35; BLOCK_MIN_b2=81; BLOCK_MIN_b3=99
 PULL_MARGIN_MIN=10                   # the last pull starts 10 min before the halt
 # The final re-pull of every step directory, after all three blocks were pulled
 # and checked, is off unless P3_DRIVER_FINAL_REPULL=1 (26 Nov 2026: it re-sends
@@ -117,6 +160,7 @@ if [[ "${P3_DRY:-}" == 1 ]]; then    # the fake remote, never AWS
   NOW_EPOCH="${P3_NOW_EPOCH:-$NOW_EPOCH}"
   [[ -n "${P3_PULL_DEADLINE_S:-}" ]] && PULL_DEADLINE_S="$P3_PULL_DEADLINE_S"
   PUSH_EVERY_S="${P3_PUSH_EVERY_S:-$PUSH_EVERY_S}"
+  CAP="${P3_CAP:-$CAP}"
 elif env | grep '^P3_' | grep -qv '^P3_DRIVER_'; then
   echo "REFUSING: P3_* variables are set but P3_DRY is not 1; nothing launched" >&2; exit 1
 fi
@@ -158,6 +202,8 @@ export AWS_SESSION_REGION=ap-southeast-2 AWS_SESSION_AZS="$AZS"
 export AWS_RATE_INR_HR=$RATE AWS_COST_CAP_INR=$CAP AWS_HALT_MINUTES=$HALT_MIN AWS_MAX_RUN_MINUTES=$DELETE_MIN
 export AWS_LAUNCH_WINDOW_MINUTES=$WINDOW_MIN
 export AWS_AMI_ID=ami-096c5dc30364c9041
+(( SPOT )) && export AWS_PROVISIONING=spot-first AWS_SPOT_MAX_PRICE_USD=$SPOT_MAX_USD
+HALT_MIN_FIRST=$HALT_MIN; DELETE_MIN_FIRST=$DELETE_MIN
 R=(--profile attnbench --region ap-southeast-2)
 KH="$REC/known_hosts"
 SSH_OPTS=(-i "$AWS_SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new
@@ -259,15 +305,22 @@ else
 fi
 
 printf 'start\t%s\t%s\n' "$(date -u +%FT%TZ)" "$REC" >> "$WINDOWS"
-status "LAUNCHING $PAIRING commit ${COMMIT:0:7} ($ITYPE_WANT; window ${WINDOW_MIN} min, a pass every 5 min; halt +$HALT_MIN, delete +$DELETE_MIN, cap Rs $CAP; progress in launcher.log)"
-echo launch | "${LAUNCH[@]}" 2>&1 | sed -u -E "s/${ATTNBENCH_AWS_ACCOUNT}/<account>/g" | tee "$REC/launcher.log"
-LRC=${PIPESTATUS[1]}
-LOUT="$(cat "$REC/launcher.log")"
-ID="$(sed -n 's/^INSTANCE_ID=//p' <<<"$LOUT")"
-LZONE="$(sed -n 's/^LAUNCH_ZONE=//p' <<<"$LOUT" | tail -1)"
-LRESULT="$(sed -n 's/^LAUNCH_RESULT=//p' <<<"$LOUT" | tail -1)"
-PASSES="$(sed -n 's/^WINDOW_PASSES=//p' <<<"$LOUT" | tail -1)"
-NREFUSED="$(sed -n 's/^CAPACITY_REFUSALS=//p' <<<"$LOUT" | tail -1)"
+status "LAUNCHING $PAIRING commit ${COMMIT:0:7} ($ITYPE_WANT$( (( SPOT )) && echo ", Spot then on-demand in each pass, bid at most \$$SPOT_MAX_USD/h"); window ${WINDOW_MIN} min, a pass every 5 min; halt +$HALT_MIN, delete +$DELETE_MIN, cap Rs $CAP; progress in launcher.log)"
+# launch LOG: one launcher run, its output in LOG; sets LRC ID LZONE LRESULT PASSES NREFUSED NEW_MARKET.
+launch() {
+  local lout
+  echo launch | "${LAUNCH[@]}" 2>&1 | sed -u -E "s/${ATTNBENCH_AWS_ACCOUNT}/<account>/g" | tee "$1"
+  LRC=${PIPESTATUS[1]}
+  lout="$(cat "$1")"
+  ID="$(sed -n 's/^INSTANCE_ID=//p' <<<"$lout")"
+  LZONE="$(sed -n 's/^LAUNCH_ZONE=//p' <<<"$lout" | tail -1)"
+  LRESULT="$(sed -n 's/^LAUNCH_RESULT=//p' <<<"$lout" | tail -1)"
+  PASSES="$(sed -n 's/^WINDOW_PASSES=//p' <<<"$lout" | tail -1)"
+  NREFUSED="$(sed -n 's/^CAPACITY_REFUSALS=//p' <<<"$lout" | tail -1)"
+  NEW_MARKET="$(sed -n 's/^LAUNCH_MARKET=//p' <<<"$lout" | tail -1)"
+  [[ "$NEW_MARKET" == spot ]] || NEW_MARKET=on-demand
+}
+launch "$REC/launcher.log"
 if [[ $LRC -ne 0 || ! "$ID" =~ ^i- ]]; then
   if [[ "$LRESULT" == SSH_SOURCE_NOT_ADMITTED ]]; then
     win_end NOTHING_CREATED
@@ -282,11 +335,16 @@ if [[ $LRC -ne 0 || ! "$ID" =~ ^i- ]]; then
   bash "$CLEANUP"; exit 1
 fi
 win_end "LAUNCHED $ID"
-LAUNCH_EPOCH="$(date -u +%s)"
-DELETE_AT=$(( LAUNCH_EPOCH + DELETE_MIN * 60 ))   # the hard delete, as the launcher schedules it
-PULL_DEADLINE=$(( LAUNCH_EPOCH + ${PULL_DEADLINE_S:-$(( (HALT_MIN - PULL_MARGIN_MIN) * 60 ))} ))
-echo "$ID" > "$REC/instance_id.txt"
-status "LAUNCHED $ID in zone ${LZONE:-unknown} on pass ${PASSES:-?} (capacity refusals before it: ${NREFUSED:-0}); halt $(date -u -r $(( LAUNCH_EPOCH + HALT_MIN * 60 )) +%FT%TZ 2>/dev/null), delete $(date -u -r $(( LAUNCH_EPOCH + DELETE_MIN * 60 )) +%FT%TZ 2>/dev/null) (about)"
+MARKET="$NEW_MARKET"; FIRST_ZONE="$LZONE"
+ATTEMPT=1; RELAUNCHES=0; SPENT_INR=0; NOTICE_SEEN=0
+started() {    # a new instance: its times and its record
+  LAUNCH_EPOCH="$(date -u +%s)"
+  DELETE_AT=$(( LAUNCH_EPOCH + DELETE_MIN * 60 ))   # the hard delete, as the launcher schedules it
+  PULL_DEADLINE=$(( LAUNCH_EPOCH + ${PULL_DEADLINE_S:-$(( (HALT_MIN - PULL_MARGIN_MIN) * 60 ))} ))
+  echo "$ID" > "$REC/instance_id.txt"
+  status "LAUNCHED $ID ($MARKET) in zone ${LZONE:-unknown} on pass ${PASSES:-?} (capacity refusals before it: ${NREFUSED:-0}); halt $(date -u -r $(( LAUNCH_EPOCH + HALT_MIN * 60 )) +%FT%TZ 2>/dev/null), delete $(date -u -r $(( LAUNCH_EPOCH + DELETE_MIN * 60 )) +%FT%TZ 2>/dev/null) (about)"
+}
+started
 
 TORN=0
 teardown() {   # retried until EC2 reads the instance back terminated
@@ -305,34 +363,44 @@ teardown() {   # retried until EC2 reads the instance back terminated
 stop() { teardown "$1"; status "$2"; exit 1; }
 trap 'teardown "driver interrupted"; status "STOPPED driver interrupted; torn down"; exit 1' INT TERM HUP
 
-status "WAITING for running + SSH"
-command aws ec2 wait instance-running "${R[@]}" --instance-ids "$ID"
-DNS="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].PublicDnsName' --output text)"
-IZONE="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].Placement.AvailabilityZone' --output text)"
-ITYPE="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].InstanceType' --output text)"
-printf 'launcher_zone\t%s\ninstance_zone\t%s\ninstance_type\t%s\nwindow_passes\t%s\ncapacity_refusals\t%s\n' \
-  "$LZONE" "$IZONE" "$ITYPE" "${PASSES:-}" "${NREFUSED:-}" > "$REC/placement.txt"
-[[ "$ITYPE" == "$ITYPE_WANT" ]] || stop "instance type '$ITYPE'" "FAIL the instance is not a $ITYPE_WANT"
-H="ubuntu@$DNS"
 rssh() { ssh "${SSH_OPTS[@]}" "$H" "$@"; }
-ok=0
-for i in $(seq 1 "$SSH_TRIES"); do rssh true 2>/dev/null && { ok=1; break; }; sleep "$SSH_WAIT_S"; done
-(( ok )) || stop "no SSH after the boot wait" "FAIL no SSH"
-status "SSH up at +$(( ($(date -u +%s) - LAUNCH_EPOCH) / 60 )) min"
+boot() {       # running, SSH, the deploy, the bootstrap, the host's fingerprint
+  local ok i
+  status "WAITING for running + SSH"
+  command aws ec2 wait instance-running "${R[@]}" --instance-ids "$ID"
+  DNS="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].PublicDnsName' --output text)"
+  IZONE="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].Placement.AvailabilityZone' --output text)"
+  ITYPE="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].InstanceType' --output text)"
+  printf 'launcher_zone\t%s\ninstance_zone\t%s\ninstance_type\t%s\nwindow_passes\t%s\ncapacity_refusals\t%s\nmarket\t%s\n' \
+    "$LZONE" "$IZONE" "$ITYPE" "${PASSES:-}" "${NREFUSED:-}" "$MARKET" > "$REC/placement.txt"
+  [[ "$ITYPE" == "$ITYPE_WANT" ]] || stop "instance type '$ITYPE'" "FAIL the instance is not a $ITYPE_WANT"
+  H="ubuntu@$DNS"
+  ok=0
+  for i in $(seq 1 "$SSH_TRIES"); do rssh true 2>/dev/null && { ok=1; break; }; sleep "$SSH_WAIT_S"; done
+  (( ok )) || stop "no SSH after the boot wait" "FAIL no SSH"
+  status "SSH up at +$(( ($(date -u +%s) - LAUNCH_EPOCH) / 60 )) min"
 
-status "DEPLOYING bundle ${COMMIT:0:7}"
-BUNDLE="${TMPDIR:-/tmp}/p3_$UTC.bundle"
-git bundle create "$BUNDLE" HEAD >/dev/null 2>&1
-scp "${SSH_OPTS[@]}" "$BUNDLE" "$H:~/" || stop "scp failed" "FAIL deploy"
-rssh "set -e; cd ~/attnbench_scaffold; git fetch -q ~/p3_$UTC.bundle HEAD; git checkout -q --detach $COMMIT; test -z \"\$(git status --porcelain)\"; git rev-parse HEAD; nvidia-smi -L; nproc; free -g | head -2" \
-  > "$REC/deploy.txt" 2>&1 || { cat "$REC/deploy.txt"; stop "checkout failed" "FAIL deploy"; }
-cat "$REC/deploy.txt"
-status "BOOTSTRAP: $BOOTSTRAP"
-AWS_SSH_KEY="$AWS_SSH_KEY" AWS_KNOWN_HOSTS="$KH" ATTNBENCH_PYTHON="$VPY" PYTHONDONTWRITEBYTECODE=1 \
-  bash "$BOOTSTRAP" "$H" > "$REC/bootstrap.txt" 2>&1; BRC=$?
-cat "$REC/bootstrap.txt"
-[[ $BRC -eq 0 && "$(tail -1 "$REC/bootstrap.txt")" == BOOTSTRAP_OK ]] || stop "bootstrap failed rc=$BRC" "FAIL bootstrap"
-status "BOOTSTRAP ok at +$(( ($(date -u +%s) - LAUNCH_EPOCH) / 60 )) min"
+  status "DEPLOYING bundle ${COMMIT:0:7}"
+  BUNDLE="${TMPDIR:-/tmp}/p3_$UTC.bundle"
+  [[ -e "$BUNDLE" ]] || git bundle create "$BUNDLE" HEAD >/dev/null 2>&1
+  scp "${SSH_OPTS[@]}" "$BUNDLE" "$H:~/" || stop "scp failed" "FAIL deploy"
+  rssh "set -e; cd ~/attnbench_scaffold; git fetch -q ~/p3_$UTC.bundle HEAD; git checkout -q --detach $COMMIT; test -z \"\$(git status --porcelain)\"; git rev-parse HEAD; nvidia-smi -L; nproc; free -g | head -2" \
+    > "$REC/deploy.txt" 2>&1 || { cat "$REC/deploy.txt"; stop "checkout failed" "FAIL deploy"; }
+  cat "$REC/deploy.txt"
+  status "BOOTSTRAP: $BOOTSTRAP"
+  AWS_SSH_KEY="$AWS_SSH_KEY" AWS_KNOWN_HOSTS="$KH" ATTNBENCH_PYTHON="$VPY" PYTHONDONTWRITEBYTECODE=1 \
+    bash "$BOOTSTRAP" "$H" > "$REC/bootstrap.txt" 2>&1; BRC=$?
+  cat "$REC/bootstrap.txt"
+  [[ $BRC -eq 0 && "$(tail -1 "$REC/bootstrap.txt")" == BOOTSTRAP_OK ]] || stop "bootstrap failed rc=$BRC" "FAIL bootstrap"
+  status "BOOTSTRAP ok at +$(( ($(date -u +%s) - LAUNCH_EPOCH) / 60 )) min"
+  # The host every later instance must match (P4's rule, 15 Nov 2026): type, zone,
+  # GPU and driver, CPU model, vCPUs.
+  { printf 'instance_type\t%s\nzone\t%s\n' "$ITYPE" "$IZONE"
+    rssh "nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1; grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//'; nproc" 2>/dev/null \
+      | sed 's/^/host\t/'; } > "$REC/host.txt"
+}
+boot
+cp "$REC/host.txt" "$REC/host_first.txt"
 
 # --- the store: witness what the instance spooled ---------------------------------
 mkdir -p "$REC/store"
@@ -424,26 +492,46 @@ whatever_there_is() {   # pull every step directory that exists, as a last act
   pull_logs
 }
 
-run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the deadline
-  local b="$1" out ex fails=0 now mins st said_stopped=0
+# A Spot instance's interruption: the notice seen at a poll, or the instance
+# shutting down or terminated by EC2 with Server.SpotInstanceTermination.
+spot_interrupted() {
+  [[ "$MARKET" == spot ]] || return 1
+  (( NOTICE_SEEN )) && return 0
+  local st why
+  st="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)" || return 1
+  why="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].StateReason.Code' --output text 2>/dev/null)" || return 1
+  [[ ( "$st" == shutting-down || "$st" == terminated ) && "$why" == Server.SpotInstanceTermination ]]
+}
+# The poll's IMDSv2 read of the interruption notice (Spot only): its body, if any,
+# follows the marker line.
+SPOT_POLL='; echo ---SPOT---; t=$(curl -s -f -m 2 -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60") && curl -s -f -m 2 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/spot/instance-action; true'
+
+run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the deadline; 3 Spot interrupted
+  local b="$1" out ex fails=0 now mins st said_stopped=0 extra="" notice
+  [[ "$MARKET" == spot ]] && extra="$SPOT_POLL"
   status "BLOCK $b START ($(block_dirs "$b"))"
-  rssh "nohup bash -c 'cd ~/attnbench_scaffold && ATTNBENCH_P3_PAIRING=$PAIRING ATTNBENCH_P3_HALT_MIN=$HALT_MIN bash scripts/aws_p3_instance.sh $b ~/p3_session' >/dev/null 2>&1 < /dev/null &" \
-    || { status "BLOCK $b could not be started over SSH"; return 1; }
+  rssh "nohup bash -c 'cd ~/attnbench_scaffold && ATTNBENCH_P3_MARKET=$MARKET ATTNBENCH_P3_PAIRING=$PAIRING ATTNBENCH_P3_HALT_MIN=$HALT_MIN bash scripts/aws_p3_instance.sh $b ~/p3_session' >/dev/null 2>&1 < /dev/null &" \
+    || { status "BLOCK $b could not be started over SSH"; spot_interrupted && return 3; return 1; }
   while :; do
     sleep "$POLL_S"
     now="$(date -u +%s)"; mins=$(( (now - LAUNCH_EPOCH) / 60 ))
-    if out="$(rssh "cat ~/p3/$b.exit 2>/dev/null; echo ---; grep -E '^=====|^-----|BLOCK ENDED|STOPPED|REFUSING|P3_HALT_WARN' ~/p3/$b.log 2>/dev/null | tail -2" 2>&1)"; then
+    if out="$(rssh "cat ~/p3/$b.exit 2>/dev/null; echo ---; grep -E '^=====|^-----|BLOCK ENDED|STOPPED|REFUSING|P3_HALT_WARN' ~/p3/$b.log 2>/dev/null | tail -2$extra" 2>&1)"; then
       (( fails )) && status "SSH back after $fails failed poll(s)"
       fails=0
+      notice="$(sed -n '/^---SPOT---$/,$p' <<<"$out" | grep -o '"action"[^,}]*' | head -1 || true)"
+      [[ -n "$notice" ]] && { NOTICE_SEEN=1; status "SPOT INTERRUPTION NOTICE in $b at +${mins}min ($notice)"; }
       witness_store || true
       ex="$(head -1 <<<"$out" | cut -f1 | grep -E '^[0-9]+$' || true)"
-      status "POLL $b +${mins}min exit='${ex}' :: $(tr '\n' ' ' <<<"$out" | cut -c1-260)"
+      status "POLL $b +${mins}min exit='${ex}' :: $(sed '/^---SPOT---$/,$d' <<<"$out" | tr '\n' ' ' | cut -c1-260)"
       if [[ -n "$ex" ]]; then
         pull_logs
         [[ "$ex" == 0 ]] || { status "BLOCK $b FAILED exit $ex"; return 1; }
-        pull "$b" $(block_dirs "$b") || return 1
+        pull "$b" $(block_dirs "$b") || { spot_interrupted && { status "SPOT INTERRUPTED during the pull of $b"; return 3; }; return 1; }
         return 0
       fi
+      (( NOTICE_SEEN )) && return 3
     else
       fails=$(( fails + 1 ))
       sg_admits; SG=$?
@@ -456,6 +544,10 @@ run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the 
       # The instance's own state (26 Nov 2026): a stopped instance is said at once.
       st="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
         --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)" || st="unreadable"
+      if spot_interrupted; then
+        status "SPOT INTERRUPTED in $b at +${mins}min: the instance is '$st' (Server.SpotInstanceTermination)"
+        return 3
+      fi
       if [[ "$st" == stopped || "$st" == stopping ]]; then
         (( said_stopped )) || status "INSTANCE STOPPED ($st) in $b at +${mins}min: it halted itself; SSH cannot come back. The card's recovery (one start, only to pull data, before the delete) or Ctrl-C to tear down"
         said_stopped=1
@@ -470,9 +562,96 @@ run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the 
   done
 }
 
+# --- a Spot interruption: discard the block, relaunch, restore, resume -------------
+ceil_inr() { awk -v r="$RATE" -v m="$1" 'BEGIN{c=r*m/60; i=int(c); if (c>i) i++; print i}'; }
+archive_attempt() {   # the interrupted instance's files, set aside as attempt_N/
+  local d="$REC/attempt_$ATTEMPT" f
+  mkdir -p "$d"
+  for f in "$REC"/b?.log "$REC"/b?.exit "$REC"/b1_backends.json "$REC"/relaunch_backends.json "$REC/store" \
+           "$REC/store_witness.tsv" "$REC/placement.txt" "$REC/deploy.txt" "$REC/bootstrap.txt" \
+           "$REC/instance_id.txt" "$REC/host.txt"; do
+    [[ -e "$f" ]] && mv "$f" "$d/"
+  done
+  mkdir -p "$REC/store"
+}
+restore_session() {   # restore_session B: the blocks before B, checked file by file on the instance
+  local b="$1" d="$REC/restore_$ATTEMPT" n got x
+  mkdir -p "$d"
+  ( cd "$REC/session" && find . -type f | LC_ALL=C sort > "$d/files" && tr '\n' '\0' < "$d/files" \
+      | xargs -0 shasum -a 256 > "$d/restore.sha256" && tar cf "$d/restore.tar" -T "$d/files" ) \
+    || stop "restore not packed" "DONE FAILED the finished blocks could not be packed for the new instance"
+  n="$(wc -l < "$d/restore.sha256" | tr -d ' ')"
+  rssh "mkdir -p ~/p3 && test ! -e ~/p3_session && mkdir ~/p3_session" \
+    || stop "restore" "DONE FAILED the new instance already has a session, or SSH failed"
+  scp "${SSH_OPTS[@]}" "$d/restore.tar" "$d/restore.sha256" "$H:~/p3/" >/dev/null 2>&1 \
+    || stop "restore scp" "DONE FAILED the finished blocks could not be sent to the new instance"
+  got="$(rssh "cd ~/p3_session && tar xf ~/p3/restore.tar && sha256sum -c ~/p3/restore.sha256 2>/dev/null | grep -c ': OK\$'" 2>/dev/null)"
+  [[ "$got" == "$n" ]] || stop "restore check" "DONE FAILED the restored blocks do not check on the new instance (${got:-0} of $n files)"
+  for x in b1 b2 b3; do
+    [[ "$x" == "$b" ]] && break
+    rssh "printf '0\t%s\trestored, attempt %s\n' $(date -u +%FT%TZ) $ATTEMPT > ~/p3/$x.exit && date -u +%FT%TZ > ~/p3/$x.started" \
+      || stop "restore exit files" "DONE FAILED the finished blocks' exit files could not be written"
+  done
+  status "RESTORED the blocks before $b on the new instance: $n files, every sha256 checked there"
+}
+relaunch() {   # relaunch B: B is discarded; a new instance, ready to run B from its start
+  local b="$1" now mins used remaining del halt need x win
+  NOTICE_SEEN=0
+  teardown "Spot interruption in block $b"
+  now="$(date -u +%s)"; mins=$(( (now - LAUNCH_EPOCH + 59) / 60 ))
+  used="$(ceil_inr "$mins")"; SPENT_INR=$(( SPENT_INR + used ))
+  printf 'attempt\t%s\t%s\t%s\t%s\tmin %s\tRs %s\tinterrupted in %s\n' "$ATTEMPT" "$ID" "$MARKET" "$FIRST_ZONE" "$mins" "$used" "$b" >> "$REC/cost.tsv"
+  status "INTERRUPTED attempt $ATTEMPT in block $b after $mins min (Rs $used at the rate; Rs $SPENT_INR of the Rs $CAP cap counted); block $b is discarded in full"
+  (( RELAUNCHES < MAX_RELAUNCHES )) || { status "DONE FAILED Spot interrupted in block $b with all $MAX_RELAUNCHES relaunches used; blocks before $b in $REC/session"; exit 1; }
+  remaining=$(( CAP - SPENT_INR ))
+  del="$(awk -v c="$remaining" -v r="$RATE" 'BEGIN{print int(c * 60 / r)}')"
+  (( del > DELETE_MIN_FIRST )) && del=$DELETE_MIN_FIRST
+  halt=$(( del - (DELETE_MIN_FIRST - HALT_MIN_FIRST) )); (( halt > HALT_MIN_FIRST )) && halt=$HALT_MIN_FIRST
+  need=$SETUP_MIN; x="$b"
+  for x in b1 b2 b3; do [[ "$x" < "$b" ]] || need=$(( need + $(eval "echo \$BLOCK_MIN_$x") )); done
+  (( halt - PULL_MARGIN_MIN >= need )) || { status "DONE FAILED Spot interrupted in block $b: what is left of the cap, Rs $remaining, allows a halt at +$halt min, short of the $need min the blocks from $b need (+$PULL_MARGIN_MIN for the last pull); no relaunch"; exit 1; }
+  now="$(date -u +%s)"
+  (( now < END_EPOCH )) || { status "DONE FAILED Spot interrupted in block $b after 18:30 UTC on 2 Dec 2026: no relaunch"; exit 1; }
+  win=$(( (END_EPOCH - now) / 60 )); (( win > RELAUNCH_WINDOW_MAX )) && win=$RELAUNCH_WINDOW_MAX
+  (( win >= 5 )) || { status "DONE FAILED Spot interrupted in block $b: under 5 min left before the deadline; no relaunch"; exit 1; }
+  archive_attempt
+  RELAUNCHES=$(( RELAUNCHES + 1 )); ATTEMPT=$(( ATTEMPT + 1 ))
+  HALT_MIN=$halt; DELETE_MIN=$del
+  export AWS_SESSION_AZS="$FIRST_ZONE" AWS_COST_CAP_INR=$remaining AWS_HALT_MINUTES=$halt AWS_MAX_RUN_MINUTES=$del AWS_LAUNCH_WINDOW_MINUTES=$win
+  status "RELAUNCH $RELAUNCHES of $MAX_RELAUNCHES: $ITYPE_WANT in $FIRST_ZONE (block 1's zone), Spot then on-demand, window $win min; halt +$halt, delete +$del, cap Rs $remaining; then block $b from its start"
+  launch "$REC/launcher_relaunch$RELAUNCHES.log"
+  if [[ $LRC -ne 0 || ! "$ID" =~ ^i- ]]; then
+    printf 'relaunch\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$REC" "NOTHING_CREATED rc=$LRC ${LRESULT:-}" >> "$WINDOWS"
+    status "DONE FAILED Spot interrupted in block $b; relaunch $RELAUNCHES created nothing (rc $LRC${LRESULT:+, $LRESULT}); blocks before $b in $REC/session"
+    bash "$CLEANUP"; exit 1
+  fi
+  printf 'relaunch\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$REC" "LAUNCHED $ID" >> "$WINDOWS"
+  MARKET="$NEW_MARKET"; TORN=0
+  started
+  boot
+  if ! diff -q "$REC/host_first.txt" "$REC/host.txt" >/dev/null; then
+    stop "host differs" "DONE FAILED the relaunched instance does not match the first ($(diff "$REC/host_first.txt" "$REC/host.txt" | grep '^>' | tr '\n' ' ' | cut -c1-160))"
+  fi
+  [[ "$b" == b1 ]] || restore_session "$b"
+  if [[ "$PAIRING" == P6 && "$b" != b1 ]]; then   # block 1's abort gate, again on the new instance
+    if ! rssh "cd ~/attnbench_scaffold && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 scripts/p6_backend_check.py --out ~/p3/relaunch_backends.json" > "$REC/relaunch_backends.txt" 2>&1; then
+      scp "${SSH_OPTS[@]}" "$H:~/p3/relaunch_backends.json" "$REC/" >/dev/null 2>&1 || true
+      stop "backend check" "DONE FAILED the image and dense-backend check failed on the relaunched instance ($REC/relaunch_backends.txt)"
+    fi
+    scp "${SSH_OPTS[@]}" "$H:~/p3/relaunch_backends.json" "$REC/" >/dev/null 2>&1 || true
+    status "BACKEND CHECK passed on the relaunched instance"
+  fi
+}
+
 GATE=""
-for B in b1 b2 b3; do
+BLOCKS=(b1 b2 b3); k=0
+while (( k < ${#BLOCKS[@]} )); do
+  B="${BLOCKS[k]}"
   run_block "$B"; brc=$?
+  if (( brc == 3 )); then
+    relaunch "$B"
+    continue
+  fi
   if (( brc != 0 )); then
     whatever_there_is
     stop "block $B rc=$brc" "DONE FAILED at block $B (rc $brc); results so far in $REC/session"
@@ -491,6 +670,7 @@ for B in b1 b2 b3; do
     echo "$GATE" > "$REC/gate.txt"
     status "GATE after block 2 (35 cells; P6 only, block 3 runs whatever it reads): $GATE"
   fi
+  k=$(( k + 1 ))
 done
 if [[ "$FINAL_REPULL" == 1 ]]; then
   whatever_there_is
@@ -501,4 +681,6 @@ fi
 push_halt teardown
 rssh 'ls ~/.cache/huggingface/hub/*/snapshots/ 2>&1; du -sh ~/.cache/huggingface 2>&1' > "$REC/hf_snapshots.txt" 2>&1 || true
 teardown "all three blocks passed"
-status "DONE OK all three blocks passed and pulled${GATE:+; $GATE}"
+(( RELAUNCHES )) && printf 'attempt\t%s\t%s\t%s\t%s\tmin %s\tRs %s\tfinished\n' "$ATTEMPT" "$ID" "$MARKET" "$FIRST_ZONE" \
+  "$(( ($(date -u +%s) - LAUNCH_EPOCH + 59) / 60 ))" "$(ceil_inr $(( ($(date -u +%s) - LAUNCH_EPOCH + 59) / 60 )))" >> "$REC/cost.tsv"
+status "DONE OK all three blocks passed and pulled${GATE:+; $GATE}$( (( RELAUNCHES )) && echo "; relaunches $RELAUNCHES")"

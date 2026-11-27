@@ -59,3 +59,41 @@ def test_the_preflight_reads_its_expectation_from_the_table():
 def test_the_file_is_outside_the_timed_path_pin():
     import timed_path
     assert "scripts/t227_steps.py" not in timed_path.pin_closure("HEAD")
+
+
+# --- P6 on Spot (the researcher's task of 27 Nov 2026): spot only on P6's host,
+# only when the session names it; on-demand otherwise ------------------------------
+
+@pytest.mark.parametrize("host", [None, "gcp:g2-standard-8", "aws:g6.2xlarge", "aws:p5.4xlarge"])
+def test_the_default_provisioning_is_on_demand(monkeypatch, host):
+    monkeypatch.delenv(S.EXPECTED_PROVISIONING_ENV, raising=False)
+    if host is None:
+        monkeypatch.delenv(S.EXPECTED_HOST_ENV, raising=False)
+    else:
+        monkeypatch.setenv(S.EXPECTED_HOST_ENV, host)
+    assert S.expected_provisioning() == "on-demand"
+
+
+def test_spot_is_accepted_on_p6s_host_when_named(monkeypatch):
+    monkeypatch.setenv(S.EXPECTED_HOST_ENV, "aws:p5.4xlarge")
+    monkeypatch.setenv(S.EXPECTED_PROVISIONING_ENV, "spot")
+    assert S.expected_provisioning() == "spot"
+
+
+@pytest.mark.parametrize("host,want", [(None, "spot"), ("aws:g6.2xlarge", "spot"),
+                                       ("gcp:g2-standard-8", "spot"), ("aws:p5.4xlarge", "SPOT"),
+                                       ("aws:p5.4xlarge", "dws-flex-start")])
+def test_any_other_provisioning_is_refused(monkeypatch, host, want):
+    if host is None:
+        monkeypatch.delenv(S.EXPECTED_HOST_ENV, raising=False)
+    else:
+        monkeypatch.setenv(S.EXPECTED_HOST_ENV, host)
+    monkeypatch.setenv(S.EXPECTED_PROVISIONING_ENV, want)
+    with pytest.raises(S.StepFailed, match="is not accepted on"):
+        S.expected_provisioning()
+
+
+def test_the_preflight_reads_its_provisioning_from_the_rule():
+    src = (ROOT / "scripts" / "t227_steps.py").read_text()
+    body = src[src.index("def step_t21_t220"):src.index("densities = None", src.index("def step_t21_t220"))]
+    assert '"provisioning_model": expected_provisioning(),' in body

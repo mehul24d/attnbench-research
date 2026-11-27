@@ -95,9 +95,17 @@ aws_launch_policy_check() {
 # capacity; 1 otherwise. AWS_ZONES_REFUSED lists the zones refused for
 # capacity, in order.
 AWS_CAPACITY_ERROR="InsufficientInstanceCapacity"
+AWS_SPOT_PRICE_ERROR="SpotMaxPriceTooLow"
+AWS_SPOT_QUOTA_ERROR="MaxSpotInstanceCountExceeded"
 
 aws_is_capacity_refusal() {     # aws_is_capacity_refusal "AWS error text"
-  [[ "$1" == *"($AWS_CAPACITY_ERROR)"* ]]
+  [[ "$1" == *"($AWS_CAPACITY_ERROR)"* ]] && return 0
+  # A Spot request (AWS_ATTEMPT_MODE=spot) may also be refused because the
+  # Spot price is above its maximum or the account's Spot vCPU quota is used:
+  # each leaves nothing and lets the next request go on (the researcher's task
+  # of 27 Nov 2026, P6 on Spot).
+  [[ "${AWS_ATTEMPT_MODE:-}" == spot ]] || return 1
+  [[ "$1" == *"($AWS_SPOT_PRICE_ERROR)"* || "$1" == *"($AWS_SPOT_QUOTA_ERROR)"* ]]
 }
 
 aws_zone_list() {               # aws_zone_list REGION "ZONE ZONE ..."
@@ -193,6 +201,10 @@ _aws_try_zone() {               # _aws_try_zone ATTEMPT_FN CONFIRM_FN PRECHECK_F
     echo "session has no instance and no volume (above); no other zone is tried." >&2
     return 1
   fi
+  if [[ "${AWS_ATTEMPT_MODE:-}" == spot && "$AWS_ATTEMPT_ERR" == *"($AWS_SPOT_QUOTA_ERROR)"* ]]; then
+    AWS_SPOT_OFF=1
+    echo "Spot quota refused ($AWS_SPOT_QUOTA_ERROR): no more Spot requests in this window; on-demand goes on."
+  fi
   return 2
 }
 
@@ -207,22 +219,33 @@ aws_launch_window() {           # aws_launch_window ATTEMPT_FN CONFIRM_FN PRECHE
   local interval_s=$(( AWS_RETRY_INTERVAL_MINUTES * 60 )) window_s=$(( window * 60 ))
   local passes=$(( (window_s + interval_s - 1) / interval_s ))
   (( passes < 1 )) && passes=1
-  local z n total=$# rc start now next pass_start
-  AWS_LAUNCHED_ZONE="" AWS_ZONES_REFUSED="" AWS_WINDOW_PASSES=0 AWS_CAPACITY_REFUSALS=0
-  AWS_ATTEMPT_ID="" AWS_ATTEMPT_ERR=""
+  local z n total rc start now next pass_start mode modes="${AWS_PASS_MODES:--}" label
+  AWS_LAUNCHED_ZONE="" AWS_LAUNCHED_MODE="" AWS_ZONES_REFUSED="" AWS_WINDOW_PASSES=0 AWS_CAPACITY_REFUSALS=0
+  AWS_ATTEMPT_ID="" AWS_ATTEMPT_ERR="" AWS_SPOT_OFF="${AWS_SPOT_OFF:-0}"
   start="$(command date -u +%s)"
   pass_start="$start"
   while :; do
     AWS_WINDOW_PASSES=$(( AWS_WINDOW_PASSES + 1 ))
-    AWS_ZONES_REFUSED="" n=0
+    AWS_ZONES_REFUSED="" n=0 total=0
+    for mode in $modes; do [[ "$mode" == spot && "$AWS_SPOT_OFF" == 1 ]] || total=$(( total + $# )); done
     (( passes > 1 )) && echo "Pass $AWS_WINDOW_PASSES of at most $passes (window $window min, a pass every $AWS_RETRY_INTERVAL_MINUTES min)."
-    for z in "$@"; do
-      n=$(( n + 1 ))
-      rc=0
-      _aws_try_zone "$attempt" "$confirm" "$precheck" "$z" "$n of $total" || rc=$?
-      [[ $rc -eq 2 ]] || return $rc
-      AWS_CAPACITY_REFUSALS=$(( AWS_CAPACITY_REFUSALS + 1 ))
-      AWS_ZONES_REFUSED+="${AWS_ZONES_REFUSED:+ }${z:-any}"
+    for mode in $modes; do
+      # Spot first, then on-demand (AWS_PASS_MODES="spot on-demand"; the
+      # researcher's task of 27 Nov 2026): Spot is left out once its quota
+      # refused or read short (AWS_SPOT_OFF=1). The default "-" is one
+      # on-demand request per zone, as before.
+      for z in "$@"; do
+        [[ "$mode" == spot && "$AWS_SPOT_OFF" == 1 ]] && continue
+        n=$(( n + 1 ))
+        AWS_ATTEMPT_MODE="$mode"
+        label="$n of $total"; [[ "$mode" == - ]] || label+=", $mode"
+        rc=0
+        _aws_try_zone "$attempt" "$confirm" "$precheck" "$z" "$label" || rc=$?
+        [[ $rc -eq 0 ]] && AWS_LAUNCHED_MODE="$mode"
+        [[ $rc -eq 2 ]] || return $rc
+        AWS_CAPACITY_REFUSALS=$(( AWS_CAPACITY_REFUSALS + 1 ))
+        AWS_ZONES_REFUSED+="${AWS_ZONES_REFUSED:+ }${z:-any}"; [[ "$mode" == - ]] || AWS_ZONES_REFUSED+="($mode)"
+      done
     done
     (( AWS_WINDOW_PASSES >= passes )) && break
     next=$(( pass_start + interval_s ))

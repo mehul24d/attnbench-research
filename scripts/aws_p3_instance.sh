@@ -234,6 +234,15 @@ printf '#!/usr/bin/env bash\nexec "%s" "%s/scripts/aws_p3_gsutil.py" "$@"\n' "$P
 chmod +x "$STATE/bin/gsutil"
 export PATH="$STATE/bin:$PATH" ATTNBENCH_BUCKET="gs://p3-mac" ATTNBENCH_P3_STORE="$HOME/p3_store"
 export ATTNBENCH_EXPECTED_HOST="$HOST" ATTNBENCH_PYTHON="$PY" PYTHONDONTWRITEBYTECODE=1
+# P6 on Spot (the researcher's task of 27 Nov 2026): the driver passes the
+# instance's market, and the preflight's T2.20 check then requires the row's
+# provisioning model to be spot (scripts/t227_steps.py, P6's host only).
+case "${ATTNBENCH_P3_MARKET:-on-demand}" in
+  on-demand) ;;
+  spot) [[ "$PAIRING" == P6 ]] || refuse "ATTNBENCH_P3_MARKET=spot is for P6 only"
+        export ATTNBENCH_EXPECTED_PROVISIONING=spot ;;
+  *) refuse "ATTNBENCH_P3_MARKET is '${ATTNBENCH_P3_MARKET}', not on-demand or spot" ;;
+esac
 # The exit path above stands in for session_exit.sh's (see the header).
 export ATTNBENCH_SESSION_EXIT=armed
 

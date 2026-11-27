@@ -829,3 +829,126 @@ def test_the_p3_cards_settings(tmp_path):
 def test_a_cap_short_of_p3s_worst_case_is_refused(tmp_path):
     p, calls = _launch(tmp_path, "P3", env={**P3_ZONES, "AWS_COST_CAP_INR": "1200"})
     assert p.returncode == 1 and "exceeds the cost cap" in p.stderr and calls == []
+
+
+# --- P6 on Spot (the researcher's task of 27 Nov 2026; docs/launch_cards/aws_p6_p5_spot.md):
+# each pass asks for Spot in 2b, 2c, 2a, then on-demand in 2b, 2c, 2a; the bid at most
+# the on-demand price; no Spot request when the quota reads under 16 vCPU -------------
+P6_SPOT = {**REH_ZONES, "AWS_RATE_INR_HR": "990.2", "AWS_COST_CAP_INR": "5940",
+           "AWS_HALT_MINUTES": "312", "AWS_MAX_RUN_MINUTES": "359",
+           "AWS_PROVISIONING": "spot-first", "AWS_SPOT_MAX_PRICE_USD": "8.944"}
+SPOT_OPTS = ("--instance-market-options MarketType=spot,SpotOptions={MaxPrice=8.944,"
+             "SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}")
+
+
+def _tries(calls):
+    """(market, zone) of every create request, in order."""
+    return [("spot" if "--instance-market-options" in c else "on-demand",
+             re.search(r"AvailabilityZone=(\S+)", c).group(1))
+            for c in aws_calls(calls) if c.startswith("ec2 run-instances")]
+
+
+def test_p6_spot_first_asks_spot_in_every_zone_then_on_demand(tmp_path):
+    """Spot refused for capacity in all three zones, on-demand refused in 2b,
+    launched in 2c: every refusal confirmed before the next request; a Spot
+    request carries the capped one-time bid, terminates on its halt and is
+    tagged SPOT; an on-demand one is unchanged."""
+    p, calls = _launch(tmp_path, "P6", env={**P6_SPOT, "FAKE_SPOT_ERROR": "InsufficientInstanceCapacity",
+                                            "FAKE_RUN_REFUSE_ZONES": "ap-southeast-2b"})
+    assert p.returncode == 0, p.stderr
+    assert _tries(calls) == [("spot", "ap-southeast-2b"), ("spot", "ap-southeast-2c"),
+                             ("spot", "ap-southeast-2a"), ("on-demand", "ap-southeast-2b"),
+                             ("on-demand", "ap-southeast-2c")]
+    c = aws_calls(calls)
+    runs = [k for k, x in enumerate(c) if x.startswith("ec2 run-instances")]
+    reads = _confirm_reads(calls)
+    assert len(reads) == 8 and all(any(runs[i] < r < runs[i + 1] for r in reads) for i in range(4))
+    for k in runs[:3]:
+        assert SPOT_OPTS in c[k] and "--instance-initiated-shutdown-behavior terminate" in c[k]
+        assert c[k].count("Key=attnbench-provisioning-model,Value=SPOT") == 2
+    for k in runs[3:]:
+        assert "--instance-market-options" not in c[k] and "--instance-initiated-shutdown-behavior stop" in c[k]
+        assert c[k].count("Key=attnbench-provisioning-model,Value=STANDARD") == 2
+    q = _one(c, "service-quotas get-service-quota")
+    assert "--quota-code L-7212CCBC" in q and "--region ap-southeast-2" in q
+    assert c.index(q) < runs[0]
+    assert "SPOT_QUOTA=16.0" in p.stdout
+    assert "LAUNCH_MARKET=on-demand" in p.stdout and "PROVISIONING_MODEL=STANDARD" in p.stdout
+    assert "LAUNCH_ZONE=ap-southeast-2c" in p.stdout and "CAPACITY_REFUSALS=4" in p.stdout
+    assert "provisioning : Spot first (one-time, max $8.944/h, on-demand $8.944/h), then STANDARD" in p.stdout
+
+
+def test_a_spot_launch_is_marked_spot(tmp_path):
+    p, calls = _launch(tmp_path, "P6", env=P6_SPOT)
+    assert p.returncode == 0, p.stderr
+    assert _tries(calls) == [("spot", "ap-southeast-2b")]
+    assert "LAUNCH_MARKET=spot" in p.stdout and "PROVISIONING_MODEL=SPOT" in p.stdout
+    assert "a Spot instance TERMINATES" in p.stdout
+    # the hard delete is set for a Spot instance as for any other
+    assert any(f"--name attnbench-hard-delete-{INSTANCE} --schedule-expression" in x for x in aws_calls(calls))
+
+
+def test_a_spot_price_above_the_bid_is_a_refusal_confirmed_then_on_demand(tmp_path):
+    p, calls = _launch(tmp_path, "P6", env={**P6_SPOT, "FAKE_SPOT_ERROR": "SpotMaxPriceTooLow"})
+    assert p.returncode == 0, p.stderr
+    assert _tries(calls) == [("spot", z) for z in ZONES.split()] + [("on-demand", "ap-southeast-2b")]
+    assert len(_confirm_reads(calls)) == 6
+    assert "LAUNCH_MARKET=on-demand" in p.stdout
+
+
+def test_a_spot_price_error_on_an_on_demand_request_stops(tmp_path):
+    """Only a Spot request may be refused for its price: the same error on an
+    on-demand request is not a capacity refusal, and stops at once."""
+    p, calls = _launch(tmp_path, "P6", env={**P6_SPOT, "FAKE_SPOT_ERROR": "InsufficientInstanceCapacity",
+                                            "FAKE_RUN_ERROR_ZONES": "ap-southeast-2b",
+                                            "FAKE_RUN_ERROR": "SpotMaxPriceTooLow"})
+    assert p.returncode == 1 and "an error other than" in p.stderr
+    assert _tries(calls)[-1] == ("on-demand", "ap-southeast-2b") and len(_tries(calls)) == 4
+
+
+def test_a_spot_quota_refusal_leaves_spot_out_for_the_rest_of_the_window(tmp_path):
+    """The quota refuses Spot in 2b: confirmed, then on-demand only, in this pass
+    and the next."""
+    clock = tmp_path / "clock"
+    clock.write_text(f"{NOW}\n")
+    p2, calls2 = _launch(tmp_path, "P6", env={**P6_SPOT, "AWS_LAUNCH_WINDOW_MINUTES": "10",
+                                              "FAKE_CLOCK": str(clock),
+                                              "FAKE_SPOT_ERROR": "MaxSpotInstanceCountExceeded",
+                                              "FAKE_RUN_REFUSE_ZONES": ZONES})
+    assert p2.returncode == 1 and "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p2.stdout
+    od = [("on-demand", z) for z in ZONES.split()]
+    assert _tries(calls2) == [("spot", "ap-southeast-2b")] + od + od
+    assert "no more Spot requests in this window" in p2.stdout
+    assert "CAPACITY_REFUSALS=7" in p2.stdout and len(_confirm_reads(calls2)) == 14
+
+
+@pytest.mark.parametrize("env,said", [({"FAKE_SPOT_QUOTA": "0.0"}, "SPOT_QUOTA=0.0"),
+                                      ({"FAKE_SPOT_QUOTA": "8.0"}, "SPOT_QUOTA=8.0"),
+                                      ({"FAKE_QUOTA_FAIL": "1"}, "SPOT_QUOTA=unreadable")])
+def test_a_spot_quota_under_16_vcpu_or_unread_makes_no_spot_request(tmp_path, env, said):
+    p, calls = _launch(tmp_path, "P6", env={**P6_SPOT, **env})
+    assert p.returncode == 0, p.stderr
+    assert f"{said}: under 16 vCPU, so no Spot request in this window" in p.stdout
+    assert _tries(calls) == [("on-demand", "ap-southeast-2b")]
+    assert "Spot skipped: quota" in p.stdout
+
+
+def test_every_refusal_of_a_spot_first_pass_is_counted(tmp_path):
+    p, calls = _launch(tmp_path, "P6", env={**P6_SPOT, "FAKE_SPOT_ERROR": "InsufficientInstanceCapacity",
+                                            "FAKE_RUN_REFUSE_ZONES": ZONES})
+    assert p.returncode == 1 and len(_tries(calls)) == 6
+    assert "CAPACITY_REFUSALS=6" in p.stdout and "No instance was created: each of the 6 requests" in p.stderr
+    assert _record_words(tmp_path) == ["window-open:sess-1", "window-closed:sess-1:refused"]
+
+
+@pytest.mark.parametrize("pairing,env,said", [
+    ("P3", {}, "on-demand only"),
+    ("P6", {"AWS_SPOT_MAX_PRICE_USD": "8.945"}, "at most the on-demand price"),
+    ("P6", {"AWS_SPOT_MAX_PRICE_USD": ""}, "at most the on-demand price"),
+    ("P6", {"AWS_SPOT_MAX_PRICE_USD": "0"}, "at most the on-demand price"),
+    ("P6", {"AWS_SESSION_REGION": "us-east-1", "AWS_SESSION_AZS": ""}, "Sydney (ap-southeast-2) only"),
+])
+def test_spot_first_is_p6_in_sydney_with_a_bid_at_most_on_demand(tmp_path, pairing, env, said):
+    p, calls = _launch(tmp_path, pairing, env={**P6_SPOT, **env})
+    assert p.returncode == 1 and said in p.stderr, p.stderr
+    assert calls == []

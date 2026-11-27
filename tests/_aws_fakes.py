@@ -63,10 +63,23 @@ case "$1 $2" in
       exit 0
     fi
     echo /dev/sda1; exit 0 ;;
+  "service-quotas get-service-quota")
+    [[ -n "${FAKE_QUOTA_FAIL:-}" ]] && { echo "AccessDenied" >&2; exit 254; }
+    echo "${FAKE_SPOT_QUOTA:-16.0}"; exit 0 ;;
   "ec2 run-instances")
     [[ -n "${FAKE_RUN_FAIL:-}" ]] && { echo "An error occurred (InsufficientInstanceCapacity)" >&2; exit 254; }
     itype=""; prev2=""
     for a in "$@"; do [[ "$prev2" == "--instance-type" ]] && itype="$a"; prev2="$a"; done
+    # A Spot request (--instance-market-options): FAKE_SPOT_ERROR in the zones of
+    # FAKE_SPOT_ERROR_ZONES (every zone when unset), as the real CLI words it.
+    if [[ "$*" == *"--instance-market-options"* && -n "${FAKE_SPOT_ERROR:-}" ]]; then
+      zone=""
+      for a in "$@"; do case "$a" in AvailabilityZone=*) zone="${a#AvailabilityZone=}";; esac; done
+      if [[ -z "${FAKE_SPOT_ERROR_ZONES:-}" || " ${FAKE_SPOT_ERROR_ZONES} " == *" $zone "* ]]; then
+        echo "aws: [ERROR]: An error occurred ($FAKE_SPOT_ERROR) when calling the RunInstances operation: Spot refused in $zone (fake)." >&2
+        exit 254
+      fi
+    fi
     # FAKE_RUN_REFUSE_FIRST=N: the first N requests, in any zone, refused for
     # capacity (a count kept in FAKE_RUN_COUNT_FILE), then the zone rules below.
     if [[ -n "${FAKE_RUN_REFUSE_FIRST:-}" ]]; then

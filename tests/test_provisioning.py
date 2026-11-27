@@ -33,11 +33,17 @@ def test_provenance_reads_the_module_not_a_copy():
 def test_the_aws_standard_tag_is_on_demand():
     text = (ROOT / "scripts" / "aws_launch_session.sh").read_text()
     (model,) = re.findall(r'^MODEL="([A-Z_]+)"', text, re.M)
-    assert f"Key={P.TAG},Value=$MODEL" in text
+    # each create request tags its own model: $MODEL, or SPOT on a Spot request
+    # (P6's spot-first, the researcher's task of 27 Nov 2026)
+    assert f"Key={P.TAG},Value=$model" in text
+    assert 'model="$MODEL"' in text and "shutdown=terminate model=SPOT" in text
     assert P.row_name(model) == "on-demand"
     got = provenance._provisioning_model(model, P.AWS_LIFE_CYCLE["on-demand"],
                                          checked_against="instance-life-cycle")
     assert got == ("on-demand", None)
+    got = provenance._provisioning_model("SPOT", P.AWS_LIFE_CYCLE["spot"],
+                                         checked_against="instance-life-cycle")
+    assert got == ("spot", None)
 
 
 def test_every_preflight_compares_row_names():

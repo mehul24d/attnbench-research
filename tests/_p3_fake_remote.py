@@ -54,6 +54,25 @@ case "$cmd" in *"cat ~/p3/${FAKE_DROP_BLOCK:-none}.exit"*)
   n=$(( $(cat "$FAKE_RUN/drop_polls" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE_RUN/drop_polls"
   [[ $n -eq ${FAKE_DROP_AT:-0} ]] && touch "$FAKE_RUN/net_down";;
 esac
+# A Spot interruption at the FAKE_INTERRUPT_AT-th poll of block FAKE_INTERRUPT_BLOCK,
+# on each of the first FAKE_INTERRUPTS (1) instances: FAKE_INTERRUPT_HOW=state (the
+# instance is gone: SSH fails, EC2 reads it terminated by Spot, its processes are
+# killed) or notice (IMDS shows the two-minute notice; the instance stays up).
+case "$cmd" in *"cat ~/p3/${FAKE_INTERRUPT_BLOCK:-none}.exit"*)
+  if [[ ! -e "$FAKE_RUN/net_down" && $(cat "$FAKE_RUN/interrupts" 2>/dev/null || echo 0) -lt ${FAKE_INTERRUPTS:-1} ]]; then
+    n=$(( $(cat "$FAKE_RUN/int_polls" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE_RUN/int_polls"
+    if [[ $n -eq ${FAKE_INTERRUPT_AT:-0} ]]; then
+      echo $(( $(cat "$FAKE_RUN/interrupts" 2>/dev/null || echo 0) + 1 )) > "$FAKE_RUN/interrupts"
+      if [[ "${FAKE_INTERRUPT_HOW:-state}" == notice ]]; then
+        touch "$FAKE_RUN/spot_notice"
+      else
+        pkill -9 -f "$FAKE_HOME/p3_session" 2>/dev/null
+        echo terminated > "$FAKE_RUN/state"; echo Server.SpotInstanceTermination > "$FAKE_RUN/reason"
+        touch "$FAKE_RUN/net_down"
+      fi
+    fi
+  fi;;
+esac
 if [[ -e "$FAKE_RUN/net_down" ]]; then
   f=$(( $(cat "$FAKE_RUN/net_fails" 2>/dev/null || echo 0) + 1 )); echo $f > "$FAKE_RUN/net_fails"
   [[ ${FAKE_DROP_FAILS:-0} -gt 0 && $f -ge ${FAKE_DROP_FAILS:-0} ]] && rm -f "$FAKE_RUN/net_down"
@@ -70,8 +89,9 @@ exec env -i HOME="$FAKE_HOME" USER=ubuntu LANG=en_US.UTF-8 \
   ATTNBENCH_PYTHON="$FAKE_PY" FAKE_RUN="$FAKE_RUN" FAKE_ROOT="$FAKE_ROOT" FAKE_VPY="$FAKE_VPY" \
   FAKE_P1_HOST="$FAKE_P1_HOST" FAKE_HOST_SCALE="${FAKE_HOST_SCALE:-1.05}" \
   FAKE_FAIL_STEP="${FAKE_FAIL_STEP:-}" FAKE_STEP_SLEEP_S="${FAKE_STEP_SLEEP_S:-0}" \
-  FAKE_BACKEND_FAIL="${FAKE_BACKEND_FAIL:-}" \
-  ATTNBENCH_P3_SHUTDOWN_SCHEDULED="$FAKE_RUN/shutdown_scheduled" ATTNBENCH_P3_BOOT_EPOCH="$FAKE_BOOT_EPOCH" \
+  FAKE_BACKEND_FAIL="$(cat "$FAKE_RUN/backend_fail" 2>/dev/null || echo "${FAKE_BACKEND_FAIL:-}")" \
+  ATTNBENCH_P3_SHUTDOWN_SCHEDULED="$FAKE_RUN/shutdown_scheduled" \
+  ATTNBENCH_P3_BOOT_EPOCH="$(cat "$FAKE_RUN/boot_epoch" 2>/dev/null || echo "$FAKE_BOOT_EPOCH")" \
   ATTNBENCH_P3_WATCH_S=0.5 \
   bash -c "$cmd"
 '''
@@ -121,6 +141,7 @@ FAKE_AWS = r'''#!/usr/bin/env bash
 printf '%q ' aws "$@" >> "$FAKE_RUN/aws_calls.log"; echo >> "$FAKE_RUN/aws_calls.log"
 case "$*" in
   *describe-security-groups*) cat "$FAKE_RUN/sg_cidrs";;
+  *StateReason.Code*) cat "$FAKE_RUN/reason" 2>/dev/null || echo None;;
   *"wait instance-running"*) :;;
   *PublicDnsName*) echo "$FAKE_DNS";;
   *Placement.AvailabilityZone*) echo ap-southeast-2a;;
@@ -136,18 +157,38 @@ echo "curl $*" >> "$FAKE_RUN/aws_calls.log"; cat "$FAKE_RUN/my_ip"
 
 # The launcher's stand-in: what the real one prints, and every setting it was given.
 FAKE_LAUNCH = r'''#!/usr/bin/env bash
-env | grep -E '^AWS_(SESSION|RATE|COST|HALT|MAX_RUN|LAUNCH_WINDOW|AMI)' | sort > "$FAKE_RUN/launch_env.txt"
-read -r typed; echo "typed=$typed" >> "$FAKE_RUN/launch_env.txt"; echo "args=$*" >> "$FAKE_RUN/launch_env.txt"
+# launches by this driver run (its process is the parent): the first, then relaunches
+k=$(( $(cat "$FAKE_RUN/launches_$PPID" 2>/dev/null || echo 0) + 1 )); echo $k > "$FAKE_RUN/launches_$PPID"
+echo $k > "$FAKE_RUN/launches"
+envf="$FAKE_RUN/launch_env.txt"; (( k > 1 )) && envf="$FAKE_RUN/launch_env_$k.txt"
+env | grep -E '^AWS_(SESSION|RATE|COST|HALT|MAX_RUN|LAUNCH_WINDOW|AMI|PROVISIONING|SPOT)' | sort > "$envf"
+read -r typed; echo "typed=$typed" >> "$envf"; echo "args=$*" >> "$envf"
 echo "Pass 1 of at most 36 (window 180 min, a pass every 5 min)."
 echo "WINDOW_PASSES=${FAKE_PASSES:-2}"
 echo "CAPACITY_REFUSALS=${FAKE_REFUSALS:-3}"
-if [[ "${FAKE_LAUNCH_MODE:-ok}" == refused ]]; then
-  echo "ZONES_REFUSED=ap-southeast-2b,ap-southeast-2c,ap-southeast-2a"
+mode="${FAKE_LAUNCH_MODE:-ok}" id="$FAKE_INSTANCE" market="${FAKE_MARKET:-on-demand}"
+if (( k > 1 )); then        # a relaunch: a new instance, a new disk
+  mode="${FAKE_RELAUNCH_MODE:-ok}" id="i-0fa0e0000000000b$k" market="${FAKE_RELAUNCH_MARKET:-spot}"
+fi
+if [[ "$mode" == refused ]]; then
+  echo "ZONES_REFUSED=ap-southeast-2a"
   echo "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY"; exit 1
 fi
-echo "Created $FAKE_INSTANCE. Billing now. Setting the hard delete."
-echo "INSTANCE_ID=$FAKE_INSTANCE"
+if (( k > 1 )); then
+  pkill -9 -f "$FAKE_HOME/p3_session" 2>/dev/null; sleep 0.3
+  mv "$FAKE_HOME" "$FAKE_HOME.dead$k"; mkdir -p "$FAKE_HOME"
+  git clone -q "$FAKE_REPO" "$FAKE_HOME/attnbench_scaffold"
+  rm -f "$FAKE_RUN/net_down" "$FAKE_RUN/spot_notice" "$FAKE_RUN/reason" "$FAKE_RUN/int_polls"
+  echo running > "$FAKE_RUN/state"
+  boot=$(date +%s); echo $boot > "$FAKE_RUN/boot_epoch"
+  echo "USEC=$(( (boot + AWS_HALT_MINUTES * 60) * 1000000 ))" > "$FAKE_RUN/shutdown_scheduled"
+  [[ -n "${FAKE_RELAUNCH_GPU:-}" ]] && echo "$FAKE_RELAUNCH_GPU" > "$FAKE_RUN/gpu_name"
+  [[ -n "${FAKE_RELAUNCH_BACKEND_FAIL:-}" ]] && echo "$FAKE_RELAUNCH_BACKEND_FAIL" > "$FAKE_RUN/backend_fail"
+fi
+echo "Created $id. Billing now. Setting the hard delete."
+echo "INSTANCE_ID=$id"
 echo "LAUNCH_ZONE=ap-southeast-2a"
+echo "LAUNCH_MARKET=$market"
 '''
 
 FAKE_TEARDOWN = r'''#!/usr/bin/env bash
@@ -162,7 +203,12 @@ REMOTE = {
     "sha256sum": '#!/usr/bin/env bash\nexec shasum -a 256 "$@"\n',
     "sudo": '#!/usr/bin/env bash\necho "$(date -u +%FT%TZ) sudo $*" >> "$FAKE_RUN/sudo.log"\n',
     "logger": '#!/usr/bin/env bash\necho "logger $*" >> "$FAKE_RUN/logger.log"\n',
-    "nvidia-smi": '#!/usr/bin/env bash\necho "GPU 0: NVIDIA L4 (fake)"\n',
+    "nvidia-smi": '#!/usr/bin/env bash\ncat "$FAKE_RUN/gpu_name" 2>/dev/null || echo "GPU 0: NVIDIA L4 (fake)"\n',
+    # IMDSv2 on the instance: a token, and the Spot notice when the test has set one.
+    "curl": ('#!/usr/bin/env bash\ncase "$*" in\n  *api/token*) echo faketoken;;\n'
+             '  *spot/instance-action*) [[ -e "$FAKE_RUN/spot_notice" ]] || exit 22\n'
+             '    echo \'{"action": "terminate", "time": "2026-11-28T00:00:00Z"}\';;\n'
+             '  *) exit 7;;\nesac\n'),
     "nproc": '#!/usr/bin/env bash\necho 8\n',
     "free": '#!/usr/bin/env bash\necho "Mem: 31 1 30"\n',
     # The image's /usr/bin/python3: the version guard answers 3.10.12 (the Mac's venv
@@ -324,6 +370,7 @@ def build(tmp: Path, halt_min: int = 473, **opts) -> dict:
         "FAKE_ROOT": str(fr), "FAKE_RUN": str(run), "FAKE_HOME": str(home), "FAKE_DNS": DNS,
         "FAKE_VPY": sys.executable, "FAKE_PY": str(fr / "bin_remote" / "fakepy"),
         "FAKE_P1_HOST": str(P1_HOST), "FAKE_INSTANCE": INSTANCE, "FAKE_BOOT_EPOCH": str(boot),
+        "FAKE_REPO": str(repo),
         "P3_DRY": "1", "P3_REC_BASE": str(run / "rec"), "P3_AWS_ENV": str(run / "aws_env.sh"),
         "P3_WINDOWS": str(run / "windows.tsv"), "P3_P1_HOST": str(P1_HOST), "P3_VPY": sys.executable,
         "P3_POLL_S": "1", "P3_LAUNCH": str(launch), "P3_TEARDOWN": str(teardown),

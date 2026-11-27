@@ -34,8 +34,9 @@
 #   - a cost cap (AWS_COST_CAP_INR), required: the launch is refused unless
 #     rate x hard-delete limit fits under it, so the worst case is bounded
 #     before anything bills;
-#   - on-demand only. Spot is refused (researcher's decision, 28 Oct 2026):
-#     an interruption would ruin a timed run;
+#   - on-demand, unless AWS_PROVISIONING=spot-first for P6 (below). Spot is
+#     otherwise refused (researcher's decision, 28 Oct 2026): an interruption
+#     would ruin a timed run;
 #   - an in-guest halt (AWS_HALT_MINUTES, default 60 minutes before the hard
 #     delete) with shutdown behaviour "stop", so GPU billing stops while the
 #     root volume survives for recovery;
@@ -138,7 +139,23 @@
 #                          Without it, a zone's default subnet in the default VPC
 #                          is used, as EC2 picks it for --placement
 #   AWS_HALT_MINUTES       in-guest halt (default AWS_MAX_RUN_MINUTES - 60)
-#   AWS_PROVISIONING       on-demand (the default and the only value accepted)
+#   AWS_PROVISIONING       on-demand (the default), or spot-first for P6 only (the
+#                          researcher's task of 27 Nov 2026, docs/launch_cards/
+#                          aws_p6_p5_spot.md): each pass of the window asks for a
+#                          one-time Spot instance in every zone in order, then
+#                          on-demand in every zone in order. A Spot request may
+#                          also be refused for its price (SpotMaxPriceTooLow) or
+#                          the Spot quota (MaxSpotInstanceCountExceeded), each
+#                          confirmed to have left nothing; after a quota refusal,
+#                          or when the Sydney P Spot quota (L-7212CCBC) reads under
+#                          the type's vCPUs or cannot be read, no Spot request is
+#                          made in the window. A Spot instance halts by
+#                          TERMINATING (a one-time Spot request cannot stop), and
+#                          its interruption behaviour is terminate
+#   AWS_SPOT_MAX_PRICE_USD the Spot bid, USD/h, required with spot-first and at
+#                          most the type's on-demand price in Sydney (P6:
+#                          $8.944, the price file of 20 Nov 2026), so a Spot hour
+#                          never costs more than the planning rate assumes
 #   AWS_HARD_DELETE_ROLE   IAM role the scheduler assumes (default
 #                          attnbench-hard-delete); it needs only
 #                          ec2:TerminateInstances
@@ -240,11 +257,31 @@ if ! awk -v w="$WORST_INR" -v c="$COST_CAP_INR" 'BEGIN{exit !(w<=c)}'; then
   exit 1
 fi
 
-# On-demand only: a Spot interruption would ruin a timed run (researcher's
-# decision, 28 Oct 2026).
-if [[ "${AWS_PROVISIONING-on-demand}" != "on-demand" ]]; then
-  echo "REFUSING TO LAUNCH -- AWS_PROVISIONING='${AWS_PROVISIONING}': measurement sessions" >&2
-  echo "are on-demand only (a Spot interruption would ruin a timed run)." >&2
+# On-demand only (a Spot interruption would ruin a timed run; researcher's
+# decision, 28 Oct 2026), except spot-first for P6 in Sydney (the researcher's
+# task of 27 Nov 2026: Spot, then on-demand, in each pass; an interrupted block
+# is discarded in full and rerun on a new instance, as P4's were, plan
+# Appendix A, 15 Nov 2026).
+PROVISIONING="${AWS_PROVISIONING-on-demand}"
+SPOT_FIRST=0
+SPOT_ON_DEMAND_USD=""
+SPOT_MAX_USD=""
+if [[ "$PROVISIONING" == spot-first && "$PAIRING" == P6 ]]; then
+  SPOT_FIRST=1
+  SPOT_ON_DEMAND_USD="8.944"   # p5.4xlarge in ap-southeast-2, the price file of 20 Nov 2026
+  SPOT_MAX_USD="${AWS_SPOT_MAX_PRICE_USD:-}"
+  if [[ "$REGION" != ap-southeast-2 ]]; then
+    echo "REFUSING TO LAUNCH -- spot-first is for Sydney (ap-southeast-2) only, not $REGION." >&2
+    exit 1
+  fi
+  if [[ ! "$SPOT_MAX_USD" =~ $NUM ]] || ! awk -v m="$SPOT_MAX_USD" -v o="$SPOT_ON_DEMAND_USD" 'BEGIN{exit !(m > 0 && m <= o)}'; then
+    echo "REFUSING TO LAUNCH -- AWS_SPOT_MAX_PRICE_USD ('${SPOT_MAX_USD}') must be a price above 0 and" >&2
+    echo "at most the on-demand price, \$${SPOT_ON_DEMAND_USD}/h." >&2
+    exit 1
+  fi
+elif [[ "$PROVISIONING" != "on-demand" ]]; then
+  echo "REFUSING TO LAUNCH -- AWS_PROVISIONING='${PROVISIONING}': measurement sessions" >&2
+  echo "are on-demand only (a Spot interruption would ruin a timed run), but P6's spot-first." >&2
   exit 1
 fi
 MODEL="STANDARD"
@@ -395,6 +432,24 @@ if [[ -z "$TRUST" || "$TRUST" != "$TRUST_WANT" ]]; then
   exit 1
 fi
 
+# The Spot quota (read-only): Sydney's "All P Spot Instance Requests", in vCPUs.
+# Under the type's vCPUs (16 for p5.4xlarge), or unreadable, no Spot request is
+# made in this window: on-demand only.
+AWS_PASS_MODES="-"
+AWS_SPOT_OFF=0
+SPOT_QUOTA=""
+if (( SPOT_FIRST )); then
+  AWS_PASS_MODES="spot on-demand"
+  SPOT_QUOTA="$(aws service-quotas get-service-quota "${P[@]}" --service-code ec2 --quota-code L-7212CCBC \
+    --query 'Quota.Value' --output text 2>/dev/null)" || SPOT_QUOTA=""
+  if [[ ! "$SPOT_QUOTA" =~ $NUM ]] || ! awk -v q="$SPOT_QUOTA" 'BEGIN{exit !(q >= 16)}'; then
+    AWS_SPOT_OFF=1
+    echo "SPOT_QUOTA=${SPOT_QUOTA:-unreadable}: under 16 vCPU, so no Spot request in this window (on-demand only)."
+  else
+    echo "SPOT_QUOTA=${SPOT_QUOTA}"
+  fi
+fi
+
 # Epoch seconds to an ISO UTC time, on GNU (the instance, CI) and BSD (the
 # researcher's Mac) date alike.
 iso_utc() {
@@ -427,9 +482,18 @@ fi
 echo "  type         : $INSTANCE_TYPE ($GPU)"
 echo "  image        : $AMI (root $ROOT_DEVICE)"
 echo "  root volume  : 200 GB gp3, encrypted, deleted with the instance"
-echo "  provisioning : $MODEL"
+if (( SPOT_FIRST )); then
+  SPOT_NOTE=""; (( AWS_SPOT_OFF )) && SPOT_NOTE="; Spot skipped: quota ${SPOT_QUOTA:-unreadable}"
+  echo "  provisioning : Spot first (one-time, max \$${SPOT_MAX_USD}/h, on-demand \$${SPOT_ON_DEMAND_USD}/h), then $MODEL, in each pass${SPOT_NOTE}"
+else
+  echo "  provisioning : $MODEL"
+fi
 echo "  rate         : Rs ${RATE_INR_HR}/h (AWS_RATE_INR_HR, planning rate, all-in)"
-echo "  in-guest halt: +${HALT_MINUTES} min, STOPS the instance (GPU billing stops, disk survives)"
+if (( SPOT_FIRST )); then
+  echo "  in-guest halt: +${HALT_MINUTES} min, STOPS an on-demand instance (disk survives); a Spot instance TERMINATES"
+else
+  echo "  in-guest halt: +${HALT_MINUTES} min, STOPS the instance (GPU billing stops, disk survives)"
+fi
 echo "  hard delete  : +${MAX_RUN_MINUTES} min, ec2:TerminateInstances by EventBridge Scheduler"
 echo "  role trust   : ${ROLE_NAME}, aws:SourceArn = schedule-group/default (read back)"
 echo "  worst case   : Rs ${WORST_INR}, cost cap Rs ${COST_CAP_INR}"
@@ -500,7 +564,11 @@ ssh_source_admitted() {
 
 # One create request in one zone (aws_launch_window calls it).
 launch_attempt() {
-  local zone="$1" errf out placement=()
+  local zone="$1" errf out placement=() market=() shutdown="$SHUTDOWN_BEHAVIOR" model="$MODEL"
+  if [[ "${AWS_ATTEMPT_MODE:-}" == spot ]]; then
+    market=(--instance-market-options "MarketType=spot,SpotOptions={MaxPrice=${SPOT_MAX_USD},SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}")
+    shutdown=terminate model=SPOT
+  fi
   if [[ -n "$SUBNET" ]]; then
     placement=(--subnet-id "$SUBNET")
   elif [[ -n "$zone" ]]; then
@@ -509,7 +577,7 @@ launch_attempt() {
   # One hard-delete time, fixed before each request: the tag and the schedule
   # carry the same value, and the instance runs at most AWS_MAX_RUN_MINUTES.
   DELETE_AT="$(iso_utc $(( $(command date -u +%s) + MAX_RUN_MINUTES * 60 )))"
-  local tags="{Key=Name,Value=$NAME},{Key=attnbench-session,Value=$NAME},{Key=attnbench-pairing,Value=$PAIRING},{Key=attnbench-provisioning-model,Value=$MODEL},{Key=attnbench-hard-delete-at,Value=${DELETE_AT}Z}"
+  local tags="{Key=Name,Value=$NAME},{Key=attnbench-session,Value=$NAME},{Key=attnbench-pairing,Value=$PAIRING},{Key=attnbench-provisioning-model,Value=$model},{Key=attnbench-hard-delete-at,Value=${DELETE_AT}Z}"
   errf="$(mktemp)"
   # bash 3.2 (macOS) aborts on "${EMPTY[@]}" under set -u, hence the guards.
   out="$(aws ec2 run-instances "${P[@]}" \
@@ -519,7 +587,8 @@ launch_attempt() {
     --key-name "$KEY_NAME" \
     --security-group-ids "$SG" \
     ${placement[@]+"${placement[@]}"} \
-    --instance-initiated-shutdown-behavior "$SHUTDOWN_BEHAVIOR" \
+    ${market[@]+"${market[@]}"} \
+    --instance-initiated-shutdown-behavior "$shutdown" \
     --metadata-options 'HttpTokens=required,HttpEndpoint=enabled,InstanceMetadataTags=enabled' \
     --block-device-mappings "DeviceName=$ROOT_DEVICE,Ebs={VolumeSize=200,VolumeType=gp3,DeleteOnTermination=true,Encrypted=true}" \
     --tag-specifications "ResourceType=instance,Tags=[$tags]" "ResourceType=volume,Tags=[$tags]" \
@@ -595,6 +664,11 @@ if [[ "$ZRC" -ne 0 ]]; then
 fi
 record_line "window-closed:$NAME:launched" "$COST_CAP_INR"
 INSTANCE_ID="$AWS_ATTEMPT_ID"
+if [[ "$AWS_LAUNCHED_MODE" == spot ]]; then
+  MODEL=SPOT SHUTDOWN_BEHAVIOR=terminate LAUNCH_MARKET=spot
+else
+  LAUNCH_MARKET=on-demand
+fi
 echo "Created $INSTANCE_ID. Billing now. Setting the hard delete."
 
 terminate_now() {
@@ -635,3 +709,4 @@ echo "LAUNCH_ZONE=${AWS_LAUNCHED_ZONE:-any}"
 if [[ -n "$AWS_ZONES_REFUSED" ]]; then echo "ZONES_REFUSED=${AWS_ZONES_REFUSED// /,}"; fi
 echo "HARD_DELETE_AT=${DELETE_AT}Z"
 echo "PROVISIONING_MODEL=$MODEL"
+echo "LAUNCH_MARKET=$LAUNCH_MARKET"
