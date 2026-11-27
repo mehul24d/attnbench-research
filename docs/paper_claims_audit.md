@@ -44,11 +44,12 @@ The adviser's task of 22 Nov 2026, item 1. Five claims were checked against `doc
   - **A rule for new runs.** Prompt plus generation cap must fit within 32,768. At 32768, admissibility comes from a cell sized down, while the timing cell stays at 32768 (Section 5.3 step 7; Appendix A, 27 Oct 2026). Probe lengths are capped at 32768 (Appendix A, 31 Oct 2026).
   - **The timing side.** Prefill only, at a realised 32,700 tokens, so no timing row reaches the limit.
 - **T1.1's certified `qa_1`/32768 cell includes the rows past the limit.** It reads 50 vs 46 of 100, bound −6.0, density 0.51 (Section 2), and the bound is computed over all 100 rows.
+- **EXPLORATORY sensitivity, 22 Nov 2026 (adviser's task, item 5; post hoc, not a rescore: it does not replace the certified −6.0 over all 100 rows).** `scripts/t11_qa1_within_limit.py` reruns the certified path (`run_t4_noninferiority.load`, `run_exact_ni`, margin 10 points, one-sided alpha 0.025) on the rows inside the limit, excluding for each arm the union of ids past the limit in the dense file or the arm's file. For `authors`: 20 rows excluded, n = 80: dense 39, `authors` 43, 4 pairs to XAttention and 0 to dense, bound −4.2 (difference +5.0); still non-inferior. The all-rows rerun reproduces −6.0 (−5.97). Descriptive arms: `authors_full` the same as `authors`; `ruler_heldout` 21 excluded, n = 79, 38 vs 45, bound −3.9. `tests/test_t11_qa1_within_limit.py` checks these numbers against the banked files. **Reported side by side (26 Nov 2026):** certified, all 100 rows, bound −6.0; post-hoc sensitivity, the 80 rows inside the limit, bound −4.2. The exclusion rule was set on 22 Nov 2026, after the certified result (25 Oct 2026) was known, so the paper labels the second number a post-hoc sensitivity; no certification, hypothesis or pre-registered result changes (Appendix A, 26 Nov 2026).
 
 **The paper must say:**
 1. In the historical 32768 accuracy rows, every NIAH row and about a fifth of `qa_1` rows decoded past the trained positions.
 2. The NIAH 32768 cells are excluded as findings.
-3. The `qa_1`/32768 certification includes 19 to 21 rows past the limit and is reported with that caveat. A sensitivity on the rows within the limit is owed (decision 1 below).
+3. The `qa_1`/32768 certification includes 19 to 21 rows past the limit and is reported with that caveat. The post-hoc sensitivity on the rows within the limit (−4.2, n = 80) is reported beside it, not in its place (decision 1 below; Appendix A, 26 Nov 2026).
 4. No study row ran past the limit, by the grid rule of 27 Oct 2026.
 
 The supported claims in `docs/claims.md` that carry the caveat and still cite 32768 accuracy must keep it in the paper. These include "1.321x at 32768 with no accuracy loss" and "at ceiling at 32768".
@@ -114,5 +115,5 @@ The supported claims in `docs/claims.md` that carry the caveat and still cite 32
 
 ## Decisions needed
 
-1. **(b)** Should the `qa_1`/32768 bound be recomputed on the rows inside the position limit, as a sensitivity in the paper? Excluding the union of over-limit ids across the paired files is the plan default if yes. It would be CPU only, from the banked T1.1 parquets.
+1. **(b)** Should the `qa_1`/32768 bound be recomputed on the rows inside the position limit, as a sensitivity in the paper? Excluding the union of over-limit ids across the paired files is the plan default if yes. It would be CPU only, from the banked T1.1 parquets. **Ruled 22 Nov 2026: recomputed as an exploratory sensitivity (above, section (b)); the certified value stands. Whether the paper's Appendix A carries it is held with the bundled Appendix A wave.** **Carried, 26 Nov 2026** (the researcher's task after the merge wave): Appendix A's 26 Nov 2026 line, as a post-hoc sensitivity beside the certified −6.0, not a rescore.
 2. **(a, c, d)** Should these "must say" lines also go into Section 7 / T7.x of the plan as dated Appendix A lines? Doing so moves `plan_sha256` and needs the PDF rebuild. This wave did not edit the plan.
