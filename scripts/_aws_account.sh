@@ -53,9 +53,19 @@ aws_account_pin() {
     echo "digits, '-' and '_'; value not printed). Nothing was queried, created or deleted." >&2
     exit 1
   fi
-  local via_profile active
+  local via_profile active perr
+  perr="$(mktemp)"
   via_profile="$(command aws sts get-caller-identity --profile "$profile" \
-                   --region "$AWS_STS_REGION" --query Account --output text 2>/dev/null || true)"
+                   --region "$AWS_STS_REGION" --query Account --output text 2>"$perr" || true)"
+  if [[ "$via_profile" != "$pinned" ]] && aws_login_expired_text "$(cat "$perr")"; then
+    rm -f "$perr"
+    [[ -n "${AWS_LOGIN_FLAG:-}" ]] && : > "$AWS_LOGIN_FLAG"
+    echo "$AWS_LOGIN_EXPIRED_MSG" >&2
+    echo "REFUSING -- the login of ATTNBENCH_AWS_PROFILE has expired. Nothing was queried," >&2
+    echo "created or deleted." >&2
+    exit 1
+  fi
+  rm -f "$perr"
   if [[ "$via_profile" != "$pinned" ]]; then
     echo "REFUSING -- the profile ATTNBENCH_AWS_PROFILE does not resolve to" >&2
     echo "ATTNBENCH_AWS_ACCOUNT (neither is printed), or its credentials did not answer." >&2
@@ -90,6 +100,17 @@ aws_redact() {
 # redaction cannot be forgotten at a new call site, and a call that does not
 # carry the pinned profile is refused before it runs. Output is buffered
 # until the call returns, and the exit status is the CLI's own.
+# An expired AWS login (the researcher's task of 28 Nov 2026, item 4). P6's window 3
+# (27 Nov 2026) ran on after its login expired and stopped as if the security
+# group had changed. A call refused for an expired login is told by its error
+# text; the wrapper below then creates the file AWS_LOGIN_FLAG (when a script set
+# it; every subshell sees the file), and that script stops with the message.
+AWS_LOGIN_EXPIRED_MSG="AWS login expired, run aws login"
+aws_login_expired_text() {      # aws_login_expired_text "error text"
+  grep -qiE 'ExpiredToken|token (has|is) expired|session has expired|credentials (have|has) expired|security token included in the request is expired|reauthenticate' <<<"$1"
+}
+aws_login_expired_seen() { [[ -n "${AWS_LOGIN_FLAG:-}" && -e "$AWS_LOGIN_FLAG" ]]; }
+
 aws() {
   if [[ -z "${AWS_PIN_PROFILE:-}" ]]; then
     echo "REFUSING aws call -- aws_account_pin has not run." >&2
@@ -110,6 +131,9 @@ aws() {
   local out err rc=0
   out="$(mktemp)"; err="$(mktemp)"
   command aws "$@" >"$out" 2>"$err" || rc=$?
+  if [[ $rc -ne 0 && -n "${AWS_LOGIN_FLAG:-}" ]] && aws_login_expired_text "$(cat "$err")"; then
+    : > "$AWS_LOGIN_FLAG"
+  fi
   aws_redact <"$out"
   aws_redact <"$err" >&2
   rm -f "$out" "$err"

@@ -36,6 +36,22 @@ for a in "$@"; do
   [[ "$prev" == "--profile" ]] && profile="$a"
   prev="$a"
 done
+# An expired AWS login (28 Nov 2026): FAKE_LOGIN_EXPIRED=token|session fails every
+# call from the start; FAKE_EXPIRE_ON="SERVICE OP:N" from the N-th such call on,
+# every call after it too. Worded as STS and the CLI's login provider word it.
+st="$(dirname "$AWS_LOG")"
+if [[ -n "${FAKE_EXPIRE_ON:-}" && "$1 $2" == "${FAKE_EXPIRE_ON%:*}" ]]; then
+  k=$(( $(cat "$st/expire_count" 2>/dev/null || echo 0) + 1 )); echo "$k" > "$st/expire_count"
+  (( k >= ${FAKE_EXPIRE_ON##*:} )) && : > "$st/login_expired"
+fi
+if [[ -n "${FAKE_LOGIN_EXPIRED:-}" || -e "$st/login_expired" ]]; then
+  if [[ "${FAKE_LOGIN_EXPIRED:-token}" == session ]]; then
+    echo "Error when retrieving credentials from login: Your session has expired. Please reauthenticate using 'aws login'." >&2
+  else
+    echo "aws: [ERROR]: An error occurred (ExpiredToken) when calling the $2 operation: The security token included in the request is expired" >&2
+  fi
+  exit 254
+fi
 # FAKE_SCP_DENIED_REGIONS: every call in these regions is denied by the
 # organization's policy, worded as the real CLI words it (26 Nov 2026).
 if [[ -n "$region" && "$1" != sts && "$2" != describe-regions && " ${FAKE_SCP_DENIED_REGIONS:-} " == *" $region "* ]]; then
@@ -65,6 +81,11 @@ case "$1 $2" in
     echo /dev/sda1; exit 0 ;;
   "service-quotas get-service-quota")
     [[ -n "${FAKE_QUOTA_FAIL:-}" ]] && { echo "AccessDenied" >&2; exit 254; }
+    # FAKE_SPOT_QUOTA_SEQ: the k-th read gives the k-th value, the last one after
+    if [[ -n "${FAKE_SPOT_QUOTA_SEQ:-}" ]]; then
+      k=$(( $(cat "$st/quota_reads" 2>/dev/null || echo 0) + 1 )); echo "$k" > "$st/quota_reads"
+      set -- $FAKE_SPOT_QUOTA_SEQ; (( k > $# )) && k=$#; echo "${!k}"; exit 0
+    fi
     echo "${FAKE_SPOT_QUOTA:-16.0}"; exit 0 ;;
   "ec2 run-instances")
     [[ -n "${FAKE_RUN_FAIL:-}" ]] && { echo "An error occurred (InsufficientInstanceCapacity)" >&2; exit 254; }

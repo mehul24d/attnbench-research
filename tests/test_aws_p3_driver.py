@@ -510,6 +510,12 @@ def test_a_spot_interruption_mid_block_relaunches_restores_and_resumes(tmp_path,
     assert second["AWS_HALT_MINUTES"] == str(min(312, delete - 47))
     assert second["AWS_PROVISIONING"] == "spot-first" and first["AWS_SESSION_AZS"].split() == [
         "ap-southeast-2b", "ap-southeast-2c", "ap-southeast-2a"]
+    # Spot asks in 2c, 2b, 2a; a relaunch in block 1's zone alone (28 Nov 2026, item 3)
+    assert first["AWS_SPOT_AZS"] == "ap-southeast-2c ap-southeast-2b ap-southeast-2a"
+    assert second["AWS_SPOT_AZS"] == "ap-southeast-2a"
+    # the credit record: the first instance voided and counted again at its spend,
+    # so the two instances count Rs 5,940 in all (28 Nov 2026, item 2)
+    assert _live_record(fake) == {F.INSTANCE: used, "i-0fa0e0000000000b2": 5940 - used}
     # two instances, each torn down once; the ledger says so
     td = (fake["run"] / "teardown.log").read_text().splitlines()
     assert [ln.split()[2] for ln in td] == [F.INSTANCE, "i-0fa0e0000000000b2"]
@@ -535,6 +541,66 @@ def test_a_spot_interruption_mid_block_relaunches_restores_and_resumes(tmp_path,
     halt = second["AWS_HALT_MINUTES"]
     assert f"ATTNBENCH_P3_MARKET=spot ATTNBENCH_P3_PAIRING=P6 ATTNBENCH_P3_HALT_MIN={halt} bash scripts/aws_p3_instance.sh {block}" \
         in (fake["run"] / "ssh_calls.log").read_text().replace("\\", "")
+
+
+def _live_record(fake):
+    """The launch record's lines the credit gate counts (VOID lines honoured)."""
+    lines = [ln.split("\t") for ln in (fake["run"] / "aws_launches.tsv").read_text().splitlines()]
+    voided = {tuple(ln[1:4]) for ln in lines if ln[0] == "VOID"}
+    for ln in lines:
+        if ln[0] == "VOID":
+            assert len(ln) == 6 and tuple(ln[1:4]) in {tuple(x[:3]) for x in lines if x[0] != "VOID"}
+    return {ln[2]: int(ln[3]) for ln in lines if ln[0] != "VOID" and tuple(ln[:3]) not in voided}
+
+
+def test_two_relaunches_keep_the_session_at_its_cap_in_the_credit_record(tmp_path):
+    """Two interruptions in block 2: each interrupted instance counts its spend,
+    the last its cap, what was left: Rs 5,940 in all, so the credit gate never
+    counts more than the session's cap."""
+    fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK="b2", FAKE_INTERRUPT_AT="1", FAKE_INTERRUPTS="2")
+    p = F.run_driver(fake, "P6", "spot")
+    log = F.driver_log(fake)
+    assert p.returncode == 0, log[-4000:]
+    assert _status(fake).split(" ", 1)[1].strip().endswith("relaunches 2")
+    rec = F.rec_dir(fake)
+    used = [int(ln.split("\t")[6].split()[1]) for ln in (rec / "cost.tsv").read_text().splitlines()
+            if "interrupted in b2" in ln]
+    assert len(used) == 2
+    live = _live_record(fake)
+    assert live == {F.INSTANCE: used[0], "i-0fa0e0000000000b2": used[1],
+                    "i-0fa0e0000000000b3": 5940 - used[0] - used[1]}
+    assert sum(live.values()) == 5940
+    assert _env(fake, 3)["AWS_COST_CAP_INR"] == str(5940 - used[0] - used[1])
+    assert sum(ln.startswith("VOID") for ln in (fake["run"] / "aws_launches.tsv").read_text().splitlines()) == 2
+    assert log.count("CREDITS the interrupted instance now counts Rs ") == 2
+
+
+def test_the_dry_run_needs_its_own_launch_record(tmp_path):
+    fake = _p6(tmp_path)
+    del fake["env"]["P3_LAUNCH_RECORD"]
+    p = F.run_driver(fake, "P6", "spot")
+    assert p.returncode == 1 and not (fake["run"] / "launch_env.txt").exists()
+
+
+# --- an expired AWS login (the researcher's task of 28 Nov 2026, item 4) ---------
+def test_an_expired_login_at_the_preflight_says_so_and_launches_nothing(tmp_path):
+    fake = _p6(tmp_path, FAKE_LOGIN_EXPIRED="1")
+    p = F.run_driver(fake, "P6", "spot")
+    assert p.returncode == 1
+    assert "REFUSED SSH preflight: AWS login expired, run aws login" in _status(fake)
+    assert not (fake["run"] / "launch_env.txt").exists() and _windows(fake) == []
+
+
+@pytest.mark.parametrize("mode,end", [("expired", "NOTHING_CREATED"), ("expired-at-pin", "NOTHING_CREATED"),
+                                      ("expired-unconfirmed", "UNCLEAR rc=1")])
+def test_a_login_that_expires_in_the_window_stops_the_driver_with_the_message(tmp_path, mode, end):
+    fake = _p6(tmp_path, FAKE_LAUNCH_MODE=mode)
+    p = F.run_driver(fake, "P6", "spot")
+    assert p.returncode == 1
+    st = _status(fake)
+    assert "STOPPED AWS login expired, run aws login (the launcher stopped" in st, st
+    assert _windows(fake)[-1][0] == "end" and _windows(fake)[-1][3] == end
+    assert "no longer admits" not in F.driver_log(fake)
 
 
 def test_an_interruption_in_block_1_reruns_block_1_with_nothing_to_restore(tmp_path):

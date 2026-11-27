@@ -146,12 +146,19 @@
 #                          on-demand in every zone in order. A Spot request may
 #                          also be refused for its price (SpotMaxPriceTooLow) or
 #                          the Spot quota (MaxSpotInstanceCountExceeded), each
-#                          confirmed to have left nothing; after a quota refusal,
-#                          or when the Sydney P Spot quota (L-7212CCBC) reads under
-#                          the type's vCPUs or cannot be read, no Spot request is
-#                          made in the window. A Spot instance halts by
+#                          confirmed to have left nothing; after a quota refusal no
+#                          more Spot requests are made in that pass. The Sydney P
+#                          Spot quota (L-7212CCBC) is read before every pass (the
+#                          researcher's task of 28 Nov 2026, item 1): a pass whose
+#                          read is under the type's vCPUs, or unreadable, makes no
+#                          Spot request, so a grant during a window starts Spot at
+#                          the next pass. A Spot instance halts by
 #                          TERMINATING (a one-time Spot request cannot stop), and
 #                          its interruption behaviour is terminate
+#   AWS_SPOT_AZS           spot-first only: the order of the Spot requests, the zones
+#                          of AWS_SESSION_AZS each once (P6: 2c, 2b, 2a; the
+#                          researcher's task of 28 Nov 2026, item 3); unset, the
+#                          session's order
 #   AWS_SPOT_MAX_PRICE_USD the Spot bid, USD/h, required with spot-first and at
 #                          most the type's on-demand price in Sydney (P6:
 #                          $8.944, the price file of 20 Nov 2026), so a Spot hour
@@ -284,6 +291,23 @@ elif [[ "$PROVISIONING" != "on-demand" ]]; then
   echo "are on-demand only (a Spot interruption would ruin a timed run), but P6's spot-first." >&2
   exit 1
 fi
+# The Spot zone order (AWS_SPOT_AZS): the session's zones, each once, in another order.
+AWS_SPOT_ZONE_LIST=""
+if [[ -n "${AWS_SPOT_AZS:-}" ]]; then
+  if (( ! SPOT_FIRST )); then
+    echo "REFUSING TO LAUNCH -- AWS_SPOT_AZS is for spot-first only." >&2
+    exit 1
+  fi
+  SESSION_ZONES=("${AWS_ZONES[@]}")
+  aws_zone_list "$REGION" "$AWS_SPOT_AZS"
+  if [[ "$(printf '%s\n' "${AWS_ZONES[@]}" | sort | tr '\n' ' ')" != "$(printf '%s\n' "${SESSION_ZONES[@]}" | sort | tr '\n' ' ')" ]]; then
+    echo "REFUSING TO LAUNCH -- AWS_SPOT_AZS ($AWS_SPOT_AZS) must name the zones of AWS_SESSION_AZS" >&2
+    echo "(${SESSION_ZONES[*]}), each once." >&2
+    exit 1
+  fi
+  AWS_SPOT_ZONE_LIST="${AWS_ZONES[*]}"
+  AWS_ZONES=("${SESSION_ZONES[@]}")
+fi
 MODEL="STANDARD"
 SHUTDOWN_BEHAVIOR="stop"
 
@@ -299,6 +323,8 @@ ROLE_NAME="${AWS_HARD_DELETE_ROLE:-attnbench-hard-delete}"
 [[ "$ROLE_NAME" =~ ^[A-Za-z0-9+=,.@_-]{1,64}$ ]] || { echo "REFUSING TO LAUNCH -- AWS_HARD_DELETE_ROLE is not a role name." >&2; exit 1; }
 
 source "$HERE/_aws_account.sh"
+# A call refused for an expired login leaves this file (scripts/_aws_account.sh).
+AWS_LOGIN_FLAG="$(mktemp)"; rm -f "$AWS_LOGIN_FLAG"
 aws_account_pin
 P=(--profile "$AWS_PIN_PROFILE" --region "$REGION")
 
@@ -433,22 +459,46 @@ if [[ -z "$TRUST" || "$TRUST" != "$TRUST_WANT" ]]; then
 fi
 
 # The Spot quota (read-only): Sydney's "All P Spot Instance Requests", in vCPUs.
-# Under the type's vCPUs (16 for p5.4xlarge), or unreadable, no Spot request is
-# made in this window: on-demand only.
+# Under the type's vCPUs (16 for p5.4xlarge), or unreadable, a pass makes no Spot
+# request: on-demand only. It is read here for pass 1 and again before every
+# later pass (pass_hook, below; the researcher's task of 28 Nov 2026, item 1).
 AWS_PASS_MODES="-"
 AWS_SPOT_OFF=0
 SPOT_QUOTA=""
+spot_quota_read() {
+  aws service-quotas get-service-quota "${P[@]}" --service-code ec2 --quota-code L-7212CCBC \
+    --query 'Quota.Value' --output text 2>/dev/null
+}
+spot_quota_ok() { [[ "$1" =~ $NUM ]] && awk -v q="$1" 'BEGIN{exit !(q >= 16)}'; }
 if (( SPOT_FIRST )); then
   AWS_PASS_MODES="spot on-demand"
-  SPOT_QUOTA="$(aws service-quotas get-service-quota "${P[@]}" --service-code ec2 --quota-code L-7212CCBC \
-    --query 'Quota.Value' --output text 2>/dev/null)" || SPOT_QUOTA=""
-  if [[ ! "$SPOT_QUOTA" =~ $NUM ]] || ! awk -v q="$SPOT_QUOTA" 'BEGIN{exit !(q >= 16)}'; then
+  SPOT_QUOTA="$(spot_quota_read)" || SPOT_QUOTA=""
+  if ! spot_quota_ok "$SPOT_QUOTA"; then
     AWS_SPOT_OFF=1
-    echo "SPOT_QUOTA=${SPOT_QUOTA:-unreadable}: under 16 vCPU, so no Spot request in this window (on-demand only)."
+    echo "SPOT_QUOTA=${SPOT_QUOTA:-unreadable}: under 16 vCPU, so no Spot request in pass 1 (on-demand only; read again before each pass)."
   else
     echo "SPOT_QUOTA=${SPOT_QUOTA}"
   fi
 fi
+SPOT_QUOTA_ON=$(( 1 - AWS_SPOT_OFF ))
+# Before every pass: an expired login stops the window; then (spot-first, from
+# pass 2) the quota read again. A grant starts Spot in that pass; a read under 16
+# (or unreadable) leaves Spot out of it.
+pass_hook() {                   # pass_hook N
+  local q
+  if aws_login_expired_seen; then _aws_login_stop pass "an AWS call before pass $1"; return 5; fi
+  (( SPOT_FIRST && $1 > 1 )) || return 0
+  q="$(spot_quota_read)" || q=""
+  if aws_login_expired_seen; then _aws_login_stop pass "the Spot quota read before pass $1"; return 5; fi
+  if spot_quota_ok "$q"; then
+    (( SPOT_QUOTA_ON )) || echo "Pass $1: SPOT_QUOTA=$q: Spot requests start in this pass."
+    SPOT_QUOTA_ON=1 AWS_SPOT_OFF=0
+  else
+    (( ! SPOT_QUOTA_ON )) || echo "Pass $1: SPOT_QUOTA=${q:-unreadable}: under 16 vCPU, no Spot request in this pass."
+    SPOT_QUOTA_ON=0 AWS_SPOT_OFF=1
+  fi
+}
+AWS_PASS_HOOK=pass_hook
 
 # Epoch seconds to an ISO UTC time, on GNU (the instance, CI) and BSD (the
 # researcher's Mac) date alike.
@@ -473,6 +523,7 @@ echo "  pairing      : $PAIRING"
 echo "  name         : $NAME"
 if [[ -n "$ZONE_SPEC" ]]; then
   echo "  region / AZ  : $REGION / ${AWS_ZONES[*]} (in this order, the next only on a capacity refusal)"
+  [[ -z "$AWS_SPOT_ZONE_LIST" ]] || echo "  Spot zones   : $AWS_SPOT_ZONE_LIST (Spot asks in this order)"
   if (( WINDOW_MINUTES > 0 )); then
     echo "  retry window : ${WINDOW_MINUTES} min, the zones again every ${AWS_RETRY_INTERVAL_MINUTES} min while every zone refuses for capacity"
   fi
@@ -483,7 +534,7 @@ echo "  type         : $INSTANCE_TYPE ($GPU)"
 echo "  image        : $AMI (root $ROOT_DEVICE)"
 echo "  root volume  : 200 GB gp3, encrypted, deleted with the instance"
 if (( SPOT_FIRST )); then
-  SPOT_NOTE=""; (( AWS_SPOT_OFF )) && SPOT_NOTE="; Spot skipped: quota ${SPOT_QUOTA:-unreadable}"
+  SPOT_NOTE=""; (( AWS_SPOT_OFF )) && SPOT_NOTE="; Spot skipped in pass 1: quota ${SPOT_QUOTA:-unreadable}, read again before each pass"
   echo "  provisioning : Spot first (one-time, max \$${SPOT_MAX_USD}/h, on-demand \$${SPOT_ON_DEMAND_USD}/h), then $MODEL, in each pass${SPOT_NOTE}"
 else
   echo "  provisioning : $MODEL"
@@ -643,6 +694,10 @@ if [[ "$ZRC" -ne 0 ]]; then
     record_line "window-closed:$NAME:refused" "$COST_CAP_INR"
   elif [[ "$ZRC" -eq 4 ]]; then
     record_line "window-closed:$NAME:stopped" "$COST_CAP_INR"
+  elif [[ "$ZRC" -eq 5 && "$AWS_LOGIN_EXPIRED_AT" != confirm ]]; then
+    # The login refused a pass, a security group read or a create request:
+    # nothing was made by it, and every refusal before it was confirmed.
+    record_line "window-closed:$NAME:stopped" "$COST_CAP_INR"
   else
     # Not a confirmed refusal: counted until the bill shows nothing was made.
     [[ -z "$AWS_ATTEMPT_ID" ]] && record_line unconfirmed "$COST_CAP_INR"
@@ -656,6 +711,16 @@ if [[ "$ZRC" -ne 0 ]]; then
       # Every request made was a capacity refusal confirmed by the session's tag.
       echo "No instance was created: each of the $AWS_CAPACITY_REFUSALS requests was refused for capacity and" >&2
       echo "confirmed to have left no instance and no volume of $NAME." >&2 ;;
+    5)
+      if [[ "$AWS_LOGIN_EXPIRED_AT" == confirm ]]; then
+        echo "LAUNCH_RESULT=AWS_LOGIN_EXPIRED_UNCONFIRMED"
+        echo "The login expired while a capacity refusal was being confirmed: run aws login, then" >&2
+        echo "scripts/aws_cleanup_check.sh. The request is counted until then." >&2
+      else
+        echo "LAUNCH_RESULT=AWS_LOGIN_EXPIRED"
+        echo "No instance was created: each of the $AWS_CAPACITY_REFUSALS requests before the login expired was" >&2
+        echo "refused for capacity and confirmed, and the expired login itself creates nothing." >&2
+      fi ;;
     *)
       echo "ERROR -- run-instances returned no instance id ('$AWS_ATTEMPT_ID'). An instance may" >&2
       echo "still exist: run scripts/aws_cleanup_check.sh now." >&2 ;;

@@ -906,9 +906,10 @@ def test_a_spot_price_error_on_an_on_demand_request_stops(tmp_path):
     assert _tries(calls)[-1] == ("on-demand", "ap-southeast-2b") and len(_tries(calls)) == 4
 
 
-def test_a_spot_quota_refusal_leaves_spot_out_for_the_rest_of_the_window(tmp_path):
-    """The quota refuses Spot in 2b: confirmed, then on-demand only, in this pass
-    and the next."""
+def test_a_spot_quota_refusal_leaves_spot_out_for_the_rest_of_the_pass(tmp_path):
+    """The quota refuses Spot in 2b: confirmed, then on-demand only in this pass;
+    the next pass reads the quota again (16) and asks for Spot again (the
+    researcher's task of 28 Nov 2026, item 1)."""
     clock = tmp_path / "clock"
     clock.write_text(f"{NOW}\n")
     p2, calls2 = _launch(tmp_path, "P6", env={**P6_SPOT, "AWS_LAUNCH_WINDOW_MINUTES": "10",
@@ -917,9 +918,10 @@ def test_a_spot_quota_refusal_leaves_spot_out_for_the_rest_of_the_window(tmp_pat
                                               "FAKE_RUN_REFUSE_ZONES": ZONES})
     assert p2.returncode == 1 and "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p2.stdout
     od = [("on-demand", z) for z in ZONES.split()]
-    assert _tries(calls2) == [("spot", "ap-southeast-2b")] + od + od
-    assert "no more Spot requests in this window" in p2.stdout
-    assert "CAPACITY_REFUSALS=7" in p2.stdout and len(_confirm_reads(calls2)) == 14
+    assert _tries(calls2) == [("spot", "ap-southeast-2b")] + od + [("spot", "ap-southeast-2b")] + od
+    assert "no more Spot requests in this pass" in p2.stdout
+    assert "CAPACITY_REFUSALS=8" in p2.stdout and len(_confirm_reads(calls2)) == 16
+    assert sum(c.startswith("service-quotas get-service-quota") for c in aws_calls(calls2)) == 2
 
 
 @pytest.mark.parametrize("env,said", [({"FAKE_SPOT_QUOTA": "0.0"}, "SPOT_QUOTA=0.0"),
@@ -928,9 +930,9 @@ def test_a_spot_quota_refusal_leaves_spot_out_for_the_rest_of_the_window(tmp_pat
 def test_a_spot_quota_under_16_vcpu_or_unread_makes_no_spot_request(tmp_path, env, said):
     p, calls = _launch(tmp_path, "P6", env={**P6_SPOT, **env})
     assert p.returncode == 0, p.stderr
-    assert f"{said}: under 16 vCPU, so no Spot request in this window" in p.stdout
+    assert f"{said}: under 16 vCPU, so no Spot request in pass 1" in p.stdout
     assert _tries(calls) == [("on-demand", "ap-southeast-2b")]
-    assert "Spot skipped: quota" in p.stdout
+    assert "Spot skipped in pass 1: quota" in p.stdout
 
 
 def test_every_refusal_of_a_spot_first_pass_is_counted(tmp_path):
@@ -952,3 +954,119 @@ def test_spot_first_is_p6_in_sydney_with_a_bid_at_most_on_demand(tmp_path, pairi
     p, calls = _launch(tmp_path, pairing, env={**P6_SPOT, **env})
     assert p.returncode == 1 and said in p.stderr, p.stderr
     assert calls == []
+
+
+# --- P6 on Spot, second wave (the researcher's task of 28 Nov 2026): the quota read
+# before every pass, Spot in 2c, 2b, 2a, an expired login stops the window --------
+def _p6_window(tmp_path, minutes, **env):
+    clock = tmp_path / "clock"
+    clock.write_text(f"{NOW}\n")
+    return _launch(tmp_path, "P6", env={**P6_SPOT, "AWS_LAUNCH_WINDOW_MINUTES": minutes,
+                                        "FAKE_CLOCK": str(clock), **env})
+
+
+def _quota_reads(calls):
+    return [k for k, c in enumerate(aws_calls(calls)) if c.startswith("service-quotas get-service-quota")]
+
+
+def test_a_quota_granted_during_a_window_starts_spot_at_the_next_pass(tmp_path):
+    """The quota reads 0, 0, then 16: passes 1 and 2 on-demand only, pass 3 asks
+    for Spot first. Each later read comes before its pass's first request."""
+    p, calls = _p6_window(tmp_path, "15", FAKE_SPOT_QUOTA_SEQ="0.0 0.0 16.0",
+                          FAKE_SPOT_ERROR="InsufficientInstanceCapacity", FAKE_RUN_REFUSE_ZONES=ZONES)
+    assert p.returncode == 1 and "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY" in p.stdout
+    od = [("on-demand", z) for z in ZONES.split()]
+    assert _tries(calls) == od + od + [("spot", z) for z in ZONES.split()] + od
+    c = aws_calls(calls)
+    runs = [k for k, x in enumerate(c) if x.startswith("ec2 run-instances")]
+    q = _quota_reads(calls)
+    assert len(q) == 3 and q[0] < runs[0] and runs[2] < q[1] < runs[3] and runs[5] < q[2] < runs[6]
+    assert "Pass 3: SPOT_QUOTA=16.0: Spot requests start in this pass." in p.stdout
+    assert "CAPACITY_REFUSALS=12" in p.stdout
+
+
+def test_a_quota_that_reads_short_later_leaves_spot_out_of_that_pass(tmp_path):
+    p, calls = _p6_window(tmp_path, "10", FAKE_SPOT_QUOTA_SEQ="16.0 0.0",
+                          FAKE_SPOT_ERROR="InsufficientInstanceCapacity", FAKE_RUN_REFUSE_ZONES=ZONES)
+    assert p.returncode == 1
+    od = [("on-demand", z) for z in ZONES.split()]
+    assert _tries(calls) == [("spot", z) for z in ZONES.split()] + od + od
+    assert "Pass 2: SPOT_QUOTA=0.0: under 16 vCPU, no Spot request in this pass." in p.stdout
+
+
+SPOT_ORDER = "ap-southeast-2c ap-southeast-2b ap-southeast-2a"
+
+
+def test_spot_asks_in_its_own_zone_order_then_on_demand_in_the_sessions(tmp_path):
+    p, calls = _launch(tmp_path, "P6", env={**P6_SPOT, "AWS_SPOT_AZS": SPOT_ORDER,
+                                            "FAKE_SPOT_ERROR": "InsufficientInstanceCapacity",
+                                            "FAKE_RUN_REFUSE_ZONES": "ap-southeast-2b"})
+    assert p.returncode == 0, p.stderr
+    assert _tries(calls) == [("spot", z) for z in SPOT_ORDER.split()] + [
+        ("on-demand", "ap-southeast-2b"), ("on-demand", "ap-southeast-2c")]
+    assert f"Spot zones   : {SPOT_ORDER} (Spot asks in this order)" in p.stdout
+    assert "Zone ap-southeast-2c (1 of 6, spot)" in p.stdout and "(4 of 6, on-demand)" in p.stdout
+
+
+@pytest.mark.parametrize("pairing,env", [
+    ("P6", {"AWS_SPOT_AZS": "ap-southeast-2c ap-southeast-2b"}),                     # one missing
+    ("P6", {"AWS_SPOT_AZS": "ap-southeast-2c ap-southeast-2b ap-southeast-2b"}),     # twice
+    ("P6", {"AWS_SPOT_AZS": "ap-southeast-2c ap-southeast-2b ap-southeast-2d"}),     # another zone
+    ("P6", {"AWS_SPOT_AZS": SPOT_ORDER, "AWS_PROVISIONING": "on-demand"}),            # not spot-first
+])
+def test_a_spot_zone_order_not_the_sessions_zones_is_refused(tmp_path, pairing, env):
+    p, calls = _launch(tmp_path, pairing, env={**P6_SPOT, **env})
+    assert p.returncode == 1 and "REFUSING TO LAUNCH" in p.stderr, p.stderr
+    assert calls == []
+
+
+@pytest.mark.parametrize("how", ["token", "session"])
+def test_an_expired_login_at_the_start_says_so_and_queries_nothing(tmp_path, how):
+    p, calls = _launch(tmp_path, "P6", env={**P6_SPOT, "FAKE_LOGIN_EXPIRED": how})
+    assert p.returncode == 1 and "AWS login expired, run aws login" in p.stderr
+    assert [c.split()[:2] for c in aws_calls(calls)] == [["sts", "get-caller-identity"]]
+
+
+@pytest.mark.parametrize("on,tries,result,words", [
+    # the security group read before pass 2's first request
+    ("ec2 describe-security-groups:4", 3, "AWS_LOGIN_EXPIRED", ["window-open:sess-1", "window-closed:sess-1:stopped"]),
+    # the second create request
+    ("ec2 run-instances:2", 2, "AWS_LOGIN_EXPIRED", ["window-open:sess-1", "window-closed:sess-1:stopped"]),
+    # the Spot quota read before pass 2
+    ("service-quotas get-service-quota:2", 3, "AWS_LOGIN_EXPIRED", ["window-open:sess-1", "window-closed:sess-1:stopped"]),
+    # the check after the first refusal: not confirmed, so counted
+    ("ec2 describe-volumes:1", 1, "AWS_LOGIN_EXPIRED_UNCONFIRMED",
+     ["window-open:sess-1", "unconfirmed", "window-closed:sess-1:stopped"]),
+])
+def test_a_login_that_expires_in_the_window_stops_it_with_the_message(tmp_path, on, tries, result, words):
+    """Window 3 of 27 Nov 2026 stopped as if the security group had changed."""
+    p, calls = _p6_window(tmp_path, "10", FAKE_SPOT_QUOTA="0.0", FAKE_RUN_REFUSE_ZONES=ZONES, FAKE_EXPIRE_ON=on)
+    assert p.returncode == 1
+    assert "AWS login expired, run aws login" in p.stdout and f"LAUNCH_RESULT={result}\n" in p.stdout
+    assert "no longer admits" not in p.stderr + p.stdout
+    assert len(_tries(calls)) == tries
+    assert _record_words(tmp_path) == words
+
+
+def test_the_gate_counts_an_interrupted_instance_at_its_spend(tmp_path):
+    """The record as the driver leaves it after a Spot interruption (the
+    researcher's task of 28 Nov 2026, item 2): the instance's line at its cap,
+    voided, and the instance again at its spend. Rs 2,467 + Rs 1,200 + the
+    relaunch's Rs 4,740 fit $100 of credits (Rs 9,599); the cap counted as well
+    would not."""
+    earlier = "2026-11-26T10:00:00Z\tP3\ti-0aaaaaaaaaaaaaaa1\t2467\n"
+    first = "2026-11-28T01:00:00Z\tP6\ti-0bbbbbbbbbbbbbbb2\t5940\n"
+    recount = ("VOID\t2026-11-28T01:00:00Z\tP6\ti-0bbbbbbbbbbbbbbb2\t2026-11-28T02:13:00Z\t"
+               "Spot interruption: counted again at its spend at the rate, Rs 1200 (task of 28 Nov 2026, item 2)\n"
+               "2026-11-28T02:13:00Z\tP6\ti-0bbbbbbbbbbbbbbb2\t1200\n")
+    env = {"AWS_COST_CAP_INR": "4740", "FAKE_CREDITS": "100"}
+    rec = _record(tmp_path)
+    rec.parent.mkdir(exist_ok=True)
+    rec.write_text(earlier + first + recount)
+    p, calls = _launch(tmp_path, env=env)
+    assert p.returncode == 0, p.stderr
+    assert "> Rs 3667.00 planned so far + Rs 4740 cap" in p.stdout
+    rec.write_text(earlier + first)
+    p, calls = _launch(tmp_path, env=env)
+    assert p.returncode == 1 and "do not exceed the planned AWS spend so far, Rs 8407.00" in p.stderr
+    assert _no_create(calls)

@@ -139,6 +139,10 @@ exit $rc
 
 FAKE_AWS = r'''#!/usr/bin/env bash
 printf '%q ' aws "$@" >> "$FAKE_RUN/aws_calls.log"; echo >> "$FAKE_RUN/aws_calls.log"
+if [[ -n "${FAKE_LOGIN_EXPIRED:-}" || -e "$FAKE_RUN/login_expired" ]]; then
+  echo "aws: [ERROR]: An error occurred (ExpiredToken) when calling the DescribeInstances operation: The security token included in the request is expired" >&2
+  exit 254
+fi
 case "$*" in
   *describe-security-groups*) cat "$FAKE_RUN/sg_cidrs";;
   *StateReason.Code*) cat "$FAKE_RUN/reason" 2>/dev/null || echo None;;
@@ -161,7 +165,7 @@ FAKE_LAUNCH = r'''#!/usr/bin/env bash
 k=$(( $(cat "$FAKE_RUN/launches_$PPID" 2>/dev/null || echo 0) + 1 )); echo $k > "$FAKE_RUN/launches_$PPID"
 echo $k > "$FAKE_RUN/launches"
 envf="$FAKE_RUN/launch_env.txt"; (( k > 1 )) && envf="$FAKE_RUN/launch_env_$k.txt"
-env | grep -E '^AWS_(SESSION|RATE|COST|HALT|MAX_RUN|LAUNCH_WINDOW|AMI|PROVISIONING|SPOT)' | sort > "$envf"
+env | grep -E '^AWS_(SESSION|RATE|COST|HALT|MAX_RUN|LAUNCH_WINDOW|LAUNCH_RECORD|AMI|PROVISIONING|SPOT)' | sort > "$envf"
 read -r typed; echo "typed=$typed" >> "$envf"; echo "args=$*" >> "$envf"
 echo "Pass 1 of at most 36 (window 180 min, a pass every 5 min)."
 echo "WINDOW_PASSES=${FAKE_PASSES:-2}"
@@ -174,6 +178,17 @@ if [[ "$mode" == refused ]]; then
   echo "ZONES_REFUSED=ap-southeast-2a"
   echo "LAUNCH_RESULT=EVERY_ZONE_REFUSED_FOR_CAPACITY"; exit 1
 fi
+if [[ "$mode" == expired ]]; then          # the login expired in the window
+  echo "AWS login expired, run aws login"
+  echo "LAUNCH_RESULT=AWS_LOGIN_EXPIRED"; exit 1
+fi
+if [[ "$mode" == expired-at-pin ]]; then   # before the window: the account pin
+  echo "AWS login expired, run aws login" >&2; exit 1
+fi
+if [[ "$mode" == expired-unconfirmed ]]; then
+  echo "AWS login expired, run aws login"
+  echo "LAUNCH_RESULT=AWS_LOGIN_EXPIRED_UNCONFIRMED"; exit 1
+fi
 if (( k > 1 )); then
   pkill -9 -f "$FAKE_HOME/p3_session" 2>/dev/null; sleep 0.3
   mv "$FAKE_HOME" "$FAKE_HOME.dead$k"; mkdir -p "$FAKE_HOME"
@@ -185,6 +200,8 @@ if (( k > 1 )); then
   [[ -n "${FAKE_RELAUNCH_GPU:-}" ]] && echo "$FAKE_RELAUNCH_GPU" > "$FAKE_RUN/gpu_name"
   [[ -n "${FAKE_RELAUNCH_BACKEND_FAIL:-}" ]] && echo "$FAKE_RELAUNCH_BACKEND_FAIL" > "$FAKE_RUN/backend_fail"
 fi
+# the launcher's line in the credit gate's record: the instance at its cap
+printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$id" "$AWS_COST_CAP_INR" >> "$AWS_LAUNCH_RECORD"
 echo "Created $id. Billing now. Setting the hard delete."
 echo "INSTANCE_ID=$id"
 echo "LAUNCH_ZONE=ap-southeast-2a"
@@ -376,6 +393,7 @@ def build(tmp: Path, halt_min: int = 473, **opts) -> dict:
         "P3_POLL_S": "1", "P3_LAUNCH": str(launch), "P3_TEARDOWN": str(teardown),
         "P3_CLEANUP": str(cleanup), "P3_BOOTSTRAP": str(bootstrap),
         "P3_LOGIN_CACHE": str(run / "login_cache"),
+        "P3_LAUNCH_RECORD": str(run / "aws_launches.tsv"),
         "ATTNBENCH_LOGIN_AT": str(int(time.time())),      # as the launch command stamps it
         "PYTHONDONTWRITEBYTECODE": "1",
     })

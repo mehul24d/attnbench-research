@@ -139,8 +139,12 @@ if [[ "$PAIRING" == P6 ]]; then
   CRED_NEED_S=34200                  # 9.5 h: 3 h + 359 min = 9.0 h, and a margin
 fi
 # Spot (P6 only): the bid is the on-demand price (p5.4xlarge in Sydney, the price
-# file of 20 Nov 2026), so the rate above bounds a Spot hour too.
+# file of 20 Nov 2026), so the rate above bounds a Spot hour too. Spot asks in
+# 2c, 2b, 2a (the researcher's task of 28 Nov 2026, item 3; 2c's placement score
+# read 4 on 27 Nov, 2b and 2a 1); on-demand keeps AZS's order.
 SPOT_MAX_USD=8.944
+SPOT_AZS="ap-southeast-2c ap-southeast-2b ap-southeast-2a"
+LAUNCH_RECORD="${AWS_LAUNCH_RECORD:-$HOME/.attnbench/aws_launches.tsv}"
 MAX_RELAUNCHES=2; RELAUNCH_WINDOW_MAX=60
 # A relaunched instance's halt must fit the blocks left, at the card's minutes:
 # boot, deploy, bootstrap and the backend check 20; then P3's blocks on the same
@@ -161,6 +165,7 @@ if [[ "${P3_DRY:-}" == 1 ]]; then    # the fake remote, never AWS
   [[ -n "${P3_PULL_DEADLINE_S:-}" ]] && PULL_DEADLINE_S="$P3_PULL_DEADLINE_S"
   PUSH_EVERY_S="${P3_PUSH_EVERY_S:-$PUSH_EVERY_S}"
   CAP="${P3_CAP:-$CAP}"
+  LAUNCH_RECORD="${P3_LAUNCH_RECORD:?set P3_LAUNCH_RECORD, a launch record for the dry run}"
 elif env | grep '^P3_' | grep -qv '^P3_DRIVER_'; then
   echo "REFUSING: P3_* variables are set but P3_DRY is not 1; nothing launched" >&2; exit 1
 fi
@@ -202,7 +207,8 @@ export AWS_SESSION_REGION=ap-southeast-2 AWS_SESSION_AZS="$AZS"
 export AWS_RATE_INR_HR=$RATE AWS_COST_CAP_INR=$CAP AWS_HALT_MINUTES=$HALT_MIN AWS_MAX_RUN_MINUTES=$DELETE_MIN
 export AWS_LAUNCH_WINDOW_MINUTES=$WINDOW_MIN
 export AWS_AMI_ID=ami-096c5dc30364c9041
-(( SPOT )) && export AWS_PROVISIONING=spot-first AWS_SPOT_MAX_PRICE_USD=$SPOT_MAX_USD
+(( SPOT )) && export AWS_PROVISIONING=spot-first AWS_SPOT_MAX_PRICE_USD=$SPOT_MAX_USD AWS_SPOT_AZS="$SPOT_AZS"
+export AWS_LAUNCH_RECORD="$LAUNCH_RECORD"
 HALT_MIN_FIRST=$HALT_MIN; DELETE_MIN_FIRST=$DELETE_MIN
 R=(--profile attnbench --region ap-southeast-2)
 KH="$REC/known_hosts"
@@ -211,6 +217,24 @@ SSH_OPTS=(-i "$AWS_SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostK
 
 cd "$WT" || exit 1
 [[ -z "$(git status --porcelain)" ]] || refuse "the tree is not clean"
+# An expired AWS login (the researcher's task of 28 Nov 2026, item 4): before an
+# instance exists the driver says so and stops; with one up it says so once and
+# goes on over SSH (the instance halts and is deleted on its own times).
+source "$WT/scripts/_aws_account.sh"     # aws_login_expired_text, AWS_LOGIN_EXPIRED_MSG
+LOGIN_SAID="$REC/login_expired"          # a file: aws_read runs in subshells
+login_said() { status "$AWS_LOGIN_EXPIRED_MSG${1:+ ($1)}"; }
+login_expired_stop() { win_end "$1"; status "STOPPED $AWS_LOGIN_EXPIRED_MSG ($2)"; bash "$CLEANUP"; exit 1; }
+# aws_read ARGS: an AWS read; an expired login is said once.
+aws_read() {
+  local e rc=0
+  e="$(mktemp)"
+  command aws "$@" 2>"$e" || rc=$?
+  if (( rc )) && aws_login_expired_text "$(cat "$e")" && [[ ! -e "$LOGIN_SAID" ]]; then
+    : > "$LOGIN_SAID"; login_said "an AWS read was refused; the driver goes on over SSH, and the teardown needs a new login"
+  fi
+  rm -f "$e"
+  return $rc
+}
 COMMIT="$(git rev-parse HEAD)"
 [[ "$PAIRING" == P6 ]] || { [[ -d "$P1_HOST" ]] && (( $(ls "$P1_HOST"/*/bare_prices.json 2>/dev/null | wc -l) == 35 )); } \
   || refuse "P1's T3.2d host components (35 cells) are not at $P1_HOST: the gate could not be read"
@@ -219,10 +243,14 @@ COMMIT="$(git rev-parse HEAD)"
 # 0 yes; 1 the address could not be read; 2 the group could not be read; 3 no.
 sg_admits() {
   local ip cidrs
+  local e
   ip="$(curl -s -m 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
   [[ -n "$ip" ]] || return 1
+  e="$(mktemp)"
   cidrs="$(command aws ec2 describe-security-groups "${R[@]}" --group-ids "$AWS_SECURITY_GROUP_ID" \
-    --query 'SecurityGroups[0].IpPermissions[?FromPort==`22`].IpRanges[].CidrIp' --output text)" || return 2
+    --query 'SecurityGroups[0].IpPermissions[?FromPort==`22`].IpRanges[].CidrIp' --output text 2>"$e")" || {
+    aws_login_expired_text "$(cat "$e")" && { rm -f "$e"; return 4; }; cat "$e" >&2; rm -f "$e"; return 2; }
+  rm -f "$e"
   [[ " $(tr -s '[:space:]' ' ' <<<"$cidrs") " == *" $ip/32 "* ]] || return 3
 }
 sg_admits; SG=$?
@@ -230,6 +258,7 @@ case $SG in
   0) ;;
   1) refuse "SSH preflight: could not read this Mac's public address (network?)" ;;
   2) refuse "SSH preflight: could not read the security group (run aws login --profile attnbench, then start again)" ;;
+  4) refuse "SSH preflight: $AWS_LOGIN_EXPIRED_MSG (the security group read was refused)" ;;
   *) refuse "SSH preflight: the security group does not admit this Mac's address (re-point it with sg_repoint.sh)" ;;
 esac
 status "SSH preflight passed (the security group admits this Mac's current address)"
@@ -322,7 +351,11 @@ launch() {
 }
 launch "$REC/launcher.log"
 if [[ $LRC -ne 0 || ! "$ID" =~ ^i- ]]; then
-  if [[ "$LRESULT" == SSH_SOURCE_NOT_ADMITTED ]]; then
+  if [[ "$LRESULT" == AWS_LOGIN_EXPIRED || ( -z "$ID" && -z "$LRESULT" && "$(cat "$REC/launcher.log")" == *"$AWS_LOGIN_EXPIRED_MSG"* ) ]]; then
+    login_expired_stop NOTHING_CREATED "the launcher stopped: passes ${PASSES:-0}, capacity refusals ${NREFUSED:-0}, each confirmed; nothing created"
+  elif [[ "$LRESULT" == AWS_LOGIN_EXPIRED_UNCONFIRMED ]]; then
+    login_expired_stop "UNCLEAR rc=$LRC" "the launcher stopped while confirming a refusal: after aws login, run scripts/aws_cleanup_check.sh"
+  elif [[ "$LRESULT" == SSH_SOURCE_NOT_ADMITTED ]]; then
     win_end NOTHING_CREATED
     status "STOPPED the security group no longer admits this Mac's address (not re-pointed); passes ${PASSES:-?}, capacity refusals ${NREFUSED:-?}; nothing created"
   elif [[ "$LRESULT" == EVERY_ZONE_REFUSED_FOR_CAPACITY && -z "$ID" ]]; then
@@ -353,11 +386,11 @@ teardown() {   # retried until EC2 reads the instance back terminated
   local n st
   for n in 1 2 3 4 5; do
     AWS_RATE_INR_HR=$RATE bash "$TEARDOWN" "$ID" ap-southeast-2 "$REC/teardown_$n"
-    st="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)"
+    st="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" --query 'Reservations[0].Instances[0].State.Name' --output text)"
     [[ "$st" == terminated || "$st" == shutting-down ]] && break
     status "TEARDOWN attempt $n left the instance '$st'; retrying in ${TEARDOWN_WAIT_S} s"; sleep "$TEARDOWN_WAIT_S"
   done
-  [[ "$st" == terminated || "$st" == shutting-down ]] || status "TEARDOWN FAILED after 5 attempts: terminate $ID by hand NOW"
+  [[ "$st" == terminated || "$st" == shutting-down ]] || status "TEARDOWN FAILED after 5 attempts: terminate $ID by hand NOW$([[ -e "$LOGIN_SAID" ]] && echo " (after aws login)")"
   bash "$CLEANUP"; echo "cleanup_check rc=$?"
 }
 stop() { teardown "$1"; status "$2"; exit 1; }
@@ -498,10 +531,10 @@ spot_interrupted() {
   [[ "$MARKET" == spot ]] || return 1
   (( NOTICE_SEEN )) && return 0
   local st why
-  st="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
-    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)" || return 1
-  why="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
-    --query 'Reservations[0].Instances[0].StateReason.Code' --output text 2>/dev/null)" || return 1
+  st="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text)" || return 1
+  why="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].StateReason.Code' --output text)" || return 1
   [[ ( "$st" == shutting-down || "$st" == terminated ) && "$why" == Server.SpotInstanceTermination ]]
 }
 # The poll's IMDSv2 read of the interruption notice (Spot only): its body, if any,
@@ -539,11 +572,12 @@ run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the 
         0) why="the group still admits this Mac's address (network?)" ;;
         1) why="this Mac's public address could not be read (network down?)" ;;
         2) why="the security group could not be read (aws login --profile attnbench?)" ;;
+        4) why="$AWS_LOGIN_EXPIRED_MSG (the security group read was refused)" ;;
         *) why="the group no longer admits this Mac's address: re-point it with sg_repoint.sh (the driver never does)" ;;
       esac
       # The instance's own state (26 Nov 2026): a stopped instance is said at once.
-      st="$(command aws ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
-        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null)" || st="unreadable"
+      st="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text)" || st="unreadable"
       if spot_interrupted; then
         status "SPOT INTERRUPTED in $b at +${mins}min: the instance is '$st' (Server.SpotInstanceTermination)"
         return 3
@@ -594,6 +628,25 @@ restore_session() {   # restore_session B: the blocks before B, checked file by 
   done
   status "RESTORED the blocks before $b on the new instance: $n files, every sha256 checked there"
 }
+# The credit gate's launch record (scripts/aws_launch_session.sh) counts every
+# instance at its cap. After an interruption its line is voided (a dated VOID
+# line, never rewritten) and the instance counted again at its spend at the
+# rate, so the relaunch reserves only what is left of Rs CAP and the session
+# counts Rs CAP in all, however many instances (the researcher's task of 28 Nov
+# 2026, item 2).
+recount_record() {   # recount_record RS: the interrupted instance ($ID) at RS
+  local line now lutc lp lw lcap
+  line="$(awk -F'\t' -v id="$ID" -v p="$PAIRING" 'NF == 4 && $2 == p && $3 == id {l = $0} END {print l}' "$LAUNCH_RECORD" 2>/dev/null)"
+  if [[ -z "$line" ]]; then
+    status "WARN CREDITS the launch record has no line for the interrupted instance: it stays as the launcher wrote it"; return
+  fi
+  IFS=$'\t' read -r lutc lp lw lcap <<<"$line"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'VOID\t%s\t%s\t%s\t%s\t%s\n' "$lutc" "$lp" "$lw" "$now" \
+    "Spot interruption: counted again at its spend at the rate, Rs $1 (task of 28 Nov 2026, item 2)" >> "$LAUNCH_RECORD"
+  printf '%s\t%s\t%s\t%s\n' "$now" "$PAIRING" "$lw" "$1" >> "$LAUNCH_RECORD"
+  status "CREDITS the interrupted instance now counts Rs $1 at the rate (was Rs $lcap, its cap); the relaunch reserves what is left of Rs $CAP"
+}
 relaunch() {   # relaunch B: B is discarded; a new instance, ready to run B from its start
   local b="$1" now mins used remaining del halt need x win
   NOTICE_SEEN=0
@@ -601,6 +654,7 @@ relaunch() {   # relaunch B: B is discarded; a new instance, ready to run B from
   now="$(date -u +%s)"; mins=$(( (now - LAUNCH_EPOCH + 59) / 60 ))
   used="$(ceil_inr "$mins")"; SPENT_INR=$(( SPENT_INR + used ))
   printf 'attempt\t%s\t%s\t%s\t%s\tmin %s\tRs %s\tinterrupted in %s\n' "$ATTEMPT" "$ID" "$MARKET" "$FIRST_ZONE" "$mins" "$used" "$b" >> "$REC/cost.tsv"
+  recount_record "$used"
   status "INTERRUPTED attempt $ATTEMPT in block $b after $mins min (Rs $used at the rate; Rs $SPENT_INR of the Rs $CAP cap counted); block $b is discarded in full"
   (( RELAUNCHES < MAX_RELAUNCHES )) || { status "DONE FAILED Spot interrupted in block $b with all $MAX_RELAUNCHES relaunches used; blocks before $b in $REC/session"; exit 1; }
   remaining=$(( CAP - SPENT_INR ))
@@ -609,7 +663,7 @@ relaunch() {   # relaunch B: B is discarded; a new instance, ready to run B from
   halt=$(( del - (DELETE_MIN_FIRST - HALT_MIN_FIRST) )); (( halt > HALT_MIN_FIRST )) && halt=$HALT_MIN_FIRST
   need=$SETUP_MIN; x="$b"
   for x in b1 b2 b3; do [[ "$x" < "$b" ]] || need=$(( need + $(eval "echo \$BLOCK_MIN_$x") )); done
-  (( halt - PULL_MARGIN_MIN >= need )) || { status "DONE FAILED Spot interrupted in block $b: what is left of the cap, Rs $remaining, allows a halt at +$halt min, short of the $need min the blocks from $b need (+$PULL_MARGIN_MIN for the last pull); no relaunch"; exit 1; }
+  (( halt - PULL_MARGIN_MIN >= need )) || { status "DONE FAILED Spot interrupted in block $b: what is left of the cap, Rs $remaining, allows a halt at +$halt min, short of the $need min the blocks from $b need (+$PULL_MARGIN_MIN for the last pull; Rs $(ceil_inr $(( need + PULL_MARGIN_MIN + DELETE_MIN_FIRST - HALT_MIN_FIRST ))) at the rate to the delete); no relaunch"; exit 1; }
   now="$(date -u +%s)"
   (( now < END_EPOCH )) || { status "DONE FAILED Spot interrupted in block $b after 18:30 UTC on 2 Dec 2026: no relaunch"; exit 1; }
   win=$(( (END_EPOCH - now) / 60 )); (( win > RELAUNCH_WINDOW_MAX )) && win=$RELAUNCH_WINDOW_MAX
@@ -617,11 +671,13 @@ relaunch() {   # relaunch B: B is discarded; a new instance, ready to run B from
   archive_attempt
   RELAUNCHES=$(( RELAUNCHES + 1 )); ATTEMPT=$(( ATTEMPT + 1 ))
   HALT_MIN=$halt; DELETE_MIN=$del
+  (( SPOT )) && export AWS_SPOT_AZS="$FIRST_ZONE"
   export AWS_SESSION_AZS="$FIRST_ZONE" AWS_COST_CAP_INR=$remaining AWS_HALT_MINUTES=$halt AWS_MAX_RUN_MINUTES=$del AWS_LAUNCH_WINDOW_MINUTES=$win
   status "RELAUNCH $RELAUNCHES of $MAX_RELAUNCHES: $ITYPE_WANT in $FIRST_ZONE (block 1's zone), Spot then on-demand, window $win min; halt +$halt, delete +$del, cap Rs $remaining; then block $b from its start"
   launch "$REC/launcher_relaunch$RELAUNCHES.log"
   if [[ $LRC -ne 0 || ! "$ID" =~ ^i- ]]; then
     printf 'relaunch\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$REC" "NOTHING_CREATED rc=$LRC ${LRESULT:-}" >> "$WINDOWS"
+    [[ "$LRESULT" == AWS_LOGIN_EXPIRED* ]] && login_said "the relaunch window stopped"
     status "DONE FAILED Spot interrupted in block $b; relaunch $RELAUNCHES created nothing (rc $LRC${LRESULT:+, $LRESULT}); blocks before $b in $REC/session"
     bash "$CLEANUP"; exit 1
   fi

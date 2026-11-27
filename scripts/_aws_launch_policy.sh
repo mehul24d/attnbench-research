@@ -157,7 +157,8 @@ aws_launch_across_zones() {     # aws_launch_across_zones ATTEMPT_FN CONFIRM_FN 
 # re-pointed here.
 #
 # Returns 0 with AWS_LAUNCHED_ZONE set; 3 when the window ended with every
-# attempt refused for capacity; 4 when the precheck failed; 1 otherwise.
+# attempt refused for capacity; 4 when the precheck failed; 5 when the AWS
+# login expired (AWS_LOGIN_EXPIRED_AT); 1 otherwise, or what AWS_PASS_HOOK returned.
 # AWS_ZONES_REFUSED lists the zones refused in the last pass, in order;
 # AWS_WINDOW_PASSES counts the passes begun and AWS_CAPACITY_REFUSALS every
 # confirmed capacity refusal of the window.
@@ -168,12 +169,24 @@ aws_window_minutes_ok() {       # aws_window_minutes_ok MINUTES
   [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= AWS_RETRY_WINDOW_MAX_MINUTES ))
 }
 
+# An expired login (scripts/_aws_account.sh, aws_login_expired_seen) stops the
+# window with 5: AWS_LOGIN_EXPIRED_AT says where (pass: before a pass; precheck:
+# the security group read; create: the create request, which the login refused
+# and so created nothing; confirm: the read after a capacity refusal).
+_aws_login_gone() { declare -F aws_login_expired_seen >/dev/null && aws_login_expired_seen; }
+_aws_login_stop() {             # _aws_login_stop WHERE WHAT
+  AWS_LOGIN_EXPIRED_AT="$1"
+  echo "${AWS_LOGIN_EXPIRED_MSG:-AWS login expired, run aws login}"
+  echo "STOPPING -- $2 was refused because the AWS login has expired; nothing more is tried." >&2
+}
+
 # One attempt in one zone. 0: created; 2: refused for capacity, nothing left
-# (the caller may go on); 4: the precheck failed; 1: stop.
+# (the caller may go on); 4: the precheck failed; 5: the login expired; 1: stop.
 _aws_try_zone() {               # _aws_try_zone ATTEMPT_FN CONFIRM_FN PRECHECK_FN ZONE LABEL
   local attempt="$1" confirm="$2" precheck="$3" z="$4" label="$5"
   aws_launch_policy_check "$z"
   if ! "$precheck" "$z"; then
+    if _aws_login_gone; then _aws_login_stop precheck "the security group read before ${z:-the region}"; return 5; fi
     echo "STOPPING -- before the create request in ${z:-the region}, the security group no longer" >&2
     echo "admits this Mac's current address on port 22 (above). It was not re-pointed; nothing" >&2
     echo "more is tried. Re-point it (sg_repoint.sh) and ask for a new launch." >&2
@@ -184,6 +197,9 @@ _aws_try_zone() {               # _aws_try_zone ATTEMPT_FN CONFIRM_FN PRECHECK_F
   if "$attempt" "$z"; then
     AWS_LAUNCHED_ZONE="$z"
     return 0
+  fi
+  if [[ -z "$AWS_ATTEMPT_ID" ]] && _aws_login_gone; then
+    _aws_login_stop create "the create request in ${z:-the region}"; return 5
   fi
   if ! aws_is_capacity_refusal "$AWS_ATTEMPT_ERR"; then
     echo "STOPPING -- the create request in ${z:-the region} failed with an error other than" >&2
@@ -197,13 +213,14 @@ _aws_try_zone() {               # _aws_try_zone ATTEMPT_FN CONFIRM_FN PRECHECK_F
   fi
   echo "Zone ${z:-any} refused for capacity, no instance id came back; confirming nothing was created."
   if ! "$confirm" "$z"; then
+    if _aws_login_gone; then _aws_login_stop confirm "the check after the refusal in ${z:-the region}"; return 5; fi
     echo "STOPPING -- after the refusal in ${z:-the region}, it could not be confirmed that the" >&2
     echo "session has no instance and no volume (above); no other zone is tried." >&2
     return 1
   fi
   if [[ "${AWS_ATTEMPT_MODE:-}" == spot && "$AWS_ATTEMPT_ERR" == *"($AWS_SPOT_QUOTA_ERROR)"* ]]; then
     AWS_SPOT_OFF=1
-    echo "Spot quota refused ($AWS_SPOT_QUOTA_ERROR): no more Spot requests in this window; on-demand goes on."
+    echo "Spot quota refused ($AWS_SPOT_QUOTA_ERROR): no more Spot requests in this pass; on-demand goes on (the quota is read again before the next pass)."
   fi
   return 2
 }
@@ -220,21 +237,40 @@ aws_launch_window() {           # aws_launch_window ATTEMPT_FN CONFIRM_FN PRECHE
   local passes=$(( (window_s + interval_s - 1) / interval_s ))
   (( passes < 1 )) && passes=1
   local z n total rc start now next pass_start mode modes="${AWS_PASS_MODES:--}" label
+  local -a zs
   AWS_LAUNCHED_ZONE="" AWS_LAUNCHED_MODE="" AWS_ZONES_REFUSED="" AWS_WINDOW_PASSES=0 AWS_CAPACITY_REFUSALS=0
-  AWS_ATTEMPT_ID="" AWS_ATTEMPT_ERR="" AWS_SPOT_OFF="${AWS_SPOT_OFF:-0}"
+  AWS_ATTEMPT_ID="" AWS_ATTEMPT_ERR="" AWS_SPOT_OFF="${AWS_SPOT_OFF:-0}" AWS_LOGIN_EXPIRED_AT=""
   start="$(command date -u +%s)"
   pass_start="$start"
   while :; do
     AWS_WINDOW_PASSES=$(( AWS_WINDOW_PASSES + 1 ))
     AWS_ZONES_REFUSED="" n=0 total=0
-    for mode in $modes; do [[ "$mode" == spot && "$AWS_SPOT_OFF" == 1 ]] || total=$(( total + $# )); done
+    # AWS_PASS_HOOK N, before pass N (the launcher's: an expired login stops the
+    # window; the Spot quota is read again and sets AWS_SPOT_OFF; the
+    # researcher's task of 28 Nov 2026, items 1 and 4). Not 0: the window stops so.
+    if [[ -n "${AWS_PASS_HOOK:-}" ]]; then
+      rc=0; "$AWS_PASS_HOOK" "$AWS_WINDOW_PASSES" || rc=$?
+      [[ $rc -eq 0 ]] || return $rc
+    fi
+    for mode in $modes; do
+      [[ "$mode" == spot && "$AWS_SPOT_OFF" == 1 ]] && continue
+      if [[ "$mode" == spot && -n "${AWS_SPOT_ZONE_LIST:-}" ]]; then
+        total=$(( total + $(wc -w <<<"$AWS_SPOT_ZONE_LIST") ))
+      else
+        total=$(( total + $# ))
+      fi
+    done
     (( passes > 1 )) && echo "Pass $AWS_WINDOW_PASSES of at most $passes (window $window min, a pass every $AWS_RETRY_INTERVAL_MINUTES min)."
     for mode in $modes; do
       # Spot first, then on-demand (AWS_PASS_MODES="spot on-demand"; the
       # researcher's task of 27 Nov 2026): Spot is left out once its quota
       # refused or read short (AWS_SPOT_OFF=1). The default "-" is one
-      # on-demand request per zone, as before.
-      for z in "$@"; do
+      # on-demand request per zone, as before. Spot asks in AWS_SPOT_ZONE_LIST's
+      # order when it is set (the same zones; P6: 2c, 2b, 2a, the researcher's
+      # task of 28 Nov 2026, item 3).
+      zs=("$@")
+      [[ "$mode" == spot && -n "${AWS_SPOT_ZONE_LIST:-}" ]] && read -r -a zs <<<"$AWS_SPOT_ZONE_LIST"
+      for z in "${zs[@]}"; do
         [[ "$mode" == spot && "$AWS_SPOT_OFF" == 1 ]] && continue
         n=$(( n + 1 ))
         AWS_ATTEMPT_MODE="$mode"
