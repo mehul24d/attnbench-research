@@ -67,8 +67,8 @@
 # 16 vCPU. On a Spot instance a block's poll also reads the instance's
 # interruption notice (IMDSv2 spot/instance-action), and a lost poll reads the
 # instance's state reason. An interruption (the notice, or the instance
-# terminated with Server.SpotInstanceTermination, or a pull cut by either)
-# discards the block it hit in full, as P4's Spot blocks were (plan Appendix A,
+# terminated with Server.SpotInstanceTermination or by its own halt,
+# Client.InstanceInitiatedShutdown, or a pull cut by either) discards the block it hit in full, as P4's Spot blocks were (plan Appendix A,
 # 15 Nov 2026: "An interrupted block is still discarded in full and rerun on a
 # new instance"). The driver then: tears the instance down; counts what it
 # cost at the rate, from launch to the teardown, rounded up; relaunches at
@@ -526,16 +526,26 @@ whatever_there_is() {   # pull every step directory that exists, as a last act
 }
 
 # A Spot instance's interruption: the notice seen at a poll, or the instance
-# shutting down or terminated by EC2 with Server.SpotInstanceTermination.
+# shutting down or terminated by EC2 with Server.SpotInstanceTermination, or by
+# its own halt, Client.InstanceInitiatedShutdown (the planned halt or the idle
+# halt: a one-time Spot instance terminates at a halt). A halt-termination takes
+# the interruption's path: the block in flight discarded, a relaunch counted
+# under the limit (the researcher's check of 28 Nov 2026). SPOT_LOST_WHY says which.
+SPOT_LOST_WHY=""
 spot_interrupted() {
   [[ "$MARKET" == spot ]] || return 1
-  (( NOTICE_SEEN )) && return 0
+  (( NOTICE_SEEN )) && { SPOT_LOST_WHY="the interruption notice"; return 0; }
   local st why
   st="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
     --query 'Reservations[0].Instances[0].State.Name' --output text)" || return 1
   why="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
     --query 'Reservations[0].Instances[0].StateReason.Code' --output text)" || return 1
-  [[ ( "$st" == shutting-down || "$st" == terminated ) && "$why" == Server.SpotInstanceTermination ]]
+  [[ "$st" == shutting-down || "$st" == terminated ]] || return 1
+  case "$why" in
+    Server.SpotInstanceTermination) SPOT_LOST_WHY="$why" ;;
+    Client.InstanceInitiatedShutdown) SPOT_LOST_WHY="$why: its own halt, taken as an interruption" ;;
+    *) return 1 ;;
+  esac
 }
 # The poll's IMDSv2 read of the interruption notice (Spot only): its body, if any,
 # follows the marker line.
@@ -561,7 +571,7 @@ run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the 
       if [[ -n "$ex" ]]; then
         pull_logs
         [[ "$ex" == 0 ]] || { status "BLOCK $b FAILED exit $ex"; return 1; }
-        pull "$b" $(block_dirs "$b") || { spot_interrupted && { status "SPOT INTERRUPTED during the pull of $b"; return 3; }; return 1; }
+        pull "$b" $(block_dirs "$b") || { spot_interrupted && { status "SPOT INTERRUPTED during the pull of $b ($SPOT_LOST_WHY)"; return 3; }; return 1; }
         return 0
       fi
       (( NOTICE_SEEN )) && return 3
@@ -579,7 +589,7 @@ run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the 
       st="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
         --query 'Reservations[0].Instances[0].State.Name' --output text)" || st="unreadable"
       if spot_interrupted; then
-        status "SPOT INTERRUPTED in $b at +${mins}min: the instance is '$st' (Server.SpotInstanceTermination)"
+        status "SPOT INTERRUPTED in $b at +${mins}min: the instance is '$st' ($SPOT_LOST_WHY)"
         return 3
       fi
       if [[ "$st" == stopped || "$st" == stopping ]]; then
@@ -643,7 +653,7 @@ recount_record() {   # recount_record RS: the interrupted instance ($ID) at RS
   IFS=$'\t' read -r lutc lp lw lcap <<<"$line"
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'VOID\t%s\t%s\t%s\t%s\t%s\n' "$lutc" "$lp" "$lw" "$now" \
-    "Spot interruption: counted again at its spend at the rate, Rs $1 (task of 28 Nov 2026, item 2)" >> "$LAUNCH_RECORD"
+    "Spot interruption (${SPOT_LOST_WHY:-the notice}): counted again at its spend at the rate, Rs $1 (task of 28 Nov 2026, item 2)" >> "$LAUNCH_RECORD"
   printf '%s\t%s\t%s\t%s\n' "$now" "$PAIRING" "$lw" "$1" >> "$LAUNCH_RECORD"
   status "CREDITS the interrupted instance now counts Rs $1 at the rate (was Rs $lcap, its cap); the relaunch reserves what is left of Rs $CAP"
 }

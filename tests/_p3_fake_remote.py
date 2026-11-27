@@ -57,7 +57,9 @@ esac
 # A Spot interruption at the FAKE_INTERRUPT_AT-th poll of block FAKE_INTERRUPT_BLOCK,
 # on each of the first FAKE_INTERRUPTS (1) instances: FAKE_INTERRUPT_HOW=state (the
 # instance is gone: SSH fails, EC2 reads it terminated by Spot, its processes are
-# killed) or notice (IMDS shows the two-minute notice; the instance stays up).
+# killed), halt (the same, terminated by its own halt: Client.InstanceInitiatedShutdown),
+# byhand (the same, terminated through the API: Client.UserInitiatedShutdown)
+# or notice (IMDS shows the two-minute notice; the instance stays up).
 case "$cmd" in *"cat ~/p3/${FAKE_INTERRUPT_BLOCK:-none}.exit"*)
   if [[ ! -e "$FAKE_RUN/net_down" && $(cat "$FAKE_RUN/interrupts" 2>/dev/null || echo 0) -lt ${FAKE_INTERRUPTS:-1} ]]; then
     n=$(( $(cat "$FAKE_RUN/int_polls" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE_RUN/int_polls"
@@ -67,7 +69,12 @@ case "$cmd" in *"cat ~/p3/${FAKE_INTERRUPT_BLOCK:-none}.exit"*)
         touch "$FAKE_RUN/spot_notice"
       else
         pkill -9 -f "$FAKE_HOME/p3_session" 2>/dev/null
-        echo terminated > "$FAKE_RUN/state"; echo Server.SpotInstanceTermination > "$FAKE_RUN/reason"
+        echo terminated > "$FAKE_RUN/state"
+        case "${FAKE_INTERRUPT_HOW:-state}" in
+          halt) echo Client.InstanceInitiatedShutdown ;;
+          byhand) echo Client.UserInitiatedShutdown ;;
+          *) echo Server.SpotInstanceTermination ;;
+        esac > "$FAKE_RUN/reason"
         touch "$FAKE_RUN/net_down"
       fi
     fi

@@ -481,7 +481,7 @@ def test_p6_on_demand_never_reads_the_spot_notice(tmp_path):
     assert "spot/instance-action" not in ssh and "ATTNBENCH_P3_MARKET=on-demand" in ssh.replace("\\", "")
 
 
-@pytest.mark.parametrize("block,how", [("b2", "state"), ("b3", "notice")])
+@pytest.mark.parametrize("block,how", [("b2", "state"), ("b3", "notice"), ("b2", "halt")])
 def test_a_spot_interruption_mid_block_relaunches_restores_and_resumes(tmp_path, block, how):
     fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK=block, FAKE_INTERRUPT_AT="1", FAKE_INTERRUPT_HOW=how)
     p = F.run_driver(fake, "P6", "spot")
@@ -490,8 +490,13 @@ def test_a_spot_interruption_mid_block_relaunches_restores_and_resumes(tmp_path,
     assert _status(fake).split(" ", 1)[1].strip() == "DONE OK all three blocks passed and pulled; relaunches 1"
     ev = _events(log)
     i = ev.index(f"BLOCK {block}")
-    said = "SPOT INTERRUPTED" if how == "state" else "SPOT INTERRUPTION"
+    said = "SPOT INTERRUPTION" if how == "notice" else "SPOT INTERRUPTED"
     assert ev[i + 1].startswith(said), ev
+    # a halt-termination (the +312 halt or the idle halt) takes the interruption's
+    # path, its reason said (the researcher's check of 28 Nov 2026)
+    if how == "halt":
+        assert "'terminated' (Client.InstanceInitiatedShutdown: its own halt, taken as an interruption)" in log
+        assert "Spot interruption (Client.InstanceInitiatedShutdown" in (fake["run"] / "aws_launches.tsv").read_text()
     assert ev[i + 2:i + 6] == ["INTERRUPTED attempt", "RELAUNCH 1", "RESTORED the", "BACKEND CHECK"], ev
     assert ev[i + 6] == f"BLOCK {block}", ev                       # the block again, from its start
     blocks = [e for e in ev if e.startswith(("BLOCK b", "PULLED b"))]
@@ -601,6 +606,20 @@ def test_a_login_that_expires_in_the_window_stops_the_driver_with_the_message(tm
     assert "STOPPED AWS login expired, run aws login (the launcher stopped" in st, st
     assert _windows(fake)[-1][0] == "end" and _windows(fake)[-1][3] == end
     assert "no longer admits" not in F.driver_log(fake)
+
+
+def test_a_spot_instance_terminated_by_hand_is_not_relaunched(tmp_path):
+    """Only Spot's own reclaim and the instance's own halt are interruptions: an
+    instance terminated through the API (Client.UserInitiatedShutdown) is not
+    replaced; the block runs out to its deadline and the session stops."""
+    fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK="b2", FAKE_INTERRUPT_AT="1", FAKE_INTERRUPT_HOW="byhand",
+                 P3_PULL_DEADLINE_S="20")
+    p = F.run_driver(fake, "P6", "spot")
+    log = F.driver_log(fake)
+    assert p.returncode == 1, log[-3000:]
+    assert " DEADLINE b2 " in log and "SPOT INTERRUPTED" not in log and " RELAUNCH " not in log
+    assert not (fake["run"] / "launch_env_2.txt").exists()
+    assert len((fake["run"] / "teardown.log").read_text().splitlines()) == 1
 
 
 def test_an_interruption_in_block_1_reruns_block_1_with_nothing_to_restore(tmp_path):
