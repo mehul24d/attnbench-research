@@ -39,7 +39,9 @@ quota is read again before every pass: a pass whose read is under 16 makes no Sp
   cannot stop). It is tagged `SPOT`; block 1's preflight then requires `spot`
   (`ATTNBENCH_EXPECTED_PROVISIONING`, P6's host only).
 - **An interruption** (the two-minute notice read over IMDSv2 at each poll, or the instance
-  terminated with `Server.SpotInstanceTermination`, or a pull cut by either) discards the
+  terminated with `Server.SpotInstanceTermination`, or terminated by its own halt,
+  `Client.InstanceInitiatedShutdown`: the +312 halt or the idle halt, or a pull cut by any of
+  these) discards the
   block it hit **in full**. The driver then tears the instance down and counts its minutes at
   the rate. It relaunches, **at most twice**, in block 1's zone, Spot then on-demand, for a
   window of up to 60 min before the deadline. It requires the new host to match the first
@@ -94,7 +96,7 @@ in its bootstrap and was rerun).
     read and the check after a refusal;
   - the credit gate on the driver's recount (admitted at ₹3,667 + the relaunch's cap; refused
     with the cap counted too).
-- **Driver, 20 tests:**
+- **Driver, 22 tests:**
   - an interruption mid-block 2 (by state) and mid-block 3 (by notice), each relaunched,
     restored and resumed to DONE OK;
   - an interruption in block 1;
@@ -104,9 +106,10 @@ in its bootstrap and was rerun).
   - a host mismatch;
   - a failed backend check;
   - two relaunches, the record at ₹5,940 in all, and the Spot zones handed to the launcher;
-  - an expired login at the preflight and in the window (three ways).
-- **Break-tests:** 20 mutations of the money, record, minutes, quota, zone order, bid, refusal
-  and login code, all killed.
+  - an expired login at the preflight and in the window (three ways);
+  - a halt-termination mid-block, relaunched as an interruption is, and one terminated by hand not relaunched.
+- **Break-tests:** 22 mutations of the money, record, minutes, quota, zone order, bid, refusal,
+  login and halt-termination code, all killed.
 
 ## The command
 
