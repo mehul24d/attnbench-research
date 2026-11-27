@@ -611,13 +611,16 @@ def test_a_login_that_expires_in_the_window_stops_the_driver_with_the_message(tm
 def test_a_spot_instance_terminated_by_hand_is_not_relaunched(tmp_path):
     """Only Spot's own reclaim and the instance's own halt are interruptions: an
     instance terminated through the API (Client.UserInitiatedShutdown) is not
-    replaced; the block runs out to its deadline and the session stops."""
+    replaced; nothing can come back, so the session stops at once and says why
+    (the reasons' table: tests/test_aws_state_reasons.py)."""
     fake = _spot(tmp_path, FAKE_INTERRUPT_BLOCK="b2", FAKE_INTERRUPT_AT="1", FAKE_INTERRUPT_HOW="byhand",
                  P3_PULL_DEADLINE_S="20")
     p = F.run_driver(fake, "P6", "spot")
     log = F.driver_log(fake)
     assert p.returncode == 1, log[-3000:]
-    assert " DEADLINE b2 " in log and "SPOT INTERRUPTED" not in log and " RELAUNCH " not in log
+    assert "INSTANCE TERMINATED at +" in log and "of b2: 'terminated' (Client.UserInitiatedShutdown: terminated through the EC2 API); not an interruption, no relaunch" in log, log[-3000:]
+    assert " DEADLINE b2 " not in log and "SPOT INTERRUPTED" not in log and " RELAUNCH " not in log
+    assert "DONE FAILED at block b2 (rc 4)" in _status(fake)
     assert not (fake["run"] / "launch_env_2.txt").exists()
     assert len((fake["run"] / "teardown.log").read_text().splitlines()) == 1
 

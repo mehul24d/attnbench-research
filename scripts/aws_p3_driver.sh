@@ -67,8 +67,9 @@
 # 16 vCPU. On a Spot instance a block's poll also reads the instance's
 # interruption notice (IMDSv2 spot/instance-action), and a lost poll reads the
 # instance's state reason. An interruption (the notice, or the instance
-# terminated with Server.SpotInstanceTermination or by its own halt,
-# Client.InstanceInitiatedShutdown, or a pull cut by either) discards the block it hit in full, as P4's Spot blocks were (plan Appendix A,
+# terminated by Spot or by its own halt, Client.InstanceInitiatedShutdown, or
+# a pull cut by either; scripts/_aws_state_reasons.sh) discards the block it
+# hit in full, as P4's Spot blocks were (plan Appendix A,
 # 15 Nov 2026: "An interrupted block is still discarded in full and rerun on a
 # new instance"). The driver then: tears the instance down; counts what it
 # cost at the rate, from launch to the teardown, rounded up; relaunches at
@@ -221,6 +222,7 @@ cd "$WT" || exit 1
 # instance exists the driver says so and stops; with one up it says so once and
 # goes on over SSH (the instance halts and is deleted on its own times).
 source "$WT/scripts/_aws_account.sh"     # aws_login_expired_text, AWS_LOGIN_EXPIRED_MSG
+source "$WT/scripts/_aws_state_reasons.sh"   # aws_state_reason, aws_state_reason_path
 LOGIN_SAID="$REC/login_expired"          # a file: aws_read runs in subshells
 login_said() { status "$AWS_LOGIN_EXPIRED_MSG${1:+ ($1)}"; }
 login_expired_stop() { win_end "$1"; status "STOPPED $AWS_LOGIN_EXPIRED_MSG ($2)"; bash "$CLEANUP"; exit 1; }
@@ -525,38 +527,50 @@ whatever_there_is() {   # pull every step directory that exists, as a last act
   pull_logs
 }
 
-# A Spot instance's interruption: the notice seen at a poll, or the instance
-# shutting down or terminated by EC2 with Server.SpotInstanceTermination, or by
-# its own halt, Client.InstanceInitiatedShutdown (the planned halt or the idle
-# halt: a one-time Spot instance terminates at a halt). A halt-termination takes
-# the interruption's path: the block in flight discarded, a relaunch counted
-# under the limit (the researcher's check of 28 Nov 2026). SPOT_LOST_WHY says which.
-SPOT_LOST_WHY=""
-spot_interrupted() {
-  [[ "$MARKET" == spot ]] || return 1
-  (( NOTICE_SEEN )) && { SPOT_LOST_WHY="the interruption notice"; return 0; }
-  local st why
-  st="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
-    --query 'Reservations[0].Instances[0].State.Name' --output text)" || return 1
-  why="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
-    --query 'Reservations[0].Instances[0].StateReason.Code' --output text)" || return 1
-  [[ "$st" == shutting-down || "$st" == terminated ]] || return 1
-  case "$why" in
-    Server.SpotInstanceTermination) SPOT_LOST_WHY="$why" ;;
-    Client.InstanceInitiatedShutdown) SPOT_LOST_WHY="$why: its own halt, taken as an interruption" ;;
-    *) return 1 ;;
+# What a lost instance means (the researcher's audit of 28 Nov 2026;
+# scripts/_aws_state_reasons.sh holds the reasons AWS documents and their paths):
+# the interruption notice seen at a poll, or the instance's state and state
+# reason. LOST_PATH is relaunch (a Spot instance terminated by Spot or by its
+# own halt: the planned halt or the idle halt), stop (terminated for any other
+# reason, or an on-demand instance terminated: nothing can come back) or
+# no-relaunch (not terminated); LOST_WHY says the reason, LOST_STATE the state.
+LOST_PATH=no-relaunch; LOST_WHY=""; LOST_STATE=""
+instance_lost() {
+  LOST_PATH=no-relaunch; LOST_WHY=""; LOST_STATE="unreadable"
+  if [[ "$MARKET" == spot ]] && (( NOTICE_SEEN )); then
+    LOST_PATH=relaunch; LOST_WHY="the interruption notice"; return
+  fi
+  local code msg
+  LOST_STATE="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text)" || { LOST_STATE="unreadable"; return; }
+  code="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].StateReason.Code' --output text)" || code=""
+  msg="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
+    --query 'Reservations[0].Instances[0].StateReason.Message' --output text)" || msg=""
+  local why; why="$(aws_state_reason "$code" "$msg")"
+  LOST_PATH="$(aws_state_reason_path "$MARKET" "$LOST_STATE" "$why")"
+  LOST_WHY="$(aws_state_reason_said "$why")"
+}
+# lost_rc: run_block's code for a lost instance (3 relaunch, 4 stop, 1 otherwise),
+# the stop said with its reason.
+lost_rc() {   # lost_rc B WHERE
+  instance_lost
+  case "$LOST_PATH" in
+    relaunch) status "SPOT INTERRUPTED $2 of $1: the instance is '$LOST_STATE' ($LOST_WHY)"; return 3 ;;
+    stop) status "INSTANCE TERMINATED $2 of $1: '$LOST_STATE' ($LOST_WHY); not an interruption, no relaunch"; return 4 ;;
   esac
+  return 1
 }
 # The poll's IMDSv2 read of the interruption notice (Spot only): its body, if any,
 # follows the marker line.
 SPOT_POLL='; echo ---SPOT---; t=$(curl -s -f -m 2 -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60") && curl -s -f -m 2 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/spot/instance-action; true'
 
-run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the deadline; 3 Spot interrupted
-  local b="$1" out ex fails=0 now mins st said_stopped=0 extra="" notice
+run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the deadline; 3 Spot interrupted; 4 terminated, not an interruption
+  local b="$1" out ex fails=0 now mins st said_stopped=0 extra="" notice x
   [[ "$MARKET" == spot ]] && extra="$SPOT_POLL"
   status "BLOCK $b START ($(block_dirs "$b"))"
   rssh "nohup bash -c 'cd ~/attnbench_scaffold && ATTNBENCH_P3_MARKET=$MARKET ATTNBENCH_P3_PAIRING=$PAIRING ATTNBENCH_P3_HALT_MIN=$HALT_MIN bash scripts/aws_p3_instance.sh $b ~/p3_session' >/dev/null 2>&1 < /dev/null &" \
-    || { status "BLOCK $b could not be started over SSH"; spot_interrupted && return 3; return 1; }
+    || { status "BLOCK $b could not be started over SSH"; lost_rc "$b" "at the start"; return; }
   while :; do
     sleep "$POLL_S"
     now="$(date -u +%s)"; mins=$(( (now - LAUNCH_EPOCH) / 60 ))
@@ -571,7 +585,7 @@ run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the 
       if [[ -n "$ex" ]]; then
         pull_logs
         [[ "$ex" == 0 ]] || { status "BLOCK $b FAILED exit $ex"; return 1; }
-        pull "$b" $(block_dirs "$b") || { spot_interrupted && { status "SPOT INTERRUPTED during the pull of $b ($SPOT_LOST_WHY)"; return 3; }; return 1; }
+        pull "$b" $(block_dirs "$b") || { lost_rc "$b" "during the pull"; return; }
         return 0
       fi
       (( NOTICE_SEEN )) && return 3
@@ -585,13 +599,11 @@ run_block() {   # run_block B: 0 passed and pulled; 1 failed; 2 SSH lost to the 
         4) why="$AWS_LOGIN_EXPIRED_MSG (the security group read was refused)" ;;
         *) why="the group no longer admits this Mac's address: re-point it with sg_repoint.sh (the driver never does)" ;;
       esac
-      # The instance's own state (26 Nov 2026): a stopped instance is said at once.
-      st="$(aws_read ec2 describe-instances "${R[@]}" --instance-ids "$ID" \
-        --query 'Reservations[0].Instances[0].State.Name' --output text)" || st="unreadable"
-      if spot_interrupted; then
-        status "SPOT INTERRUPTED in $b at +${mins}min: the instance is '$st' ($SPOT_LOST_WHY)"
-        return 3
-      fi
+      # The instance's own state (26 Nov 2026): a stopped instance is said at once;
+      # a terminated one is relaunched or stopped on its reason (28 Nov 2026).
+      lost_rc "$b" "at +${mins}min"; x=$?
+      (( x == 1 )) || return $x
+      st="$LOST_STATE"
       if [[ "$st" == stopped || "$st" == stopping ]]; then
         (( said_stopped )) || status "INSTANCE STOPPED ($st) in $b at +${mins}min: it halted itself; SSH cannot come back. The card's recovery (one start, only to pull data, before the delete) or Ctrl-C to tear down"
         said_stopped=1
@@ -653,7 +665,7 @@ recount_record() {   # recount_record RS: the interrupted instance ($ID) at RS
   IFS=$'\t' read -r lutc lp lw lcap <<<"$line"
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'VOID\t%s\t%s\t%s\t%s\t%s\n' "$lutc" "$lp" "$lw" "$now" \
-    "Spot interruption (${SPOT_LOST_WHY:-the notice}): counted again at its spend at the rate, Rs $1 (task of 28 Nov 2026, item 2)" >> "$LAUNCH_RECORD"
+    "Spot interruption (${LOST_WHY:-the notice}): counted again at its spend at the rate, Rs $1 (task of 28 Nov 2026, item 2)" >> "$LAUNCH_RECORD"
   printf '%s\t%s\t%s\t%s\n' "$now" "$PAIRING" "$lw" "$1" >> "$LAUNCH_RECORD"
   status "CREDITS the interrupted instance now counts Rs $1 at the rate (was Rs $lcap, its cap); the relaunch reserves what is left of Rs $CAP"
 }

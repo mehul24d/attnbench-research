@@ -153,6 +153,7 @@ fi
 case "$*" in
   *describe-security-groups*) cat "$FAKE_RUN/sg_cidrs";;
   *StateReason.Code*) cat "$FAKE_RUN/reason" 2>/dev/null || echo None;;
+  *StateReason.Message*) r="$(cat "$FAKE_RUN/reason" 2>/dev/null)" && echo "$r: the fake's state reason" || echo None;;
   *"wait instance-running"*) :;;
   *PublicDnsName*) echo "$FAKE_DNS";;
   *Placement.AvailabilityZone*) echo ap-southeast-2a;;
