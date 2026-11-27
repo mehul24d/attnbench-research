@@ -38,6 +38,14 @@ quota is read again before every pass: a pass whose read is under 16 makes no Sp
 - **A Spot instance terminates** at its halt and on interruption (a one-time Spot request
   cannot stop). It is tagged `SPOT`; block 1's preflight then requires `spot`
   (`ATTNBENCH_EXPECTED_PROVISIONING`, P6's host only).
+- **The state reasons** (audited 28 Nov 2026 against AWS's StateReason page; the table is
+  `scripts/_aws_state_reasons.sh`): the reason is the message's leading token, else the code
+  (AWS lists the reasons under the message, and its own example shows the two differing). A
+  Spot instance shutting down or terminated with `Server.SpotInstanceTermination`,
+  `Server.SpotInstanceShutdown` or `Client.InstanceInitiatedShutdown` is an interruption. Any
+  other terminated instance, Spot or on-demand (by hand, `Client.UserInitiatedShutdown`; a
+  retirement; a launch failure; no reason), stops the session at once with the reason, no
+  relaunch. An instance not terminated keeps the poll going to the block's deadline.
 - **An interruption** (the two-minute notice read over IMDSv2 at each poll, or the instance
   terminated with `Server.SpotInstanceTermination`, or terminated by its own halt,
   `Client.InstanceInitiatedShutdown`: the +312 halt or the idle halt, or a pull cut by any of
@@ -96,6 +104,8 @@ in its bootstrap and was rerun).
     read and the check after a refusal;
   - the credit gate on the driver's recount (admitted at ₹3,667 + the relaunch's cap; refused
     with the cap counted too).
+- **State reasons, 7 tests:** every documented reason, each market and state, mapped to its
+  path in one table; the message read before the code.
 - **Driver, 22 tests:**
   - an interruption mid-block 2 (by state) and mid-block 3 (by notice), each relaunched,
     restored and resumed to DONE OK;
@@ -107,9 +117,10 @@ in its bootstrap and was rerun).
   - a failed backend check;
   - two relaunches, the record at ₹5,940 in all, and the Spot zones handed to the launcher;
   - an expired login at the preflight and in the window (three ways);
-  - a halt-termination mid-block, relaunched as an interruption is, and one terminated by hand not relaunched.
-- **Break-tests:** 22 mutations of the money, record, minutes, quota, zone order, bid, refusal,
-  login and halt-termination code, all killed.
+  - a halt-termination mid-block, relaunched as an interruption is, and one terminated by hand
+    stopping at once, not relaunched.
+- **Break-tests:** 27 mutations of the money, record, minutes, quota, zone order, bid, refusal,
+  login, halt-termination and state-reason code, all killed.
 
 ## The command
 
