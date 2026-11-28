@@ -1,16 +1,29 @@
-% Paper skeleton (cloud task C11). Structure follows docs/RESEARCH_PLAN.md,
-% which wins over anything written here.
+% The paper, anonymised for ISPASS 2027's double-blind review (paper skeleton
+% wave, 29 Nov 2026). Structure follows docs/RESEARCH_PLAN.md, which wins over
+% anything written here.
+%
+% Format, from the ISPASS 2027 submission page (fetched 29 Nov 2026): IEEE
+% conference style, nine single-spaced double-column pages in 10-point type on
+% 8.5x11 inch paper, with unlimited extra pages for references only; figures
+% and appendices count within the nine; pages numbered; PDF only; references
+% list all authors; author names and other hints of identity removed;
+% substantial generative-AI use disclosed in the acknowledgments.
 %
 % Rules that bind this file and everything it inputs (plan Section 6):
 %  - No numbers are typed into the text. Every number comes from a macro in
-%    the generated numbers file (scripts/paper_artifacts.py, task C10).
-%  - No claims until the analysis that supports them is banked (T7.1).
-%  - Cite only papers read in full (rule 5); refs.bib stays empty until then.
-%  - No model identifiers and no assistant attribution (rule 9).
-%  - Plain language, short sentences, no em dashes.
+%    generated/numbers.tex (scripts/paper_figures.py) or sits in a generated
+%    table or figure.
+%  - Every exploratory or post hoc number carries its label.
+%  - Cite only papers read in full (rule 5).
+%  - No model identifiers (rule 9). Plain language, short sentences, no em dashes.
 %
-% Build: see Makefile and README.md in this directory.
-\documentclass[journal]{IEEEtran}
+% \fact{...} bullets are drafting notes: facts from docs/paper/claim_status.md
+% with their source. The author replaces them with prose; a submission build
+% (paper/build.py --submission) refuses any \fact or \stub left.
+%
+% Build: python3 paper/build.py (see README.md in this directory).
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
 
 \usepackage[T1]{fontenc}
 \usepackage{amsmath}
@@ -22,25 +35,18 @@
 \graphicspath{{figures/}}
 
 % ---------------------------------------------------------------------------
-% Generated numbers. The Makefile passes the path; the default below is a
-% placeholder until task C10 fixes where scripts/paper_artifacts.py writes.
-% A missing file stops the build with an error. There is no fallback value.
+% Generated numbers. A missing file stops the build; there is no fallback.
 % ---------------------------------------------------------------------------
 \providecommand{\NumbersFile}{generated/numbers.tex}
 \IfFileExists{\NumbersFile}{%
   \input{\NumbersFile}%
 }{%
   \errmessage{Generated numbers file '\NumbersFile' is missing. Run
-    scripts/paper_artifacts.py (task C10) or pass NUMBERS=... to make.
-    The paper never builds without it}%
+    scripts/paper_figures.py. The paper never builds without it}%
   \csname @@end\endcsname
 }
 
-% ---------------------------------------------------------------------------
-% Skeleton mode (make skeleton only): figures are drawn as labelled boxes so
-% the layout can be checked before any figure exists. In a normal build a
-% missing figure is a LaTeX error, as it should be.
-% ---------------------------------------------------------------------------
+% Skeleton mode draws figures as labelled boxes (layout checks only).
 \newif\ifskeleton
 \providecommand{\SkeletonBuild}{0}
 \ifnum\SkeletonBuild=1 \skeletontrue \fi
@@ -53,28 +59,46 @@
     \includegraphics[width=#1]{#2}%
   \fi}
 
-% A visible marker for text not yet written. make check refuses a
-% submission build that still contains one (see check_skeleton.py).
+% A visible marker for text not yet written.
 \newcommand{\stub}[1]{\textbf{[Stub: #1]}}
+
+% Drafting facts. \ShowFacts=0 hides them, to measure the layout without them.
+\newif\iffacts
+\providecommand{\ShowFacts}{1}
+\ifnum\ShowFacts=1 \factstrue \fi
+\newcommand{\src}[1]{\hfill{\scriptsize\texttt{\detokenize{#1}}}}
+\newenvironment{facts}{%
+  \iffacts\par\smallskip\noindent{\footnotesize\textit{Facts for this section
+  (drafting notes, not prose):}}\footnotesize\raggedright\begin{itemize}\setlength{\itemsep}{0pt}%
+  \else\setbox0\vbox\bgroup\begin{itemize}\fi}{%
+  \iffacts\end{itemize}\normalsize\else\end{itemize}\egroup\fi}
+\newcommand{\fact}[1]{\item #1}
+
+% Records whether anything is cited, so the bibliography is typeset only then.
+\newif\ifanycite
+\let\papercite\cite
+\renewcommand{\cite}{\global\anycitetrue\papercite}
+\let\papernocite\nocite
+\renewcommand{\nocite}{\global\anycitetrue\papernocite}
 
 % Method name (plan Section 1).
 \newcommand{\bunga}{BUNGA\xspace}
 
 \begin{document}
 
-% The title depends on the outcome (plan Section 1, "If sparse prefill never
-% pays"): it names prediction, not profitability, if the profitable set is
-% empty. Decided by the researcher after T7.1.
-\title{\stub{title, decided after T7.1}}
+\title{\stub{title, decided by the author}}
 
-\author{\stub{authors and affiliations}}
+% Double-blind: no names, affiliations or other hints of identity.
+\author{\IEEEauthorblockN{Anonymous Author(s)}
+\IEEEauthorblockA{\stub{submission number}}}
 
 \maketitle
+% ISPASS asks for numbered pages; IEEEtran's conference mode omits them.
+\thispagestyle{plain}
+\pagestyle{plain}
 
 \begin{abstract}
-\stub{abstract, written last. Must state the scope limits of plan Section 1:
-one GPU, one CUDA stream per forward pass, batch sizes as in Section 5.4,
-eager and compiled PyTorch.}
+\stub{abstract, written by the author}
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -83,19 +107,23 @@ eager and compiled PyTorch.}
 
 \input{sections/introduction}
 \input{sections/background}
-\input{sections/hypotheses}
-\input{sections/method}
-\input{sections/setup}
-\input{sections/results_time}
-\input{sections/results_recall}
-\input{sections/results_dispatch}
-\input{sections/limitations}
+\input{sections/protocol}
+\input{sections/results_preregistered}
+\input{sections/results_exploratory}
+\input{sections/threats}
+\input{sections/related_work}
 \input{sections/conclusion}
+\input{sections/acknowledgments}
 
-\appendices
-\input{sections/appendix_artifact}
+% The last page of body content: build.py reads this label's page from the
+% .aux file and compares it with the nine-page limit.
+\label{paper:bodyend}
 
+% Typeset only once something is cited: an empty bibliography is a LaTeX
+% error, and refs.bib stays empty until a paper is read in full (rule 5).
+\ifanycite
 \bibliographystyle{IEEEtran}
 \bibliography{refs}
+\fi
 
 \end{document}

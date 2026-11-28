@@ -14,7 +14,10 @@ What runs, in order (each step's output goes under --out, never into docs/):
   3. exploratory_residual.py: compared with docs/exploratory/residual_20261122.json;
   4. paper_tables.py: compared with docs/paper/exploratory/paper_tables.json;
   5. t11_qa1_within_limit.py on the tracked T1.1 parquets: its own check
-     refuses unless the certified all-rows bounds reproduce.
+     refuses unless the certified all-rows bounds reproduce;
+  6. paper_figures.py on steps 1 and 4's regenerated outputs: the paper's six
+     tables and figures (paper skeleton wave, 29 Nov 2026), compared byte for
+     byte with paper/generated/ and paper/figures/.
 
 The scoring wave's inputs file names absolute paths on the Mac where it ran,
 and its P2 prediction copy lived in a scratch directory since purged. This
@@ -22,8 +25,7 @@ script rewrites those paths under --banked and reads P2's prediction from the
 mirror instead (the scorer checks it against its sha256 either way).
 
 Not reproduced here, and said so in the report: P3's exploratory score (its
-script is on the unmerged branch p3-g6-2026-11-26) and any figure (no paper
-figure exists yet). The report is written to <out>/REPRODUCE.md. The exit
+script is on the unmerged branch p3-g6-2026-11-26). The report is written to <out>/REPRODUCE.md. The exit
 code is 0 only if every step ran and matched.
 """
 
@@ -94,6 +96,18 @@ def diff_paths(a, b, path=""):
     return [] if a == b else [path or "/"]
 
 
+def compare_tree(got: Path, want: Path) -> str:
+    """Every file the generator wrote must equal the committed copy, byte for byte."""
+    files = sorted(f for f in got.rglob("*") if f.is_file())
+    bad = [str(f.relative_to(got)) for f in files
+           if not (want / f.relative_to(got)).is_file()
+           or (want / f.relative_to(got)).read_bytes() != f.read_bytes()]
+    if not files:
+        return "FAILED: nothing generated"
+    return (f"identical ({len(files)} files: 5 tables, 2 figures with their data)" if not bad
+            else f"DIFFERS in {len(bad)} of {len(files)} files, first: {bad[:3]}")
+
+
 def run(name: str, cmd: list, log: Path) -> tuple[int, str]:
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                        env={**__import__("os").environ, "PYTHONDONTWRITEBYTECODE": "1"})
@@ -144,6 +158,11 @@ def main(argv=None) -> int:
          None, False),
         ("qa_1/32768 within-limit sensitivity", [py, "scripts/t11_qa1_within_limit.py"],
          None, None, None, False),
+        ("paper tables and figures (29 Nov)", [py, "scripts/paper_figures.py", "--scored",
+                                               str(out / "scoring" / "hypotheses_scored.json"),
+                                               "--tables", str(out / "paper" / "paper_tables.json"),
+                                               "--out", str(out / "paper_artifacts")],
+         out / "paper_artifacts", ROOT / "paper", "tree", False),
     ]
     rows, ok = [], True
     for i, (name, cmd, got, want, key, labels) in enumerate(steps, 1):
@@ -152,6 +171,8 @@ def main(argv=None) -> int:
             res = f"FAILED (exit {code}): {tail}"
         elif got is None:
             res = "ran; its built-in check reproduced the certified all-rows bounds"
+        elif key == "tree":
+            res = compare_tree(got, want)
         elif not got.exists():
             res = f"FAILED: {got.name} not written"
         else:
@@ -160,9 +181,8 @@ def main(argv=None) -> int:
                 res = "identical except block labels (local directory names)"
         ok &= res.startswith(("identical", "ran;"))
         rows.append((i, name, res))
-    rows += [(6, "P3 exploratory score", "NOT RUN: scripts/score_p3_exploratory.py is on the "
-              "unmerged branch p3-g6-2026-11-26 (584516a), not on this commit"),
-             (7, "figures", "NONE: paper/figures/ has no generated figure yet (fig1 needs T3.1 inputs)")]
+    rows += [(len(steps) + 1, "P3 exploratory score", "NOT RUN: scripts/score_p3_exploratory.py "
+              "is on the unmerged branch p3-g6-2026-11-26 (584516a), not on this commit")]
     md = ["# Reproduction report", "", f"Commit `{head}`{' (DIRTY tree)' if dirty else ''}; "
           f"python {sys.version.split()[0]}. Banked data read from `--banked`; logs per step "
           "beside this file.", "", "| # | Step | Result |", "|---|---|---|"]

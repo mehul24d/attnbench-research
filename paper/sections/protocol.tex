@@ -1,0 +1,16 @@
+% The pre-registered protocol: what was locked, scored and withdrawn, and when.
+\section{Pre-registered protocol}
+\label{sec:protocol}
+
+\stub{the lock, the pairings, the hypotheses and their tolerances, the scoring rule, written by the author}
+
+\input{generated/tab_pairings}
+
+\begin{facts}
+\fact{H0 to H3 were scored at lock tag \LockTag, analysis commit \AnalysisCommit, CPU only, on 16 Nov 2026 \src{docs/paper/claim_status.md, scoring context}}
+\fact{Scored pairings: H0 on P2, H1 on P2 and P4, H2 on P2, H3 on P4. P1 is the development pairing and is never counted as a test \src{docs/lock_values.json scored_pairings; docs/RESEARCH_PLAN.md section 4}}
+\fact{The timed-path pin \TimedPathPin covers every scored row \src{docs/paper/claim_status.md, scoring context}}
+\fact{H4 (recall sufficiency) and H5 (crossover direction) were withdrawn before scoring: T1.5's pilot, T1.8's recall matching and audit B1's cross-card control never ran \src{docs/RESEARCH_PLAN.md Appendix A, 12 Nov 2026}}
+\fact{H6 (dispatch) was withdrawn before scoring: no quality-certified admissible set exists (H4 unscored; XAttention's Triton path fails the mask gate on P2 in 10 of 10 records beyond $\pm$0.01; an all-dense set cannot fail) \src{docs/RESEARCH_PLAN.md Appendix A, 14 Nov 2026}}
+\fact{P-T4 predicted 0 of 2 primary cells certified; 2 of 2 were. Failed \src{docs/RESEARCH_PLAN.md section 2}}
+\end{facts}
