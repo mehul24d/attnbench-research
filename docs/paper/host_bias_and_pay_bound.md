@@ -1,4 +1,4 @@
-# EXPLORATORY / POST HOC: host-price bias, a pay condition, P3's delay injection (28 Nov 2026)
+# EXPLORATORY / POST HOC: the host-price miss, an exploratory pay screen, P3's delay injection (28 Nov 2026)
 
 These are items 10, 11 and 12 of the extension to the 28 Nov 2026 paper-quality wave. **Everything here is EXPLORATORY / POST HOC.**
 - Nothing is scored or rescored.
@@ -13,6 +13,8 @@ The numbers come from:
 Intervals are percentile bootstraps at the lock's settings (level 0.95, 10,000 resamples, seed 0). They resample whole cells, or whole layers for S4.
 
 ## Item 10: how far the host prices overstate host time
+
+**The mechanism is the per-layer idle-gap residual.** The host miss is not a null-kernel bias: the committed prices do not read the null pass. Nor is it a flaw in TaxBreak's method, which this study does not use as TaxBreak wrote it (see the end of this item).
 
 **A premise to correct first.** P2's and P4's committed predictions do not read null-kernel prices. By the ruling of 1 Nov 2026, they read:
 - the **bare timer**: each call re-issued alone at its prefill inputs, at least 1,000 times;
@@ -55,11 +57,13 @@ The **null pass**, which substitutes a null kernel for every launching call unde
 - "T floor sys is the mean T raw launch of an empty C++ __global__ null kernel profiled under the same protocol."
 - "Phase 2: Isolation replay. We first measure T floor sys with a null-kernel nsys run. Then, for each kernel-database entry, we replay the original ATen operation in isolation under nsys."
 
-The plan's G2 row already describes our adaptation as "null kernels across the whole operation sequence rather than the launch path alone".
+The plan's G2 row already describes our adaptation as "null kernels across the whole operation sequence rather than the launch path alone". **So nothing here is a finding against TaxBreak.** Its launch-floor use of a null kernel is not what overstates our host prices. The null pass is this study's own extension, and it is not what the committed prices read either. The overstatement sits in the per-layer idle-gap residual.
 
-## Item 11: a parameter-free necessary condition for sparse prefill to pay
+## Item 11: an exploratory screen for when sparse prefill cannot pay
 
-**Derivation** (`attnbench/exploratory/pay_bound.py`). Three facts hold on one stream:
+**A screen, not a theorem.** It is a lower bound under stated assumptions, built and checked after the fact on the same banked cells. The assumptions are one stream, in-order issue, and the bare-timed null kernel's mean taken as the least issue cost per operation. f is itself a measured mean, so the bound can fail on a cell, and the traced reading does fail as a floor on 2 P2 cells (below).
+
+**Construction** (`attnbench/exploratory/pay_bound.py`). Under those assumptions:
 - the prefill cannot end before its device work is done (device-busy time B);
 - each in-step synchronisation drains the device, and the next operation needs at least one launch floor f to be issued after the synchronisation returns;
 - the host issues N operations at no less than f each.
@@ -79,10 +83,10 @@ Nothing is fitted on P1 to P4.
 | P4 | traced | 29 | 1 | 0 | 26 of 28 | 0 |
 | P4 | priced, before timing | 29 | 1 | 0 | 26 of 28 | 0 |
 
-**Verdict: kept.** The condition rules out no measured win, and it rules out 14 to 26 measured losses. The before-timing reading is a true floor on every cell (T_sparse ÷ LB ≥ 1.03). The traced reading is not a floor in 2 P2 cells, where profiling stretches the device-busy time.
+**Verdict: kept, as an exploratory screen.** The screen rules out no measured win, and it rules out 14 to 26 measured losses. The before-timing reading held as a floor on every banked cell (T_sparse ÷ LB ≥ 1.03). The traced reading is not a floor in 2 P2 cells, where profiling stretches the device-busy time.
 
 **Limits, stated plainly.**
-- **The device term sets LB in every cell.** The synchronisation term adds at most 476 × 6 µs, about 3 ms, and the host term N·f never binds. In effect the condition reads: "the sparse arm's device chain, plus one launch floor per synchronisation, must beat dense's measured time".
+- **The device term sets LB in every cell.** The synchronisation term adds at most 476 × 6 µs, about 3 ms, and the host term N·f never binds. In effect the screen reads: "the sparse arm's device chain, plus one launch floor per synchronisation, must beat dense's measured time".
 - **It needs dense's measured time.** A version built from components on both sides would need an upper bound on dense's host time, which item 10 shows is not reliable from the committed prices.
 - **It is post hoc** and labelled so.
 - **P3 is not checked**, because its traced ground truth is not read by these loaders.

@@ -21,9 +21,9 @@ The paper-quality wave of 28 Nov 2026, item 6. This is a draft list for the pape
 
 ## Internal validity (could something else explain the result?)
 
-7. **Host components from the null-kernel pass overstate host cost.**
+7. **The committed host prices overstate host cost, through the per-layer idle-gap residual** (not a null-kernel bias, and not a flaw in TaxBreak's method; `docs/paper/host_bias_and_pay_bound.md`, EXPLORATORY).
    - Priced host alone exceeds the whole measured time in 17 of 35 P2 cells and 23 of 35 P4 cells (EXPLORATORY).
-   - The H100 diagnostic's Q4 puts measured / priced host at 0.60–0.65. The cause is unconfirmed; the S4 null-pass / recorded ratio of 2.1–2.5x is a candidate.
+   - The H100 diagnostic's Q4 puts measured / priced host at 0.60–0.65. This wave locates the excess in the idle-gap residual: the bare per-call part never exceeds a measured prefill, and the residual alone does in 14 P2 and 18 P4 cells (EXPLORATORY / POST HOC).
 8. **Device busy and idle times come from traced runs.**
    - Traced device time inflates by up to about 7 µs per kernel on P2 at 1951 tokens (under 0.2 µs on P4).
    - No untraced host timeline exists, so measured idle time cannot be split into host, queue and synchronisation (`docs/exploratory/residual_20261122.md`; `docs/paper/exploratory/paper_tables.md`).

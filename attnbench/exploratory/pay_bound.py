@@ -1,5 +1,5 @@
-"""EXPLORATORY / POST HOC: a parameter-free necessary condition for a sparse
-arm's prefill to beat dense (the researcher's paper-quality wave of
+"""EXPLORATORY / POST HOC: an exploratory screen, not a theorem, for when a
+sparse arm's prefill cannot beat dense (the researcher's paper-quality wave of
 28 Nov 2026, item 11). Nothing is scored; no parameter is fitted on P1-P4.
 
 **The condition.** On one stream, a prefill cannot end before its device

@@ -1157,5 +1157,5 @@
    "slack_min": 1.0304508065321671
   }
  },
- "verdict": "valid on every cell; separates at least one measured loss"
+ "verdict": "kept as an exploratory screen: held on every banked cell and separates at least one measured loss"
 }

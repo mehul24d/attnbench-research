@@ -9,8 +9,9 @@ apart here:
 
   - the *null pass* (`host_profile`, `host_profile_null_pass.json`): the
     prefill with every launching call replaced by one null kernel, under the
-    tape's and the null device's Python modes. This is the null-kernel
-    substitution adapted from TaxBreak;
+    tape's and the null device's Python modes. This is this study's own
+    extension of a null kernel to every call (TaxBreak uses a null kernel
+    only for its launch floor, and replays real operations for dispatch);
   - the *committed price* (`host_profile.json`, pricing `bare_timer`): each
     call bare-timed alone (`bare_timer`), plus the per-layer idle-gap residual
     (`layer_residual`), plus a few positions priced another way (the
