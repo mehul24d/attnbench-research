@@ -13,6 +13,12 @@ Two kinds of check, over every file (gzip files and zip members, such as
     account ID), EC2 resource IDs, store URLs, GCP project paths, e-mail
     addresses and home directories.
 
+A pattern match is excused only when it lies wholly inside an occurrence of
+one of the exact strings in ALLOW, the repository's known fakes (the
+researcher's yes of 28 Nov 2026). ALLOW holds exact byte strings, never
+patterns, and each carries its own delimiters where a real value could
+otherwise share its prefix. Literals are never excused.
+
 The report gives counts and file paths only, never a matched value. The exit
 code is 0 only if nothing matched.
 """
@@ -38,6 +44,35 @@ PATTERNS = {
     "email": rb"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}",
     "home_dir": rb"/(?:Users|home)/(?!(?:ubuntu|user)\b)[A-Za-z0-9._-]+",
 }
+
+# The known fakes, as exact strings (the researcher's yes of 28 Nov 2026).
+ALLOW = (
+    b"123456789012",          # AWS's documented example account number (test fixture)
+    b"arn:aws:iam::x ",       # the test ARN, with its trailing space (two hits in the tests)
+    b"a@b.org",               # the test e-mail address
+    # The commit trailer, as a whole line: the address is excused only there.
+    b"\nCo-Authored-By: Claude Opus 5.5 <noreply" + b"@anthropic.com>\n",
+    b'"gs://b"',              # the test bucket, quoted
+    b'"gs://{STORE}"',        # build_artifact.py's placeholder template
+    b"/Users/someone",        # the test home directory
+)
+
+
+def _allowed_spans(b: bytes) -> list[tuple[int, int]]:
+    spans = []
+    for a in ALLOW:
+        i = b.find(a)
+        while i != -1:
+            spans.append((i, i + len(a)))
+            i = b.find(a, i + 1)
+    return spans
+
+
+def _count(rx, b: bytes, spans) -> int:
+    if not spans:
+        return len(rx.findall(b))
+    return sum(1 for m in rx.finditer(b)
+               if not any(s <= m.start() and m.end() <= e for s, e in spans))
 
 
 def blobs(path: Path):
@@ -68,11 +103,12 @@ def scan(root: Path, literals: list[bytes]) -> dict:
         files += 1
         rel = p.relative_to(root).as_posix()
         for label, b in blobs(p):
+            spans = _allowed_spans(b)
             for k, rx in checks.items():
-                n = len(rx.findall(b))
+                n = len(rx.findall(b)) if k.startswith("literal ") else _count(rx, b, spans)
                 if n:
                     hits[k][rel + label] = hits[k].get(rel + label, 0) + n
-            for k, rx in checks.items():  # file names too
+            for k, rx in checks.items():  # file names too, never excused
                 if rx.search(rel.encode()):
                     hits[k][rel + " (path)"] = 1
     return {"files": files, "hits": hits}
