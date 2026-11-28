@@ -34,3 +34,14 @@ It exited 0.
    - The comparison itself is offline.
    - The mirror was recorded once from the store, on 16 Nov 2026. Rebuilding it needs store access, which this wave did not use.
 4. **P3 and the figures** are not covered (rows 6 and 7).
+
+## From the anonymised artifact (item 15, 28 Nov 2026)
+
+`scripts/build_artifact.py` built the artifact locally. It is outside the repository and **not published**: 511 data files, 2.20 GB. `scripts/artifact_scan.py` then reported it **clean**: no store or project name, account ID, ARN, EC2 resource ID, store URL, e-mail address or home directory in 515 files, with gzip and zip members read decompressed.
+
+`regenerate.sh`, run against the artifact alone with `--banked <artifact>/data`, exited 0:
+- the checksums held;
+- steps 1 to 5 above gave the same results as the clean-clone run (step 2 again differs only in block labels);
+- `null_kernel_bias.json` and `pay_bound.json` were byte-identical to the committed copies.
+
+So the anonymisation changes no number.

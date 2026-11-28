@@ -55,3 +55,18 @@ Since the brief says the researcher supplied the three "distant" entries, they m
 
 **Other flags.**
 - Three venues are not shown on any page fetched here: LLMServingSim 2.0 (ISPASS 2026), Vidur (MLSys 2024) and DuoAttention (ICLR 2025). Recheck each in IEEE Xplore, Scopus or the proceedings before submission (task T7.3).
+
+## Second check: every arXiv ID and the CTFusion DOI, fetched (28 Nov 2026, item 13)
+
+This is item 13 of the wave's extension. There is no `docs/paper/related_work.md`, so this file is the one checked (plan default, flagged).
+
+**All 25 arXiv IDs in this file resolve.** One arXiv API query (`export.arxiv.org/api/query?id_list=…`) returned all 25 entries. Each returned title and first author matches the row above. Two notes from that query:
+- **arXiv:2605.11504 is not this study's CTFusion.** It is "CTFusion: A CTF-based Benchmark for LLM Agent Evaluation" (Lee), so the warning in row 1 stands.
+- **Venues.** The arXiv comment fields confirm TaxBreak ("Accepted at IEEE ISPASS 2026"), Twilight (NeurIPS 2025), CompactAttention (NeurIPS 2026), Token Sparse Attention (ICML 2026) and DFSAttn (ICML 2026). They still show no venue for LLMServingSim 2.0, Vidur or DuoAttention, so those three stay unconfirmed.
+
+**The CTFusion DOI is verified.**
+- Crossref's record for 10.1109/flta67013.2025.11336244 gives the title "A Holistic Model for End-to-End Latency Prediction of Deep Learning Tasks on Heterogeneous Systems".
+- It gives the authors as Gennai, Ohsita and Shimonishi, the venue as the 2025 3rd International Conference on Federated Learning Technologies and Applications (FLTA), pp. 471–478, published 14 Oct 2025.
+- doi.org redirects the DOI to IEEE Xplore document 11336244.
+
+**The Token Sparse Attention "0.45x" figure is removed.** That figure, MInference at 0.45x of dense at 8K on an A100, appeared only in the 28 Nov 2026 novelty review, in chat, from a search snippet, and was marked unverified there. It is in no file in this repository, which a grep for "0.45" confirms. It must not be cited unless the researcher reads it in the paper's full text.
