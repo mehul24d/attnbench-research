@@ -1,4 +1,4 @@
-pairing,cell,arm,signed_rel,rel_lo,rel_hi,abs_error_ms
+pairing,cell,arm,signed_rel,rel_lo,rel_hi,signed_error_ms
 P2,dense|1|1951|b1,dense,0.709041,0.701644,0.714819,28.0007
 P2,meanpool|0.25|1951|b1,meanpool,1.091881,1.089243,1.097193,89.5865
 P2,meanpool|0.5|1951|b1,meanpool,1.109164,1.090451,1.118330,90.8553

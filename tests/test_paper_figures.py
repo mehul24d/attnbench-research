@@ -61,7 +61,7 @@ def test_figure_data_carry_the_scored_errors(fresh):
         q = by_cell[(r["pairing"], r["cell"])]
         pred, meas = float(q["predicted_ms"]), float(q["measured_ms"])
         assert float(r["signed_rel"]) == pytest.approx((pred - meas) / meas, abs=1e-5)
-        assert float(r["abs_error_ms"]) == pytest.approx(pred - meas, abs=1e-3)
+        assert float(r["signed_error_ms"]) == pytest.approx(pred - meas, abs=1e-3)
 
 
 def test_refuses_when_the_cells_do_not_reproduce_h1(tmp_path):
@@ -95,6 +95,20 @@ def test_refuses_a_verdict_that_disagrees_with_its_median(tmp_path):
     path.write_text(json.dumps(s))
     with pytest.raises(PF.Refused, match="verdict"):
         _build(tmp_path / "out", scored=path)
+
+
+def test_the_error_figure_leads_with_h1s_relative_error(fresh):
+    """The top (larger) panel plots H1's pre-registered relative error; the ms
+    panel is labelled a signed error, never an absolute one."""
+    head = (fresh / "figures/fig_error_by_cell.csv").read_text().splitlines()[0]
+    assert head == "pairing,cell,arm,signed_rel,rel_lo,rel_hi,signed_error_ms"
+    cap = (fresh / "generated/fig_error_by_cell.tex").read_text()
+    assert "Top: H1's pre-registered relative error" in cap
+    assert "signed error (ms)" in cap and "absolute error" not in cap.replace(
+        "median of its absolute value", "")
+    src = (ROOT / "scripts/paper_figures.py").read_text()
+    assert 'bot.set_ylabel("signed error (ms)")' in src
+    assert 'top.set_ylabel("signed relative error")' in src
 
 
 def test_every_caption_states_its_type(fresh):

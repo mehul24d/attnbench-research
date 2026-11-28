@@ -12,7 +12,7 @@ It writes, under --out:
   generated/numbers.tex           the macros the paper's text may use
   generated/tab_pairings.tex      T1  pairing and lock status        PRE-REGISTERED verdicts
   generated/fig_pred_vs_meas.tex  F1  predicted against measured     PRE-REGISTERED
-  generated/fig_error_by_cell.tex F2  signed and absolute error      PRE-REGISTERED (intervals EXPLORATORY)
+  generated/fig_error_by_cell.tex F2  signed relative error (H1's) and signed error (ms)   PRE-REGISTERED (intervals EXPLORATORY)
   generated/tab_miss.tex          T2  the miss decomposition         EXPLORATORY / POST HOC
   generated/tab_baselines.tex     T3  baselines and knockouts        PRE-REGISTERED rivals, EXPLORATORY knockouts
   generated/tab_threats.tex       T4  threats to validity            a list, not a result
@@ -428,8 +428,9 @@ def fig_pred_vs_meas(tables, out: Path) -> list[list]:
 
 def fig_error_by_cell(tables, out: Path) -> list[list]:
     plt = _plt()
-    fig, axes = plt.subplots(2, 2, figsize=(7.0, 3.6), sharex="col")
-    data = [["pairing", "cell", "arm", "signed_rel", "rel_lo", "rel_hi", "abs_error_ms"]]
+    fig, axes = plt.subplots(2, 2, figsize=(7.0, 3.6), sharex="col",
+                             gridspec_kw={"height_ratios": (3, 2)})
+    data = [["pairing", "cell", "arm", "signed_rel", "rel_lo", "rel_hi", "signed_error_ms"]]
     for col, p in enumerate(PAIRINGS):
         rows = _cells_in_order(tables[p]["miss"])
         unc = {u["cell"]: u for u in tables[p]["uncertainty"]}
@@ -466,7 +467,7 @@ def fig_error_by_cell(tables, out: Path) -> list[list]:
             ax.margins(y=0.08)
         if col == 0:
             top.set_ylabel("signed relative error")
-            bot.set_ylabel("predicted $-$ measured (ms)")
+            bot.set_ylabel("signed error (ms)")
         for ax in (top, bot):
             ax.grid(True, axis="y", color=GRID, lw=0.4)
     from matplotlib.lines import Line2D
@@ -530,12 +531,14 @@ def build(scored_path: Path, tables_path: Path, lock_path: Path, plan_path: Path
             "fig:predmeas"),
         "fig_error_by_cell.tex": fig_env(
             "fig_error_by_cell",
-            r"\textbf{Pre-registered} errors, with \textbf{exploratory} intervals. Top: each "
-            r"cell's signed relative error, (predicted $-$ measured) / measured; the band is "
-            r"H1's tolerance. Whiskers are post hoc percentile bootstrap intervals over the "
-            r"cell's rounds (within one session; often narrower than the marker). Bottom: the "
-            r"same error in milliseconds. Cells are grouped by realised prompt length; the "
-            r"last cell ($\times$4) is the dense cell at batch 4.",
+            r"\textbf{Pre-registered} errors, with \textbf{exploratory} intervals. Top: H1's "
+            r"pre-registered relative error for each cell, signed, (predicted $-$ measured) / "
+            r"measured; the band is H1's tolerance, and the median of its absolute value over "
+            r"the cells is H1's scored value (\HoneMedianPtwo on P2, \HoneMedianPfour on P4). "
+            r"Whiskers are post hoc percentile bootstrap intervals over the cell's rounds "
+            r"(within one session; often narrower than the marker). Bottom: the signed error "
+            r"(ms), predicted $-$ measured, not a scored quantity. Cells are grouped by "
+            r"realised prompt length; the last cell ($\times$4) is the dense cell at batch 4.",
             "fig:errcell"),
     }
     written = []
