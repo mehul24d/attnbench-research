@@ -1,0 +1,23 @@
+% EXPLORATORY / POST HOC results. Every number here carries that label, and
+% none replaces a pre-registered result.
+\section{Results: exploratory and post hoc}
+\label{sec:results-expl}
+
+\stub{the exploratory analyses, each labelled, written by the author}
+
+\input{generated/tab_miss}
+
+\begin{facts}
+\fact{EXPLORATORY. H100 diagnostic Q1: P4 priced the FA3-off kernel (sdpa\_flash attention / P4's priced attention = 1.016, band 0.9--1.1) \src{docs/exploratory/h100_diag_verdict_20261117.json}}
+\fact{EXPLORATORY. Q2: the graph replay prices FA3 faithfully (graph / eager FA3 attention = 1.019); with Q1, P4's misprice is the backend mismatch alone \src{docs/exploratory/h100_diag_rerun_verdict_20261117.json}}
+\fact{EXPLORATORY. Q3: the device is comparable at 8192, 16384 and 32768 (all 9 pairs within $\pm$10\%, ratios 1.017--1.055) \src{docs/exploratory/h100_diag_verdict_20261117.json}}
+\fact{EXPLORATORY. Q4: at 8192 not comparable (traced wall 1.110x P4's); at 16384 and 32768 host overstated (measured / priced host 0.65 and 0.60) \src{docs/exploratory/h100_diag_verdict_20261117.json}}
+\fact{EXPLORATORY. Error with all device time traced: 0.116 (P2), 0.208 (P4) \src{docs/exploratory/exploratory_wave_20261116.md}}
+\fact{EXPLORATORY. P4's residual is host pricing: queue nil, $s_0$ under 5\%, priced host above the whole measured time in 23 of 35 cells \src{docs/exploratory/residual_20261122.md}}
+\fact{EXPLORATORY, POST HOC MARGIN. Safe dispatch at margin 0.02264 (fixed from P1 after P2 and P4 cell times were seen): P2 zero regret; P4 worst 13.9\% slower than dense \src{docs/paper_claims_audit.md (c)}}
+\fact{EXPLORATORY. Paired sign: all 58 sparse cells exclude zero \src{docs/exploratory/exploratory_wave_20261116.md line 13}}
+\fact{EXPLORATORY (run after the lock; not a scored pairing). P3 full transfer from P1: recursion 0.0811, step\_form 0.0408 over 35 cells; the branch holding it is not merged \src{docs/p3_run/p3_exploratory_scored.md}}
+\fact{EXPLORATORY / POST HOC, lower bounds. The committed host price exceeds the whole measured prefill in 17 (P2), 2 (P3) and 23 (P4) of 35 cells; the bare part alone never does, the idle-gap residual alone does in 14 (P2) and 18 (P4); null pass / committed 1.31 to 1.45 (non-oracle); P4 committed / nsys host 1.53 to 1.68 \src{docs/paper/host_bias_and_pay_bound.md}}
+\fact{EXPLORATORY / POST HOC. Pay screen (a lower bound under stated assumptions, not a theorem): no measured win ruled out; rules out 14 of 25 (P2) and 26 of 28 (P4) measured losses before timing \src{docs/paper/host_bias_and_pay_bound.md}}
+\fact{EXPLORATORY / POST HOC. Miss decomposition, knockouts, per-cell intervals, FA3 repricing and host scaling \src{docs/paper/exploratory/paper_tables.md}}
+\end{facts}

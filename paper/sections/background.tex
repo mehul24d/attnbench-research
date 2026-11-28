@@ -1,18 +1,11 @@
-% Plan Section 3 (gaps G1 to G3 and nearest work). Related work comes from
-% T7.2 (reading in full) and T7.3 (IEEE Xplore and Scopus search).
-% Rule 5: a paper is cited only once it is read in full and its entry is in
-% refs.bib. Anything known from an abstract is marked "from abstract".
-\section{Background and Related Work}
+% Background and the model. Plan Sections 1 and 3.
+\section{Background and \bunga}
 \label{sec:background}
 
-\subsection{Host cost and synchronisation in prefill}
-\label{sec:bg-host}
-\stub{gap G2, plan Section 3}
+\stub{prefill on one GPU and one CUDA stream; where host time and synchronisation enter; what \bunga composes, written by the author}
 
-\subsection{Cross-device latency prediction}
-\label{sec:bg-predict}
-\stub{gap G1, plan Section 3}
-
-\subsection{Recall as an accuracy proxy}
-\label{sec:bg-recall}
-\stub{gap G3, plan Section 3}
+\begin{facts}
+\fact{P2's and P4's committed host prices read the bare timer plus the per-layer idle-gap residual (plus a few positions priced by isolated replay), not the null pass; the null pass is banked beside them as the instrumented comparison \src{docs/paper/host_bias_and_pay_bound.md}}
+\fact{The step form and the fitted sum are pre-registered H1 comparators, named in the plan at every lock tag \src{docs/paper/h1_comparators.md}}
+\fact{claim\_status.md holds no further fact on the model's design; the plan's method sections are the source \src{docs/RESEARCH_PLAN.md}}
+\end{facts}

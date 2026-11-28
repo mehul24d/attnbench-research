@@ -1,27 +1,13 @@
-% Plan Section 1 (question, RQ1 to RQ4, contributions, scope, "if sparse
-% prefill never pays"). Contributions in the plan's order of weight: G2
-% (lead), G3 (lead), the profitability dispatcher, G1 (validation question).
-% State what is not claimed as new (plan Section 1, G2 and G1).
+% Introduction. Prose and contributions are the author's to write.
 \section{Introduction}
 \label{sec:intro}
 
-\stub{the question, plan Section 1}
+\stub{the question, the motivation and the contributions, written by the author}
 
-\stub{motivation from banked evidence, plan Section 2; every figure from the
-numbers file, each against the fastest correct dense kernel}
-
-\stub{research questions RQ1 to RQ4}
-
-\stub{contributions in the plan's order: G2, G3, the dispatcher, G1}
-
-\stub{scope: one GPU, one CUDA stream per forward pass, eager and compiled}
-
-% Figure 1: host, link and device lanes for one layer on two GPUs.
-% Produced by scripts/figures/make_fig1.py from a measured trace (task T3.1);
-% never from --demo. Its metadata comes from scripts/figures/figure_meta.py.
-\begin{figure}[t]
-  \centering
-  \paperfigure{fig1.pdf}
-  \caption{\stub{caption, written from the figure's meta.json}}
-  \label{fig:timeline}
-\end{figure}
+\begin{facts}
+\fact{H1 (composition) fails on both scored pairings: the recursion's median absolute relative error is 0.1183 on P2 and 0.2495 on P4, over 35 cells each, against a tolerance of 0.1 \src{docs/scoring/hypotheses_scored_20261116.md lines 8-9}}
+\fact{On both scored pairings the pre-registered rivals fitted\_sum and step\_form beat the recursion (P2 0.1005 and 0.0842; P4 0.1216 and 0.2454) \src{docs/scoring/hypotheses_scored_20261116.md lines 8-9}}
+\fact{H0, H2 and H3 could not be scored as pre-registered; H4, H5 and H6 were withdrawn before scoring \src{docs/paper/claim_status.md section A}}
+\fact{Calibrated XAttention is certified non-inferior on qa\_1 at 16384 (bound $-4.3$) and 32768 (bound $-6.0$) on P1's L4 PyTorch path (pre-registered certification) \src{docs/t4_xattention_calibrated.md}}
+\fact{The research questions map onto hypotheses: RQ1 to H1--H3, RQ2 to H1's rival comparison and the XAttention pair, RQ3 to H4, RQ4 to H6 \src{docs/RESEARCH_PLAN.md section 1}}
+\end{facts}

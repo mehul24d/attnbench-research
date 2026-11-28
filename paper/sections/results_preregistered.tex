@@ -1,0 +1,21 @@
+% Results that were pre-registered, as scored. Nothing here is rescored.
+\section{Results: pre-registered}
+\label{sec:results-pre}
+
+\stub{the scored results, written by the author}
+
+\input{generated/fig_pred_vs_meas}
+\input{generated/fig_error_by_cell}
+\input{generated/tab_baselines}
+
+\begin{facts}
+\fact{H1 on P2 fails: 0.1183 over 35 cells against $\le$ 0.1; beaten by fitted\_sum 0.1005 and step\_form 0.0842; below sum 0.6935 and learned 1.4465; sign 25 agree, 0 disagree; XAttention pair 0 agree, 1 disagree \src{docs/scoring/hypotheses_scored_20261116.md line 8}}
+\fact{H1 on P4 fails: 0.2495 over 35 cells; beaten by fitted\_sum 0.1216 and step\_form 0.2454; below sum 0.8527 and learned 0.3169; sign 25 agree, 2 disagree; XAttention pair 0 agree, 1 disagree \src{docs/scoring/hypotheses_scored_20261116.md line 9}}
+\fact{P4's dense prediction priced sdpa\_flash while its ground truth ran FA3: a fault in the committed prediction, reported and not corrected \src{docs/RESEARCH_PLAN.md Appendix A, 17 Nov 2026}}
+\fact{H0 not scored: no P2 cell has P1's strict operation sequence (0 same, 25 different; dense at 1951 runs 1225 operations on P1 and 1085 on P2); 20 XAttention cells unmatched because calibrated densities differ. The table's reason text is the code's fallback for an empty comparison \src{docs/scoring/hypotheses_scored_20261116.md line 7}}
+\fact{H2 not scored: no transferred cell is measured; all 45 left out, for H0's reason \src{docs/scoring/hypotheses_scored_20261116.md line 10}}
+\fact{H3 not scored: of 6 estimators, mean-pool at 0.25 and 0.5 and both XAttention arms are unresolved; oracle at 0.25 and 0.5 have no crossover in range \src{docs/scoring/hypotheses_scored_20261116.md lines 11, 21-30}}
+\fact{T1.1 Session B: calibrated XAttention is non-inferior on qa\_1 at 16384, 69 vs 68 of 100, bound $-4.3$, density 0.59 (P1) \src{docs/t4_xattention_calibrated.md}}
+\fact{The same at 32768: 50 vs 46, bound $-6.0$, density 0.51, over all 100 rows, of which 19 to 21 were decoded past the position limit \src{docs/t4_xattention_calibrated.md; docs/paper_claims_audit.md (b)}}
+\fact{The earlier study's H100 oracle-mask mechanism predictions: 2 of 3 passed (7 of 9 cells) \src{docs/limitations.md, The H100 test (pre-registered)}}
+\end{facts}

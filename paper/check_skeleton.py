@@ -2,14 +2,17 @@
 """Static checks on the paper sources. Needs no LaTeX.
 
   python3 paper/check_skeleton.py           # the rules below
-  python3 paper/check_skeleton.py --final   # also refuses any remaining \\stub
+  python3 paper/check_skeleton.py --final   # also refuses any \\stub or \\fact left
 
 Checks (plan Section 6):
   - every \\input{sections/...} in main.tex exists;
   - main.tex loads the generated numbers file through \\NumbersFile and stops
     with an error when it is missing;
+  - every \\input{generated/...} file exists (scripts/paper_figures.py);
   - typeset text has no digits except in identifiers (H1, RQ2, T7.1, P4 and
-    the like) and in \\stub{...} markers: numbers come from macros (C10);
+    the like) and in \\stub{...} and \\fact{...} drafting notes: numbers come
+    from generated/numbers.tex or sit in generated tables and figures;
+  - the author block is anonymous (double-blind review);
   - no em dashes;
   - no "no accuracy loss" or "zero accuracy cost" (rule 1);
   - no assistant or model identifiers anywhere under paper/ (rule 9);
@@ -57,7 +60,7 @@ def strip_braced(tex: str, command: str) -> str:
 
 def typeset_text(tex: str) -> str:
     tex = strip_comments(tex)
-    for cmd in ("stub", "label", "ref", "eqref", "cite", "input",
+    for cmd in ("stub", "fact", "src", "label", "ref", "eqref", "cite", "input",
                 "paperfigure", "includegraphics", "usepackage",
                 "documentclass", "graphicspath", "providecommand",
                 "newcommand", "IfFileExists", "begin", "end", "url"):
@@ -82,6 +85,17 @@ def main() -> int:
         path = PAPER / (name if name.endswith(".tex") else name + ".tex")
         if not path.is_file():
             errors.append(f"main.tex inputs {name}, which does not exist")
+    for path in tex_files:
+        for name in re.findall(r"\\input\{(generated/[^}]+)\}", strip_comments(path.read_text())):
+            gen = PAPER / (name if name.endswith(".tex") else name + ".tex")
+            if not gen.is_file():
+                errors.append(f"{path.relative_to(PAPER)} inputs {name}, which does not exist; "
+                              "run scripts/paper_figures.py")
+
+    # Double-blind review: the author block names nobody.
+    author = re.search(r"\\author\{(.*?)\n\n", strip_comments(main_src), re.S)
+    if author is None or "Anonymous" not in author.group(1) or "\\thanks" in author.group(1):
+        errors.append("main.tex: the author block must stay anonymous (double-blind review)")
 
     body = strip_comments(main_src)
     if r"\input{\NumbersFile}" not in body or r"\errmessage" not in body:
@@ -106,6 +120,8 @@ def main() -> int:
                 errors.append(f"{rel}: banned phrase '{phrase}' (rule 1)")
         if args.final and re.search(r"\\stub\s*\{", strip_comments(src)):
             errors.append(f"{rel}: \\stub left in a final build")
+        if args.final and re.search(r"\\fact\s*\{", strip_comments(src)):
+            errors.append(f"{rel}: \\fact drafting note left in a final build")
 
     for path in sorted(p for p in PAPER.rglob("*")
                        if p.is_file() and p != SELF and "build" not in p.parts
